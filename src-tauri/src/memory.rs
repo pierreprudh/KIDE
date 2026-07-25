@@ -1,3 +1,4 @@
+use crate::workspace::Workspace;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -94,11 +95,11 @@ pub struct MemoryInput {
     pub status: Option<String>,
 }
 
-fn memory_dir(workspace_root: &str) -> Result<PathBuf, String> {
-    let dir = Path::new(workspace_root).join(".klide").join("memory");
+fn memory_dir(workspace: &Workspace) -> Result<PathBuf, String> {
+    let dir = workspace.resolve_new(".klide/memory")?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Unable to create .klide/memory directory: {e}"))?;
-    Ok(dir)
+    workspace.resolve_existing(".klide/memory")
 }
 
 fn slugify(input: &str) -> String {
@@ -237,7 +238,7 @@ fn render_markdown(entry: &MemoryEntry) -> String {
     out
 }
 
-fn parse_entry_from_file(path: &Path, workspace_root: &str) -> Option<MemoryEntry> {
+fn parse_entry_from_file(path: &Path, workspace_root: &Path) -> Option<MemoryEntry> {
     let content = std::fs::read_to_string(path).ok()?;
     let rel_path = path
         .strip_prefix(workspace_root)
@@ -425,7 +426,8 @@ fn split_sections(
 
 #[tauri::command]
 pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<MemoryEntry, String> {
-    let dir = memory_dir(&workspace_root)?;
+    let workspace = Workspace::new(&workspace_root)?;
+    let dir = memory_dir(&workspace)?;
     let created = now_ms();
     let date_iso = iso_date(created);
     let stem = format!("{}-{}", date_stamp(created), slugify(&input.title));
@@ -464,18 +466,25 @@ pub fn memory_list(
     workspace_root: String,
     limit: Option<usize>,
 ) -> Result<Vec<MemoryEntry>, String> {
-    let dir = memory_dir(&workspace_root)?;
+    let workspace = Workspace::new(&workspace_root)?;
+    let dir = memory_dir(&workspace)?;
     let mut entries = Vec::new();
     let read = match std::fs::read_dir(&dir) {
         Ok(r) => r,
         Err(_) => return Ok(entries),
     };
     for entry in read.flatten() {
-        let path = entry.path();
+        let entry_path = entry.path();
+        let Ok(path) = workspace.resolve_abs_read(&entry_path.to_string_lossy()) else {
+            continue;
+        };
+        if !path.starts_with(&dir) {
+            continue;
+        }
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        if let Some(parsed) = parse_entry_from_file(&path, &workspace_root) {
+        if let Some(parsed) = parse_entry_from_file(&path, workspace.root()) {
             entries.push(parsed);
         }
     }
@@ -485,6 +494,55 @@ pub fn memory_list(
 
 #[tauri::command]
 pub fn memory_read(workspace_root: String, rel_path: String) -> Result<String, String> {
-    let path = Path::new(&workspace_root).join(&rel_path);
+    let workspace = Workspace::new(&workspace_root)?;
+    let dir = memory_dir(&workspace)?;
+    let path = workspace.resolve_existing(&rel_path)?;
+    if !path.starts_with(&dir) || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        return Err("Memory file is outside .klide/memory".to_string());
+    }
     std::fs::read_to_string(&path).map_err(|e| format!("Unable to read memory file: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{memory_list, memory_read};
+
+    #[test]
+    fn memory_read_stays_beneath_memory_dir() {
+        let base =
+            std::env::temp_dir().join(format!("klide-memory-security-{}", std::process::id()));
+        let workspace = base.join("workspace");
+        let memory_dir = workspace.join(".klide").join("memory");
+        let outside = base.join("outside.txt");
+        let other_workspace_file = workspace.join("notes.txt");
+        let memory_file = memory_dir.join("handoff.md");
+
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+        std::fs::write(&other_workspace_file, "workspace").unwrap();
+        std::fs::write(&memory_file, "memory").unwrap();
+
+        let root = workspace.to_string_lossy().to_string();
+        assert_eq!(
+            memory_read(root.clone(), ".klide/memory/handoff.md".to_string()).unwrap(),
+            "memory"
+        );
+        assert!(memory_read(root.clone(), "../outside.txt".to_string()).is_err());
+        assert!(memory_read(root.clone(), "notes.txt".to_string()).is_err());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, memory_dir.join("leak.md")).unwrap();
+            assert!(
+                memory_list(root, None)
+                    .unwrap()
+                    .iter()
+                    .all(|entry| entry.id != "leak"),
+                "memory listing must not follow a symlink outside the workspace"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
