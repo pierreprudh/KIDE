@@ -27,7 +27,6 @@ use pty::{
     delegate_pty_stop, delegate_pty_write, pty_spawn, pty_write, DelegatePtyState, PtyState,
 };
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::Emitter;
@@ -533,17 +532,99 @@ async fn ai_chat(
     }
 }
 
-pub(crate) fn resolve_command(command: &str) -> Result<String, String> {
-    let output = Command::new("sh")
+fn is_executable_file(path: &std::path::Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn executable_candidates(path: &std::path::Path) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut candidates = vec![path.to_path_buf()];
+        if path.extension().is_none() {
+            let extensions = std::env::var_os("PATHEXT")
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+            for extension in extensions.split(';').filter(|value| !value.is_empty()) {
+                let mut candidate = path.as_os_str().to_os_string();
+                candidate.push(extension);
+                candidates.push(PathBuf::from(candidate));
+            }
+        }
+        candidates
+    }
+    #[cfg(not(windows))]
+    {
+        vec![path.to_path_buf()]
+    }
+}
+
+fn resolved_executable(path: &std::path::Path) -> Option<String> {
+    executable_candidates(path)
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
+        .map(|candidate| {
+            std::fs::canonicalize(&candidate)
+                .unwrap_or(candidate)
+                .to_string_lossy()
+                .to_string()
+        })
+}
+
+#[cfg(unix)]
+fn resolved_from_login_shell(command: &str) -> Option<String> {
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+    let output = std::process::Command::new(shell)
         .arg("-lc")
-        .arg(format!("command -v {command}"))
+        .arg("command -v -- \"$1\"")
+        .arg("klide-resolve")
+        .arg(command)
         .output()
-        .map_err(|e| format!("Unable to check {command}: {e}"))?;
-    if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() {
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    resolved_executable(std::path::Path::new(&path))
+}
+
+#[cfg(not(unix))]
+fn resolved_from_login_shell(_command: &str) -> Option<String> {
+    None
+}
+
+pub(crate) fn resolve_command(command: &str) -> Result<String, String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("Command is empty".to_string());
+    }
+
+    let requested = std::path::Path::new(command);
+    if requested.is_absolute() || requested.components().count() > 1 {
+        if let Some(path) = resolved_executable(requested) {
             return Ok(path);
         }
+    } else if let Some(path) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .find_map(|directory| resolved_executable(&directory.join(command)))
+    }) {
+        return Ok(path);
+    }
+    if let Some(path) = resolved_from_login_shell(command) {
+        return Ok(path);
     }
 
     let home = std::env::var("HOME").unwrap_or_default();
@@ -561,7 +642,7 @@ pub(crate) fn resolve_command(command: &str) -> Result<String, String> {
     };
     candidates
         .into_iter()
-        .find(|path| std::path::Path::new(path).exists())
+        .find_map(|path| resolved_executable(std::path::Path::new(&path)))
         .ok_or_else(|| format!("{command} CLI is not installed or not on PATH"))
 }
 
@@ -1127,5 +1208,17 @@ mod agent_log_path_tests {
         }
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod command_resolution_tests {
+    use super::resolve_command;
+
+    #[test]
+    fn command_resolution_does_not_interpret_shell_syntax() {
+        assert!(resolve_command("does-not-exist; printf injected").is_err());
+        let known_command = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(resolve_command(known_command).is_ok());
     }
 }

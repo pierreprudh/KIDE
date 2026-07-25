@@ -85,10 +85,10 @@ pub(crate) struct PullRequestDetails {
 /// inherits only a minimal PATH (no `/opt/homebrew/bin`), so a bare
 /// `Command::new("gh")` fails in the production bundle even when `gh` is
 /// installed — which is why author avatars fell back to the initial disc and
-/// the PR panel went quiet after v0.5 shipped. We resolve through the login
-/// shell (the same `resolve_command` helper the delegate + MLX paths use) and
-/// cache the result. Falls back to the bare name so dev (full PATH) still works
-/// if the shell lookup ever fails.
+/// the PR panel went quiet after v0.5 shipped. We resolve through the shared
+/// PATH helper used by delegates and MLX; its safe login-shell fallback sees
+/// Homebrew paths without interpolating the binary name. Falls back to the
+/// bare name so dev still works if the lookup ever fails.
 fn gh_bin() -> String {
     use std::sync::OnceLock;
     static GH: OnceLock<String> = OnceLock::new();
