@@ -363,11 +363,12 @@ function DurationValue({ ms }: { ms: number }) {
   );
 }
 
-// Task readout — one segment per task in a discrete track, ready segments lit
-// sage and the rest left as quiet hairlines. Segment count is the plan size,
-// lit count is what's dispatchable — both readable without a number. A compact
-// "n of m ready" line names it above. Segments flex to share a fixed width, so
-// any plan size fits. Shares the meter vocabulary of TierMeter, not chips/dots.
+// Task readout — one rounded tile per task, filled sage when the task is ready
+// to dispatch and left a quiet muted cell otherwise. Tile count is the plan
+// size, lit count is what's dispatchable. A compact "n of m ready" line names
+// it above. Tiles flex to share a fixed width, so any plan size fits. Hovering
+// magnifies the pointed-at tile and its neighbors (Dock wave), rising from the
+// baseline. Not chips/dots — filled cells with no text or status border.
 function TaskReadout({ total, ready }: { total: number; ready: number }) {
   const mono = { fontFamily: "var(--font-mono)", fontWeight: 600, fontVariantNumeric: "tabular-nums" as const };
   return (
@@ -376,22 +377,19 @@ function TaskReadout({ total, ready }: { total: number; ready: number }) {
         <span style={{ ...mono, fontSize: "var(--fs-md)", color: ready > 0 ? "var(--accent)" : "var(--fg-strong)" }}>{ready}</span>
         <span style={{ opacity: 0.7 }}> of {total} ready</span>
       </span>
-      <div style={{ display: "flex", gap: 4, width: 140, marginTop: -5, marginBottom: -5 }} aria-hidden>
+      <div style={{ display: "flex", gap: 5, width: 148 }} aria-hidden>
         {Array.from({ length: total }).map((_, i) => (
           <span
             key={i}
             className="klide-orch-seg"
             style={{
               flex: 1,
-              height: 4,
-              padding: "5px 0",
-              boxSizing: "content-box",
-              backgroundClip: "content-box",
-              borderRadius: 2,
+              height: 14,
+              borderRadius: 4,
               background: i < ready ? "var(--accent)" : "var(--border-strong)",
-              opacity: i < ready ? 0.85 : 0.32,
+              opacity: i < ready ? 0.9 : 0.26,
               cursor: "default",
-              transformOrigin: "center",
+              transformOrigin: "bottom",
               willChange: "transform",
               transition: "transform 380ms cubic-bezier(0.16, 1, 0.3, 1), opacity 380ms cubic-bezier(0.16, 1, 0.3, 1)",
             }}
@@ -1238,11 +1236,11 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
         /* macOS Dock magnification — the hovered segment swells and lights sage;
            neighbors only magnify (Dock never recolors them), falling off on both
            sides. Symmetric via :has() (prev sibling) + adjacency (next). */
-        .klide-orch-seg:hover { transform: scaleY(2.4) scaleX(1.2); background: var(--accent) !important; opacity: 1 !important; }
+        .klide-orch-seg:hover { transform: scale(1.5); background: var(--accent) !important; opacity: 1 !important; }
         .klide-orch-seg:hover + .klide-orch-seg,
-        .klide-orch-seg:has(+ .klide-orch-seg:hover) { transform: scaleY(1.75) scaleX(1.08); opacity: 0.92 !important; }
+        .klide-orch-seg:has(+ .klide-orch-seg:hover) { transform: scale(1.26); opacity: 0.9 !important; }
         .klide-orch-seg:hover + .klide-orch-seg + .klide-orch-seg,
-        .klide-orch-seg:has(+ .klide-orch-seg + .klide-orch-seg:hover) { transform: scaleY(1.3); opacity: 0.72 !important; }
+        .klide-orch-seg:has(+ .klide-orch-seg + .klide-orch-seg:hover) { transform: scale(1.1); opacity: 0.68 !important; }
         @media (prefers-reduced-motion: reduce) {
           .klide-orch-activity { animation: none; }
           .klide-orch-kpi-value { transition: none; }
