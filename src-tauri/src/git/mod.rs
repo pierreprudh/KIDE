@@ -1827,7 +1827,11 @@ detached
                 .await
                 .expect("merge succeeds");
         }
-        let log = git_output(&repo, &["log", "--format=%B", "-2"]).unwrap();
+        // `--first-parent` walks main's mainline, so this is exactly the two
+        // merge commits. A plain `-2` was flaky: every commit here is created
+        // within the same second, so git's date-ordered walk could tie-break to
+        // the branch's own "work" commit and miss the first merge entirely.
+        let log = git_output(&repo, &["log", "--first-parent", "--format=%B", "-2"]).unwrap();
         assert!(
             log.contains("Merge branch 'codex/fix-thing'")
                 && log.contains("Co-Authored-By: Codex <noreply@openai.com>"),
