@@ -50,6 +50,14 @@ export type FoldedRow =
       thinking?: string;
       toolCalls: FoldedToolCall[];
       meta?: AssistantMeta;
+    }
+  | {
+      kind: "compaction";
+      summary: string;
+      /** Conversation rows that preceded the marker — i.e. what the model
+       *  stopped seeing verbatim from this point on. Derived here rather than
+       *  carried on the wire, which has no count. */
+      count: number;
     };
 
 type AssistantRow = Extract<FoldedRow, { kind: "assistant" }>;
@@ -169,6 +177,19 @@ export function foldAgentEvents(events: AgentEvent[]): FoldedRow[] {
       });
       continue;
     }
+
+    if (event.type === "context_compacted") {
+      // The auto-compactor collapsed the older turns for the *model*. The
+      // transcript still holds them all, so replay renders everything — but it
+      // has to render the marker too, or a reloaded conversation looks like an
+      // unbroken thread that mysteriously forgot its early turns.
+      rows.push({
+        kind: "compaction",
+        summary: event.summary,
+        count: rows.length,
+      });
+      continue;
+    }
   }
 
   return rows;
@@ -238,6 +259,19 @@ export function foldedToMsgs(rows: FoldedRow[]): Msg[] {
       });
       continue;
     }
+    if (row.kind === "compaction") {
+      msgs.push({
+        role: "system",
+        // Plain-text fallback for serialization and search, matching what the
+        // live compaction path writes.
+        content: `Compacted ${row.count} earlier message${row.count === 1 ? "" : "s"} to free context.`,
+        // "agent" layout (the slim tool-style row): the wire event carries no
+        // manual/automatic distinction, and the unobtrusive row is the safe
+        // default for a replayed marker.
+        compaction: { count: row.count, summary: row.summary, source: "agent" },
+      });
+      continue;
+    }
     msgs.push({
       role: "assistant",
       content: row.text,
@@ -279,6 +313,11 @@ export function foldedToRunMessages(rows: FoldedRow[]): RunMessage[] {
       out.push({ role: "user", text: row.text });
       continue;
     }
+    // `RunMessage.role` is "user" | "assistant" by wire contract (the Rust
+    // struct and every Delegate adapter agree), so the compaction marker has no
+    // row to occupy here. Mission Control's Conversation shows what each side
+    // said; the model's context bookkeeping is the AI panel's concern.
+    if (row.kind === "compaction") continue;
     if (!row.text.trim() && row.toolCalls.length === 0) continue;
     out.push({
       role: "assistant",

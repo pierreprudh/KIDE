@@ -5245,7 +5245,9 @@ export function MissionControl({
   function selectRun(run: Run) {
     if (run.id !== selectedId && artifactTabs.length > 0 && !closeArtifact()) return;
     setSelectedId(run.id);
-    if (run.source === "claude-code" || run.source === "codex" || run.source === "opencode") {
+    // Derive from DELEGATE_IDS, never a hand-written list — a literal triple
+    // here silently dropped `omp` from every delegate affordance on the board.
+    if (isDelegateId(run.source)) {
       setPinnedId(run.id);
     } else {
       setPinnedId(null);
@@ -5599,9 +5601,7 @@ export function MissionControl({
                       onResumeKlideRun;
                     const cliResumable =
                       run.kind === "run" &&
-                      (run.source === "claude-code" ||
-                        run.source === "codex" ||
-                        run.source === "opencode") &&
+                      isDelegateId(run.source) &&
                       !isClaudeInternalSubagent(run) &&
                       run.status !== "running" &&
                       onOpenInAiPanel;
@@ -5791,9 +5791,7 @@ export function MissionControl({
                                     childTask && (childTask.status === "queued" || childTask.status === "error");
                                   const childCliResumable =
                                     child.kind === "run" &&
-                                    (child.source === "claude-code" ||
-                                      child.source === "codex" ||
-                                      child.source === "opencode") &&
+                                    isDelegateId(child.source) &&
                                     !isClaudeInternalSubagent(child) &&
                                     child.status !== "running" &&
                                     onOpenInAiPanel;

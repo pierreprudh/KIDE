@@ -2326,6 +2326,21 @@ This user request requires workspace inspection. Before answering, you MUST call
       if (driver.handleEvent(event)) return;
 
       switch (event.type) {
+        case "context_compacted": {
+          // The Rust auto-compactor collapsed the older turns mid-run. Without
+          // this the conversation just silently loses its early context and the
+          // marker only appears after a reload (via foldEvents).
+          const priorMsgs = msgsRef.current;
+          commit([
+            ...priorMsgs,
+            {
+              role: "system",
+              content: `Compacted ${priorMsgs.length} earlier message${priorMsgs.length === 1 ? "" : "s"} to free context.`,
+              compaction: { count: priorMsgs.length, summary: event.summary, source: "agent" },
+            },
+          ]);
+          break;
+        }
         case "diff_proposed": {
           setPendingDiff(event.proposal);
           break;

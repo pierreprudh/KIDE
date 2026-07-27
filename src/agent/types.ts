@@ -214,7 +214,13 @@ export type AgentEvent =
   | { type: "subagent_requested"; runId: string; requestId: string; subagent: string; task: string; ts: number }
   | { type: "subagent_resolved"; runId: string; requestId: string; result: string; ts: number }
   | { type: "advisor_requested"; runId: string; requestId: string; question: string; ts: number }
-  | { type: "advisor_resolved"; runId: string; requestId: string; advice: string; ts: number };
+  | { type: "advisor_resolved"; runId: string; requestId: string; advice: string; ts: number }
+  /** The auto-compactor collapsed the older turns into `summary` to free
+   *  context. Emitted by the Harness and persisted to the Transcript, so a
+   *  replayed Conversation must render the marker where it happened —
+   *  otherwise the reloaded transcript looks like an unbroken conversation
+   *  that mysteriously forgot its early turns. */
+  | { type: "context_compacted"; runId: string; summary: string; ts: number };
 
 export type AgentMessageView = {
   id: string;
