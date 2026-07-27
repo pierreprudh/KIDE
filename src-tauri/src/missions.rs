@@ -20,7 +20,6 @@ use crate::pty_host::{PtyExitOutcome, ScrollbackMeta};
 use crate::workspace::Workspace;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
@@ -562,18 +561,67 @@ fn events_path(dir: &Path) -> PathBuf {
     dir.join("events.jsonl")
 }
 
+/// Read the Mission event log.
+///
+/// This reader is deliberately strict. ADR-0002 makes `events.jsonl` the
+/// authority for what a Mission has done and `seq` monotonic (invariant 8), so
+/// a line we cannot parse is not something to skip — skipping it used to make
+/// the next `append_event` reuse a `seq` that was already taken, which silently
+/// reorders the projection's fold. A malformed line, a mission-id mismatch, a
+/// future `schemaVersion`, or a non-increasing `seq` all mean "this log is not
+/// what I think it is", and the caller gets to say so out loud.
+///
+/// The two Markdown parsers already reject a schema-version mismatch; this
+/// brings the event log up to the same standard.
 fn read_events(dir: &Path) -> Result<Vec<MissionEventLine>, String> {
     let path = events_path(dir);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("Unable to read Mission events: {e}"))?;
-    Ok(text
-        .lines()
-        .filter_map(|line| serde_json::from_str::<MissionEventLine>(line).ok())
-        .collect())
+
+    let mut lines: Vec<MissionEventLine> = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        // A trailing newline yields one empty final entry; genuinely blank
+        // interior lines are harmless padding either way.
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let line: MissionEventLine = serde_json::from_str(raw).map_err(|e| {
+            format!(
+                "Mission event log {path:?} is corrupt at line {}: {e}. \
+                 The log is the record of what this Mission did, so Klide will \
+                 not guess past it.",
+                index + 1
+            )
+        })?;
+        if line.schema_version > MISSION_SCHEMA_VERSION {
+            return Err(format!(
+                "Mission event log {path:?} line {} was written by a newer Klide \
+                 (schemaVersion {} > {MISSION_SCHEMA_VERSION}).",
+                index + 1,
+                line.schema_version
+            ));
+        }
+        if let Some(previous) = lines.last() {
+            if line.seq <= previous.seq {
+                return Err(format!(
+                    "Mission event log {path:?} line {} breaks sequence ordering \
+                     (seq {} follows seq {}).",
+                    index + 1,
+                    line.seq,
+                    previous.seq
+                ));
+            }
+        }
+        lines.push(line);
+    }
+    Ok(lines)
 }
 
 fn append_event(dir: &Path, mission_id: &str, event: MissionEvent) -> Result<(), String> {
-    let prior = read_events(dir).unwrap_or_default();
+    // Propagate a read failure instead of defaulting to an empty log. The old
+    // `unwrap_or_default()` turned an unreadable log into `seq: 0` appended to
+    // a file that already had events.
+    let prior = read_events(dir)?;
     let line = MissionEventLine {
         schema_version: MISSION_SCHEMA_VERSION,
         mission_id: mission_id.to_string(),
@@ -583,12 +631,8 @@ fn append_event(dir: &Path, mission_id: &str, event: MissionEvent) -> Result<(),
     };
     let encoded =
         serde_json::to_string(&line).map_err(|e| format!("Unable to encode Mission event: {e}"))?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(events_path(dir))
-        .map_err(|e| format!("Unable to open Mission events: {e}"))?;
-    writeln!(file, "{encoded}").map_err(|e| format!("Unable to append Mission event: {e}"))
+    crate::durable::append_line(&events_path(dir), &encoded)
+        .map_err(|e| format!("Unable to append Mission event: {e}"))
 }
 
 fn load_bundle_from_dir(dir: &Path) -> Result<DurableMissionBundle, String> {
@@ -1047,13 +1091,16 @@ fn do_create(
 
     std::fs::create_dir_all(dir.join("tasks"))
         .map_err(|e| format!("Unable to create Mission directory: {e}"))?;
-    std::fs::write(dir.join("mission.md"), render_mission_markdown(&mission)?)
-        .map_err(|e| format!("Unable to write mission.md: {e}"))?;
+    crate::durable::write_atomic(
+        &dir.join("mission.md"),
+        render_mission_markdown(&mission)?.as_bytes(),
+    )
+    .map_err(|e| format!("Unable to write mission.md: {e}"))?;
     for task in &tasks {
-        std::fs::write(task_path(&dir, &task.id)?, render_task_markdown(task)?)
+        crate::durable::write_atomic(&task_path(&dir, &task.id)?, render_task_markdown(task)?.as_bytes())
             .map_err(|e| format!("Unable to write task `{}`: {e}", task.id))?;
     }
-    std::fs::write(events_path(&dir), "")
+    crate::durable::write_atomic(&events_path(&dir), b"")
         .map_err(|e| format!("Unable to create Mission event log: {e}"))?;
     append_event(&dir, &mission_id, MissionEvent::MissionCreated)?;
     for task in &tasks {
@@ -1098,8 +1145,17 @@ pub fn mission_list(workspace_root: String) -> Result<Vec<DurableMissionBundle>,
         if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
             continue;
         }
-        if let Ok(bundle) = load_bundle_from_dir(&entry.path()) {
-            bundles.push(bundle);
+        match load_bundle_from_dir(&entry.path()) {
+            Ok(bundle) => bundles.push(bundle),
+            // A Mission that will not load is skipped so one bad directory
+            // cannot blank the whole board — but it is never skipped silently.
+            // Without this line a corrupt Mission simply vanishes from the
+            // list, and `do_create`'s `dir.exists()` guard then refuses to
+            // recreate it: invisible *and* uncreatable.
+            Err(error) => eprintln!(
+                "klide: skipping unreadable Mission at {:?}: {error}",
+                entry.path()
+            ),
         }
     }
     bundles.sort_by(|a, b| {
@@ -1210,15 +1266,15 @@ fn do_save_task(
         created_ms: existing.created_ms,
         updated_ms: now,
     };
-    std::fs::write(
-        task_path(&dir, &updated.id)?,
-        render_task_markdown(&updated)?,
+    crate::durable::write_atomic(
+        &task_path(&dir, &updated.id)?,
+        render_task_markdown(&updated)?.as_bytes(),
     )
     .map_err(|e| format!("Unable to update task `{}`: {e}", updated.id))?;
     bundle.mission.updated_ms = now;
-    std::fs::write(
-        dir.join("mission.md"),
-        render_mission_markdown(&bundle.mission)?,
+    crate::durable::write_atomic(
+        &dir.join("mission.md"),
+        render_mission_markdown(&bundle.mission)?.as_bytes(),
     )
     .map_err(|e| format!("Unable to update mission.md: {e}"))?;
     append_event(
@@ -1276,9 +1332,9 @@ fn snapshot_approval(
         updates.push(updated);
     }
     for updated in updates {
-        std::fs::write(
-            task_path(dir, &updated.id)?,
-            render_task_markdown(&updated)?,
+        crate::durable::write_atomic(
+            &task_path(dir, &updated.id)?,
+            render_task_markdown(&updated)?.as_bytes(),
         )
         .map_err(|e| format!("Unable to save task execution snapshot: {e}"))?;
         append_event(
@@ -2360,6 +2416,132 @@ mod tests {
         let three = first_dependency_cycle(&deps(&[("a", &["b"]), ("b", &["c"]), ("c", &["a"])]))
             .expect("a→b→c→a is a cycle");
         assert_eq!(three.first(), three.last());
+    }
+
+    // --- the event log is the authority (ADR-0002 invariant 8) --------------
+
+    /// Create a real Mission and hand back its directory, so the event-log
+    /// tests operate on a log Rust actually wrote.
+    fn mission_dir_for(tag: &str) -> PathBuf {
+        let root = temp_workspace(tag);
+        do_create(root.to_str().unwrap(), sample_input()).unwrap();
+        mission_dir(root.to_str().unwrap(), "mission-one", true).unwrap()
+    }
+
+    #[test]
+    fn read_events_accepts_a_log_rust_wrote_and_numbers_it_from_zero() {
+        let dir = mission_dir_for("events-happy");
+        let events = read_events(&dir).unwrap();
+        // MissionCreated + one TaskCreated per task in sample_input().
+        assert!(events.len() >= 2, "got {} events", events.len());
+        assert_eq!(events[0].seq, 0);
+        for (index, line) in events.iter().enumerate() {
+            assert_eq!(line.seq, index as u64, "seq must be dense and monotonic");
+            assert_eq!(line.mission_id, "mission-one");
+            assert_eq!(line.schema_version, MISSION_SCHEMA_VERSION);
+        }
+    }
+
+    #[test]
+    fn read_events_refuses_a_truncated_last_line_instead_of_dropping_it() {
+        // The regression this reader exists for. A non-atomic write used to be
+        // able to leave a half-written final line; the old
+        // `filter_map(…ok())` dropped it, so `append_event` then derived its
+        // seq from the *previous* line and reused a number already on disk.
+        let dir = mission_dir_for("events-truncated");
+        let path = events_path(&dir);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("{\"schemaVersion\":1,\"missionId\":\"mission-one\",\"seq\":9,\"ts\":1,\"eve");
+        std::fs::write(&path, text).unwrap();
+
+        let err = read_events(&dir).unwrap_err();
+        assert!(err.contains("corrupt"), "unexpected error: {err}");
+        // And the append path refuses too, rather than minting a duplicate seq.
+        let err = append_event(&dir, "mission-one", MissionEvent::PlanApproved).unwrap_err();
+        assert!(err.contains("corrupt"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn read_events_refuses_a_non_increasing_seq() {
+        let dir = mission_dir_for("events-seq");
+        let path = events_path(&dir);
+        let events = read_events(&dir).unwrap();
+        let reused = events.last().unwrap().seq;
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&format!(
+            "{{\"schemaVersion\":1,\"missionId\":\"mission-one\",\"seq\":{reused},\"ts\":1,\"event\":{{\"type\":\"plan_approved\"}}}}\n"
+        ));
+        std::fs::write(&path, text).unwrap();
+
+        let err = read_events(&dir).unwrap_err();
+        assert!(err.contains("sequence ordering"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn read_events_refuses_a_log_from_a_newer_klide() {
+        // Degrading to "this Mission has no events" would read as unapproved
+        // with every task queued — worse than saying the log is too new.
+        let dir = mission_dir_for("events-future");
+        let path = events_path(&dir);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        let next = read_events(&dir).unwrap().last().unwrap().seq + 1;
+        text.push_str(&format!(
+            "{{\"schemaVersion\":99,\"missionId\":\"mission-one\",\"seq\":{next},\"ts\":1,\"event\":{{\"type\":\"plan_approved\"}}}}\n"
+        ));
+        std::fs::write(&path, text).unwrap();
+
+        let err = read_events(&dir).unwrap_err();
+        assert!(err.contains("newer Klide"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn read_events_tolerates_blank_padding_lines() {
+        let dir = mission_dir_for("events-blank");
+        let path = events_path(&dir);
+        let before = read_events(&dir).unwrap().len();
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n   \n");
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(read_events(&dir).unwrap().len(), before);
+    }
+
+    #[test]
+    fn append_event_keeps_seq_dense_across_many_appends() {
+        let dir = mission_dir_for("events-append");
+        let start = read_events(&dir).unwrap().len() as u64;
+        for _ in 0..5 {
+            append_event(&dir, "mission-one", MissionEvent::PlanApproved).unwrap();
+        }
+        let events = read_events(&dir).unwrap();
+        assert_eq!(events.len() as u64, start + 5);
+        for (index, line) in events.iter().enumerate() {
+            assert_eq!(line.seq, index as u64);
+        }
+    }
+
+    #[test]
+    fn mission_writes_leave_no_temp_files_for_the_listing_scan_to_trip_over() {
+        let root = temp_workspace("no-temps");
+        do_create(root.to_str().unwrap(), sample_input()).unwrap();
+        let dir = mission_dir(root.to_str().unwrap(), "mission-one", true).unwrap();
+
+        let mut stray = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if crate::durable::is_tmp_path(&entry.path()) {
+                stray.push(entry.path());
+            }
+        }
+        for entry in std::fs::read_dir(dir.join("tasks")).unwrap().flatten() {
+            if crate::durable::is_tmp_path(&entry.path()) {
+                stray.push(entry.path());
+            }
+        }
+        assert!(stray.is_empty(), "left temp files behind: {stray:?}");
+        // And the Mission still lists cleanly.
+        assert_eq!(
+            mission_list(root.to_str().unwrap().to_string()).unwrap().len(),
+            1
+        );
     }
 
     #[test]

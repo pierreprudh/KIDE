@@ -457,7 +457,8 @@ pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<Memory
     };
 
     let body = render_markdown(&entry);
-    std::fs::write(&path, body).map_err(|e| format!("Unable to write memory entry: {e}"))?;
+    crate::durable::write_atomic(&path, body.as_bytes())
+        .map_err(|e| format!("Unable to write memory entry: {e}"))?;
     Ok(entry)
 }
 

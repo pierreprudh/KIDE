@@ -213,9 +213,19 @@ pub fn read_scrollback_meta(dir: &Path, session_id: &str) -> Option<ScrollbackMe
     serde_json::from_str(&text).ok()
 }
 
+/// Persist a session's spawn/exit facts.
+///
+/// Atomic, because this file is load-bearing for Mission recovery: a reader that
+/// catches it half-written gets `None` from `read_scrollback_meta`, which
+/// `delegate_attempt_recovery` reports as `Missing`, which makes the Mission
+/// supervisor append `attempt_interrupted` — an attempt declared dead because
+/// of a partial write.
 fn write_scrollback_meta(dir: &Path, meta: &ScrollbackMeta) {
     if let Ok(json) = serde_json::to_string_pretty(meta) {
-        let _ = fs::write(scrollback_meta_path(dir, &meta.session_id), json);
+        let _ = crate::durable::write_atomic(
+            &scrollback_meta_path(dir, &meta.session_id),
+            json.as_bytes(),
+        );
     }
 }
 
@@ -265,7 +275,10 @@ fn open_scrollback_sink(dir: &Path, session_id: &str) -> Option<ScrollbackSink> 
         if existing_meta.len() as usize > SCROLLBACK_DISK_CAP {
             if let Ok(existing) = fs::read(&path) {
                 let keep = existing.len().saturating_sub(SCROLLBACK_CAP);
-                let _ = fs::write(&path, &existing[keep..]);
+                // Atomic: this is a read-all-then-overwrite, so a truncating
+                // write that is interrupted loses the entire replay history
+                // rather than just the trimmed head.
+                let _ = crate::durable::write_atomic(&path, &existing[keep..]);
             }
         }
     }
@@ -742,6 +755,12 @@ pub fn scan_recent_sessions(dir: &Path, live_ids: &HashSet<String>) -> Vec<Recen
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
+        // Skip a write that is still in flight. The suffix check below would
+        // already exclude it, but stating it keeps the two modules' contract
+        // explicit rather than accidental.
+        if crate::durable::is_tmp_path(&path) {
+            continue;
+        }
         let is_meta = path
             .file_name()
             .and_then(|n| n.to_str())

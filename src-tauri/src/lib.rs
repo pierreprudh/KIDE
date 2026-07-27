@@ -4,6 +4,7 @@ mod agent;
 mod custom_cli;
 mod custom_providers;
 mod delegate;
+mod durable;
 mod git;
 mod local_servers;
 mod memory;

@@ -196,7 +196,7 @@ pub fn delegate_daemon_set_enabled(app: tauri::AppHandle, enabled: bool) -> Resu
         }
         let json = serde_json::to_string_pretty(&PtydConfig { enabled })
             .map_err(|e| e.to_string())?;
-        std::fs::write(&path, json).map_err(|e| e.to_string())?;
+        crate::durable::write_atomic(&path, json.as_bytes())?;
     }
     if enabled {
         let dir = app_data_dir(&app).ok_or("no app data dir")?;
@@ -872,7 +872,9 @@ fn write_delegate_sessions(
     }
     let vec: Vec<DelegateSessionMapping> = seen.into_values().collect();
     let content = serde_json::to_string_pretty(&vec).map_err(|e| e.to_string())?;
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    // Atomic: two threads write this file (the PTY session-id detector and the
+    // hook server), so a truncating write can be observed half-done.
+    crate::durable::write_atomic(&path, content.as_bytes())
 }
 
 pub fn record_delegate_parent(
