@@ -101,7 +101,8 @@ Klide/
 │   │   ├── providers.ts         Provider definitions (12 providers)
 │   │   ├── client.ts            Frontend agent harness client
 │   │   ├── race.ts              Same-task multi-run dispatch into isolated worktrees
-│   │   ├── missionChain.ts      Dependency-aware mission dispatch
+│   │   ├── durableMissions.ts   Mission IPC + Markdown/events → MissionState projection
+│   │   ├── missionHarness.ts    MissionState reducer (projection model, not a second loop)
 │   │   ├── routingPolicy.ts     Deterministic tier/model routing
 │   │   └── tools.ts             Frontend tool list fetcher (fetches from Rust)
 │   ├── gridLayouts.ts           Freeform grid layouts

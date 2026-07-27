@@ -1934,7 +1934,7 @@ function App() {
     { id: "layout-free", label: "Layout: Free (floating panels)", action: () => { setFocusMode(false); setAnchoredLayout(false); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
     { id: "layout-focus", label: "Layout: Focus (chat)", action: () => { setFocusMode(true); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
     { id: "runs", label: "View: Mission Control", action: () => { setView("runs"); setPaletteOpen(false); } },
-    { id: "orchestrator", label: "View: Orchestrator Preview", action: () => { setView("orchestrator"); setPaletteOpen(false); } },
+    { id: "orchestrator", label: "View: Orchestrator", action: () => { setView("orchestrator"); setPaletteOpen(false); } },
     { id: "back-to-workbench", label: "View: Back to Workbench", shortcut: "Esc", action: () => { setView("workbench"); setPaletteOpen(false); } },
     { id: "git-review", label: "View: Git Review", shortcut: "⌘⇧G", action: () => { setView((v) => v === "git-review" ? "workbench" : "git-review"); setPaletteOpen(false); } },
     { id: "create-pr", label: "Git: Create Pull Request…", action: () => { setPaletteOpen(false); void (async () => { try { const pr = await invoke<string>("create_pr", { workspaceRoot, title: "Klide changes", body: null }); setFileNotice(`PR: ${pr}`); } catch(e) { setFileNotice(`PR failed: ${e}`); } })(); } },
@@ -2099,8 +2099,9 @@ function App() {
                 />
               </Suspense>
             ) : view === "orchestrator" ? (
-              // Real tier-board console. workspaceRoot enables real plan-mode
-              // dispatch through the slice-1 dispatcher seam.
+              // The tier-board console. Rust's Mission supervisor owns which
+              // task runs next (ADR-0002); this surface authors the plan,
+              // approves it, and reattaches to the resulting Harness Runs.
               <Suspense fallback={null}>
                 <OrchestratorConsole workspaceRoot={workspaceRoot} />
               </Suspense>

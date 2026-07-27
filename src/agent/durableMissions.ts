@@ -108,11 +108,6 @@ export type DurableMissionBundle = {
   events: DurableMissionEventLine[];
 };
 
-export type PreparedMissionAttempt = {
-  runId: string;
-  bundle: DurableMissionBundle;
-};
-
 /**
  * Compile authored Markdown + Rust-owned events into the existing headless
  * Mission state. This is a projection only: refreshing from disk is always
@@ -211,13 +206,6 @@ export async function createDurableMission(
   return invoke<DurableMissionBundle>("mission_create", { workspaceRoot, input });
 }
 
-export async function readDurableMission(
-  workspaceRoot: string,
-  missionId: string
-): Promise<DurableMissionBundle> {
-  return invoke<DurableMissionBundle>("mission_read", { workspaceRoot, missionId });
-}
-
 export async function listDurableMissions(workspaceRoot: string): Promise<DurableMissionBundle[]> {
   return invoke<DurableMissionBundle[]>("mission_list", { workspaceRoot });
 }
@@ -250,48 +238,6 @@ export async function dispatchDurableMissionTask(
   });
 }
 
-export async function prepareMissionAttempt(
-  workspaceRoot: string,
-  missionId: string,
-  taskId: string
-): Promise<PreparedMissionAttempt> {
-  return invoke<PreparedMissionAttempt>("mission_prepare_attempt", {
-    workspaceRoot,
-    missionId,
-    taskId,
-  });
-}
-
-export async function failMissionAttemptDispatch(
-  workspaceRoot: string,
-  missionId: string,
-  taskId: string,
-  runId: string,
-  message: string
-): Promise<DurableMissionBundle> {
-  return invoke<DurableMissionBundle>("mission_fail_attempt_dispatch", {
-    workspaceRoot,
-    missionId,
-    taskId,
-    runId,
-    message,
-  });
-}
-
-export async function validateMissionAttempt(
-  workspaceRoot: string,
-  missionId: string,
-  taskId: string,
-  runId: string
-): Promise<DurableMissionBundle> {
-  return invoke<DurableMissionBundle>("mission_validate_attempt", {
-    workspaceRoot,
-    missionId,
-    taskId,
-    runId,
-  });
-}
-
 export async function reviewDurableMissionAttempt(
   workspaceRoot: string,
   missionId: string,
@@ -302,47 +248,4 @@ export async function reviewDurableMissionAttempt(
     missionId,
     input,
   });
-}
-
-/** The terminal AgentEvent reaches the request channel just before the Harness
- * finishes writing its terminal summary. Retry that tiny handoff window here
- * so callers still treat validation as one durable Rust operation. */
-export async function validateMissionAttemptAfterRun(
-  workspaceRoot: string,
-  missionId: string,
-  taskId: string,
-  runId: string
-): Promise<DurableMissionBundle> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      return await validateMissionAttempt(workspaceRoot, missionId, taskId, runId);
-    } catch (error) {
-      lastError = error;
-      if (!String(error).includes("has not settled yet")) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-  throw lastError;
-}
-
-/** Observe the Rust Harness' automatic acceptance write. The poll is only a
- * view reattachment seam; it never decides or mutates Mission state. */
-export async function waitForMissionAttemptValidation(
-  workspaceRoot: string,
-  missionId: string,
-  taskId: string,
-  runId: string
-): Promise<DurableMissionBundle> {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    const bundle = await readDurableMission(workspaceRoot, missionId);
-    const recorded = bundle.events.some((line) =>
-      line.event.type === "attempt_validation_recorded"
-      && line.event.taskId === taskId
-      && line.event.runId === runId
-    );
-    if (recorded) return bundle;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(`Rust did not record validation for Run ${runId}.`);
 }
