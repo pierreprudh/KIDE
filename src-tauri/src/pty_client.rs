@@ -53,12 +53,13 @@ pub fn request(data_dir: &Path, request: &Request) -> Result<Response, String> {
 /// sessions the new protocol misreads.
 pub fn ensure_daemon(data_dir: &Path) -> Result<(), String> {
     match request(data_dir, &Request::Ping) {
-        Ok(Response::Pong { version, .. }) if version == env!("CARGO_PKG_VERSION") => {
-            return Ok(())
-        }
+        Ok(Response::Pong { version, .. }) if version == env!("CARGO_PKG_VERSION") => return Ok(()),
         Ok(Response::Pong { version, .. }) => {
             let _ = request(data_dir, &Request::Shutdown);
-            eprintln!("ptyd: replacing v{version} with v{}", env!("CARGO_PKG_VERSION"));
+            eprintln!(
+                "ptyd: replacing v{version} with v{}",
+                env!("CARGO_PKG_VERSION")
+            );
             // Give it a beat to release the socket before rebinding.
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -110,7 +111,9 @@ pub fn subscribe(data_dir: &Path) -> Result<BufReader<UnixStream>, String> {
     writeln!(stream, "{line}").map_err(|e| format!("send: {e}"))?;
     let mut reader = BufReader::new(stream);
     let mut ack = String::new();
-    reader.read_line(&mut ack).map_err(|e| format!("recv: {e}"))?;
+    reader
+        .read_line(&mut ack)
+        .map_err(|e| format!("recv: {e}"))?;
     match serde_json::from_str::<Response>(&ack) {
         Ok(Response::Subscribed) => {
             // Events are pushed at the session's pace — an idle session may be

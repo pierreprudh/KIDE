@@ -215,6 +215,12 @@ export type AgentEvent =
   | { type: "subagent_resolved"; runId: string; requestId: string; result: string; ts: number }
   | { type: "advisor_requested"; runId: string; requestId: string; question: string; ts: number }
   | { type: "advisor_resolved"; runId: string; requestId: string; advice: string; ts: number }
+  /** The auto-compactor collapsed the older turns into `summary` to free
+   *  context. Emitted by the Harness and persisted to the Transcript, so a
+   *  replayed Conversation must render the marker where it happened —
+   *  otherwise the reloaded transcript looks like an unbroken conversation
+   *  that mysteriously forgot its early turns. */
+  | { type: "context_compacted"; runId: string; summary: string; ts: number }
   | { type: "steering_injected"; runId: string; reason: string; ts: number };
 
 export type AgentMessageView = {
@@ -297,4 +303,7 @@ export type StartAgentRunInput = {
   testAfterEditCommand?: string;
   /** When this run is a spawned sub-agent, the parent run's id. */
   parentId?: string;
+  /** Optional durable Mission attempt linkage. Task id and Run id stay distinct. */
+  missionId?: string;
+  missionTaskId?: string;
 };

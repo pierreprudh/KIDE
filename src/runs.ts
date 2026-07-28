@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AgentEvent } from "./agent/types";
 import { foldAgentEvents, foldedToRunMessages } from "./agent/foldEvents";
 
-import type { DelegateId } from "./delegates";
+import { isDelegateId, type DelegateId } from "./delegates";
 
 export type RunSource = DelegateId | "klide";
 export type RunStatus = "running" | "waiting" | "queued" | "done" | "cancelled" | "error";
@@ -476,12 +476,9 @@ export const SOURCE_COLOR: Record<RunSource, string> = {
 };
 
 function toSource(raw: string): RunSource {
-  return raw === "claude-code" ||
-    raw === "codex" ||
-    raw === "opencode" ||
-    raw === "omp"
-    ? raw
-    : "klide";
+  // Derived from DELEGATE_IDS (which a Rust test pins against `delegate::ALL`),
+  // so a fifth CLI is recognised here the moment it joins the seam.
+  return isDelegateId(raw) ? raw : "klide";
 }
 
 function toStatus(raw: string): RunStatus {

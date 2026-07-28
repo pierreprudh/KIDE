@@ -4,9 +4,11 @@ mod agent;
 mod custom_cli;
 mod custom_providers;
 mod delegate;
+mod durable;
 mod git;
 mod local_servers;
 mod memory;
+mod missions;
 mod models;
 mod pricing;
 mod providers;
@@ -285,8 +287,12 @@ fn account_activate(
 /// resolve from that project's `.env`. Called by the frontend whenever the
 /// workspace changes; `None` clears it.
 #[tauri::command]
-fn set_active_workspace(root: Option<String>) {
-    providers::set_active_workspace(root);
+async fn set_active_workspace(app: tauri::AppHandle, root: Option<String>) -> Result<(), String> {
+    providers::set_active_workspace(root.clone());
+    if let Some(root) = root.filter(|root| !root.trim().is_empty()) {
+        missions::reconcile_workspace(app, root).await?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -697,7 +703,13 @@ fn read_text_file(workspace_root: String, path: String) -> Result<String, String
 }
 
 fn mime_for_path(path: &str) -> &'static str {
-    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -899,6 +911,7 @@ pub fn run() {
         .manage(pty::DaemonBridge::default())
         .manage(delegate::status::DelegateStatusState::default())
         .manage(agent::AgentSupervisorState::default())
+        .manage(missions::MissionStoreState::default())
         .manage(local_servers::LocalServerState::default())
         .manage(models::ReflectionProbeCache::default())
         .plugin(tauri_plugin_dialog::init())
@@ -1148,6 +1161,16 @@ pub fn run() {
             memory_write,
             memory_list,
             memory_read,
+            missions::mission_create,
+            missions::mission_read,
+            missions::mission_list,
+            missions::mission_save_task,
+            missions::mission_approve,
+            missions::mission_dispatch_task,
+            missions::mission_prepare_attempt,
+            missions::mission_fail_attempt_dispatch,
+            missions::mission_validate_attempt,
+            missions::mission_review_attempt,
             git::github::create_pr,
             git::git_log,
             git::git_graph,

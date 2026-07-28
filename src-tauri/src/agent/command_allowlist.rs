@@ -291,9 +291,15 @@ mod tests {
     #[test]
     fn exact_rules_still_match_commands_with_metachars() {
         let rules = vec!["npm run build && npm test".to_string()];
-        assert!(match_rule(&rules, "npm run build && npm test", "npm run build && npm test")
+        assert!(
+            match_rule(
+                &rules,
+                "npm run build && npm test",
+                "npm run build && npm test"
+            )
             .expect("exact match")
-            .exact);
+            .exact
+        );
     }
 
     #[test]

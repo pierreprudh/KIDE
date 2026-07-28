@@ -261,7 +261,11 @@ fn parse_pr_view(json: &str, number: u32) -> Result<PullRequestDetails, String> 
                         .and_then(|a| a.as_str())
                         .unwrap_or("unknown")
                         .to_string(),
-                    body: c.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+                    body: c
+                        .get("body")
+                        .and_then(|b| b.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     created_at_ms: ms_from_rfc3339(c.get("createdAt")),
                 })
                 .collect()

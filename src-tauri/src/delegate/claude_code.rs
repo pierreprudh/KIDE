@@ -27,6 +27,15 @@ impl Delegate for ClaudeCode {
         format!(" --resume {}", shell_quote(session_id))
     }
 
+    fn mission_command(&self, task: Option<&str>, model: Option<&str>) -> Result<String, String> {
+        let task = self.mission_task(task)?;
+        let model_arg = self.mission_model_arg(model);
+        Ok(format!(
+            "claude -p{model_arg} --permission-mode acceptEdits --output-format text {}",
+            shell_quote(task)
+        ))
+    }
+
     /// Headless: `-p` reads the prompt from stdin and prints the answer.
     /// `acceptEdits` lets Goal-mode runs touch files without an interactive
     /// permission prompt nobody is there to answer.
@@ -224,15 +233,14 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
             }
         }
         match v.get("type").and_then(|t| t.as_str()) {
-            Some("user")
-                if counts_as_main => {
-                    count += 1;
-                    if title.is_none() {
-                        if let Some(t) = v.get("message").and_then(extract_user_text) {
-                            title = Some(clean_title(&t));
-                        }
+            Some("user") if counts_as_main => {
+                count += 1;
+                if title.is_none() {
+                    if let Some(t) = v.get("message").and_then(extract_user_text) {
+                        title = Some(clean_title(&t));
                     }
                 }
+            }
             Some("assistant") => {
                 if counts_as_main {
                     count += 1;
@@ -339,9 +347,7 @@ fn claude_project_cwd(path: &std::path::Path) -> Option<String> {
         let encoded = components.next()?.as_os_str().to_string_lossy();
         let rest = encoded.strip_prefix('-')?;
         let cwd = format!("/{}", rest.replace('-', "/"));
-        return std::path::Path::new(&cwd)
-            .is_dir()
-            .then_some(cwd);
+        return std::path::Path::new(&cwd).is_dir().then_some(cwd);
     }
     None
 }

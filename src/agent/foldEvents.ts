@@ -52,6 +52,14 @@ export type FoldedRow =
       meta?: AssistantMeta;
     }
   | {
+      kind: "compaction";
+      summary: string;
+      /** Conversation rows that preceded the marker — i.e. what the model
+       *  stopped seeing verbatim from this point on. Derived here rather than
+       *  carried on the wire, which has no count. */
+      count: number;
+    }
+  | {
       kind: "steering";
       reason: string;
     };
@@ -174,6 +182,19 @@ export function foldAgentEvents(events: AgentEvent[]): FoldedRow[] {
       continue;
     }
 
+    if (event.type === "context_compacted") {
+      // The auto-compactor collapsed the older turns for the *model*. The
+      // transcript still holds them all, so replay renders everything — but it
+      // has to render the marker too, or a reloaded conversation looks like an
+      // unbroken thread that mysteriously forgot its early turns.
+      rows.push({
+        kind: "compaction",
+        summary: event.summary,
+        count: rows.length,
+      });
+      continue;
+    }
+
     if (event.type === "steering_injected") {
       rows.push({ kind: "steering", reason: event.reason });
       continue;
@@ -247,6 +268,19 @@ export function foldedToMsgs(rows: FoldedRow[]): Msg[] {
       });
       continue;
     }
+    if (row.kind === "compaction") {
+      msgs.push({
+        role: "system",
+        // Plain-text fallback for serialization and search, matching what the
+        // live compaction path writes.
+        content: `Compacted ${row.count} earlier message${row.count === 1 ? "" : "s"} to free context.`,
+        // "agent" layout (the slim tool-style row): the wire event carries no
+        // manual/automatic distinction, and the unobtrusive row is the safe
+        // default for a replayed marker.
+        compaction: { count: row.count, summary: row.summary, source: "agent" },
+      });
+      continue;
+    }
     if (row.kind === "steering") {
       msgs.push({
         role: "system",
@@ -296,9 +330,10 @@ export function foldedToRunMessages(rows: FoldedRow[]): RunMessage[] {
       out.push({ role: "user", text: row.text });
       continue;
     }
-    // Mission Control's RunMessage has no system role; steering markers are an
-    // AI-panel transcript annotation, so they're dropped from the run board.
-    if (row.kind === "steering") continue;
+    // `RunMessage.role` is "user" | "assistant" by wire contract (the Rust
+    // struct and every Delegate adapter agree), so AI-panel transcript
+    // annotations have no row to occupy in Mission Control's Conversation.
+    if (row.kind === "compaction" || row.kind === "steering") continue;
     if (!row.text.trim() && row.toolCalls.length === 0) continue;
     out.push({
       role: "assistant",

@@ -15,11 +15,11 @@ pub mod types;
 #[cfg(test)]
 use self::run_core::KEEP_RECENT_TOOL_RESULTS;
 use self::run_core::{
-    apply_clean_context_if_requested, assistant_provider_message,
-    compact_old_tool_results, compaction_system_message, compaction_threshold, decide_turn,
-    estimate_prompt_tokens, parallel_read_calls, plan_tool_step, provider_messages,
-    refresh_todo_context, tool_provider_message, user_provider_message, ProviderCaps,
-    ToolStepPlan, TurnDecision, TurnStep,
+    apply_clean_context_if_requested, assistant_provider_message, compact_old_tool_results,
+    compaction_system_message, compaction_threshold, decide_turn, estimate_prompt_tokens,
+    parallel_read_calls, plan_tool_step, provider_messages, refresh_todo_context,
+    tool_provider_message, user_provider_message, ProviderCaps, ToolStepPlan, TurnDecision,
+    TurnStep,
 };
 use self::tools::{
     apply_write, clear_run_snapshots, dynamic_tool_command, execute_read_only_tool,
@@ -1674,7 +1674,11 @@ Do not propose it again — take a different approach or ask the user what they'
         with_run_handle(ctx.sup, ctx.id, |h| {
             h.rejected_edits.lock().unwrap().insert(edit_key.clone());
         });
-        let verb = if proposal.is_create { "created" } else { "changed" };
+        let verb = if proposal.is_create {
+            "created"
+        } else {
+            "changed"
+        };
         let content = match note {
             // Review feedback turns the rejection into steering: tell the
             // model to revise toward the note instead of abandoning course.
@@ -1702,10 +1706,30 @@ take a different approach or ask the user what they'd prefer.",
 #[tauri::command]
 pub async fn agent_start_run(
     app: tauri::AppHandle,
-    state: tauri::State<'_, AgentSupervisorState>,
+    request: StartRunRequest,
+    on_event: Channel<AgentEvent>,
+) -> Result<StartRunResponse, String> {
+    start_run(app, request, on_event).await
+}
+
+/// Start a Harness run without a request-scoped frontend channel. Structural
+/// events are still appended to the transcript and broadcast on
+/// `agent-run:<id>`, so a surface can reattach later. Durable Mission
+/// supervision uses this path while every frontend surface is closed.
+pub(crate) async fn start_background_run(
+    app: tauri::AppHandle,
+    request: StartRunRequest,
+) -> Result<StartRunResponse, String> {
+    let on_event = Channel::<AgentEvent>::new(|_| Ok(()));
+    start_run(app, request, on_event).await
+}
+
+async fn start_run(
+    app: tauri::AppHandle,
     mut request: StartRunRequest,
     on_event: Channel<AgentEvent>,
 ) -> Result<StartRunResponse, String> {
+    let state = app.state::<AgentSupervisorState>();
     if let Some(root) = request.workspace_root.as_deref() {
         for command in command_allowlist::list(root)? {
             if !request.command_allowlist.iter().any(|c| c == &command) {
@@ -1725,6 +1749,20 @@ pub async fn agent_start_run(
         .unwrap_or_else(run_id);
     // The id names the transcript file — refuse anything path-shaped.
     validate_run_id(&id)?;
+    let mission_link = match (
+        request.workspace_root.clone(),
+        request.mission_id.clone(),
+        request.mission_task_id.clone(),
+    ) {
+        (Some(root), Some(mission_id), Some(task_id)) => Some((root, mission_id, task_id)),
+        (_, None, None) => None,
+        _ => {
+            return Err(
+                "A Mission-linked Run requires workspaceRoot, missionId, and missionTaskId."
+                    .to_string(),
+            )
+        }
+    };
     let cancel = CancellationToken::new();
 
     // Crash-loop quarantine: a conversation whose recent runs all errored on
@@ -1783,9 +1821,10 @@ pub async fn agent_start_run(
     // Detach the loop so this command returns the run id immediately; the UI
     // follows progress through the event channel and can abort via the token.
     let supervisor: Arc<dyn RunSupervisor> = Arc::new(TauriSupervisor::new(app.clone()));
+    let mission_app = app.clone();
     let task_id = id.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = run_agent_loop(
+        let result = run_agent_loop(
             supervisor,
             runs_dir,
             task_id.clone(),
@@ -1794,8 +1833,19 @@ pub async fn agent_start_run(
             cancel,
             RealProviderCaller,
         )
-        .await
-        {
+        .await;
+        if let Some((root, mission_id, mission_task_id)) = mission_link {
+            if let Err(err) = crate::missions::record_linked_attempt_validation(
+                &mission_app,
+                &root,
+                &mission_id,
+                &mission_task_id,
+                &task_id,
+            ) {
+                eprintln!("mission attempt {task_id} validation failed: {err}");
+            }
+        }
+        if let Err(err) = result {
             eprintln!("agent run {task_id} failed: {err}");
         }
     });
@@ -2256,7 +2306,14 @@ async fn run_agent_loop(
                 },
                 ts: now_ms(),
             })?;
-            settle_run(sup, &runs_dir, &id, &summary, message_count, AgentRunStatus::Error)?;
+            settle_run(
+                sup,
+                &runs_dir,
+                &id,
+                &summary,
+                message_count,
+                AgentRunStatus::Error,
+            )?;
             completed = true;
             break;
         }
@@ -2277,22 +2334,34 @@ async fn run_agent_loop(
                     hint.reason, error
                 );
                 let request_id = format!("adv_{id}_steer_{turn}");
-                let reason = match steer_via_advisor(sup, &id, request_id, question, &cancel, &mut emit)
-                    .await?
-                {
-                    AdvisorSteer::Cancelled => {
-                        finish_cancelled(&mut emit, sup, &runs_dir, &id, &summary, message_count)?;
-                        return Ok(());
-                    }
-                    AdvisorSteer::Advice(advice) => {
-                        messages.push(steering::advisor_steering_message(&advice));
-                        format!("{} — consulted advisor: {}", hint.reason, steering::preview(&advice))
-                    }
-                    AdvisorSteer::FallbackNudge => {
-                        messages.push(steering::steering_system_message(&hint.nudge));
-                        format!("{} — no advisor available, nudged", hint.reason)
-                    }
-                };
+                let reason =
+                    match steer_via_advisor(sup, &id, request_id, question, &cancel, &mut emit)
+                        .await?
+                    {
+                        AdvisorSteer::Cancelled => {
+                            finish_cancelled(
+                                &mut emit,
+                                sup,
+                                &runs_dir,
+                                &id,
+                                &summary,
+                                message_count,
+                            )?;
+                            return Ok(());
+                        }
+                        AdvisorSteer::Advice(advice) => {
+                            messages.push(steering::advisor_steering_message(&advice));
+                            format!(
+                                "{} — consulted advisor: {}",
+                                hint.reason,
+                                steering::preview(&advice)
+                            )
+                        }
+                        AdvisorSteer::FallbackNudge => {
+                            messages.push(steering::steering_system_message(&hint.nudge));
+                            format!("{} — no advisor available, nudged", hint.reason)
+                        }
+                    };
                 emit(AgentEvent::SteeringInjected {
                     run_id: id.clone(),
                     reason,
@@ -3311,7 +3380,9 @@ mod turn_decision_tests {
         let resp = response(
             content,
             None,
-            vec![serde_json::json!({ "function": { "name": "read_file", "arguments": { "path": "b.rs" } } })],
+            vec![
+                serde_json::json!({ "function": { "name": "read_file", "arguments": { "path": "b.rs" } } }),
+            ],
         );
         let step = decide_turn(&resp, 0, 0);
         match step.decision {
@@ -3336,7 +3407,10 @@ mod turn_decision_tests {
         }
         // Both calls replay to the model on the next turn.
         assert_eq!(
-            step.assistant_message["tool_calls"].as_array().unwrap().len(),
+            step.assistant_message["tool_calls"]
+                .as_array()
+                .unwrap()
+                .len(),
             2
         );
     }
@@ -3772,8 +3846,10 @@ mod test_support {
                         .collect(),
                 );
                 script.lock().unwrap().pop_front().unwrap_or_else(|| {
-                    Err("provider script exhausted — the loop ran more turns than scripted"
-                        .to_string())
+                    Err(
+                        "provider script exhausted — the loop ran more turns than scripted"
+                            .to_string(),
+                    )
                 })
             })
         }
@@ -3913,22 +3989,29 @@ mod run_supervisor_tests {
         };
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<AgentEvent>::new()));
         let sink = events.clone();
-        let mut emit =
-            move |e: AgentEvent| -> Result<(), String> {
-                sink.lock().unwrap().push(e);
-                Ok(())
-            };
+        let mut emit = move |e: AgentEvent| -> Result<(), String> {
+            sink.lock().unwrap().push(e);
+            Ok(())
+        };
 
         let (outcome, _) = tokio::join!(
             process_advisor_tool(&ctx, &call, &mut emit),
-            answer_question(&sup, "adv-run", "Use a channel; it fits the ownership model."),
+            answer_question(
+                &sup,
+                "adv-run",
+                "Use a channel; it fits the ownership model."
+            ),
         );
 
         // Tool result wraps the advice as guidance for the executor.
         match outcome.expect("advisor tool ok") {
             ToolOutcome::Produced(r) => {
                 assert!(r.ok);
-                assert!(r.content.contains("Advisor guidance:"), "got: {}", r.content);
+                assert!(
+                    r.content.contains("Advisor guidance:"),
+                    "got: {}",
+                    r.content
+                );
                 assert!(r.content.contains("Use a channel"), "got: {}", r.content);
             }
             _ => panic!("expected Produced outcome"),
@@ -3979,7 +4062,9 @@ mod run_supervisor_tests {
             input: serde_json::json!({ "question": "A or B?" }),
         };
         let mut emit = |_: AgentEvent| -> Result<(), String> { Ok(()) };
-        let reply = format!("{ADVISOR_ERROR_PREFIX}Advisor unavailable (anthropic/claude-opus-4-8): no key");
+        let reply = format!(
+            "{ADVISOR_ERROR_PREFIX}Advisor unavailable (anthropic/claude-opus-4-8): no key"
+        );
 
         let (outcome, _) = tokio::join!(
             process_advisor_tool(&ctx, &call, &mut emit),
@@ -3989,7 +4074,11 @@ mod run_supervisor_tests {
         match outcome.expect("advisor tool ok") {
             ToolOutcome::Produced(r) => {
                 assert!(!r.ok, "a failed consult must be a not-ok tool result");
-                assert!(r.content.contains("Advisor consult failed"), "got: {}", r.content);
+                assert!(
+                    r.content.contains("Advisor consult failed"),
+                    "got: {}",
+                    r.content
+                );
                 assert!(r.content.contains("no key"), "got: {}", r.content);
                 assert!(
                     !r.content.contains("Advisor guidance:"),
@@ -4127,7 +4216,10 @@ mod run_loop_tests {
 
         // The transcript carries the whole sequence.
         let events = read_events(&runs_dir, "loop-run").unwrap();
-        assert!(matches!(events.first(), Some(AgentEvent::RunStarted { .. })));
+        assert!(matches!(
+            events.first(),
+            Some(AgentEvent::RunStarted { .. })
+        ));
         let finished: Vec<&ToolResult> = events
             .iter()
             .filter_map(|e| match e {
@@ -4136,7 +4228,10 @@ mod run_loop_tests {
             })
             .collect();
         assert_eq!(finished.len(), 3);
-        assert!(finished[0].content.contains("hello world"), "read shows original");
+        assert!(
+            finished[0].content.contains("hello world"),
+            "read shows original"
+        );
         assert!(finished[1].ok, "edit applied: {}", finished[1].content);
         assert!(
             finished[2].ok && finished[2].content.contains("hello klide"),
@@ -4178,7 +4273,14 @@ mod run_loop_tests {
         let caller =
             ScriptedProviderCaller::new(vec![Err("connection refused (mock)".to_string())]);
         let sup = Arc::new(FakeSupervisor::with_run("err-run"));
-        drive_loop(sup.clone(), &runs_dir, "err-run", test_request(&root, &[]), caller).await;
+        drive_loop(
+            sup.clone(),
+            &runs_dir,
+            "err-run",
+            test_request(&root, &[]),
+            caller,
+        )
+        .await;
 
         assert_eq!(
             with_run_handle(sup.as_ref(), "err-run", |h| h.status),
@@ -4356,8 +4458,7 @@ mod permission_gate_tests {
 
         // Approved for the run: the identical command auto-executes, no prompt.
         let second =
-            run_gate_without_prompt(&ctx, &command_call("c2", "echo approved-hi"), &mut emit)
-                .await;
+            run_gate_without_prompt(&ctx, &command_call("c2", "echo approved-hi"), &mut emit).await;
         assert!(second.ok, "re-run auto-executes: {}", second.content);
         assert_eq!(prompts_shown(&events), 1, "asked exactly once");
         let _ = std::fs::remove_dir_all(root);
@@ -4386,13 +4487,20 @@ mod permission_gate_tests {
         );
         let result = produced(outcome);
         assert!(!result.ok, "rejected command must not run");
-        assert!(result.content.contains("command not run"), "got: {}", result.content);
+        assert!(
+            result.content.contains("command not run"),
+            "got: {}",
+            result.content
+        );
 
         // Re-proposing the identical command auto-rejects without a prompt.
-        let second = run_gate_without_prompt(&ctx, &command_call("c2", "echo nope"), &mut emit).await;
+        let second =
+            run_gate_without_prompt(&ctx, &command_call("c2", "echo nope"), &mut emit).await;
         assert!(!second.ok);
         assert!(
-            second.content.contains("already proposed this exact command"),
+            second
+                .content
+                .contains("already proposed this exact command"),
             "got: {}",
             second.content
         );
@@ -4419,7 +4527,11 @@ mod permission_gate_tests {
         let first_call = command_call("c1", "echo persist-me");
         let (outcome, _) = tokio::join!(
             process_command_tool(&ctx, &first_call, &mut emit),
-            answer_permission(&sup, "perm-run", r#"{"behavior":"allow","scope":"project"}"#),
+            answer_permission(
+                &sup,
+                "perm-run",
+                r#"{"behavior":"allow","scope":"project"}"#
+            ),
         );
         assert!(produced(outcome).ok);
 
@@ -4491,7 +4603,10 @@ mod diff_gate_tests {
             parse_diff_decision(r#"{"behavior":"reject","note":"  "}"#),
             ("reject".to_string(), None)
         );
-        assert_eq!(parse_diff_decision("{broken"), ("{broken".to_string(), None));
+        assert_eq!(
+            parse_diff_decision("{broken"),
+            ("{broken".to_string(), None)
+        );
     }
 
     #[tokio::test]

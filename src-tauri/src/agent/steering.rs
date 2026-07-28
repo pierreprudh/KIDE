@@ -57,7 +57,11 @@ pub(super) fn steering_system_message(nudge: &str) -> serde_json::Value {
 /// A one-line preview of a longer block (advisor advice) for the transcript
 /// marker: first non-empty line, trimmed to ~80 chars with an ellipsis.
 pub(super) fn preview(text: &str) -> String {
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
     if line.chars().count() > 80 {
         let head: String = line.chars().take(79).collect();
         format!("{head}…")
@@ -121,7 +125,10 @@ impl LoopMonitor {
         let mut failed_now: Vec<String> = Vec::new();
         for obs in &calls {
             if obs.failed {
-                *self.lifetime_failures.entry(obs.signature.clone()).or_default() += 1;
+                *self
+                    .lifetime_failures
+                    .entry(obs.signature.clone())
+                    .or_default() += 1;
                 failed_now.push(obs.signature.clone());
             }
         }
@@ -171,7 +178,12 @@ impl LoopMonitor {
     /// Pick the busiest not-yet-nudged signature in `counts` at or over
     /// `threshold` and, if any, mark it nudged and build its steering.
     /// Deterministic (count desc, then signature) so tests are stable.
-    fn fire(&mut self, counts: &HashMap<String, usize>, threshold: usize, kind: Kind) -> Option<Steering> {
+    fn fire(
+        &mut self,
+        counts: &HashMap<String, usize>,
+        threshold: usize,
+        kind: Kind,
+    ) -> Option<Steering> {
         let mut candidates: Vec<(&str, usize)> = counts
             .iter()
             .filter(|(sig, &n)| n >= threshold && !self.nudged.contains(sig.as_str()))
@@ -185,12 +197,16 @@ impl LoopMonitor {
         Some(match kind {
             Kind::Failure => Steering {
                 nudge: failure_nudge(tool, count),
-                reason: format!("Repeated failure — `{tool}` failed {count}× with identical arguments"),
+                reason: format!(
+                    "Repeated failure — `{tool}` failed {count}× with identical arguments"
+                ),
                 escalate: true,
             },
             Kind::Repeat => Steering {
                 nudge: repeat_nudge(tool, count),
-                reason: format!("Loop detected — `{tool}` called {count}× with identical arguments"),
+                reason: format!(
+                    "Loop detected — `{tool}` called {count}× with identical arguments"
+                ),
                 escalate: false,
             },
         })
@@ -237,7 +253,10 @@ mod tests {
     fn ok(calls: &[NormalizedToolCall]) -> Vec<CallObservation> {
         calls
             .iter()
-            .map(|c| CallObservation { signature: call_signature(c), failed: false })
+            .map(|c| CallObservation {
+                signature: call_signature(c),
+                failed: false,
+            })
             .collect()
     }
 
@@ -245,7 +264,10 @@ mod tests {
     fn err(calls: &[NormalizedToolCall]) -> Vec<CallObservation> {
         calls
             .iter()
-            .map(|c| CallObservation { signature: call_signature(c), failed: true })
+            .map(|c| CallObservation {
+                signature: call_signature(c),
+                failed: true,
+            })
             .collect()
     }
 
@@ -260,8 +282,14 @@ mod tests {
 
     #[test]
     fn signature_is_order_independent_for_object_keys() {
-        let a = call("read_file", serde_json::json!({ "path": "a.rs", "start": 1 }));
-        let b = call("read_file", serde_json::json!({ "start": 1, "path": "a.rs" }));
+        let a = call(
+            "read_file",
+            serde_json::json!({ "path": "a.rs", "start": 1 }),
+        );
+        let b = call(
+            "read_file",
+            serde_json::json!({ "start": 1, "path": "a.rs" }),
+        );
         assert_eq!(call_signature(&a), call_signature(&b));
     }
 
@@ -269,7 +297,10 @@ mod tests {
     fn distinct_calls_never_steer() {
         let mut m = LoopMonitor::default();
         for i in 0..8 {
-            let c = call("read_file", serde_json::json!({ "path": format!("f{i}.rs") }));
+            let c = call(
+                "read_file",
+                serde_json::json!({ "path": format!("f{i}.rs") }),
+            );
             assert!(steer(m.observe(ok(&[c]))).is_none());
         }
     }
@@ -278,31 +309,52 @@ mod tests {
     fn repeated_identical_call_steers_once() {
         let mut m = LoopMonitor::default();
         let c = call("read_file", serde_json::json!({ "path": "a.rs" }));
-        assert!(steer(m.observe(ok(&[c.clone()]))).is_none(), "1st call: below threshold");
-        assert!(steer(m.observe(ok(&[c.clone()]))).is_none(), "2nd call: below threshold");
+        assert!(
+            steer(m.observe(ok(&[c.clone()]))).is_none(),
+            "1st call: below threshold"
+        );
+        assert!(
+            steer(m.observe(ok(&[c.clone()]))).is_none(),
+            "2nd call: below threshold"
+        );
         let steering = steer(m.observe(ok(&[c.clone()]))).expect("3rd call trips the monitor");
         assert!(steering.nudge.contains("[STEERING]"));
         assert!(steering.nudge.contains("read_file"));
         assert!(steering.reason.contains("Loop detected"));
         // Debounced: a 4th identical call in the same loop stays quiet.
-        assert!(steer(m.observe(ok(&[c]))).is_none(), "already steered, stays quiet");
+        assert!(
+            steer(m.observe(ok(&[c]))).is_none(),
+            "already steered, stays quiet"
+        );
     }
 
     #[test]
     fn intra_turn_repetition_trips_the_monitor() {
         let mut m = LoopMonitor::default();
-        let c = call("run_command", serde_json::json!({ "command": "cargo check" }));
+        let c = call(
+            "run_command",
+            serde_json::json!({ "command": "cargo check" }),
+        );
         // Same call three times inside one turn is already a loop.
         let steering = steer(m.observe(ok(&[c.clone(), c.clone(), c])));
-        assert!(steering.expect("intra-turn loop").nudge.contains("run_command"));
+        assert!(steering
+            .expect("intra-turn loop")
+            .nudge
+            .contains("run_command"));
     }
 
     #[test]
     fn repeated_failure_steers_earlier_than_repetition() {
         let mut m = LoopMonitor::default();
-        let c = call("run_command", serde_json::json!({ "command": "cargo test" }));
+        let c = call(
+            "run_command",
+            serde_json::json!({ "command": "cargo test" }),
+        );
         // First failure is not yet a loop.
-        assert!(steer(m.observe(err(&[c.clone()]))).is_none(), "1st failure: below fail threshold");
+        assert!(
+            steer(m.observe(err(&[c.clone()]))).is_none(),
+            "1st failure: below fail threshold"
+        );
         // Second identical failure trips the monitor — one repeat earlier than
         // the plain repetition rule (which needs three).
         let steering = steer(m.observe(err(&[c]))).expect("2nd identical failure steers");
@@ -313,7 +365,10 @@ mod tests {
 
     #[test]
     fn preview_takes_first_nonempty_line_and_truncates() {
-        assert_eq!(preview("\n\n  Fix the import path.  \nmore"), "Fix the import path.");
+        assert_eq!(
+            preview("\n\n  Fix the import path.  \nmore"),
+            "Fix the import path."
+        );
         let long = "x".repeat(200);
         let p = preview(&long);
         assert!(p.ends_with('…') && p.chars().count() == 80);
@@ -335,11 +390,17 @@ mod tests {
         // Succeeding twice is benign — below the repetition threshold.
         let mut ok_m = LoopMonitor::default();
         assert!(steer(ok_m.observe(ok(&[c.clone()]))).is_none());
-        assert!(steer(ok_m.observe(ok(&[c.clone()]))).is_none(), "two successes stay quiet");
+        assert!(
+            steer(ok_m.observe(ok(&[c.clone()]))).is_none(),
+            "two successes stay quiet"
+        );
         // Failing twice is not.
         let mut err_m = LoopMonitor::default();
         assert!(steer(err_m.observe(err(&[c.clone()]))).is_none());
-        assert!(steer(err_m.observe(err(&[c]))).is_some(), "two failures steer");
+        assert!(
+            steer(err_m.observe(err(&[c]))).is_some(),
+            "two failures steer"
+        );
     }
 
     #[test]
@@ -348,7 +409,10 @@ mod tests {
         let c = call("read_file", serde_json::json!({ "path": "a.rs" }));
         m.observe(ok(&[c.clone()]));
         m.observe(ok(&[c.clone()]));
-        assert!(steer(m.observe(ok(&[c.clone()]))).is_some(), "first loop steers");
+        assert!(
+            steer(m.observe(ok(&[c.clone()]))).is_some(),
+            "first loop steers"
+        );
 
         // Flush the signature out of the window with unrelated work.
         let other = call("grep", serde_json::json!({ "q": "x" }));
@@ -359,13 +423,19 @@ mod tests {
         // The same call looping again is a fresh loop → steers again.
         m.observe(ok(&[c.clone()]));
         m.observe(ok(&[c.clone()]));
-        assert!(steer(m.observe(ok(&[c]))).is_some(), "fresh loop steers again");
+        assert!(
+            steer(m.observe(ok(&[c]))).is_some(),
+            "fresh loop steers again"
+        );
     }
 
     #[test]
     fn repeated_failure_gives_up_after_the_run_cap() {
         let mut m = LoopMonitor::default();
-        let c = call("run_command", serde_json::json!({ "command": "cargo build" }));
+        let c = call(
+            "run_command",
+            serde_json::json!({ "command": "cargo build" }),
+        );
         // The first few identical failures steer (nudge / escalate) but keep going.
         for _ in 0..(EARLY_EXIT_FAILURES - 1) {
             assert!(

@@ -1,9 +1,9 @@
 // Agent races — one task dispatched to two (or more) agents, each in its own
 // git worktree, so their evidence can be compared and the winner merged.
 //
-// Distinct from src/agent/fanout.ts (the goal *decomposition* engine, which
-// splits one goal into subtasks): a race gives every agent the SAME task and
-// the group is the unit of comparison. Runs themselves live in the Rust
+// Distinct from a Mission (which *decomposes* one goal into dependent tasks):
+// a race gives every agent the SAME task and the group is the unit of
+// comparison. Runs themselves live in the Rust
 // harness (transcripts + summaries on disk); this store only remembers which
 // run ids belong together and what prompt spawned them. localStorage +
 // module-level pub/sub, same pattern as memoryDrafts.ts.

@@ -617,12 +617,11 @@ fn capture_claude(dir: &std::path::Path, name: &str) -> Result<(String, String),
     Ok((name.to_string(), file))
 }
 
-/// Write `bytes` to `dest` atomically (temp file + rename) at mode 0600, so a
-/// reader never sees a half-written credential file.
+/// Write `bytes` to `dest` atomically at mode 0600, so a reader never sees a
+/// half-written credential file. The recipe this module pioneered now lives in
+/// `crate::durable` and is shared with Mission and Delegate-session state.
 fn atomic_write_private(dest: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = dest.with_extension("klide-tmp");
-    write_private(&tmp, bytes)?;
-    std::fs::rename(&tmp, dest).map_err(|e| format!("Could not move {tmp:?} into place: {e}"))
+    crate::durable::write_atomic_private(dest, bytes)
 }
 
 /// Switch `provider` to the saved account `name`. Refuses if a live run would

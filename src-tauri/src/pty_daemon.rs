@@ -29,7 +29,8 @@
 #![cfg(unix)]
 
 use crate::pty_host::{
-    LiveSessionRow, PtyEventSink, RecentDelegateSession, SessionHost, SessionSnapshot, SpawnSpec,
+    DelegateMissionLink, LiveSessionRow, PtyEventSink, PtyExitOutcome, RecentDelegateSession,
+    SessionHost, SessionSnapshot, SpawnSpec,
 };
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -115,7 +116,9 @@ pub enum Request {
     /// [`token_path`]. No ack on success — the next request's response is
     /// the ack. A wrong or missing token gets one `Err` line and a closed
     /// connection.
-    Auth { token: String },
+    Auth {
+        token: String,
+    },
     /// Liveness + version check. A client seeing a version mismatch after an
     /// app upgrade asks the daemon to shut down and starts a fresh one.
     Ping,
@@ -137,6 +140,7 @@ pub enum Request {
         task: Option<String>,
         model: Option<String>,
         resume_session_id: Option<String>,
+        mission_link: Option<DelegateMissionLink>,
         /// Whether the daemon should watch output for the CLI announcing its
         /// own session id (`delegate::lookup(provider)` — the daemon links
         /// the same crate, so the detector runs in-process here too).
@@ -164,15 +168,28 @@ pub enum Request {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    Pong { version: String, pid: u32 },
+    Pong {
+        version: String,
+        pid: u32,
+    },
     Subscribed,
     Ok,
-    Err { message: String },
-    Reused { reused: bool },
-    Wrote { wrote: bool },
+    Err {
+        message: String,
+    },
+    Reused {
+        reused: bool,
+    },
+    Wrote {
+        wrote: bool,
+    },
     Snapshot(SessionSnapshot),
-    LiveRows { rows: Vec<LiveSessionRow> },
-    Recent { sessions: Vec<RecentDelegateSession> },
+    LiveRows {
+        rows: Vec<LiveSessionRow>,
+    },
+    Recent {
+        sessions: Vec<RecentDelegateSession>,
+    },
 }
 
 /// Pushed to subscribed connections — the socket twin of the app's
@@ -187,6 +204,7 @@ pub enum Event {
     },
     Exit {
         session_id: String,
+        outcome: PtyExitOutcome,
     },
     ExternalId {
         session_id: String,
@@ -262,11 +280,12 @@ impl PtyEventSink for BroadcastSink {
         });
     }
 
-    fn exit(&self, session_id: &str) {
+    fn exit(&self, session_id: &str, outcome: &PtyExitOutcome) {
         self.state.touch();
         self.state.log(&format!("session exited: {session_id}"));
         self.state.broadcast(&Event::Exit {
             session_id: session_id.to_string(),
+            outcome: outcome.clone(),
         });
     }
 
@@ -287,18 +306,14 @@ pub fn bind_socket(data_dir: &Path) -> Result<UnixListener, String> {
     if let Some(parent) = path.parent() {
         // 0700: the socket rendezvous dir is per-user, like tmux's.
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let _ = std::fs::set_permissions(
-            parent,
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
-        );
+        let _ =
+            std::fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700));
     }
     let restrict = |listener: UnixListener| {
         // 0600 on the socket file itself — connect() checks write permission,
         // so this is a second fence in front of the token handshake.
-        let _ = std::fs::set_permissions(
-            &path,
-            std::os::unix::fs::PermissionsExt::from_mode(0o600),
-        );
+        let _ =
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
         listener
     };
     match UnixListener::bind(&path) {
@@ -357,8 +372,8 @@ pub fn daemon_main(data_dir: PathBuf) -> ! {
         let state = state.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(IDLE_CHECK_EVERY);
-            let busy = !state.host.live_ids().is_empty()
-                || !state.subscribers.lock().unwrap().is_empty();
+            let busy =
+                !state.host.live_ids().is_empty() || !state.subscribers.lock().unwrap().is_empty();
             if busy {
                 state.touch();
                 continue;
@@ -402,9 +417,12 @@ fn handle_client(stream: UnixStream, state: Arc<DaemonState>) {
         let request = match serde_json::from_str::<Request>(&line) {
             Ok(r) => r,
             Err(e) => {
-                let _ = respond(&mut writer, &Response::Err {
-                    message: format!("bad request: {e}"),
-                });
+                let _ = respond(
+                    &mut writer,
+                    &Response::Err {
+                        message: format!("bad request: {e}"),
+                    },
+                );
                 continue;
             }
         };
@@ -417,16 +435,22 @@ fn handle_client(stream: UnixStream, state: Arc<DaemonState>) {
                 continue;
             }
             state.log("refused connection: bad token");
-            let _ = respond(&mut writer, &Response::Err {
-                message: "unauthorized".to_string(),
-            });
+            let _ = respond(
+                &mut writer,
+                &Response::Err {
+                    message: "unauthorized".to_string(),
+                },
+            );
             return;
         }
         if !authed {
             state.log("refused connection: no auth line");
-            let _ = respond(&mut writer, &Response::Err {
-                message: "unauthorized: send auth first".to_string(),
-            });
+            let _ = respond(
+                &mut writer,
+                &Response::Err {
+                    message: "unauthorized: send auth first".to_string(),
+                },
+            );
             return;
         }
         match request {
@@ -457,9 +481,12 @@ fn handle_client(stream: UnixStream, state: Arc<DaemonState>) {
                     }
                     state.subscribers.lock().unwrap().remove(&id);
                 } else {
-                    let _ = respond(&mut writer, &Response::Err {
-                        message: "could not clone stream for events".to_string(),
-                    });
+                    let _ = respond(
+                        &mut writer,
+                        &Response::Err {
+                            message: "could not clone stream for events".to_string(),
+                        },
+                    );
                 }
                 return;
             }
@@ -480,9 +507,8 @@ fn handle_client(stream: UnixStream, state: Arc<DaemonState>) {
 }
 
 fn respond(writer: &mut UnixStream, response: &Response) -> std::io::Result<()> {
-    let line = serde_json::to_string(response).unwrap_or_else(|e| {
-        format!("{{\"type\":\"err\",\"message\":\"serialize: {e}\"}}")
-    });
+    let line = serde_json::to_string(response)
+        .unwrap_or_else(|e| format!("{{\"type\":\"err\",\"message\":\"serialize: {e}\"}}"));
     writeln!(writer, "{line}")
 }
 
@@ -507,6 +533,7 @@ fn handle_request(request: Request, state: &Arc<DaemonState>) -> Response {
             task,
             model,
             resume_session_id,
+            mission_link,
             detect_session_id,
         } => {
             state.log(&format!("spawn {session_id} ({provider})"));
@@ -528,6 +555,7 @@ fn handle_request(request: Request, state: &Arc<DaemonState>) -> Response {
                     task,
                     model,
                     resume_session_id,
+                    mission_link,
                     extract_session_id: extract,
                 },
                 Some(state.scroll_dir()),
@@ -861,6 +889,7 @@ mod tests {
             task: Some("e2e".into()),
             model: None,
             resume_session_id: None,
+            mission_link: None,
             detect_session_id: false,
         }) {
             Response::Ok => {}
@@ -887,8 +916,13 @@ mod tests {
                     last_seq = seq;
                     output.push_str(&data);
                 }
-                Event::Exit { session_id } => {
+                Event::Exit {
+                    session_id,
+                    outcome,
+                } => {
                     assert_eq!(session_id, "convo-e2e:custom");
+                    assert_eq!(outcome.exit_code, 0);
+                    assert!(!outcome.stop_requested);
                     break;
                 }
                 Event::ExternalId { .. } => {}
