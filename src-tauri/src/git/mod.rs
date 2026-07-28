@@ -142,7 +142,6 @@ pub(crate) fn git_output(workspace_root: &str, args: &[&str]) -> Result<String, 
     }
 }
 
-
 fn count_diff_lines(diff: &str) -> (usize, usize) {
     let mut additions = 0;
     let mut deletions = 0;
@@ -223,7 +222,6 @@ pub(crate) async fn git_commit(workspace_root: String, message: String) -> Resul
     })
     .await
 }
-
 
 /// A git-shaped diff for an UNTRACKED file (plain `git diff` shows nothing for
 /// those). The `@@ -0,0 +1,N @@` hunk header is load-bearing: the frontend's
@@ -725,7 +723,6 @@ fn merge_commit_files(name_status: &str, numstat: &str) -> Vec<CommitFile> {
         .collect()
 }
 
-
 /// Full detail for one commit: metadata, changed files with counts, and the
 /// patch. `-m --first-parent` makes merge commits show their diff against
 /// the first parent instead of an (empty) combined diff.
@@ -1031,7 +1028,6 @@ pub(crate) async fn git_stash_list(workspace_root: String) -> Result<Vec<GitStas
     .await
 }
 
-
 // ── Worktrees (the "fleet" primitive) ───────────────────────────────────
 //
 // A worktree is just a second checkout of the repo on its own branch, in its
@@ -1129,7 +1125,9 @@ fn apply_worktree_setup(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let port = setup.port_base.map(|base| worktree_setup::port_for(base, &name));
+    let port = setup
+        .port_base
+        .map(|base| worktree_setup::port_for(base, &name));
 
     let script_started = match setup.setup_script.clone().filter(|s| !s.trim().is_empty()) {
         Some(script) => {
@@ -1214,7 +1212,11 @@ async fn worktree_add_core(
             let actual = git_output(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|_| branch.to_string());
-            let actual = if actual == "HEAD" { String::new() } else { actual };
+            let actual = if actual == "HEAD" {
+                String::new()
+            } else {
+                actual
+            };
             let (bootstrapped, linked, port, script_started) =
                 apply_worktree_setup(notify, &toplevel, &dir, &actual, copy_files);
             return Ok(WorktreeInfo {
@@ -1315,7 +1317,9 @@ fn agent_merge_message(branch: &str) -> Option<String> {
     } else {
         return None;
     };
-    Some(format!("Merge branch '{branch}'\n\nCo-Authored-By: {coauthor}"))
+    Some(format!(
+        "Merge branch '{branch}'\n\nCo-Authored-By: {coauthor}"
+    ))
 }
 
 /// Merge a worktree's `branch` into the branch currently checked out in the
@@ -1407,11 +1411,11 @@ pub(crate) async fn git_worktree_remove(
             let target = std::path::Path::new(&path).join(rel_path);
             match std::fs::symlink_metadata(&target) {
                 Ok(meta) if meta.is_dir() => {
-                    return Err(format!("Refusing to delete directory during cleanup: {rel}"));
+                    return Err(format!(
+                        "Refusing to delete directory during cleanup: {rel}"
+                    ));
                 }
-                Ok(_) => {
-                    std::fs::remove_file(&target).map_err(|e| format!("delete {rel}: {e}"))?
-                }
+                Ok(_) => std::fs::remove_file(&target).map_err(|e| format!("delete {rel}: {e}"))?,
                 Err(_) => {} // already gone
             }
         }
@@ -1667,9 +1671,14 @@ detached
     async fn worktree_add_applies_the_fleet_recipe() {
         let (base, repo) = temp_repo("wt-recipe");
 
-        let wt = worktree_add_core(repo.clone(),"klide/test-run".into(), Some(vec![]), noop_notify())
-            .await
-            .unwrap();
+        let wt = worktree_add_core(
+            repo.clone(),
+            "klide/test-run".into(),
+            Some(vec![]),
+            noop_notify(),
+        )
+        .await
+        .unwrap();
         assert_eq!(wt.branch, "klide/test-run");
         assert!(std::path::Path::new(&wt.path).join(".git").exists());
         // New branch records what it forked from, and a bare `git push` from
@@ -1688,17 +1697,27 @@ detached
         );
 
         // Re-adding is idempotent: same path back, no error.
-        let again = worktree_add_core(repo.clone(),"klide/test-run".into(), Some(vec![]), noop_notify())
-            .await
-            .unwrap();
+        let again = worktree_add_core(
+            repo.clone(),
+            "klide/test-run".into(),
+            Some(vec![]),
+            noop_notify(),
+        )
+        .await
+        .unwrap();
         assert_eq!(again.path, wt.path);
 
         // A worktree dir deleted by hand leaves a stale registration that
         // claims the branch; the prune-before-add must revive it cleanly.
         std::fs::remove_dir_all(&wt.path).unwrap();
-        let revived = worktree_add_core(repo.clone(),"klide/test-run".into(), Some(vec![]), noop_notify())
-            .await
-            .unwrap();
+        let revived = worktree_add_core(
+            repo.clone(),
+            "klide/test-run".into(),
+            Some(vec![]),
+            noop_notify(),
+        )
+        .await
+        .unwrap();
         assert_eq!(revived.path, wt.path);
         assert!(std::path::Path::new(&revived.path).join(".git").exists());
 
@@ -1714,9 +1733,14 @@ detached
     #[tokio::test]
     async fn worktree_remove_cleans_recipe_artifacts_and_the_created_branch() {
         let (base, repo) = temp_repo("wt-discard");
-        let wt = worktree_add_core(repo.clone(), "klide/race-x-1".into(), Some(vec![]), noop_notify())
-            .await
-            .unwrap();
+        let wt = worktree_add_core(
+            repo.clone(),
+            "klide/race-x-1".into(),
+            Some(vec![]),
+            noop_notify(),
+        )
+        .await
+        .unwrap();
         // Untracked, not ignored — exactly the copy that makes bare
         // `git worktree remove` refuse.
         std::fs::write(std::path::Path::new(&wt.path).join(".env"), "K=1").unwrap();
@@ -1743,8 +1767,16 @@ detached
         .expect("clean removal");
         assert!(!std::path::Path::new(&wt.path).exists());
         assert!(
-            run_git(&repo, &["show-ref", "--verify", "--quiet", "refs/heads/klide/race-x-1"])
-                .is_err(),
+            run_git(
+                &repo,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/klide/race-x-1"
+                ]
+            )
+            .is_err(),
             "created branch is deleted with the discarded worktree"
         );
         assert!(
@@ -1753,12 +1785,21 @@ detached
         );
 
         // Content NOT in clean_files still blocks a non-force removal.
-        let wt2 = worktree_add_core(repo.clone(), "klide/race-x-2".into(), Some(vec![]), noop_notify())
-            .await
-            .unwrap();
+        let wt2 = worktree_add_core(
+            repo.clone(),
+            "klide/race-x-2".into(),
+            Some(vec![]),
+            noop_notify(),
+        )
+        .await
+        .unwrap();
         std::fs::write(std::path::Path::new(&wt2.path).join("work.txt"), "w").unwrap();
-        let refused = git_worktree_remove(repo.clone(), wt2.path.clone(), Some(false), None, None).await;
-        assert!(refused.is_err(), "dirty checkout survives non-force cleanup");
+        let refused =
+            git_worktree_remove(repo.clone(), wt2.path.clone(), Some(false), None, None).await;
+        assert!(
+            refused.is_err(),
+            "dirty checkout survives non-force cleanup"
+        );
         assert!(std::path::Path::new(&wt2.path).join("work.txt").exists());
 
         let _ = std::fs::remove_dir_all(&base);
@@ -1767,9 +1808,14 @@ detached
     #[tokio::test]
     async fn branch_diff_defaults_to_the_recorded_fork_base() {
         let (base, repo) = temp_repo("wt-diff-base");
-        let wt = worktree_add_core(repo.clone(),"klide/diffed".into(), Some(vec![]), noop_notify())
-            .await
-            .unwrap();
+        let wt = worktree_add_core(
+            repo.clone(),
+            "klide/diffed".into(),
+            Some(vec![]),
+            noop_notify(),
+        )
+        .await
+        .unwrap();
         // Move main forward AFTER the fork, then commit a change in the
         // worktree — the merge-base diff must contain only the worktree's
         // change, and the base must come from branch.<name>.base, not from
@@ -1799,9 +1845,14 @@ detached
         let (base, repo) = temp_repo("wt-guard");
         // The user explicitly opted out — the recipe must not clobber that.
         run_git(&repo, &["config", "push.autoSetupRemote", "false"]).unwrap();
-        worktree_add_core(repo.clone(),"klide/guarded".into(), Some(vec![]), noop_notify())
-            .await
-            .unwrap();
+        worktree_add_core(
+            repo.clone(),
+            "klide/guarded".into(),
+            Some(vec![]),
+            noop_notify(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             git_output(&repo, &["config", "--get", "push.autoSetupRemote"])
                 .unwrap()
@@ -1817,7 +1868,10 @@ detached
     #[tokio::test]
     async fn worktree_merge_credits_the_agent_on_agent_branches() {
         let (base, repo) = temp_repo("wt-merge-credit");
-        for (branch, file) in [("codex/fix-thing", "codex.txt"), ("plain-branch", "plain.txt")] {
+        for (branch, file) in [
+            ("codex/fix-thing", "codex.txt"),
+            ("plain-branch", "plain.txt"),
+        ] {
             run_git(&repo, &["checkout", "-b", branch]).unwrap();
             std::fs::write(std::path::Path::new(&repo).join(file), "w").unwrap();
             run_git(&repo, &["add", "."]).unwrap();
@@ -1838,7 +1892,8 @@ detached
             "codex merge carries the credit trailer: {log}"
         );
         assert!(
-            log.contains("Merge branch 'plain-branch'") && log.matches("Co-Authored-By").count() == 1,
+            log.contains("Merge branch 'plain-branch'")
+                && log.matches("Co-Authored-By").count() == 1,
             "plain merge keeps git's default message: {log}"
         );
         let _ = std::fs::remove_dir_all(&base);

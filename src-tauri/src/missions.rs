@@ -1097,8 +1097,11 @@ fn do_create(
     )
     .map_err(|e| format!("Unable to write mission.md: {e}"))?;
     for task in &tasks {
-        crate::durable::write_atomic(&task_path(&dir, &task.id)?, render_task_markdown(task)?.as_bytes())
-            .map_err(|e| format!("Unable to write task `{}`: {e}", task.id))?;
+        crate::durable::write_atomic(
+            &task_path(&dir, &task.id)?,
+            render_task_markdown(task)?.as_bytes(),
+        )
+        .map_err(|e| format!("Unable to write task `{}`: {e}", task.id))?;
     }
     crate::durable::write_atomic(&events_path(&dir), b"")
         .map_err(|e| format!("Unable to create Mission event log: {e}"))?;
@@ -2451,7 +2454,9 @@ mod tests {
         let dir = mission_dir_for("events-truncated");
         let path = events_path(&dir);
         let mut text = std::fs::read_to_string(&path).unwrap();
-        text.push_str("{\"schemaVersion\":1,\"missionId\":\"mission-one\",\"seq\":9,\"ts\":1,\"eve");
+        text.push_str(
+            "{\"schemaVersion\":1,\"missionId\":\"mission-one\",\"seq\":9,\"ts\":1,\"eve",
+        );
         std::fs::write(&path, text).unwrap();
 
         let err = read_events(&dir).unwrap_err();
@@ -2539,7 +2544,9 @@ mod tests {
         assert!(stray.is_empty(), "left temp files behind: {stray:?}");
         // And the Mission still lists cleanly.
         assert_eq!(
-            mission_list(root.to_str().unwrap().to_string()).unwrap().len(),
+            mission_list(root.to_str().unwrap().to_string())
+                .unwrap()
+                .len(),
             1
         );
     }

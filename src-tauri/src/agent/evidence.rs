@@ -233,7 +233,10 @@ pub fn render_evidence_markdown(summary: &AgentRunSummary, events: &[AgentEvent]
         } else {
             ""
         };
-        md.push_str(&format!("- [{mark}] {}{evidence}{status_note}\n", check.label));
+        md.push_str(&format!(
+            "- [{mark}] {}{evidence}{status_note}\n",
+            check.label
+        ));
     }
     for warning in &validation.warnings {
         md.push_str(&format!("- ⚠ {warning}\n"));
@@ -323,7 +326,8 @@ fn event_ts(event: &AgentEvent) -> i64 {
         | AgentEvent::SubagentRequested { ts, .. }
         | AgentEvent::SubagentResolved { ts, .. }
         | AgentEvent::AdvisorRequested { ts, .. }
-        | AgentEvent::AdvisorResolved { ts, .. } => *ts,
+        | AgentEvent::AdvisorResolved { ts, .. }
+        | AgentEvent::SteeringInjected { ts, .. } => *ts,
     }
 }
 
@@ -502,7 +506,10 @@ mod tests {
         let id = "r1";
         let md = render_evidence_markdown(&base_summary(id), &full_run_events(id));
 
-        assert!(md.starts_with("# Evidence — Fix the flaky test"), "got: {md}");
+        assert!(
+            md.starts_with("# Evidence — Fix the flaky test"),
+            "got: {md}"
+        );
         assert!(md.contains("ollama · qwen2.5:7b · goal mode"));
         assert!(md.contains("- **Stopped** done"));
         assert!(md.contains("## Goal"));
@@ -561,7 +568,10 @@ mod tests {
             },
         ];
         let md = render_evidence_markdown(&base_summary(id), &events);
-        assert!(md.contains("## Permissions (0 approved, 1 denied)"), "got: {md}");
+        assert!(
+            md.contains("## Permissions (0 approved, 1 denied)"),
+            "got: {md}"
+        );
         assert!(md.contains("- run `npm test` — deny"));
     }
 
@@ -579,7 +589,10 @@ mod tests {
             ts: 1_000,
         }];
         let md = render_evidence_markdown(&base_summary(id), &events);
-        assert!(md.contains("- **Stopped** error — connection refused"), "got: {md}");
+        assert!(
+            md.contains("- **Stopped** error — connection refused"),
+            "got: {md}"
+        );
     }
 
     #[test]

@@ -287,10 +287,7 @@ fn account_activate(
 /// resolve from that project's `.env`. Called by the frontend whenever the
 /// workspace changes; `None` clears it.
 #[tauri::command]
-async fn set_active_workspace(
-    app: tauri::AppHandle,
-    root: Option<String>,
-) -> Result<(), String> {
+async fn set_active_workspace(app: tauri::AppHandle, root: Option<String>) -> Result<(), String> {
     providers::set_active_workspace(root.clone());
     if let Some(root) = root.filter(|root| !root.trim().is_empty()) {
         missions::reconcile_workspace(app, root).await?;
@@ -706,7 +703,13 @@ fn read_text_file(workspace_root: String, path: String) -> Result<String, String
 }
 
 fn mime_for_path(path: &str) -> &'static str {
-    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",

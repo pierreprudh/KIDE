@@ -3023,7 +3023,11 @@ mod tests {
             input: serde_json::json!({ "question": "A or B?" }),
         };
         assert!(matches!(
-            crate::agent::run_core::plan_tool_step(&AgentMode::Plan, &advisor_call, Some(ToolKind::Pause)),
+            crate::agent::run_core::plan_tool_step(
+                &AgentMode::Plan,
+                &advisor_call,
+                Some(ToolKind::Pause)
+            ),
             crate::agent::run_core::ToolStepPlan::Execute { .. }
         ));
     }

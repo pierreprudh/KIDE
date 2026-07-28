@@ -167,8 +167,7 @@ pub struct DaemonStatus {
 #[tauri::command]
 pub fn delegate_daemon_status(app: tauri::AppHandle) -> DaemonStatus {
     let enabled = daemon_enabled(&app);
-    let ping = app_data_dir(&app)
-        .map(|dir| pty_client::request(&dir, &DaemonRequest::Ping));
+    let ping = app_data_dir(&app).map(|dir| pty_client::request(&dir, &DaemonRequest::Ping));
     match ping {
         Some(Ok(DaemonResponse::Pong { version, .. })) => DaemonStatus {
             enabled,
@@ -194,8 +193,8 @@ pub fn delegate_daemon_set_enabled(app: tauri::AppHandle, enabled: bool) -> Resu
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let json = serde_json::to_string_pretty(&PtydConfig { enabled })
-            .map_err(|e| e.to_string())?;
+        let json =
+            serde_json::to_string_pretty(&PtydConfig { enabled }).map_err(|e| e.to_string())?;
         crate::durable::write_atomic(&path, json.as_bytes())?;
     }
     if enabled {

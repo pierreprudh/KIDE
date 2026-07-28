@@ -220,7 +220,8 @@ export type AgentEvent =
    *  replayed Conversation must render the marker where it happened —
    *  otherwise the reloaded transcript looks like an unbroken conversation
    *  that mysteriously forgot its early turns. */
-  | { type: "context_compacted"; runId: string; summary: string; ts: number };
+  | { type: "context_compacted"; runId: string; summary: string; ts: number }
+  | { type: "steering_injected"; runId: string; reason: string; ts: number };
 
 export type AgentMessageView = {
   id: string;

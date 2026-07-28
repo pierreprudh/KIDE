@@ -78,6 +78,10 @@ function compacted(summary: string): AgentEvent {
   return { type: "context_compacted", runId: RUN, summary, ts: at() };
 }
 
+function steered(reason: string): AgentEvent {
+  return { type: "steering_injected", runId: RUN, reason, ts: at() };
+}
+
 describe("foldAgentEvents", () => {
   it("pairs user and assistant turns in order", () => {
     const rows = foldAgentEvents([
@@ -294,6 +298,23 @@ describe("foldAgentEvents", () => {
       expect(assistant.meta?.ms).toBe(800);
     });
   });
+
+  it("preserves compaction and steering as independent transcript annotations", () => {
+    const rows = foldAgentEvents([
+      userMessage("one"),
+      compacted("earlier context"),
+      steered("try a different tool"),
+      assistantMessage("recovered"),
+    ]);
+    expect(rows.map((row) => row.kind)).toEqual([
+      "user",
+      "compaction",
+      "steering",
+      "assistant",
+    ]);
+    expect(rows[1]).toMatchObject({ kind: "compaction", summary: "earlier context" });
+    expect(rows[2]).toEqual({ kind: "steering", reason: "try a different tool" });
+  });
 });
 
 describe("foldedToMsgs — the AI panel shape", () => {
@@ -341,6 +362,16 @@ describe("foldedToMsgs — the AI panel shape", () => {
     expect(marker.content).not.toContain("messages");
   });
 
+  it("renders a steering marker as a system message with steering metadata", () => {
+    const msgs = foldedToMsgs(foldAgentEvents([userMessage("one"), steered("change course")]));
+    const marker = msgs[1] as Extract<Msg, { role: "system" }>;
+    expect(marker).toMatchObject({
+      role: "system",
+      content: "change course",
+      steering: { reason: "change course" },
+    });
+  });
+
   it("drops undefined toolCalls rather than emitting an empty array", () => {
     const msgs = foldedToMsgs(foldAgentEvents([assistantMessage("plain answer")]));
     const assistant = msgs[0] as Extract<Msg, { role: "assistant" }>;
@@ -385,12 +416,18 @@ describe("foldedToRunMessages — the Mission Control shape", () => {
     expect(out[0].tools).toHaveLength(1);
   });
 
-  it("skips the compaction marker — RunMessage has no role for it", () => {
+  it("skips compaction and steering markers — RunMessage has no role for them", () => {
     // The wire contract is "user" | "assistant" (the Rust struct and every
-    // Delegate adapter agree), so the model's context bookkeeping stays out of
+    // Delegate adapter agree), so AI-panel transcript annotations stay out of
     // Mission Control's Conversation.
     const out = foldedToRunMessages(
-      foldAgentEvents([userMessage("one"), assistantMessage("first"), compacted("gist"), userMessage("two")]),
+      foldAgentEvents([
+        userMessage("one"),
+        assistantMessage("first"),
+        compacted("gist"),
+        steered("change course"),
+        userMessage("two"),
+      ]),
     );
     expect(out.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
   });

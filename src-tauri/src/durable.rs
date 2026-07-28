@@ -47,8 +47,8 @@ fn write_atomic_inner(dest: &Path, bytes: &[u8], private: bool) -> Result<(), St
     let tmp = tmp_path(dest);
 
     {
-        let mut file = fs::File::create(&tmp)
-            .map_err(|e| format!("Could not create {tmp:?}: {e}"))?;
+        let mut file =
+            fs::File::create(&tmp).map_err(|e| format!("Could not create {tmp:?}: {e}"))?;
         if private {
             set_private(&tmp);
         }

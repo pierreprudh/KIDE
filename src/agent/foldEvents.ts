@@ -58,6 +58,10 @@ export type FoldedRow =
        *  stopped seeing verbatim from this point on. Derived here rather than
        *  carried on the wire, which has no count. */
       count: number;
+    }
+  | {
+      kind: "steering";
+      reason: string;
     };
 
 type AssistantRow = Extract<FoldedRow, { kind: "assistant" }>;
@@ -190,6 +194,11 @@ export function foldAgentEvents(events: AgentEvent[]): FoldedRow[] {
       });
       continue;
     }
+
+    if (event.type === "steering_injected") {
+      rows.push({ kind: "steering", reason: event.reason });
+      continue;
+    }
   }
 
   return rows;
@@ -272,6 +281,14 @@ export function foldedToMsgs(rows: FoldedRow[]): Msg[] {
       });
       continue;
     }
+    if (row.kind === "steering") {
+      msgs.push({
+        role: "system",
+        content: row.reason,
+        steering: { reason: row.reason },
+      });
+      continue;
+    }
     msgs.push({
       role: "assistant",
       content: row.text,
@@ -314,10 +331,9 @@ export function foldedToRunMessages(rows: FoldedRow[]): RunMessage[] {
       continue;
     }
     // `RunMessage.role` is "user" | "assistant" by wire contract (the Rust
-    // struct and every Delegate adapter agree), so the compaction marker has no
-    // row to occupy here. Mission Control's Conversation shows what each side
-    // said; the model's context bookkeeping is the AI panel's concern.
-    if (row.kind === "compaction") continue;
+    // struct and every Delegate adapter agree), so AI-panel transcript
+    // annotations have no row to occupy in Mission Control's Conversation.
+    if (row.kind === "compaction" || row.kind === "steering") continue;
     if (!row.text.trim() && row.toolCalls.length === 0) continue;
     out.push({
       role: "assistant",

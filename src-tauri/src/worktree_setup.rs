@@ -132,10 +132,7 @@ pub fn link_dirs_into(source_root: &str, worktree: &Path, dirs: &[String]) -> Ve
         };
         let src = Path::new(source_root).join(name);
         let dst = worktree.join(name);
-        if src.is_dir()
-            && !dst.exists()
-            && std::os::unix::fs::symlink(&src, &dst).is_ok()
-        {
+        if src.is_dir() && !dst.exists() && std::os::unix::fs::symlink(&src, &dst).is_ok() {
             linked.push(name.to_string());
         }
     }
@@ -343,7 +340,10 @@ mod tests {
         );
 
         assert_eq!(copied, vec![".env".to_string()]);
-        assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "SECRET=1");
+        assert_eq!(
+            std::fs::read_to_string(wt.join(".env")).unwrap(),
+            "SECRET=1"
+        );
         assert_eq!(
             std::fs::read_to_string(wt.join(".env.local")).unwrap(),
             "KEEP"
@@ -394,9 +394,18 @@ mod tests {
         let (base, src, wt) = temp_pair("script");
         let envs = script_env(src.to_str().unwrap(), &wt, "klide/wt-1", Some(3107));
 
-        let ok = run_script("echo port=$KLIDE_WORKTREE_PORT on $KLIDE_WORKTREE_BRANCH", &wt, &envs, 30);
+        let ok = run_script(
+            "echo port=$KLIDE_WORKTREE_PORT on $KLIDE_WORKTREE_BRANCH",
+            &wt,
+            &envs,
+            30,
+        );
         assert!(ok.ok);
-        assert!(ok.output.contains("port=3107 on klide/wt-1"), "got: {}", ok.output);
+        assert!(
+            ok.output.contains("port=3107 on klide/wt-1"),
+            "got: {}",
+            ok.output
+        );
 
         let fail = run_script("echo doomed >&2; exit 3", &wt, &envs, 30);
         assert!(!fail.ok);
