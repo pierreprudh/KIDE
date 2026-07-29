@@ -2297,6 +2297,120 @@ mod tests {
         dir
     }
 
+    /// The `MissionEvent` variant names declared in this file, read from source
+    /// so a new variant shows up here for free (same reasoning as
+    /// `agent::types::tests::rust_event_types`).
+    fn rust_mission_event_types() -> Vec<String> {
+        let rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/missions.rs"),
+        )
+        .expect("read src/missions.rs");
+        let start = rs
+            .find("pub enum MissionEvent {")
+            .expect("MissionEvent enum in this file");
+        let body = &rs[start..];
+        let end = body.find("\n}").expect("end of MissionEvent enum");
+        body[..end]
+            .lines()
+            .filter_map(|line| {
+                // Unit variants end in `,`, struct variants open with ` {`.
+                let name = line.strip_prefix("    ")?;
+                name.strip_suffix(" {").or_else(|| name.strip_suffix(','))
+            })
+            .filter(|name| {
+                name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && name.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+            .map(|variant| {
+                let mut out = String::new();
+                for (i, ch) in variant.char_indices() {
+                    if ch.is_ascii_uppercase() {
+                        if i != 0 {
+                            out.push('_');
+                        }
+                        out.push(ch.to_ascii_lowercase());
+                    } else {
+                        out.push(ch);
+                    }
+                }
+                out
+            })
+            .collect()
+    }
+
+    #[test]
+    fn frontend_mirror_matches_mission_event_wire() {
+        // ADR-0002 makes this event log the authority for what a Mission has
+        // done, and TypeScript only projects it — but the projection's copy of
+        // the vocabulary is hand-written. The projection switch is exhaustive,
+        // so a variant *missing* from the mirror is a tsc error; this is the
+        // other half, catching a variant added in Rust and never mirrored at
+        // all. Same seam as `delegate::tests::frontend_delegate_ids_match_all`.
+        let ts = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../src/agent/durableMissions.ts"),
+        )
+        .expect("read src/agent/durableMissions.ts");
+        let marker = "export type DurableMissionEvent =";
+        let start = ts.find(marker).expect("DurableMissionEvent in the mirror") + marker.len();
+        let end = ts[start..]
+            .find("\nexport ")
+            .map(|i| start + i)
+            .unwrap_or(ts.len());
+        let union = &ts[start..end];
+
+        let mut frontend: Vec<String> = union
+            .match_indices("type: \"")
+            .map(|(i, m)| {
+                let rest = &union[i + m.len()..];
+                rest[..rest.find('"').expect("closing quote")].to_string()
+            })
+            .collect();
+        frontend.sort();
+        frontend.dedup();
+
+        let mut backend = rust_mission_event_types();
+        backend.sort();
+
+        assert_eq!(
+            backend, frontend,
+            "MissionEvent drifted between src-tauri/src/missions.rs and \
+src/agent/durableMissions.ts — update both"
+        );
+    }
+
+    #[test]
+    fn mission_event_fields_reach_the_frontend_as_camel_case() {
+        // The mirror declares `taskId` / `runId` / `exitCode`, which only holds
+        // because of `rename_all_fields = "camelCase"` on the enum. Dropping
+        // that attribute would leave both test suites green and break the app,
+        // since the projection would read `undefined` for every id.
+        let settled = MissionEvent::AttemptSettled {
+            task_id: "t1".into(),
+            run_id: "r1".into(),
+            exit_code: 0,
+            signal: None,
+        };
+        let v = serde_json::to_value(&settled).expect("serialize");
+        assert_eq!(v["type"], "attempt_settled");
+        assert_eq!(v["taskId"], "t1");
+        assert_eq!(v["runId"], "r1");
+        assert_eq!(v["exitCode"], 0);
+        // `signal` is optional on the wire — the mirror declares `signal?`.
+        assert!(v.get("signal").is_none(), "got: {v}");
+
+        let parked = MissionEvent::MissionParked {
+            reason: "operator".into(),
+        };
+        let v = serde_json::to_value(&parked).expect("serialize");
+        assert_eq!(v["type"], "mission_parked");
+        assert_eq!(v["reason"], "operator");
+
+        // A unit variant carries nothing but its tag.
+        let created = serde_json::to_value(MissionEvent::MissionCreated).expect("serialize");
+        assert_eq!(created["type"], "mission_created");
+    }
+
     #[test]
     fn validate_id_accepts_only_a_single_path_component() {
         // Mission and Task ids become directory and file names under
