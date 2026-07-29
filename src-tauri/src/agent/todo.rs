@@ -82,7 +82,11 @@ fn save(root: &str, scope: &str, store: &TodoStore) -> Result<(), String> {
     }
     let json =
         serde_json::to_string_pretty(store).map_err(|e| format!("Cannot serialize todos: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("Cannot write todos: {e}"))
+    // Atomic, because `load` treats an unparseable store as an empty one: a
+    // truncated write here would silently discard the whole plan mid-run and
+    // the next save would make that permanent. Same helper the Mission event
+    // log uses (`durable`).
+    crate::durable::write_atomic(&path, json.as_bytes())
 }
 
 fn now_ms() -> i64 {
@@ -279,4 +283,182 @@ pub fn update_text(root: &str, scope: &str, id: &str, text: String) -> Result<St
     }
     save(root, scope, &store)?;
     Ok(format!("Updated todo {id}."))
+}
+
+#[cfg(test)]
+mod tests {
+    //! The todo store is on the hot path — `list_todos_text` runs on every
+    //! agent turn to build the system prompt, and the plan tools mutate it
+    //! mid-run. It carries three invariants nothing checked before: ids are
+    //! never reused, the event log's `seq` only ever increases, and a `scope`
+    //! can't escape `.agents/todos/`.
+    use super::*;
+
+    /// A fresh workspace root per test. Scoped by name so tests can run in
+    /// parallel without sharing a store.
+    fn root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("klide-todo-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn at(root: &Path) -> &str {
+        root.to_str().unwrap()
+    }
+
+    #[test]
+    fn add_list_complete_and_clear_round_trip() {
+        let dir = root("round-trip");
+        let r = at(&dir);
+        assert!(
+            list_todos_text(r, "").is_none(),
+            "empty store lists nothing"
+        );
+
+        add_todo(r, "", "write the parser".into()).unwrap();
+        add_todo(r, "", "wire the seam".into()).unwrap();
+        assert_eq!(
+            list_todos_text(r, "").unwrap(),
+            "[ ] T1: write the parser\n[ ] T2: wire the seam"
+        );
+
+        set_todo_done(r, "", "T1", true).unwrap();
+        assert_eq!(
+            list_todos_text(r, "").unwrap(),
+            "[x] T1: write the parser\n[ ] T2: wire the seam"
+        );
+
+        assert_eq!(clear_done(r, "").unwrap(), "Cleared 1 completed todo(s).");
+        assert_eq!(list_todos_text(r, "").unwrap(), "[ ] T2: wire the seam");
+
+        assert_eq!(clear_all(r, "").unwrap(), "Cleared 1 todo(s).");
+        assert!(list_todos_text(r, "").is_none());
+    }
+
+    #[test]
+    fn ids_are_never_reused_after_removal() {
+        // The model refers to todos by id inside a run. If `next_id` were
+        // derived from the list length, removing T1 and adding another item
+        // would mint a second T1 — and a `complete T1` from earlier in the
+        // conversation would tick the wrong task.
+        let dir = root("id-reuse");
+        let r = at(&dir);
+        add_todo(r, "", "first".into()).unwrap();
+        remove_todo(r, "", "T1").unwrap();
+        add_todo(r, "", "second".into()).unwrap();
+        assert_eq!(list_todos_text(r, "").unwrap(), "[ ] T2: second");
+    }
+
+    #[test]
+    fn missing_ids_are_reported_not_ignored() {
+        let dir = root("missing-id");
+        let r = at(&dir);
+        assert_eq!(
+            set_todo_done(r, "", "T9", true).unwrap_err(),
+            "Todo T9 not found."
+        );
+        assert_eq!(remove_todo(r, "", "T9").unwrap_err(), "Todo T9 not found.");
+        assert_eq!(
+            update_text(r, "", "T9", "x".into()).unwrap_err(),
+            "Todo T9 not found."
+        );
+    }
+
+    #[test]
+    fn edits_record_the_previous_text_once() {
+        let dir = root("edit-events");
+        let r = at(&dir);
+        add_todo(r, "", "old".into()).unwrap();
+        update_text(r, "", "T1", "new".into()).unwrap();
+        // A no-op edit must not push an event — otherwise a model that
+        // re-states its plan verbatim floods the log and evicts real history.
+        update_text(r, "", "T1", "new".into()).unwrap();
+
+        let store = load(r, "");
+        let edits: Vec<&TodoEvent> = store.events.iter().filter(|e| e.action == "edit").collect();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].previous_text.as_deref(), Some("old"));
+        assert_eq!(edits[0].text.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn toggling_to_the_same_state_records_nothing() {
+        let dir = root("idempotent-complete");
+        let r = at(&dir);
+        add_todo(r, "", "task".into()).unwrap();
+        set_todo_done(r, "", "T1", true).unwrap();
+        set_todo_done(r, "", "T1", true).unwrap();
+        let store = load(r, "");
+        assert_eq!(
+            store
+                .events
+                .iter()
+                .filter(|e| e.action == "complete")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn event_seq_keeps_increasing_past_the_ring_cap() {
+        // The ring drops the *oldest* events at 120, but `seq` is a running
+        // counter, not an index. The UI reads it to order the plan's history,
+        // so it must never restart or repeat after an eviction.
+        let dir = root("event-ring");
+        let r = at(&dir);
+        for i in 0..130 {
+            add_todo(r, "", format!("task {i}")).unwrap();
+        }
+        let store = load(r, "");
+        assert_eq!(store.events.len(), 120, "ring capped");
+        let seqs: Vec<u64> = store.events.iter().map(|e| e.seq).collect();
+        assert_eq!(seqs.first().copied(), Some(11), "oldest 10 evicted");
+        assert_eq!(seqs.last().copied(), Some(130));
+        assert!(
+            seqs.windows(2).all(|w| w[1] == w[0] + 1),
+            "seq is contiguous and increasing"
+        );
+    }
+
+    #[test]
+    fn a_scope_cannot_escape_the_todos_directory() {
+        // `scope` reaches this module from a tool call, so it is model-authored
+        // input. Anything that isn't `[A-Za-z0-9_-]` collapses to `_` —
+        // including `.` and `/` — so the result is always a single filename
+        // inside `.agents/todos/`, never a path.
+        let dir = root("scope-escape");
+        let r = at(&dir);
+        let hostile = store_path(r, "../../../../etc/passwd");
+        assert_eq!(
+            hostile,
+            dir.join(".agents")
+                .join("todos")
+                .join("____________etc_passwd.json")
+        );
+        assert!(hostile.starts_with(dir.join(".agents").join("todos")));
+
+        // And a scoped list is genuinely separate from the default one.
+        add_todo(r, "", "unscoped".into()).unwrap();
+        add_todo(r, "run-1", "scoped".into()).unwrap();
+        assert_eq!(list_todos_text(r, "").unwrap(), "[ ] T1: unscoped");
+        assert_eq!(list_todos_text(r, "run-1").unwrap(), "[ ] T1: scoped");
+        // A whitespace-only scope is the default store, not a `" ".json` file.
+        assert_eq!(store_path(r, "   "), store_path(r, ""));
+    }
+
+    #[test]
+    fn an_unreadable_store_reads_as_empty() {
+        // Pinning current behaviour, not endorsing it: `load` swallows a parse
+        // error and hands back an empty store, so the next `save` overwrites
+        // whatever was there. Writes are atomic (see `save`), so Klide can no
+        // longer *create* this state — but an externally corrupted file still
+        // costs the user their list silently.
+        let dir = root("corrupt-store");
+        let r = at(&dir);
+        let path = store_path(r, "");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(list_todos_text(r, "").is_none());
+    }
 }

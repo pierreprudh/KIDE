@@ -2297,6 +2297,39 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn validate_id_accepts_only_a_single_path_component() {
+        // Mission and Task ids become directory and file names under
+        // `.klide/missions/`, and they arrive from the frontend — so this is
+        // the guard that keeps a crafted id from writing outside the workspace.
+        // It was the only unverified traversal check in the module.
+        for ok in ["m1", "mission-2026-07-29", "task_3", "..a", "a.."] {
+            assert!(validate_id(ok, "mission").is_ok(), "should accept {ok:?}");
+        }
+        for bad in [
+            "",
+            "   ",
+            "..",
+            ".",
+            "/",
+            "/etc",
+            "../secrets",
+            "a/b",
+            "a\\b",
+            // A bare backslash is a legal filename character on Unix but a
+            // separator on Windows, so it is rejected on both.
+            "..\\secrets",
+            "/absolute/path",
+        ] {
+            assert!(
+                validate_id(bad, "mission").is_err(),
+                "should reject {bad:?}"
+            );
+        }
+        // The label reaches the user, so it names the thing they typed.
+        assert_eq!(validate_id("../x", "task").unwrap_err(), "Invalid task id.");
+    }
+
     fn sample_input() -> CreateMissionInput {
         CreateMissionInput {
             id: Some("mission-one".to_string()),

@@ -2862,6 +2862,137 @@ pub async fn agent_revert_run_checkpoints(
 }
 
 #[cfg(test)]
+mod worktree_commit_tests {
+    //! `commit_worktree_on_done` runs `git add -A && git commit` when a run
+    //! settles, so its guard is load-bearing in the strongest sense: if
+    //! `worktree_label` ever stopped distinguishing a linked worktree from the
+    //! user's own checkout, every finished Klide run would commit whatever was
+    //! in Pierre's working tree. That guard had no test.
+
+    use super::*;
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repo with one commit on `main`, plus a linked worktree on `klide/work`.
+    fn repo_with_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("klide-agent-commit-{name}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let main = base.join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-b", "main"]);
+        git(&main, &["config", "user.email", "test@klide.local"]);
+        git(&main, &["config", "user.name", "Klide Test"]);
+        std::fs::write(main.join("a.txt"), "hi\n").unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "-m", "init"]);
+
+        let wt = base.join("repo-worktrees").join("work");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "klide/work",
+                wt.to_str().unwrap(),
+                "main",
+            ],
+        );
+        (base, main, wt)
+    }
+
+    fn summary(cwd: &Path, title: &str) -> AgentRunSummary {
+        AgentRunSummary {
+            id: "run-1".into(),
+            path: String::new(),
+            source: "klide".into(),
+            title: title.into(),
+            status: "done".into(),
+            provider: "ollama".into(),
+            model: "qwen2.5:7b".into(),
+            cwd: Some(cwd.to_str().unwrap().to_string()),
+            project: None,
+            git_branch: None,
+            created_ms: 0,
+            updated_ms: 0,
+            message_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            files_touched: 0,
+            cost_usd: None,
+            last_event: None,
+            worktree: None,
+            validation: None,
+            parent_id: None,
+        }
+    }
+
+    #[test]
+    fn commits_a_dirty_linked_worktree_onto_its_branch() {
+        let (_base, _main, wt) = repo_with_worktree("dirty-worktree");
+        std::fs::write(wt.join("b.txt"), "agent wrote this\n").unwrap();
+
+        commit_worktree_on_done(&summary(&wt, "Add the b file"));
+
+        assert_eq!(git(&wt, &["status", "--porcelain"]), "", "tree is clean");
+        let log = git(&wt, &["log", "-1", "--format=%s%n%b"]);
+        assert!(log.contains("klide: Add the b file"), "got: {log}");
+        assert!(log.contains("Klide agent run run-1"), "got: {log}");
+        assert!(log.contains("Co-Authored-By: qwen2.5:7b"), "got: {log}");
+        // Untracked files are included — `add -A` is what makes a race winner
+        // mergeable, since headless runs apply edits without staging them.
+        assert_eq!(git(&wt, &["log", "--oneline"]).lines().count(), 2);
+    }
+
+    #[test]
+    fn never_commits_in_the_users_own_checkout() {
+        // The guard. `worktree_label` returns None for a main working copy, so
+        // a normal Klide run in Pierre's repo must leave his uncommitted work
+        // exactly where it is.
+        let (_base, main, _wt) = repo_with_worktree("main-checkout");
+        std::fs::write(main.join("wip.txt"), "half-finished\n").unwrap();
+        let before = git(&main, &["rev-parse", "HEAD"]);
+
+        commit_worktree_on_done(&summary(&main, "Should not commit"));
+
+        assert_eq!(git(&main, &["rev-parse", "HEAD"]), before, "no new commit");
+        assert!(
+            git(&main, &["status", "--porcelain"]).contains("wip.txt"),
+            "the user's work is still uncommitted"
+        );
+    }
+
+    #[test]
+    fn a_clean_worktree_and_a_missing_cwd_are_both_no_ops() {
+        let (_base, _main, wt) = repo_with_worktree("clean-worktree");
+        let before = git(&wt, &["rev-parse", "HEAD"]);
+
+        commit_worktree_on_done(&summary(&wt, "Nothing changed"));
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before, "no empty commit");
+
+        // A run with no cwd (or one outside a repo) must not panic or shell out
+        // against the process's own working directory.
+        let mut no_cwd = summary(&wt, "No cwd");
+        no_cwd.cwd = None;
+        commit_worktree_on_done(&no_cwd);
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before);
+    }
+}
+
+#[cfg(test)]
 mod replay_tests {
     //! The "agent has memory" fix lives in `reconstruct_prior_messages`:
     //! given a transcript, it has to produce provider-shaped messages that
