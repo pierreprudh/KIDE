@@ -21,6 +21,9 @@ import { KbdFor } from "./components/Kbd";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { AiPanel } from "./components/AiPanel";
 import { StatusBar } from "./components/StatusBar";
+// Static (not lazy) on purpose: it is the placeholder shown *while* the
+// Mission Control chunk loads, so it has to be in the main bundle.
+import { MissionControlSkeleton } from "./components/MissionControlSkeleton";
 import ToastHost from "./components/ToastHost";
 import { notify } from "./toast";
 import { eventsToConversation } from "./components/ai/eventsToMsgs";
@@ -2083,7 +2086,7 @@ function App() {
                 />
               </Suspense>
             ) : view === "runs" ? (
-              <Suspense fallback={null}>
+              <Suspense fallback={<MissionControlSkeleton />}>
                 <MissionControl
                   workspaceRoot={workspaceRoot}
                   theme={theme}

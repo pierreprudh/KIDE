@@ -498,3 +498,28 @@ export function ToolIcon({ name, size = 12 }: { name: string; size?: number }) {
     </svg>
   );
 }
+
+/** Race mark — a pane split into two columns: two agents side by side on the
+ *  same task. Inline SVG so it renders crisply and matches the stroke-icon
+ *  family used across Mission Control. Lives here (not in MissionControl) so
+ *  the board's loading skeleton can draw the same mark without importing the
+ *  board module back. */
+export function RaceMark({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flexShrink: 0 }}
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M12 4v16" />
+    </svg>
+  );
+}

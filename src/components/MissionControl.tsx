@@ -85,7 +85,7 @@ import { CheckpointPanel } from "./CheckpointPanel";
 import { listCheckpoints } from "../agent/client";
 import type { ArtifactRequest } from "./ArtifactInspector";
 import { useArtifactInspector } from "../hooks/useArtifactInspector";
-import { ProviderLogo } from "./ai/icons";
+import { ProviderLogo, RaceMark } from "./ai/icons";
 import type { ProviderId } from "../agent/types";
 import {
   DEFAULT_MODELS,
@@ -101,6 +101,11 @@ import { modelBrand } from "../modelBrand";
 import { renderMarkdown } from "./markdown";
 import { buildRunHandoff } from "../agentHandoff";
 import { notify } from "../toast";
+import {
+  BoardRowsSkeleton,
+  RunDetailSkeleton,
+  TranscriptSkeleton,
+} from "./MissionControlSkeleton";
 
 const ArtifactInspector = lazy(() =>
   import("./ArtifactInspector").then((module) => ({ default: module.ArtifactInspector }))
@@ -1282,29 +1287,6 @@ function MetaRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Race mark — a pane split into two columns: two agents side by side on the
- *  same task. Inline SVG so it renders crisply and matches the stroke-icon
- *  family used across Mission Control. */
-function RaceMark({ size = 11 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      style={{ flexShrink: 0 }}
-    >
-      <rect x="3" y="4" width="18" height="16" rx="2.5" />
-      <path d="M12 4v16" />
-    </svg>
-  );
-}
-
 /** A run's race membership, precomputed for the board rows. */
 type RaceRowInfo = {
   groupId: string;
@@ -1833,7 +1815,10 @@ function ConversationView({ run, preloaded }: { run: Run; preloaded?: RunMessage
   }, []);
 
   const muted = { fontSize: 12, color: "var(--fg-subtle)" } as const;
-  if (loading) return <div style={muted}>Loading conversation…</div>;
+  // Reading a session log off disk is a real wait (Codex/Claude JSONL can be
+  // large). Draw the turn stack rather than a one-line "Loading…", so the
+  // messages fade into place they already occupy.
+  if (loading) return <TranscriptSkeleton />;
   if (error) return <div style={muted}>Couldn't read this session.</div>;
   if (messages.length === 0) return <div style={muted}>No readable messages.</div>;
 
@@ -5397,7 +5382,9 @@ export function MissionControl({
             <h1 style={{ fontSize: 14, fontWeight: 600, color: "var(--fg-strong)", margin: 0, flexShrink: 0 }}>
               Mission Control
             </h1>
-            {loading && (
+            {/* Only on refresh — during the first scan the row skeleton below
+                already carries the "working on it" signal. */}
+            {loading && filtered.length > 0 && (
               <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>loading…</span>
             )}
             {/* Project switcher + refresh ride together on the right. */}
@@ -5492,6 +5479,12 @@ export function MissionControl({
             }}
             onWatch={onWatchRace}
           />
+          {/* First scan of session logs + Klide conversations. Keep the
+              board's shape (sections, cards) instead of an empty column, so
+              the rows land in place rather than appearing from nothing. A
+              refresh with rows already on screen keeps them — only a genuinely
+              empty board skeletons. */}
+          {loading && filtered.length === 0 && <BoardRowsSkeleton />}
           {!loading && filtered.length === 0 && (
             sessionQuery.trim() !== "" || sourceFilter !== "all" ? (
               <div className="klide-enter-rise" style={{ padding: "24px 12px", fontSize: 12, color: "var(--fg-subtle)", lineHeight: 1.55 }}>
@@ -5987,6 +5980,10 @@ export function MissionControl({
             onSaveMemory={onSaveMemory}
             summarizingFromRunId={summarizingFromRunId}
           />
+        ) : loading ? (
+          // Carries the placeholder straight through from the Suspense
+          // fallback, so the detail side doesn't blink void → text → run.
+          <RunDetailSkeleton />
         ) : (
           <div
             style={{
@@ -5999,7 +5996,7 @@ export function MissionControl({
               padding: 24,
             }}
           >
-            {loading ? "Loading runs..." : "Select a run to inspect its transcript and metadata."}
+            Select a run to inspect its transcript and metadata.
           </div>
         )}
       </div>
