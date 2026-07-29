@@ -90,7 +90,11 @@ export type AgentUsage = {
 };
 
 export type PermissionOption = {
-  id: string;
+  /** The wire name is `optionId`, not `id` — see `standard_gate_options` in
+   *  `src-tauri/src/agent/mod.rs`. This mirror said `id` for as long as nobody
+   *  read the field; the Rust `frontend_mirror_matches_agent_wire` test now
+   *  pins the enclosing event, and AiPanel consumes this type directly. */
+  optionId: string;
   label: string;
   behavior: "allow" | "deny" | "ask_later";
   scope?: "once" | "run" | "project" | "user";
@@ -138,18 +142,14 @@ export type AgentRunResult = {
   message?: string;
 };
 
+/** Mirrors `AgentError` in `src-tauri/src/agent/types.rs`.
+ *
+ *  `code` lists exactly what the Harness emits — kept honest by the Rust
+ *  `frontend_mirror_matches_error_codes` test against `error_code::ALL`. A
+ *  transcript written by an older build may still carry a retired code; that
+ *  only affects the `!== "aborted"` comparisons, which stay correct. */
 export type AgentError = {
-  code:
-    | "provider_unavailable"
-    | "provider_auth"
-    | "provider_rate_limited"
-    | "tool_validation"
-    | "permission_denied"
-    | "workspace_path"
-    | "diff_stale"
-    | "aborted"
-    | "max_turns"
-    | "internal";
+  code: "aborted" | "max_turns" | "provider_unavailable" | "steering_gave_up";
   message: string;
   detail?: string;
   retryable: boolean;

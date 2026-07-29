@@ -31,10 +31,11 @@ use self::transcripts::{
     app_runs_dir, append_event, list_summaries, now_ms, read_events, run_id, transcript_path,
     validate_run_id, write_summary,
 };
+use self::types::error_code;
 use self::types::{
     AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentRunStatus,
-    AgentRunSummary, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest, StartRunRequest,
-    StartRunResponse, SubmitUserTurnRequest, ToolResult,
+    AgentRunSummary, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest, PermissionOption,
+    PermissionRequest, StartRunRequest, StartRunResponse, SubmitUserTurnRequest, ToolResult,
 };
 use crate::{ai_chat, AiChatResponse, AiUsage, StreamChunk};
 use serde::Deserialize;
@@ -754,7 +755,7 @@ fn finish_cancelled<E: FnMut(AgentEvent) -> Result<(), String>>(
     emit(AgentEvent::RunError {
         run_id: id.to_string(),
         error: AgentError {
-            code: "aborted".to_string(),
+            code: error_code::ABORTED.to_string(),
             message: "Run stopped by user.".to_string(),
             detail: None,
             retryable: false,
@@ -1177,14 +1178,21 @@ fn last_tool_output(messages: &[serde_json::Value]) -> Option<String> {
 /// The four options every command/network gate offers, declared once so the
 /// optionId / behavior / scope wire contract can't drift between capabilities.
 /// Only the run/project labels differ ("Approve for this run" vs "Approve
-/// target for this run").
-fn standard_gate_options(run_label: &str, project_label: &str) -> serde_json::Value {
-    serde_json::json!([
-        { "optionId": "allow_once", "label": "Approve", "behavior": "allow", "scope": "once" },
-        { "optionId": "allow_run", "label": run_label, "behavior": "allow", "scope": "run" },
-        { "optionId": "allow_project", "label": project_label, "behavior": "allow", "scope": "project" },
-        { "optionId": "deny", "label": "Reject", "behavior": "deny" }
-    ])
+/// target for this run"). Serde owns the field names now, so the frontend
+/// mirror can't disagree with them by hand.
+fn standard_gate_options(run_label: &str, project_label: &str) -> Vec<PermissionOption> {
+    let option = |id: &str, label: &str, behavior: &str, scope: Option<&str>| PermissionOption {
+        option_id: id.to_string(),
+        label: label.to_string(),
+        behavior: behavior.to_string(),
+        scope: scope.map(str::to_string),
+    };
+    vec![
+        option("allow_once", "Approve", "allow", Some("once")),
+        option("allow_run", run_label, "allow", Some("run")),
+        option("allow_project", project_label, "allow", Some("project")),
+        option("deny", "Reject", "deny", None),
+    ]
 }
 
 async fn process_command_tool<E>(
@@ -1309,21 +1317,21 @@ where
         ));
     }
 
-    let perm = serde_json::json!({
-        "id": permission::request_id(ctx, call),
-        "runId": ctx.id,
-        "toolCallId": call.id,
-        "toolName": permission_tool_name,
-        "input": {
+    let perm = PermissionRequest {
+        id: permission::request_id(ctx, call),
+        run_id: ctx.id.to_string(),
+        tool_call_id: call.id.clone(),
+        tool_name: permission_tool_name.to_string(),
+        input: serde_json::json!({
             "command": command,
             "cwd": cwd,
             "externalPaths": external_paths,
             "matchedAllowRule": matched_rule.as_ref().map(|rule| rule.pattern.clone())
-        },
-        "summary": permission_summary,
-        "reason": permission_reason,
-        "options": standard_gate_options("Approve for this run", "Approve for this project")
-    });
+        }),
+        summary: permission_summary,
+        reason: permission_reason,
+        options: standard_gate_options("Approve for this run", "Approve for this project"),
+    };
 
     let decision = match permission::run_gate(ctx, call, perm, emit).await? {
         permission::GateDecision::Cancelled => return Ok(ToolOutcome::Cancelled),
@@ -1463,16 +1471,19 @@ where
         permission::Precheck::Ask => {}
     }
 
-    let perm = serde_json::json!({
-        "id": permission::request_id(ctx, call),
-        "runId": ctx.id,
-        "toolCallId": call.id,
-        "toolName": call.name,
-        "input": invocation.input,
-        "summary": invocation.summary,
-        "reason": invocation.reason,
-        "options": standard_gate_options("Approve target for this run", "Approve target for this project")
-    });
+    let perm = PermissionRequest {
+        id: permission::request_id(ctx, call),
+        run_id: ctx.id.to_string(),
+        tool_call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        input: invocation.input.clone(),
+        summary: invocation.summary.clone(),
+        reason: invocation.reason.clone(),
+        options: standard_gate_options(
+            "Approve target for this run",
+            "Approve target for this project",
+        ),
+    };
 
     let decision = match permission::run_gate(ctx, call, perm, emit).await? {
         permission::GateDecision::Cancelled => return Ok(ToolOutcome::Cancelled),
@@ -2062,7 +2073,7 @@ async fn run_agent_loop(
             Ok(response) => response,
             Err(err) => {
                 let error = AgentError {
-                    code: "provider_unavailable".to_string(),
+                    code: error_code::PROVIDER_UNAVAILABLE.to_string(),
                     message: err,
                     detail: None,
                     retryable: true,
@@ -2299,7 +2310,7 @@ async fn run_agent_loop(
             emit(AgentEvent::RunError {
                 run_id: id.clone(),
                 error: AgentError {
-                    code: "steering_gave_up".to_string(),
+                    code: error_code::STEERING_GAVE_UP.to_string(),
                     message: reason.clone(),
                     detail: None,
                     retryable: true,
@@ -2399,7 +2410,7 @@ async fn run_agent_loop(
         })?;
         message_count += 1;
         let error = AgentError {
-            code: "max_turns".to_string(),
+            code: error_code::MAX_TURNS.to_string(),
             message: "Agent reached the maximum tool turns.".to_string(),
             detail: None,
             retryable: true,
@@ -4440,20 +4451,23 @@ mod permission_gate_tests {
         // The prompt offered the four standard options.
         {
             let evs = events.lock().unwrap();
-            let request_json = evs
+            let request = evs
                 .iter()
                 .find_map(|e| match e {
                     AgentEvent::PermissionRequested { request, .. } => Some(request.clone()),
                     _ => None,
                 })
                 .expect("PermissionRequested emitted");
-            let ids: Vec<&str> = request_json["options"]
-                .as_array()
-                .expect("options array")
+            let ids: Vec<&str> = request
+                .options
                 .iter()
-                .filter_map(|o| o["optionId"].as_str())
+                .map(|o| o.option_id.as_str())
                 .collect();
             assert_eq!(ids, ["allow_once", "allow_run", "allow_project", "deny"]);
+            // And they reach the frontend as `optionId`, which is what the
+            // mirror in src/agent/types.ts declares.
+            let wire = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(wire["options"][0]["optionId"], "allow_once");
         }
 
         // Approved for the run: the identical command auto-executes, no prompt.

@@ -14,7 +14,7 @@
 
 use super::tools::NormalizedToolCall;
 use super::transcripts::now_ms;
-use super::types::{AgentEvent, AgentRunStatus};
+use super::types::{AgentEvent, AgentRunStatus, PermissionRequest};
 use super::{command_allowlist, network_allowlist};
 use super::{pause_for_user, with_run_handle, AgentRunHandle, PauseOutcome, ToolCtx};
 
@@ -178,7 +178,7 @@ pub fn precheck(ctx: &ToolCtx<'_>, cap: Capability, run_key: &str, project_ok: b
 pub async fn run_gate<E>(
     ctx: &ToolCtx<'_>,
     call: &NormalizedToolCall,
-    request: serde_json::Value,
+    request: PermissionRequest,
     emit: &mut E,
 ) -> Result<GateDecision, String>
 where

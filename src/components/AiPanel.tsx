@@ -2379,15 +2379,15 @@ This user request requires workspace inspection. Before answering, you MUST call
           break;
         }
         case "permission_requested": {
-          const req = event.request as {
-            id: string;
-            toolName?: string;
-            summary?: string;
-            reason?: string;
-            input?: { command?: string; externalPaths?: string[] };
-          };
-          const isCommand = !!req.input?.command;
-          const command = req.input?.command ?? req.summary ?? req.toolName ?? "permission request";
+          const req = event.request;
+          // `input` is the one genuinely open field on the wire — the command
+          // gate sends {command, cwd, externalPaths, matchedAllowRule}, a
+          // network capability sends whatever it declared. Everything else is
+          // typed, and the Rust `frontend_mirror_matches_agent_wire` test keeps
+          // it that way.
+          const input = (req.input ?? {}) as { command?: string; externalPaths?: string[] };
+          const isCommand = !!input.command;
+          const command = input.command ?? req.summary ?? req.toolName ?? "permission request";
           setPendingPermission({
             runId: event.runId,
             requestId: req.id,
@@ -2396,7 +2396,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             command,
             summary: req.summary ?? command,
             reason: req.reason ?? "",
-            externalPaths: Array.isArray(req.input?.externalPaths) ? req.input.externalPaths : [],
+            externalPaths: Array.isArray(input.externalPaths) ? input.externalPaths : [],
             suggestedPattern: isCommand ? suggestCommandPattern(command) : undefined,
           });
           break;
