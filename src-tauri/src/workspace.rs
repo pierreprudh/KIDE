@@ -138,9 +138,17 @@ impl Workspace {
     /// Validate an absolute path for an operation on the entry itself
     /// (create/rename/delete). The entry may not exist yet and may be a
     /// symlink we must not follow, so the check canonicalizes its parent
-    /// directory. Returns the path verbatim.
+    /// directory. Returns the validated lexical path.
     pub fn resolve_abs_entry(&self, path: &str) -> Result<PathBuf, String> {
         let target = PathBuf::from(path);
+        if !target.is_absolute()
+            || target
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+            || !target.starts_with(&self.root)
+        {
+            return Err("Path is outside the open workspace".to_string());
+        }
         let parent = target
             .parent()
             .ok_or_else(|| "Path has no parent folder".to_string())?;
@@ -325,6 +333,10 @@ mod tests {
         let new_file = ws.root().join("brand-new.txt");
         assert!(ws.resolve_abs_entry(new_file.to_str().unwrap()).is_ok());
         assert!(ws.resolve_abs_entry("/etc/passwd").is_err());
+        assert!(ws.resolve_abs_entry("brand-new.txt").is_err());
+        assert!(ws
+            .resolve_abs_entry(ws.root().join("../escape.txt").to_str().unwrap())
+            .is_err());
     }
 
     #[test]

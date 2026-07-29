@@ -92,17 +92,23 @@ impl Capability {
     /// Persist a project-scoped approval to the on-disk allowlist. `persist`
     /// is the value to store (a command string, or a network target); for the
     /// command capability the user may have widened it to a wildcard `pattern`.
-    fn persist_project(&self, root: &str, persist: &str, pattern: Option<&str>) {
+    fn persist_project(
+        &self,
+        runs_dir: &std::path::Path,
+        root: &str,
+        persist: &str,
+        pattern: Option<&str>,
+    ) {
         let result = match self {
             Capability::Command => {
                 let pattern = pattern.unwrap_or(persist);
                 if pattern.contains('*') || pattern.contains('?') {
-                    command_allowlist::add_rule(root, pattern)
+                    command_allowlist::add_rule(runs_dir, root, pattern)
                 } else {
-                    command_allowlist::add(root, pattern)
+                    command_allowlist::add(runs_dir, root, pattern)
                 }
             }
-            Capability::Network => network_allowlist::add(root, persist),
+            Capability::Network => network_allowlist::add(runs_dir, root, persist),
         };
         if let Err(err) = result {
             eprintln!("failed to persist project {} allowlist: {err}", self.noun());
@@ -253,7 +259,7 @@ pub fn record(
             }
             if scope == "project" {
                 if let Some(root) = ctx.request.workspace_root.as_deref() {
-                    cap.persist_project(root, persist, pattern.as_deref());
+                    cap.persist_project(ctx.runs_dir, root, persist, pattern.as_deref());
                 }
             }
         }
@@ -267,24 +273,51 @@ pub fn record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
 
-    fn temp_workspace(name: &str) -> String {
+    fn temp_workspace(name: &str) -> (String, PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("klide-permission-{name}-{}", std::process::id()));
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-permission-runs-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runs_dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.to_string_lossy().to_string()
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Klide",
+                "-c",
+                "user.email=test@klide.local",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        (dir.to_string_lossy().to_string(), runs_dir)
     }
 
     #[test]
     fn command_project_persist_routes_exact_vs_wildcard() {
-        let root = temp_workspace("cmd-persist");
+        let (root, runs_dir) = temp_workspace("cmd-persist");
         // An exact command lands in the `commands` list verbatim.
-        Capability::Command.persist_project(&root, "cargo test", None);
+        Capability::Command.persist_project(&runs_dir, &root, "cargo test", None);
         // A widened pattern lands as a wildcard rule, matching a family.
-        Capability::Command.persist_project(&root, "cargo build", Some("cargo *"));
+        Capability::Command.persist_project(&runs_dir, &root, "cargo build", Some("cargo *"));
 
-        let stored = command_allowlist::list(&root).unwrap();
+        let stored = command_allowlist::list(&runs_dir, &root).unwrap();
         assert!(stored.contains(&"cargo test".to_string()));
         assert!(stored.contains(&"cargo *".to_string()));
         let matched = command_allowlist::match_rule(&stored, "cargo run", "cargo run")
@@ -292,15 +325,17 @@ mod tests {
         assert_eq!(matched.pattern, "cargo *");
         assert!(!matched.exact);
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[test]
     fn network_project_persist_writes_the_target() {
-        let root = temp_workspace("net-persist");
-        Capability::Network.persist_project(&root, "host:docs.rs", None);
-        assert!(network_allowlist::is_allowed(&root, "host:docs.rs").unwrap());
-        assert!(!network_allowlist::is_allowed(&root, "host:example.com").unwrap());
+        let (root, runs_dir) = temp_workspace("net-persist");
+        Capability::Network.persist_project(&runs_dir, &root, "host:docs.rs", None);
+        assert!(network_allowlist::is_allowed(&runs_dir, &root, "host:docs.rs").unwrap());
+        assert!(!network_allowlist::is_allowed(&runs_dir, &root, "host:example.com").unwrap());
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[test]

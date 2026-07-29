@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "verify:bundle": "bash scripts/verify-bundle.sh"
+    "verify:bundle": "bash scripts/verify-bundle.sh",
+    "verify:distribution": "KLIDE_DISTRIBUTION=1 bash scripts/verify-bundle.sh"
   },
   "dependencies": {
     "@fontsource/atkinson-hyperlegible": "^5.2.8",
@@ -22,7 +23,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "diff": "^9.0.0",
-    "monaco-editor": "^0.55.1",
+    "monaco-editor": "^0.56.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -32,7 +33,13 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4",
+    "vite": "^7.3.6",
     "vitest": "^4.1.9"
+  },
+  "overrides": {
+    "@babel/core": "7.29.7",
+    "dompurify": "3.4.12",
+    "esbuild": "0.28.1",
+    "postcss": "8.5.25"
   }
 }

@@ -1,3 +1,4 @@
+mod approval_store;
 mod command_allowlist;
 #[cfg(test)]
 mod eval;
@@ -1453,7 +1454,8 @@ where
         Err(result) => return Ok(ToolOutcome::Produced(result)),
     };
     let target = invocation.target.clone();
-    let project_ok = network_allowlist::is_allowed(root_value, &target).unwrap_or(false);
+    let project_ok =
+        network_allowlist::is_allowed(ctx.runs_dir, root_value, &target).unwrap_or(false);
 
     match permission::precheck(ctx, permission::Capability::Network, &target, project_ok) {
         permission::Precheck::Execute => {
@@ -1741,15 +1743,18 @@ async fn start_run(
     on_event: Channel<AgentEvent>,
 ) -> Result<StartRunResponse, String> {
     let state = app.state::<AgentSupervisorState>();
+    let runs_dir = app_runs_dir(&app)?;
+    // Never accept renderer-supplied trust. Only the private, fingerprint-bound
+    // approval store may populate this field.
+    request.command_allowlist.clear();
     if let Some(root) = request.workspace_root.as_deref() {
-        for command in command_allowlist::list(root)? {
+        for command in command_allowlist::list(&runs_dir, root)? {
             if !request.command_allowlist.iter().any(|c| c == &command) {
                 request.command_allowlist.push(command);
             }
         }
     }
 
-    let runs_dir = app_runs_dir(&app)?;
     // Reuse the client's conversation id when supplied so the transcript on
     // disk shares the AI panel's id (deduped against the in-memory convo in
     // Mission Control); otherwise mint a fresh one.
@@ -4028,7 +4033,7 @@ mod test_support {
     /// A StartRunRequest for headless tests: goal mode, auto-accept diffs, an
     /// explicit num_ctx so the loop never looks up provider model metadata.
     pub(super) fn test_request(root: &str, command_allowlist: &[&str]) -> StartRunRequest {
-        serde_json::from_value(serde_json::json!({
+        let mut request: StartRunRequest = serde_json::from_value(serde_json::json!({
             "workspaceRoot": root,
             "mode": "goal",
             "provider": "mock",
@@ -4040,7 +4045,15 @@ mod test_support {
             "requireDiffReview": false,
             "commandAllowlist": command_allowlist,
         }))
-        .unwrap()
+        .unwrap();
+        // Production deserialization deliberately ignores renderer-supplied
+        // trust. Tests that exercise an already-classified run may still seed
+        // the native request directly.
+        request.command_allowlist = command_allowlist
+            .iter()
+            .map(|command| (*command).to_string())
+            .collect();
+        request
     }
 }
 
@@ -4488,6 +4501,7 @@ mod permission_gate_tests {
     //! timeout-guarded second calls prove no prompt was shown.
     use super::test_support::*;
     use super::*;
+    use std::process::Command;
     use std::time::Duration;
 
     fn temp_workspace(name: &str) -> String {
@@ -4498,6 +4512,25 @@ mod permission_gate_tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Klide",
+                "-c",
+                "user.email=test@klide.local",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
         dir.to_string_lossy().to_string()
     }
 
@@ -4560,7 +4593,12 @@ mod permission_gate_tests {
         let sup = FakeSupervisor::with_run("perm-run");
         let cancel = CancellationToken::new();
         let request = test_request(&root, &[]);
-        let runs_dir = std::env::temp_dir();
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-project-scope-runs-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
         let ctx = ToolCtx {
             sup: &sup,
             id: "perm-run",
@@ -4607,6 +4645,7 @@ mod permission_gate_tests {
         assert!(second.ok, "re-run auto-executes: {}", second.content);
         assert_eq!(prompts_shown(&events), 1, "asked exactly once");
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[tokio::test]
@@ -4615,7 +4654,12 @@ mod permission_gate_tests {
         let sup = FakeSupervisor::with_run("perm-run");
         let cancel = CancellationToken::new();
         let request = test_request(&root, &[]);
-        let runs_dir = std::env::temp_dir();
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-project-persist-runs-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
         let ctx = ToolCtx {
             sup: &sup,
             id: "perm-run",
@@ -4651,6 +4695,7 @@ mod permission_gate_tests {
         );
         assert_eq!(prompts_shown(&events), 1, "asked exactly once");
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[tokio::test]
@@ -4659,7 +4704,12 @@ mod permission_gate_tests {
         let sup = FakeSupervisor::with_run("perm-run");
         let cancel = CancellationToken::new();
         let request = test_request(&root, &[]);
-        let runs_dir = std::env::temp_dir();
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-project-persist-runs-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
         let ctx = ToolCtx {
             sup: &sup,
             id: "perm-run",
@@ -4681,7 +4731,7 @@ mod permission_gate_tests {
         assert!(produced(outcome).ok);
 
         // The approval reached the project allowlist on disk…
-        let stored = command_allowlist::list(&root).unwrap();
+        let stored = command_allowlist::list(&runs_dir, &root).unwrap();
         assert!(
             stored.contains(&"echo persist-me".to_string()),
             "project approval persisted: {stored:?}"
@@ -4692,6 +4742,7 @@ mod permission_gate_tests {
         assert!(second.ok);
         assert_eq!(prompts_shown(&events), 1, "asked exactly once");
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 }
 

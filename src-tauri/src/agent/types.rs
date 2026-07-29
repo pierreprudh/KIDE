@@ -104,9 +104,9 @@ pub struct StartRunRequest {
     /// failing check is returned to the model as a not-ok tool result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_after_edit_command: Option<String>,
-    /// Commands or wildcard command rules pre-approved for `run_command` by
-    /// the project allowlist, so trusted commands skip the approval prompt.
-    #[serde(default)]
+    /// Backend-populated project approvals. Renderer input is deliberately
+    /// ignored: a compromised webview must not be able to mint command trust.
+    #[serde(default, skip_deserializing)]
     pub command_allowlist: Vec<String>,
     /// Whether file edits pause for diff review before applying. `None` or
     /// `Some(true)` keeps the default review-every-edit behavior; `Some(false)`
@@ -587,6 +587,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn renderer_cannot_deserialize_command_approvals() {
+        let request: StartRunRequest = serde_json::from_value(serde_json::json!({
+            "workspaceRoot": "/tmp/project",
+            "mode": "goal",
+            "provider": "mock",
+            "model": "mock",
+            "initialText": "test",
+            "commandAllowlist": ["rm -rf important"]
+        }))
+        .unwrap();
+        assert!(
+            request.command_allowlist.is_empty(),
+            "command trust must be loaded by native code, never supplied over IPC"
+        );
+    }
+
+    #[test]
     fn agent_usage_serializes_camel_case_and_omits_nones() {
         let u = AgentUsage {
             prompt_tokens: Some(120),
@@ -664,6 +681,7 @@ mod tests {
         let v = serde_json::to_value(&event).expect("serialize");
         assert!(v.get("usage").is_none(), "got: {v}");
     }
+
     /// Read `src/agent/types.ts` — the frontend's hand-written mirror of the
     /// wire types in this file.
     fn frontend_mirror() -> String {
@@ -691,7 +709,11 @@ mod tests {
 
     /// Every double-quoted string in a slice of mirror source.
     fn quoted(src: &str) -> Vec<String> {
-        src.split('"').skip(1).step_by(2).map(String::from).collect()
+        src.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(String::from)
+            .collect()
     }
 
     fn snake_case(variant: &str) -> String {
@@ -778,7 +800,9 @@ src/agent/types.ts — update both"
             .find("export type AgentError = {")
             .expect("AgentError in src/agent/types.ts");
         let body = &ts[start..];
-        let end = body.find("message:").expect("message field after code union");
+        let end = body
+            .find("message:")
+            .expect("message field after code union");
         let mut frontend = quoted(&body[..end]);
         frontend.sort();
 

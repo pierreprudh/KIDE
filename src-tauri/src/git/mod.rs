@@ -1115,6 +1115,7 @@ fn apply_worktree_setup(
     dir: &std::path::Path,
     branch: &str,
     copy_files: Option<Vec<String>>,
+    approved_setup_script: Option<String>,
 ) -> (Vec<String>, Vec<String>, Option<u16>, bool) {
     use crate::worktree_setup;
     let setup = worktree_setup::load(toplevel);
@@ -1129,7 +1130,15 @@ fn apply_worktree_setup(
         .port_base
         .map(|base| worktree_setup::port_for(base, &name));
 
-    let script_started = match setup.setup_script.clone().filter(|s| !s.trim().is_empty()) {
+    // The script read after checkout creation must still be byte-for-byte the
+    // script the native dialog showed. A repository change between prompt and
+    // execution invalidates the approval instead of winning a TOCTOU race.
+    let script_started = match setup
+        .setup_script
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .filter(|s| approved_setup_script.as_deref() == Some(s.as_str()))
+    {
         Some(script) => {
             // Background: an `npm install` must not block opening the panel.
             // The outcome lands on the notify seam; the frontend toasts it.
@@ -1164,11 +1173,72 @@ pub(crate) async fn git_worktree_add(
     branch: String,
     copy_files: Option<Vec<String>>,
 ) -> Result<WorktreeInfo, String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let prompt_root = workspace_root.clone();
+    let candidate_script = blocking(move || {
+        let toplevel = git_output(&prompt_root, &["rev-parse", "--show-toplevel"])?
+            .trim()
+            .to_string();
+        let script = crate::worktree_setup::load(&toplevel)
+            .setup_script
+            .filter(|s| !s.trim().is_empty());
+        if script.as_ref().is_some_and(|s| s.len() > 4096) {
+            return Err(
+                "Worktree setupScript is too large to review safely (max 4096 bytes)".into(),
+            );
+        }
+        if script.as_ref().is_some_and(|script| {
+            script.chars().any(|character| {
+                (character.is_control() && !matches!(character, '\n' | '\t'))
+                    || matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            })
+        }) {
+            return Err(
+                "Worktree setupScript contains hidden control or bidirectional text".into(),
+            );
+        }
+        Ok(script)
+    })
+    .await?;
+
+    let approved_setup_script = if let Some(script) = candidate_script {
+        let dialog_app = app.clone();
+        let prompt = format!(
+            "This repository wants to run the following shell command in the new worktree:\n\n\
+             {script}\n\nRun it after creating the worktree?"
+        );
+        let approved = blocking(move || {
+            Ok(dialog_app
+                .dialog()
+                .message(prompt)
+                .title("Review Worktree Setup Script")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Create and Run".into(),
+                    "Create Without Running".into(),
+                ))
+                .blocking_show())
+        })
+        .await?;
+        approved.then_some(script)
+    } else {
+        None
+    };
+
     use tauri::Emitter;
+    let event_app = app.clone();
     let notify: SetupNotify = std::sync::Arc::new(move |done: WorktreeSetupDone| {
-        let _ = app.emit("worktree-setup:done", done);
+        let _ = event_app.emit("worktree-setup:done", done);
     });
-    worktree_add_core(workspace_root, branch, copy_files, notify).await
+    worktree_add_core(
+        workspace_root,
+        branch,
+        copy_files,
+        approved_setup_script,
+        notify,
+    )
+    .await
 }
 
 /// The command's body behind the notify seam, so tests can drive it against a
@@ -1177,6 +1247,7 @@ async fn worktree_add_core(
     workspace_root: String,
     branch: String,
     copy_files: Option<Vec<String>>,
+    approved_setup_script: Option<String>,
     notify: SetupNotify,
 ) -> Result<WorktreeInfo, String> {
     blocking(move || {
@@ -1217,8 +1288,14 @@ async fn worktree_add_core(
             } else {
                 actual
             };
-            let (bootstrapped, linked, port, script_started) =
-                apply_worktree_setup(notify, &toplevel, &dir, &actual, copy_files);
+            let (bootstrapped, linked, port, script_started) = apply_worktree_setup(
+                notify,
+                &toplevel,
+                &dir,
+                &actual,
+                copy_files,
+                approved_setup_script,
+            );
             return Ok(WorktreeInfo {
                 path,
                 branch: actual,
@@ -1278,8 +1355,14 @@ async fn worktree_add_core(
             }
         }
 
-        let (bootstrapped, linked, port, script_started) =
-            apply_worktree_setup(notify, &toplevel, &dir, branch, copy_files);
+        let (bootstrapped, linked, port, script_started) = apply_worktree_setup(
+            notify,
+            &toplevel,
+            &dir,
+            branch,
+            copy_files,
+            approved_setup_script,
+        );
         Ok(WorktreeInfo {
             path,
             branch: branch.to_string(),
@@ -1397,6 +1480,41 @@ pub(crate) async fn git_worktree_remove(
     delete_branch: Option<String>,
 ) -> Result<(), String> {
     blocking(move || {
+        let toplevel = git_output(&workspace_root, &["rev-parse", "--show-toplevel"])?
+            .trim()
+            .to_string();
+        let main_checkout = std::fs::canonicalize(&toplevel)
+            .map_err(|e| format!("Unable to resolve repository root: {e}"))?;
+        let requested = std::fs::canonicalize(&path)
+            .map_err(|e| format!("Unable to resolve worktree path: {e}"))?;
+        if requested == main_checkout {
+            return Err("Refusing to remove the main repository checkout.".to_string());
+        }
+        let registered = parse_worktree_list(&git_output(
+            &toplevel,
+            &["worktree", "list", "--porcelain"],
+        )?)
+        .into_iter()
+        .find(|worktree| {
+            std::fs::canonicalize(&worktree.path)
+                .map(|candidate| candidate == requested)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            "Refusing to remove a path that is not a registered worktree.".to_string()
+        })?;
+        let requested_delete_branch = delete_branch
+            .map(|branch| branch.trim().to_string())
+            .filter(|branch| !branch.is_empty());
+        if requested_delete_branch
+            .as_ref()
+            .is_some_and(|branch| branch != &registered.branch)
+        {
+            return Err(
+                "Refusing to delete a branch that is not checked out by this worktree.".to_string(),
+            );
+        }
+
         for rel in clean_files.unwrap_or_default() {
             let rel_path = std::path::Path::new(&rel);
             // Worktree-relative only: an absolute or `..`-escaping entry could
@@ -1408,7 +1526,17 @@ pub(crate) async fn git_worktree_remove(
             {
                 return Err(format!("Invalid cleanup path: {rel}"));
             }
-            let target = std::path::Path::new(&path).join(rel_path);
+            let target = requested.join(rel_path);
+            let parent = target
+                .parent()
+                .ok_or_else(|| format!("Invalid cleanup path: {rel}"))?;
+            if parent.exists() {
+                let real_parent = std::fs::canonicalize(parent)
+                    .map_err(|e| format!("Invalid cleanup path {rel}: {e}"))?;
+                if !real_parent.starts_with(&requested) {
+                    return Err(format!("Invalid cleanup path: {rel}"));
+                }
+            }
             match std::fs::symlink_metadata(&target) {
                 Ok(meta) if meta.is_dir() => {
                     return Err(format!(
@@ -1423,16 +1551,14 @@ pub(crate) async fn git_worktree_remove(
         if force.unwrap_or(false) {
             args.push("--force");
         }
-        args.push(&path);
-        run_git(&workspace_root, &args)?;
-        if let Some(branch) = delete_branch
-            .map(|b| b.trim().to_string())
-            .filter(|b| !b.is_empty())
-        {
+        let requested_string = requested.to_string_lossy().to_string();
+        args.push(&requested_string);
+        run_git(&toplevel, &args)?;
+        if let Some(branch) = requested_delete_branch {
             // -D, not -d: the branch may be unmerged (it usually just mirrors
             // its base when the run never started, but -d would refuse any
             // stray commit). The checkout is already gone either way.
-            run_git(&workspace_root, &["branch", "-D", &branch])?;
+            run_git(&toplevel, &["branch", "-D", "--", &branch])?;
         }
         Ok(())
     })
@@ -1675,6 +1801,7 @@ detached
             repo.clone(),
             "klide/test-run".into(),
             Some(vec![]),
+            None,
             noop_notify(),
         )
         .await
@@ -1701,6 +1828,7 @@ detached
             repo.clone(),
             "klide/test-run".into(),
             Some(vec![]),
+            None,
             noop_notify(),
         )
         .await
@@ -1714,6 +1842,7 @@ detached
             repo.clone(),
             "klide/test-run".into(),
             Some(vec![]),
+            None,
             noop_notify(),
         )
         .await
@@ -1737,6 +1866,7 @@ detached
             repo.clone(),
             "klide/race-x-1".into(),
             Some(vec![]),
+            None,
             noop_notify(),
         )
         .await
@@ -1789,6 +1919,7 @@ detached
             repo.clone(),
             "klide/race-x-2".into(),
             Some(vec![]),
+            None,
             noop_notify(),
         )
         .await
@@ -1812,6 +1943,7 @@ detached
             repo.clone(),
             "klide/diffed".into(),
             Some(vec![]),
+            None,
             noop_notify(),
         )
         .await
@@ -1849,6 +1981,7 @@ detached
             repo.clone(),
             "klide/guarded".into(),
             Some(vec![]),
+            None,
             noop_notify(),
         )
         .await
