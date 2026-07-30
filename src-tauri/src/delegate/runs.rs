@@ -155,8 +155,21 @@ pub(crate) fn clean_title(s: &str) -> String {
     one.chars().take(120).collect()
 }
 
+/// How long a Delegate transcript may go without a write before the board reads
+/// the run as finished.
+///
+/// A Delegate CLI reports no lifecycle of its own, so "is it still going?" is
+/// inferred from the session log's mtime. That makes this the **only** staleness
+/// authority for Delegate runs, and it silently bounds the frontend's:
+/// `STALE_RUNNING_MS` in `src/runs.ts` flags a *running* run as idle after five
+/// minutes, which a Delegate can never reach — it has been relabelled `done`
+/// here after two. `delegate_recency_window_bounds_the_frontend_idle_signal`
+/// pins that relationship so the next person to change either number sees the
+/// other one.
+pub(crate) const DELEGATE_RECENCY_MS: i64 = 120_000;
+
 pub(crate) fn recency_status(updated_ms: i64) -> String {
-    if now_ms() - updated_ms < 120_000 {
+    if now_ms() - updated_ms < DELEGATE_RECENCY_MS {
         "running".to_string()
     } else {
         "done".to_string()
@@ -387,5 +400,53 @@ mod tests {
         assert_eq!(msgs.len(), 80);
         assert_eq!(msgs[0].text, "m20");
         assert_eq!(msgs[79].text.chars().count(), 4001); // 4000 + ellipsis
+    }
+
+    /// Read a numeric constant out of the frontend mirror.
+    fn frontend_const(name: &str) -> i64 {
+        let ts = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/runs.ts"),
+        )
+        .expect("read src/runs.ts");
+        let marker = format!("{name} = ");
+        let start = ts.find(&marker).unwrap_or_else(|| panic!("{name} in src/runs.ts")) + marker.len();
+        let expr = &ts[start..start + ts[start..].find(';').expect("terminating ;")];
+        // Values are written either plain (`120_000`) or as a product
+        // (`5 * 60_000`); both spellings are legible, so accept both.
+        expr
+            .split('*')
+            .map(|part| {
+                part.trim()
+                    .replace('_', "")
+                    .parse::<i64>()
+                    .unwrap_or_else(|_| panic!("{name} is not a numeric literal: {expr}"))
+            })
+            .product()
+    }
+
+    #[test]
+    fn delegate_recency_window_bounds_the_frontend_idle_signal() {
+        // A Delegate reports no lifecycle, so its status is inferred from
+        // transcript mtime — making this the only staleness authority for one.
+        // The frontend has a second: STALE_RUNNING_MS flags a *running* run as
+        // idle. Because a Delegate is relabelled `done` here first, that signal
+        // can only ever fire for a Klide Harness run — never for a Delegate,
+        // which is presumably what it was written for.
+        //
+        // This test does not pretend that is fixed. It pins both numbers and the
+        // relationship between them, so changing either one surfaces the other:
+        // the idle signal reaches Delegates only once this window is the larger.
+        assert_eq!(DELEGATE_RECENCY_MS, frontend_const("DELEGATE_RECENCY_MS"));
+
+        let stale_running = frontend_const("STALE_RUNNING_MS");
+        assert_eq!(stale_running, 300_000, "src/runs.ts STALE_RUNNING_MS moved");
+        assert!(
+            DELEGATE_RECENCY_MS < stale_running,
+            "a Delegate is relabelled done after {DELEGATE_RECENCY_MS}ms, so the \
+frontend's {stale_running}ms idle signal is unreachable for one. If this \
+assertion now fails, the idle signal has become reachable for Delegates — \
+which is the fix, not a regression: update this test and the comments on both \
+constants."
+        );
     }
 }
