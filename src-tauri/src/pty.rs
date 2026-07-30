@@ -140,19 +140,96 @@ fn start_daemon_subscriber(app: tauri::AppHandle) {
     });
 }
 
-/// Live session ids the daemon is hosting (empty when off/unreachable) — for
-/// merged live/recent listings.
-fn daemon_live_rows(app: &tauri::AppHandle) -> Vec<LiveSessionRow> {
+/// One round-trip to `ptyd`, or `None` when there is no daemon to ask.
+///
+/// Every command below had its own copy of this preamble — check the toggle,
+/// find the app data dir, send, match the response — which is how the account
+/// switch guard ended up being the one operation that never asked the daemon at
+/// all. One helper means the "is there a daemon?" question is answered in a
+/// single place, and it is the single place a `cfg(not(unix))` stub would go.
+///
+/// `None` is deliberately indistinguishable from "the daemon doesn't have it":
+/// every caller's fallback is the in-process host, which is also what should
+/// happen when the daemon is off, unreachable, or mid-restart.
+fn ask_daemon(app: &tauri::AppHandle, request: &DaemonRequest) -> Option<DaemonResponse> {
     if !daemon_enabled(app) {
-        return Vec::new();
+        return None;
     }
-    let Some(dir) = app_data_dir(app) else {
-        return Vec::new();
-    };
-    match pty_client::request(&dir, &DaemonRequest::LiveRows) {
-        Ok(DaemonResponse::LiveRows { rows }) => rows,
+    ask_daemon_regardless(app, request)
+}
+
+/// `ask_daemon`, but ignoring the toggle.
+///
+/// Turning persistence off routes *new* spawns in-process; it does not evict
+/// what the daemon is already hosting, because those sessions are the user's
+/// work. So the read-only listings and the liveness checks have to keep asking
+/// even when the toggle is off, or a running session becomes invisible — which
+/// is exactly how a live session would get offered as "reopen", or have its
+/// credentials swapped underneath it.
+fn ask_daemon_regardless(
+    app: &tauri::AppHandle,
+    request: &DaemonRequest,
+) -> Option<DaemonResponse> {
+    let dir = app_data_dir(app)?;
+    pty_client::request(&dir, request).ok()
+}
+
+/// Live sessions the daemon is hosting (empty when unreachable) — for merged
+/// live/recent listings and the account-switch guard.
+fn daemon_live_rows(app: &tauri::AppHandle) -> Vec<LiveSessionRow> {
+    match ask_daemon_regardless(app, &DaemonRequest::LiveRows) {
+        Some(DaemonResponse::LiveRows { rows }) => rows,
         _ => Vec::new(),
     }
+}
+
+// ── Two-host policies ────────────────────────────────────────────────────────
+// A delegate session lives in exactly one of two hosts, and every read has to
+// answer for both. These are the merge rules, pulled out of the commands so
+// they can be stated once and tested without an `AppHandle` — the commands
+// above are Tauri glue and stay untestable until the hosts are a trait, but
+// the *rules* don't have to be.
+
+/// Both hosts' live rows, in-process first. On an id collision the in-process
+/// row wins: spawn checks both hosts before starting, so a duplicate means the
+/// daemon is reporting a stale row for a session we ourselves now hold.
+fn merge_live_rows(local: Vec<LiveSessionRow>, daemon: Vec<LiveSessionRow>) -> Vec<LiveSessionRow> {
+    let local_ids: HashSet<&str> = local.iter().map(|r| r.session_id.as_str()).collect();
+    let extra: Vec<LiveSessionRow> = daemon
+        .into_iter()
+        .filter(|r| !local_ids.contains(r.session_id.as_str()))
+        .collect();
+    let mut rows = local;
+    rows.extend(extra);
+    rows
+}
+
+/// Every id live *anywhere*. "Recent" means persisted but not in here — a
+/// session still running in the daemon must never be offered as a reopen.
+fn all_live_ids(local: HashSet<String>, daemon: &[LiveSessionRow]) -> HashSet<String> {
+    let mut live = local;
+    live.extend(daemon.iter().map(|r| r.session_id.clone()));
+    live
+}
+
+/// Is any session for `provider` live, given the in-process answer and the
+/// daemon's rows? Either host counts — see `provider_has_live_session`.
+fn provider_is_live(local_has: bool, daemon: &[LiveSessionRow], provider: &str) -> bool {
+    local_has || daemon.iter().any(|row| row.provider == provider)
+}
+
+/// The AI-panel conversation id inside a PTY session id.
+///
+/// Session ids are `{convoId}:{provider}`. That format is composed in the
+/// frontend and taken apart here, with no shared constructor — so this is the
+/// one place the decomposition is written, and the fallback is explicit:
+/// an id that doesn't carry the expected suffix is returned whole rather than
+/// silently truncated.
+fn convo_id_for(session_id: &str, provider: &str) -> String {
+    session_id
+        .strip_suffix(&format!(":{provider}"))
+        .unwrap_or(session_id)
+        .to_string()
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -167,9 +244,8 @@ pub struct DaemonStatus {
 #[tauri::command]
 pub fn delegate_daemon_status(app: tauri::AppHandle) -> DaemonStatus {
     let enabled = daemon_enabled(&app);
-    let ping = app_data_dir(&app).map(|dir| pty_client::request(&dir, &DaemonRequest::Ping));
-    match ping {
-        Some(Ok(DaemonResponse::Pong { version, .. })) => DaemonStatus {
+    match ask_daemon_regardless(&app, &DaemonRequest::Ping) {
+        Some(DaemonResponse::Pong { version, .. }) => DaemonStatus {
             enabled,
             reachable: true,
             version: Some(version),
@@ -218,14 +294,23 @@ pub struct DelegatePtyState {
     pub host: SessionHost,
 }
 
-impl DelegatePtyState {
-    /// Is a delegate PTY for `provider` currently live? Used by account
-    /// switching to refuse swapping a CLI's credentials out from under a
-    /// running session. Only covers Klide-spawned PTYs — a CLI running in an
-    /// external terminal is invisible to us.
-    pub fn has_live_session(&self, provider: &str) -> bool {
-        self.host.has_live_session(provider)
-    }
+/// Is a delegate PTY for `provider` live in **either** host?
+///
+/// Account switching refuses to swap a CLI's credentials while one of its
+/// sessions is running, because the CLI refreshes its token and writes back to
+/// the store being replaced. That guard used to ask only the in-process
+/// `SessionHost`, so a `ptyd`-hosted session — the whole point of which is to
+/// outlive the app — sailed straight through it. Every other operation in this
+/// file already unions the two hosts; this was the one that didn't.
+///
+/// Only covers Klide-spawned PTYs either way: a CLI the user started in their
+/// own terminal is invisible to us.
+pub(crate) fn provider_has_live_session(app: &tauri::AppHandle, provider: &str) -> bool {
+    let local = app
+        .state::<DelegatePtyState>()
+        .host
+        .has_live_session(provider);
+    provider_is_live(local, &daemon_live_rows(app), provider)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,18 +517,14 @@ pub fn delegate_pty_spawn(
     if state.host.reuse_or_cd(&session_id, cwd.as_deref())? {
         return Ok(());
     }
-    if daemon_enabled(&app) {
-        if let Some(dir) = app_data_dir(&app) {
-            if let Ok(DaemonResponse::Reused { reused: true }) = pty_client::request(
-                &dir,
-                &DaemonRequest::ReuseOrCd {
-                    session_id: session_id.clone(),
-                    cwd: cwd.clone(),
-                },
-            ) {
-                return Ok(());
-            }
-        }
+    if let Some(DaemonResponse::Reused { reused: true }) = ask_daemon(
+        &app,
+        &DaemonRequest::ReuseOrCd {
+            session_id: session_id.clone(),
+            cwd: cwd.clone(),
+        },
+    ) {
+        return Ok(());
     }
 
     // All per-CLI knowledge (spawn syntax, resume flags, model flags) lives
@@ -573,18 +654,18 @@ pub fn delegate_pty_write(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
+    // The in-process host answers for an id it holds; only an id it doesn't
+    // hold can belong to the daemon.
     let mut wrote = state.host.write(&session_id, &data)?;
-    if !wrote && daemon_enabled(&app) {
-        if let Some(dir) = app_data_dir(&app) {
-            if let Ok(DaemonResponse::Wrote { wrote: w }) = pty_client::request(
-                &dir,
-                &DaemonRequest::Write {
-                    session_id: session_id.clone(),
-                    data: data.clone(),
-                },
-            ) {
-                wrote = w;
-            }
+    if !wrote {
+        if let Some(DaemonResponse::Wrote { wrote: w }) = ask_daemon(
+            &app,
+            &DaemonRequest::Write {
+                session_id: session_id.clone(),
+                data: data.clone(),
+            },
+        ) {
+            wrote = w;
         }
     }
     // Typing into the TUI answers whatever the agent was waiting on, so
@@ -612,16 +693,14 @@ pub fn delegate_pty_snapshot(
     // in the daemon must answer from there (its ring has the authoritative
     // seq for the dedup handshake). Dead sessions read the shared disk log,
     // identical from either side.
-    if !state.host.live_ids().contains(&session_id) && daemon_enabled(&app) {
-        if let Some(dir) = app_data_dir(&app) {
-            if let Ok(DaemonResponse::Snapshot(snap)) = pty_client::request(
-                &dir,
-                &DaemonRequest::Snapshot {
-                    session_id: session_id.clone(),
-                },
-            ) {
-                return snap;
-            }
+    if !state.host.live_ids().contains(&session_id) {
+        if let Some(DaemonResponse::Snapshot(snap)) = ask_daemon(
+            &app,
+            &DaemonRequest::Snapshot {
+                session_id: session_id.clone(),
+            },
+        ) {
+            return snap;
         }
     }
     state
@@ -639,8 +718,7 @@ pub fn delegate_pty_recent_sessions(
     };
     // "Recent" = persisted but not live ANYWHERE — a session still running in
     // the daemon must not be offered as a reopen.
-    let mut live: HashSet<String> = state.host.live_ids();
-    live.extend(daemon_live_rows(&app).into_iter().map(|r| r.session_id));
+    let live = all_live_ids(state.host.live_ids(), &daemon_live_rows(&app));
     pty_host::scan_recent_sessions(&dir, &live)
 }
 
@@ -681,25 +759,14 @@ pub fn delegate_pty_live_sessions(
     let now = pty_host::now_ms();
     // Merge both hosts; on an id collision (shouldn't happen — spawn checks
     // both before starting) the in-process row wins.
-    let mut rows = state.host.live_rows();
-    let local_ids: HashSet<String> = rows.iter().map(|r| r.session_id.clone()).collect();
-    rows.extend(
-        daemon_live_rows(&app)
-            .into_iter()
-            .filter(|r| !local_ids.contains(&r.session_id)),
-    );
+    let rows = merge_live_rows(state.host.live_rows(), daemon_live_rows(&app));
     let mut out: Vec<LiveDelegateSession> = rows
         .into_iter()
         .map(|row| {
             // `session_id` is `{convoId}:{provider}`; strip the known provider
             // suffix to recover the conversation id. Fall back to the whole id
             // if the shape is unexpected.
-            let suffix = format!(":{}", row.provider);
-            let convo_id = row
-                .session_id
-                .strip_suffix(&suffix)
-                .unwrap_or(&row.session_id)
-                .to_string();
+            let convo_id = convo_id_for(&row.session_id, &row.provider);
             // The CLI's own hooks are the truth when present (they know
             // "blocked on a permission" from "thinking hard" — no amount
             // of PTY-quietness timing does); the timer is the fallback.
@@ -750,18 +817,16 @@ pub fn delegate_pty_resize(
 ) -> Result<(), String> {
     // Both hosts no-op for an id they don't hold, so just tell both.
     state.host.resize(&session_id, rows, cols)?;
-    if daemon_enabled(&app) {
-        if let Some(dir) = app_data_dir(&app) {
-            let _ = pty_client::request(
-                &dir,
-                &DaemonRequest::Resize {
-                    session_id,
-                    rows,
-                    cols,
-                },
-            );
-        }
-    }
+    // Regardless of the toggle: the daemon may still be hosting a session the
+    // user is looking at, and it would otherwise keep the old geometry forever.
+    ask_daemon_regardless(
+        &app,
+        &DaemonRequest::Resize {
+            session_id,
+            rows,
+            cols,
+        },
+    );
     Ok(())
 }
 
@@ -772,11 +837,9 @@ pub fn delegate_pty_stop(
     session_id: String,
 ) -> Result<(), String> {
     state.host.stop(&session_id);
-    if daemon_enabled(&app) {
-        if let Some(dir) = app_data_dir(&app) {
-            let _ = pty_client::request(&dir, &DaemonRequest::Stop { session_id });
-        }
-    }
+    // Regardless of the toggle, or turning persistence off would leave the
+    // sessions the daemon already hosts with no way to be stopped from the UI.
+    ask_daemon_regardless(&app, &DaemonRequest::Stop { session_id });
     Ok(())
 }
 
@@ -915,4 +978,91 @@ pub fn get_delegate_parent(app: &tauri::AppHandle, delegate_id: &str) -> Option<
     read_delegate_sessions(app)
         .get(delegate_id)
         .map(|m| m.parent_id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    //! The two-host merge rules. The commands around them are Tauri glue and
+    //! need an `AppHandle`, which is why this file carried no tests at all —
+    //! but the rules themselves are data in, data out, and they are where the
+    //! bugs were: the account-switch guard asked only the in-process host, and
+    //! stop/resize skipped the daemon whenever the persistence toggle was off.
+    use super::*;
+
+    fn row(session_id: &str, provider: &str) -> LiveSessionRow {
+        LiveSessionRow {
+            session_id: session_id.to_string(),
+            provider: provider.to_string(),
+            cwd: None,
+            task: None,
+            model: None,
+            started_ms: 0,
+            updated_ms: 0,
+            buffered_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn merge_live_rows_keeps_both_hosts_and_prefers_in_process() {
+        let local = vec![row("a:claude-code", "claude-code")];
+        let daemon = vec![row("b:codex", "codex")];
+        let merged = merge_live_rows(local, daemon);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|r| r.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["a:claude-code", "b:codex"],
+            "in-process rows come first"
+        );
+
+        // A collision means the daemon is reporting a session we now hold
+        // ourselves. Taking both would double the row on the board.
+        let mut stale = row("a:claude-code", "claude-code");
+        stale.task = Some("stale".into());
+        let merged = merge_live_rows(vec![row("a:claude-code", "claude-code")], vec![stale]);
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].task.is_none(), "the in-process row won");
+    }
+
+    #[test]
+    fn recent_excludes_sessions_live_in_either_host() {
+        let live = all_live_ids(
+            HashSet::from(["a:claude-code".to_string()]),
+            &[row("b:codex", "codex")],
+        );
+        assert!(live.contains("a:claude-code"));
+        // The one that matters: a session running in the daemon must not be
+        // offered as a "reopen", or clicking it spawns a second CLI.
+        assert!(live.contains("b:codex"));
+        assert!(!live.contains("c:opencode"));
+    }
+
+    #[test]
+    fn a_daemon_hosted_session_blocks_an_account_switch() {
+        let daemon = [row("a:claude-code", "claude-code")];
+
+        // The bug this replaced: the guard consulted only the in-process host,
+        // so a ptyd-hosted session — the whole point of which is to outlive the
+        // app — let the switch through, and the running CLI then wrote its
+        // refreshed token back into the store that had just been replaced.
+        assert!(provider_is_live(false, &daemon, "claude-code"));
+        // A different CLI is unaffected.
+        assert!(!provider_is_live(false, &daemon, "codex"));
+        // In-process alone still counts, with no daemon rows at all.
+        assert!(provider_is_live(true, &[], "claude-code"));
+        assert!(!provider_is_live(false, &[], "claude-code"));
+    }
+
+    #[test]
+    fn convo_id_strips_only_the_matching_provider_suffix() {
+        assert_eq!(convo_id_for("run-7:claude-code", "claude-code"), "run-7");
+        // Colons are legal inside a conversation id, so only the trailing
+        // `:provider` comes off.
+        assert_eq!(convo_id_for("a:b:codex", "codex"), "a:b");
+        // Unexpected shape: return the id whole rather than truncate it, or
+        // reattach would bind an AI panel to a conversation that doesn't exist.
+        assert_eq!(convo_id_for("run-7", "claude-code"), "run-7");
+        assert_eq!(convo_id_for("run-7:codex", "claude-code"), "run-7:codex");
+    }
 }
