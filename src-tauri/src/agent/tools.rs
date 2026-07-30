@@ -2,6 +2,8 @@ use super::todo;
 use super::types::{AgentMode, DiffProposal, ToolResult};
 use crate::workspace::Workspace;
 use std::collections::HashMap;
+use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -49,6 +51,8 @@ const MAX_LIST_ENTRIES: usize = 500;
 const MAX_SEARCH_RESULTS: usize = 200;
 const MAX_WALK_FILES: usize = 6_000;
 const MAX_WRITE_BYTES: u64 = 220_000;
+const MAX_WEB_RESPONSE_BYTES: u64 = 1_000_000;
+const MAX_WEB_REDIRECTS: usize = 5;
 
 /// The advisor-consult tool name. A side-effect-free Pause tool available in
 /// both Plan and Goal (unlike other Pause tools, which are Goal-only). Named
@@ -70,6 +74,9 @@ pub struct NormalizedToolCall {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolKind {
     ReadOnly,
+    // Mutates only Klide's app-owned planning metadata. It is intentionally
+    // available in Plan mode, but is not a workspace read.
+    PlanState,
     // Reads from the network. Goal-only and routed through the network
     // permission/profile gate in the Harness loop.
     Network,
@@ -89,6 +96,7 @@ pub enum ToolKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolCapability {
     ReadWorkspace,
+    UpdatePlanState,
     WriteWorkspace,
     RunCommand,
     PauseForUser,
@@ -99,6 +107,7 @@ impl ToolKind {
     pub fn capability(self) -> ToolCapability {
         match self {
             ToolKind::ReadOnly => ToolCapability::ReadWorkspace,
+            ToolKind::PlanState => ToolCapability::UpdatePlanState,
             ToolKind::Network => ToolCapability::Network,
             ToolKind::Write => ToolCapability::WriteWorkspace,
             ToolKind::Command => ToolCapability::RunCommand,
@@ -110,7 +119,7 @@ impl ToolKind {
 pub fn tool_allowed_in_mode(mode: &AgentMode, kind: ToolKind) -> bool {
     match mode {
         AgentMode::Chat => false,
-        AgentMode::Plan => kind == ToolKind::ReadOnly,
+        AgentMode::Plan => matches!(kind, ToolKind::ReadOnly | ToolKind::PlanState),
         AgentMode::Goal => true,
     }
 }
@@ -122,6 +131,7 @@ pub fn tool_kind_label(kind: ToolKind) -> &'static str {
 pub fn tool_capability_label(capability: ToolCapability) -> &'static str {
     match capability {
         ToolCapability::ReadWorkspace => "read workspace",
+        ToolCapability::UpdatePlanState => "update plan state",
         ToolCapability::WriteWorkspace => "write workspace",
         ToolCapability::RunCommand => "run command",
         ToolCapability::PauseForUser => "pause for user",
@@ -318,7 +328,7 @@ fn registry() -> Vec<ToolEntry> {
             summary: default_summary,
         },
         ToolEntry {
-            kind: ToolKind::ReadOnly,
+            kind: ToolKind::PlanState,
             schema: schema("update_todo_list", "Add, complete, uncomplete, edit, remove, or clear todos. This directly modifies the project's task list for multi-session continuity. Returns the updated list. IMPORTANT: before laying out a brand-new plan, call action 'clear' once to remove the previous plan's leftover items, then 'add' the new steps.",
                 serde_json::json!({
                     "action": {
@@ -513,16 +523,14 @@ pub fn list_tools_for_workspace(
     workspace_root: Option<&str>,
 ) -> Vec<serde_json::Value> {
     let reg = registry();
-    let kind_filter = match mode {
-        AgentMode::Chat => return Vec::new(),
-        AgentMode::Plan => Some(ToolKind::ReadOnly),
-        AgentMode::Goal => None,
-    };
+    if matches!(mode, AgentMode::Chat) {
+        return Vec::new();
+    }
     let mut tools: Vec<serde_json::Value> = reg
         .iter()
         .filter(|e| {
             let name = e.schema["function"]["name"].as_str().unwrap_or("");
-            let kind_ok = kind_filter.is_none_or(|k| e.kind == k)
+            let kind_ok = tool_allowed_in_mode(mode, e.kind)
                 // consult_advisor is a side-effect-free Pause tool — escalating
                 // a hard decision to a stronger model is as useful while
                 // planning as while executing. Offer it in Plan too, even
@@ -1482,6 +1490,9 @@ fn read_file(ws: &Workspace, path: &str) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
+    if is_sensitive_agent_path(ws.root(), &full) {
+        return sensitive_path_error(ws.display(&full));
+    }
     let metadata = match std::fs::metadata(&full) {
         Ok(m) => m,
         Err(e) => return err(format!("Unable to read metadata: {e}")),
@@ -1619,6 +1630,56 @@ fn ignored_dir(name: &str) -> bool {
     )
 }
 
+fn is_sensitive_agent_path(root: &Path, path: &Path) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let components: Vec<String> = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(|component| component.to_ascii_lowercase())
+        .collect();
+    if components.iter().any(|component| {
+        matches!(
+            component.as_str(),
+            ".ssh" | ".aws" | ".gnupg" | ".azure" | ".kube"
+        )
+    }) {
+        return true;
+    }
+    if components
+        .windows(2)
+        .any(|pair| pair[0] == ".config" && pair[1] == "gcloud")
+    {
+        return true;
+    }
+    let Some(name) = components.last() else {
+        return false;
+    };
+    name == ".env"
+        || name.starts_with(".env.")
+        || matches!(
+            name.as_str(),
+            ".npmrc"
+                | ".pypirc"
+                | ".netrc"
+                | ".git-credentials"
+                | "credentials"
+                | "credentials.json"
+                | "secrets.json"
+                | "secrets.yaml"
+                | "secrets.yml"
+        )
+        || [".pem", ".key", ".p12", ".pfx", ".jks"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
+fn sensitive_path_error(path: String) -> ToolResult {
+    err(format!(
+        "Access to {path} is blocked because it may contain credentials or private keys. \
+Open it locally yourself if needed; do not send its contents to a model."
+    ))
+}
+
 fn walk_files(root: &Path, start: &Path, out: &mut Vec<PathBuf>) {
     if out.len() >= MAX_WALK_FILES {
         return;
@@ -1634,6 +1695,9 @@ fn walk_files(root: &Path, start: &Path, out: &mut Vec<PathBuf>) {
         let Ok(ft) = entry.file_type() else {
             continue;
         };
+        if is_sensitive_agent_path(root, &path) {
+            continue;
+        }
         if ft.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
             if !ignored_dir(&name) {
@@ -1681,6 +1745,9 @@ fn glob(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
+    if is_sensitive_agent_path(ws.root(), &start) {
+        return sensitive_path_error(ws.display(&start));
+    }
     let mut files = Vec::new();
     walk_files(ws.root(), &start, &mut files);
     let mut matches: Vec<String> = files
@@ -1719,6 +1786,9 @@ fn grep(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
+    if is_sensitive_agent_path(ws.root(), &start) {
+        return sensitive_path_error(ws.display(&start));
+    }
     let mut files = Vec::new();
     if start.is_file() {
         files.push(start);
@@ -1787,8 +1857,41 @@ fn get_git_diff(root: &Path, input: &serde_json::Value) -> ToolResult {
         args.push("--cached");
     }
     if let Some(p) = path.as_deref() {
+        if p.starts_with(':')
+            || Path::new(p).is_absolute()
+            || Path::new(p)
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return err("Git diff path must be a plain workspace-relative path.".to_string());
+        }
+        if is_sensitive_agent_path(root, &root.join(p)) {
+            return sensitive_path_error(p.to_string());
+        }
         args.push("--");
         args.push(p);
+    } else {
+        args.extend([
+            "--",
+            ".",
+            ":(exclude,glob)**/.env",
+            ":(exclude,glob)**/.env.*",
+            ":(exclude,glob)**/.npmrc",
+            ":(exclude,glob)**/.pypirc",
+            ":(exclude,glob)**/.netrc",
+            ":(exclude,glob)**/.git-credentials",
+            ":(exclude,glob)**/*.pem",
+            ":(exclude,glob)**/*.key",
+            ":(exclude,glob)**/*.p12",
+            ":(exclude,glob)**/*.pfx",
+            ":(exclude,glob)**/*.jks",
+            ":(exclude,glob)**/.ssh/**",
+            ":(exclude,glob)**/.aws/**",
+            ":(exclude,glob)**/.gnupg/**",
+            ":(exclude,glob)**/.azure/**",
+            ":(exclude,glob)**/.kube/**",
+            ":(exclude,glob)**/.config/gcloud/**",
+        ]);
     }
     match git_output(root, &args) {
         Ok(output) => ok(format!(
@@ -1851,17 +1954,11 @@ fn web_search(input: &serde_json::Value) -> ToolResult {
         urlencoding(&query)
     );
 
-    let resp = match std::panic::catch_unwind(|| {
-        reqwest::blocking::Client::builder()
-            .user_agent("Klide/1.0")
-            .timeout(std::time::Duration::from_secs(8))
-            .build()
-            .ok()
-            .and_then(|c| c.get(&url).send().ok())
-            .and_then(|r| r.text().ok())
-    }) {
-        Ok(Some(body)) => body,
-        _ => return err("Web search timed out or failed. Try a more specific query.".to_string()),
+    let resp = match fetch_public_body(&url) {
+        Ok(body) => body,
+        Err(_) => {
+            return err("Web search timed out or failed. Try a more specific query.".to_string())
+        }
     };
 
     let mut results: Vec<String> = Vec::new();
@@ -1887,28 +1984,13 @@ fn web_search(input: &serde_json::Value) -> ToolResult {
 }
 
 fn web_fetch(input: &serde_json::Value) -> ToolResult {
-    let url = match trimmed_arg(input, "url") {
+    let requested_url = match trimmed_arg(input, "url") {
         Some(u) => u,
         None => return err("web_fetch requires a url".to_string()),
     };
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return err("URL must start with http:// or https://".to_string());
-    }
-    let body = match std::panic::catch_unwind(|| {
-        reqwest::blocking::Client::builder()
-            .user_agent("Klide/1.0")
-            .timeout(std::time::Duration::from_secs(8))
-            .build()
-            .ok()
-            .and_then(|c| c.get(&url).send().ok())
-            .and_then(|r| r.text().ok())
-    }) {
-        Ok(Some(b)) => b,
-        _ => {
-            return err(
-                "Web fetch timed out. The page may be too large or unreachable.".to_string(),
-            )
-        }
+    let body = match fetch_public_body(&requested_url) {
+        Ok(body) => body,
+        Err(error) => return err(error),
     };
 
     let text = strip_html(&body);
@@ -1918,7 +2000,153 @@ fn web_fetch(input: &serde_json::Value) -> ToolResult {
     } else {
         ""
     };
-    ok(format!("Content of {url}:\n\n{truncated}{note}"))
+    ok(format!("Content of {requested_url}:\n\n{truncated}{note}"))
+}
+
+fn fetch_public_body(requested_url: &str) -> Result<String, String> {
+    let (mut current_url, original_host, _) = resolve_public_url(requested_url)?;
+    let mut redirect_count = 0usize;
+    'redirects: loop {
+        let (_, host, addresses) = resolve_public_url(current_url.as_str())?;
+        if !host.eq_ignore_ascii_case(&original_host) {
+            return Err(
+                "Cross-host redirects are blocked. Fetch the destination URL explicitly.".into(),
+            );
+        }
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Klide/1.0")
+            .timeout(std::time::Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(&host, &addresses)
+            .build()
+            .map_err(|error| format!("Unable to prepare web fetch: {error}"))?;
+        let response = client
+            .get(current_url.clone())
+            .send()
+            .map_err(|error| format!("Web fetch failed: {error}"))?;
+        if response.status().is_redirection() {
+            let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+                return Err("Redirect response did not include a destination.".into());
+            };
+            let location = location
+                .to_str()
+                .map_err(|_| "Redirect destination was not valid text.".to_string())?;
+            current_url = current_url
+                .join(location)
+                .map_err(|_| "Redirect destination was not a valid URL.".to_string())?;
+            redirect_count += 1;
+            if redirect_count > MAX_WEB_REDIRECTS {
+                return Err("Web fetch exceeded the redirect limit.".into());
+            }
+            continue 'redirects;
+        }
+        if !response.status().is_success() {
+            return Err(format!("Web fetch returned HTTP {}.", response.status()));
+        }
+        return read_limited_response(response);
+    }
+}
+
+fn read_limited_response(response: reqwest::blocking::Response) -> Result<String, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_WEB_RESPONSE_BYTES)
+    {
+        return Err(format!(
+            "Web response is too large (max {MAX_WEB_RESPONSE_BYTES} bytes)."
+        ));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_WEB_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Unable to read web response: {error}"))?;
+    if bytes.len() as u64 > MAX_WEB_RESPONSE_BYTES {
+        return Err(format!(
+            "Web response is too large (max {MAX_WEB_RESPONSE_BYTES} bytes)."
+        ));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn resolve_public_url(raw_url: &str) -> Result<(reqwest::Url, String, Vec<SocketAddr>), String> {
+    if raw_url.len() > 8_192 {
+        return Err("URL is too long.".to_string());
+    }
+    let mut url = reqwest::Url::parse(raw_url).map_err(|_| "URL is not valid.".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("URL must use http:// or https://.".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("URLs containing credentials are blocked.".to_string());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "URL must include a host.".to_string())?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    // Pinning below is keyed by this normalized hostname. Rewrite a trailing
+    // dot in the URL too, otherwise reqwest could miss the override and perform
+    // a second, attacker-raceable DNS lookup for `example.com.`.
+    url.set_host(Some(&host))
+        .map_err(|_| "URL host is not valid.".to_string())?;
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Err("Local and private network addresses are blocked.".to_string());
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "URL has no usable port.".to_string())?;
+    let addresses: Vec<SocketAddr> = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|_| "Unable to resolve the URL host.".to_string())?
+        .collect();
+    if addresses.is_empty() {
+        return Err("Unable to resolve the URL host.".to_string());
+    }
+    if addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        return Err(
+            "Local, private, reserved, and link-local network addresses are blocked.".to_string(),
+        );
+    }
+    Ok((url, host, addresses))
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_public_ipv4(ip),
+        IpAddr::V6(ip) => {
+            if let Some(ipv4) = ip.to_ipv4() {
+                return is_public_ipv4(ipv4);
+            }
+            let segments = ip.segments();
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && (segments[0] & 0xfe00) != 0xfc00
+                && (segments[0] & 0xffc0) != 0xfe80
+                && (segments[0] & 0xffc0) != 0xfec0
+                && !(segments[0] == 0x0100 && segments[1..].iter().all(|segment| *segment == 0))
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+                && (segments[0] & 0xfff0) != 0x3ff0
+        }
+    }
+}
+
+fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(a == 0
+        || a == 10
+        || a == 127
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 192 && b == 168)
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 224)
 }
 
 fn extract_href(line: &str) -> Option<String> {
@@ -2642,6 +2870,57 @@ mod tests {
         assert!(!out.content.contains("nested.rs"));
     }
 
+    #[test]
+    fn agent_file_tools_block_common_secret_paths() {
+        let dir =
+            std::env::temp_dir().join(format!("klide-sensitive-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join(".env"), "TOKEN=secret").unwrap();
+        std::fs::write(dir.join("src").join("app.rs"), "TOKEN=public_name").unwrap();
+        let ws = Workspace::new(dir.to_str().unwrap()).unwrap();
+
+        let read = read_file(&ws, ".env");
+        assert!(!read.ok);
+        assert!(read.content.contains("blocked"));
+
+        let grep_result = grep(
+            &ws,
+            &serde_json::json!({ "pattern": "TOKEN=", "path": "." }),
+        );
+        assert!(grep_result.ok);
+        assert!(grep_result.content.contains("src/app.rs"));
+        assert!(!grep_result.content.contains("secret"));
+
+        let glob_result = glob(&ws, &serde_json::json!({ "pattern": "**/*" }));
+        assert!(glob_result.ok);
+        assert!(!glob_result.content.contains(".env"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn web_fetch_url_policy_rejects_local_reserved_and_credentials() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "192.168.1.1",
+            "203.0.113.10",
+            "[::1]",
+            "[fd00::1]",
+            "[fec0::1]",
+            "[3fff::1]",
+        ] {
+            assert!(
+                resolve_public_url(&format!("http://{ip}/")).is_err(),
+                "{ip} must be blocked"
+            );
+        }
+        assert!(resolve_public_url("file:///etc/passwd").is_err());
+        assert!(resolve_public_url("http://user:password@1.1.1.1/").is_err());
+        assert!(resolve_public_url("https://1.1.1.1/").is_ok());
+    }
+
     // Path-containment tests live with the Workspace module (src/workspace.rs).
 
     #[test]
@@ -2996,7 +3275,13 @@ mod tests {
         assert!(!tool_allowed_in_mode(&AgentMode::Plan, ToolKind::Command));
         assert!(tool_allowed_in_mode(&AgentMode::Goal, ToolKind::Network));
         assert!(!tool_allowed_in_mode(&AgentMode::Plan, ToolKind::Network));
+        assert!(tool_allowed_in_mode(&AgentMode::Plan, ToolKind::PlanState));
         let plan = list_tools_for_workspace(&AgentMode::Plan, &[], Some(&root));
+        assert!(
+            plan.iter()
+                .any(|schema| schema["function"]["name"] == "update_todo_list"),
+            "Plan mode may update app-owned plan state"
+        );
         assert!(
             !plan
                 .iter()

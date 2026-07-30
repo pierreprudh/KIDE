@@ -21,6 +21,7 @@
 set -euo pipefail
 
 BOOT_TIMEOUT_S=30
+DISTRIBUTION="${KLIDE_DISTRIBUTION:-0}"
 
 fail() {
   echo "✗ $1" >&2
@@ -62,8 +63,10 @@ ok "structure (executable: $EXECUTABLE)"
 # (Captured into a variable: `codesign | grep -q` trips pipefail via SIGPIPE.)
 SIG_INFO=$(codesign -dv "$APP" 2>&1 || true)
 if echo "$SIG_INFO" | grep -q "not signed"; then
+  if [ "$DISTRIBUTION" = "1" ]; then fail "distribution bundle is unsigned"; fi
   echo "· unsigned bundle — skipping signature checks"
 elif echo "$SIG_INFO" | grep -q "^Signature=adhoc"; then
+  if [ "$DISTRIBUTION" = "1" ]; then fail "distribution bundle has only an ad-hoc signature"; fi
   echo "· ad-hoc (linker) signature only — skipping signature checks"
 else
   codesign --verify --deep --strict "$APP" \
@@ -72,6 +75,7 @@ else
   if spctl --assess --type execute "$APP" >/dev/null 2>&1; then
     ok "Gatekeeper accepts the bundle (notarized)"
   else
+    if [ "$DISTRIBUTION" = "1" ]; then fail "Gatekeeper rejected the distribution bundle"; fi
     echo "· Gatekeeper does not accept it yet (expected before notarization)"
   fi
 fi
@@ -115,4 +119,8 @@ if [ "$BOOT_EXIT" -ne 0 ] || ! grep -q "KLIDE_SMOKE_OK" "$BOOT_LOG"; then
 fi
 ok "boots and loads the frontend (${elapsed}s)"
 
-echo "PASS — bundle is safe to notarize/distribute"
+if [ "$DISTRIBUTION" = "1" ]; then
+  echo "PASS — distribution bundle is signed, notarized, and runnable"
+else
+  echo "PASS — local bundle is runnable (set KLIDE_DISTRIBUTION=1 before distribution)"
+fi

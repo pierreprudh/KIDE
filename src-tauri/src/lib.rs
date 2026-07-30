@@ -797,8 +797,10 @@ fn delete_entry(workspace_root: String, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn reveal_entry(path: String) -> Result<(), String> {
-    tauri_plugin_opener::reveal_item_in_dir(&path)
+fn reveal_entry(workspace_root: String, path: String) -> Result<(), String> {
+    let ws = workspace::Workspace::new(&workspace_root)?;
+    let target = ws.resolve_abs_read(&path)?;
+    tauri_plugin_opener::reveal_item_in_dir(target)
         .map_err(|e| format!("Unable to reveal in Finder: {e}"))
 }
 

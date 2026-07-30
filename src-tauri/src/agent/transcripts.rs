@@ -203,16 +203,8 @@ pub(crate) fn summarize_validation(events: &[AgentEvent]) -> AgentValidationSumm
                     command_ids.insert(tool_call_id.clone());
                 }
             }
-            AgentEvent::PermissionRequested { request, .. }
-                if request
-                    .get("input")
-                    .and_then(|input| input.get("command"))
-                    .and_then(|command| command.as_str())
-                    .is_some() =>
-            {
-                if let Some(tool_call_id) = request.get("toolCallId").and_then(|v| v.as_str()) {
-                    command_ids.insert(tool_call_id.to_string());
-                }
+            AgentEvent::PermissionRequested { request, .. } if request.command().is_some() => {
+                command_ids.insert(request.tool_call_id.clone());
             }
             AgentEvent::PermissionResolved { decision, .. } => {
                 if decision.get("behavior").and_then(|b| b.as_str()) == Some("allow") {
@@ -455,7 +447,7 @@ pub fn list_summaries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::{AgentUsage, ToolResult};
+    use crate::agent::types::{AgentUsage, PermissionRequest, ToolResult};
 
     fn file_changed(id: &str, path: &str) -> AgentEvent {
         AgentEvent::FileChanged {
@@ -520,11 +512,7 @@ mod tests {
     fn permission_requested(id: &str, request_id: &str, tool_call_id: &str) -> AgentEvent {
         AgentEvent::PermissionRequested {
             run_id: id.to_string(),
-            request: serde_json::json!({
-                "id": request_id,
-                "toolCallId": tool_call_id,
-                "input": { "command": "npm test" }
-            }),
+            request: PermissionRequest::for_command(request_id, tool_call_id, "npm test"),
             ts: 1,
         }
     }

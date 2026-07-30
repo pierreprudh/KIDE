@@ -1,3 +1,4 @@
+mod approval_store;
 mod command_allowlist;
 #[cfg(test)]
 mod eval;
@@ -31,10 +32,11 @@ use self::transcripts::{
     app_runs_dir, append_event, list_summaries, now_ms, read_events, run_id, transcript_path,
     validate_run_id, write_summary,
 };
+use self::types::error_code;
 use self::types::{
     AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentRunStatus,
-    AgentRunSummary, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest, StartRunRequest,
-    StartRunResponse, SubmitUserTurnRequest, ToolResult,
+    AgentRunSummary, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest, PermissionOption,
+    PermissionRequest, StartRunRequest, StartRunResponse, SubmitUserTurnRequest, ToolResult,
 };
 use crate::{ai_chat, AiChatResponse, AiUsage, StreamChunk};
 use serde::Deserialize;
@@ -754,7 +756,7 @@ fn finish_cancelled<E: FnMut(AgentEvent) -> Result<(), String>>(
     emit(AgentEvent::RunError {
         run_id: id.to_string(),
         error: AgentError {
-            code: "aborted".to_string(),
+            code: error_code::ABORTED.to_string(),
             message: "Run stopped by user.".to_string(),
             detail: None,
             retryable: false,
@@ -1177,14 +1179,21 @@ fn last_tool_output(messages: &[serde_json::Value]) -> Option<String> {
 /// The four options every command/network gate offers, declared once so the
 /// optionId / behavior / scope wire contract can't drift between capabilities.
 /// Only the run/project labels differ ("Approve for this run" vs "Approve
-/// target for this run").
-fn standard_gate_options(run_label: &str, project_label: &str) -> serde_json::Value {
-    serde_json::json!([
-        { "optionId": "allow_once", "label": "Approve", "behavior": "allow", "scope": "once" },
-        { "optionId": "allow_run", "label": run_label, "behavior": "allow", "scope": "run" },
-        { "optionId": "allow_project", "label": project_label, "behavior": "allow", "scope": "project" },
-        { "optionId": "deny", "label": "Reject", "behavior": "deny" }
-    ])
+/// target for this run"). Serde owns the field names now, so the frontend
+/// mirror can't disagree with them by hand.
+fn standard_gate_options(run_label: &str, project_label: &str) -> Vec<PermissionOption> {
+    let option = |id: &str, label: &str, behavior: &str, scope: Option<&str>| PermissionOption {
+        option_id: id.to_string(),
+        label: label.to_string(),
+        behavior: behavior.to_string(),
+        scope: scope.map(str::to_string),
+    };
+    vec![
+        option("allow_once", "Approve", "allow", Some("once")),
+        option("allow_run", run_label, "allow", Some("run")),
+        option("allow_project", project_label, "allow", Some("project")),
+        option("deny", "Reject", "deny", None),
+    ]
 }
 
 async fn process_command_tool<E>(
@@ -1309,21 +1318,21 @@ where
         ));
     }
 
-    let perm = serde_json::json!({
-        "id": permission::request_id(ctx, call),
-        "runId": ctx.id,
-        "toolCallId": call.id,
-        "toolName": permission_tool_name,
-        "input": {
+    let perm = PermissionRequest {
+        id: permission::request_id(ctx, call),
+        run_id: ctx.id.to_string(),
+        tool_call_id: call.id.clone(),
+        tool_name: permission_tool_name.to_string(),
+        input: serde_json::json!({
             "command": command,
             "cwd": cwd,
             "externalPaths": external_paths,
             "matchedAllowRule": matched_rule.as_ref().map(|rule| rule.pattern.clone())
-        },
-        "summary": permission_summary,
-        "reason": permission_reason,
-        "options": standard_gate_options("Approve for this run", "Approve for this project")
-    });
+        }),
+        summary: permission_summary,
+        reason: permission_reason,
+        options: standard_gate_options("Approve for this run", "Approve for this project"),
+    };
 
     let decision = match permission::run_gate(ctx, call, perm, emit).await? {
         permission::GateDecision::Cancelled => return Ok(ToolOutcome::Cancelled),
@@ -1445,7 +1454,8 @@ where
         Err(result) => return Ok(ToolOutcome::Produced(result)),
     };
     let target = invocation.target.clone();
-    let project_ok = network_allowlist::is_allowed(root_value, &target).unwrap_or(false);
+    let project_ok =
+        network_allowlist::is_allowed(ctx.runs_dir, root_value, &target).unwrap_or(false);
 
     match permission::precheck(ctx, permission::Capability::Network, &target, project_ok) {
         permission::Precheck::Execute => {
@@ -1463,16 +1473,19 @@ where
         permission::Precheck::Ask => {}
     }
 
-    let perm = serde_json::json!({
-        "id": permission::request_id(ctx, call),
-        "runId": ctx.id,
-        "toolCallId": call.id,
-        "toolName": call.name,
-        "input": invocation.input,
-        "summary": invocation.summary,
-        "reason": invocation.reason,
-        "options": standard_gate_options("Approve target for this run", "Approve target for this project")
-    });
+    let perm = PermissionRequest {
+        id: permission::request_id(ctx, call),
+        run_id: ctx.id.to_string(),
+        tool_call_id: call.id.clone(),
+        tool_name: call.name.clone(),
+        input: invocation.input.clone(),
+        summary: invocation.summary.clone(),
+        reason: invocation.reason.clone(),
+        options: standard_gate_options(
+            "Approve target for this run",
+            "Approve target for this project",
+        ),
+    };
 
     let decision = match permission::run_gate(ctx, call, perm, emit).await? {
         permission::GateDecision::Cancelled => return Ok(ToolOutcome::Cancelled),
@@ -1730,15 +1743,18 @@ async fn start_run(
     on_event: Channel<AgentEvent>,
 ) -> Result<StartRunResponse, String> {
     let state = app.state::<AgentSupervisorState>();
+    let runs_dir = app_runs_dir(&app)?;
+    // Never accept renderer-supplied trust. Only the private, fingerprint-bound
+    // approval store may populate this field.
+    request.command_allowlist.clear();
     if let Some(root) = request.workspace_root.as_deref() {
-        for command in command_allowlist::list(root)? {
+        for command in command_allowlist::list(&runs_dir, root)? {
             if !request.command_allowlist.iter().any(|c| c == &command) {
                 request.command_allowlist.push(command);
             }
         }
     }
 
-    let runs_dir = app_runs_dir(&app)?;
     // Reuse the client's conversation id when supplied so the transcript on
     // disk shares the AI panel's id (deduped against the in-memory convo in
     // Mission Control); otherwise mint a fresh one.
@@ -2062,7 +2078,7 @@ async fn run_agent_loop(
             Ok(response) => response,
             Err(err) => {
                 let error = AgentError {
-                    code: "provider_unavailable".to_string(),
+                    code: error_code::PROVIDER_UNAVAILABLE.to_string(),
                     message: err,
                     detail: None,
                     retryable: true,
@@ -2299,7 +2315,7 @@ async fn run_agent_loop(
             emit(AgentEvent::RunError {
                 run_id: id.clone(),
                 error: AgentError {
-                    code: "steering_gave_up".to_string(),
+                    code: error_code::STEERING_GAVE_UP.to_string(),
                     message: reason.clone(),
                     detail: None,
                     retryable: true,
@@ -2399,7 +2415,7 @@ async fn run_agent_loop(
         })?;
         message_count += 1;
         let error = AgentError {
-            code: "max_turns".to_string(),
+            code: error_code::MAX_TURNS.to_string(),
             message: "Agent reached the maximum tool turns.".to_string(),
             detail: None,
             retryable: true,
@@ -2848,6 +2864,137 @@ pub async fn agent_revert_run_checkpoints(
     validate_run_id(&run_id)?;
     let runs_dir = app_runs_dir(&app)?;
     revert_all_checkpoints_at(&runs_dir, &run_id)
+}
+
+#[cfg(test)]
+mod worktree_commit_tests {
+    //! `commit_worktree_on_done` runs `git add -A && git commit` when a run
+    //! settles, so its guard is load-bearing in the strongest sense: if
+    //! `worktree_label` ever stopped distinguishing a linked worktree from the
+    //! user's own checkout, every finished Klide run would commit whatever was
+    //! in Pierre's working tree. That guard had no test.
+
+    use super::*;
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repo with one commit on `main`, plus a linked worktree on `klide/work`.
+    fn repo_with_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("klide-agent-commit-{name}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let main = base.join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-b", "main"]);
+        git(&main, &["config", "user.email", "test@klide.local"]);
+        git(&main, &["config", "user.name", "Klide Test"]);
+        std::fs::write(main.join("a.txt"), "hi\n").unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "-m", "init"]);
+
+        let wt = base.join("repo-worktrees").join("work");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "klide/work",
+                wt.to_str().unwrap(),
+                "main",
+            ],
+        );
+        (base, main, wt)
+    }
+
+    fn summary(cwd: &Path, title: &str) -> AgentRunSummary {
+        AgentRunSummary {
+            id: "run-1".into(),
+            path: String::new(),
+            source: "klide".into(),
+            title: title.into(),
+            status: "done".into(),
+            provider: "ollama".into(),
+            model: "qwen2.5:7b".into(),
+            cwd: Some(cwd.to_str().unwrap().to_string()),
+            project: None,
+            git_branch: None,
+            created_ms: 0,
+            updated_ms: 0,
+            message_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            files_touched: 0,
+            cost_usd: None,
+            last_event: None,
+            worktree: None,
+            validation: None,
+            parent_id: None,
+        }
+    }
+
+    #[test]
+    fn commits_a_dirty_linked_worktree_onto_its_branch() {
+        let (_base, _main, wt) = repo_with_worktree("dirty-worktree");
+        std::fs::write(wt.join("b.txt"), "agent wrote this\n").unwrap();
+
+        commit_worktree_on_done(&summary(&wt, "Add the b file"));
+
+        assert_eq!(git(&wt, &["status", "--porcelain"]), "", "tree is clean");
+        let log = git(&wt, &["log", "-1", "--format=%s%n%b"]);
+        assert!(log.contains("klide: Add the b file"), "got: {log}");
+        assert!(log.contains("Klide agent run run-1"), "got: {log}");
+        assert!(log.contains("Co-Authored-By: qwen2.5:7b"), "got: {log}");
+        // Untracked files are included — `add -A` is what makes a race winner
+        // mergeable, since headless runs apply edits without staging them.
+        assert_eq!(git(&wt, &["log", "--oneline"]).lines().count(), 2);
+    }
+
+    #[test]
+    fn never_commits_in_the_users_own_checkout() {
+        // The guard. `worktree_label` returns None for a main working copy, so
+        // a normal Klide run in Pierre's repo must leave his uncommitted work
+        // exactly where it is.
+        let (_base, main, _wt) = repo_with_worktree("main-checkout");
+        std::fs::write(main.join("wip.txt"), "half-finished\n").unwrap();
+        let before = git(&main, &["rev-parse", "HEAD"]);
+
+        commit_worktree_on_done(&summary(&main, "Should not commit"));
+
+        assert_eq!(git(&main, &["rev-parse", "HEAD"]), before, "no new commit");
+        assert!(
+            git(&main, &["status", "--porcelain"]).contains("wip.txt"),
+            "the user's work is still uncommitted"
+        );
+    }
+
+    #[test]
+    fn a_clean_worktree_and_a_missing_cwd_are_both_no_ops() {
+        let (_base, _main, wt) = repo_with_worktree("clean-worktree");
+        let before = git(&wt, &["rev-parse", "HEAD"]);
+
+        commit_worktree_on_done(&summary(&wt, "Nothing changed"));
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before, "no empty commit");
+
+        // A run with no cwd (or one outside a repo) must not panic or shell out
+        // against the process's own working directory.
+        let mut no_cwd = summary(&wt, "No cwd");
+        no_cwd.cwd = None;
+        commit_worktree_on_done(&no_cwd);
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before);
+    }
 }
 
 #[cfg(test)]
@@ -3886,7 +4033,7 @@ mod test_support {
     /// A StartRunRequest for headless tests: goal mode, auto-accept diffs, an
     /// explicit num_ctx so the loop never looks up provider model metadata.
     pub(super) fn test_request(root: &str, command_allowlist: &[&str]) -> StartRunRequest {
-        serde_json::from_value(serde_json::json!({
+        let mut request: StartRunRequest = serde_json::from_value(serde_json::json!({
             "workspaceRoot": root,
             "mode": "goal",
             "provider": "mock",
@@ -3898,7 +4045,15 @@ mod test_support {
             "requireDiffReview": false,
             "commandAllowlist": command_allowlist,
         }))
-        .unwrap()
+        .unwrap();
+        // Production deserialization deliberately ignores renderer-supplied
+        // trust. Tests that exercise an already-classified run may still seed
+        // the native request directly.
+        request.command_allowlist = command_allowlist
+            .iter()
+            .map(|command| (*command).to_string())
+            .collect();
+        request
     }
 }
 
@@ -4346,6 +4501,7 @@ mod permission_gate_tests {
     //! timeout-guarded second calls prove no prompt was shown.
     use super::test_support::*;
     use super::*;
+    use std::process::Command;
     use std::time::Duration;
 
     fn temp_workspace(name: &str) -> String {
@@ -4356,6 +4512,25 @@ mod permission_gate_tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Klide",
+                "-c",
+                "user.email=test@klide.local",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
         dir.to_string_lossy().to_string()
     }
 
@@ -4418,7 +4593,12 @@ mod permission_gate_tests {
         let sup = FakeSupervisor::with_run("perm-run");
         let cancel = CancellationToken::new();
         let request = test_request(&root, &[]);
-        let runs_dir = std::env::temp_dir();
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-project-scope-runs-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
         let ctx = ToolCtx {
             sup: &sup,
             id: "perm-run",
@@ -4440,20 +4620,23 @@ mod permission_gate_tests {
         // The prompt offered the four standard options.
         {
             let evs = events.lock().unwrap();
-            let request_json = evs
+            let request = evs
                 .iter()
                 .find_map(|e| match e {
                     AgentEvent::PermissionRequested { request, .. } => Some(request.clone()),
                     _ => None,
                 })
                 .expect("PermissionRequested emitted");
-            let ids: Vec<&str> = request_json["options"]
-                .as_array()
-                .expect("options array")
+            let ids: Vec<&str> = request
+                .options
                 .iter()
-                .filter_map(|o| o["optionId"].as_str())
+                .map(|o| o.option_id.as_str())
                 .collect();
             assert_eq!(ids, ["allow_once", "allow_run", "allow_project", "deny"]);
+            // And they reach the frontend as `optionId`, which is what the
+            // mirror in src/agent/types.ts declares.
+            let wire = serde_json::to_value(&request).expect("serialize request");
+            assert_eq!(wire["options"][0]["optionId"], "allow_once");
         }
 
         // Approved for the run: the identical command auto-executes, no prompt.
@@ -4462,6 +4645,7 @@ mod permission_gate_tests {
         assert!(second.ok, "re-run auto-executes: {}", second.content);
         assert_eq!(prompts_shown(&events), 1, "asked exactly once");
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[tokio::test]
@@ -4470,7 +4654,12 @@ mod permission_gate_tests {
         let sup = FakeSupervisor::with_run("perm-run");
         let cancel = CancellationToken::new();
         let request = test_request(&root, &[]);
-        let runs_dir = std::env::temp_dir();
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-project-persist-runs-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
         let ctx = ToolCtx {
             sup: &sup,
             id: "perm-run",
@@ -4506,6 +4695,7 @@ mod permission_gate_tests {
         );
         assert_eq!(prompts_shown(&events), 1, "asked exactly once");
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[tokio::test]
@@ -4514,7 +4704,12 @@ mod permission_gate_tests {
         let sup = FakeSupervisor::with_run("perm-run");
         let cancel = CancellationToken::new();
         let request = test_request(&root, &[]);
-        let runs_dir = std::env::temp_dir();
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-project-persist-runs-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
         let ctx = ToolCtx {
             sup: &sup,
             id: "perm-run",
@@ -4536,7 +4731,7 @@ mod permission_gate_tests {
         assert!(produced(outcome).ok);
 
         // The approval reached the project allowlist on disk…
-        let stored = command_allowlist::list(&root).unwrap();
+        let stored = command_allowlist::list(&runs_dir, &root).unwrap();
         assert!(
             stored.contains(&"echo persist-me".to_string()),
             "project approval persisted: {stored:?}"
@@ -4547,6 +4742,7 @@ mod permission_gate_tests {
         assert!(second.ok);
         assert_eq!(prompts_shown(&events), 1, "asked exactly once");
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 }
 

@@ -236,4 +236,59 @@ describe("durable Mission projection", () => {
     expect(state.tasks.implement.status).toBe("blocked");
     expect(state.missions["mission-one"].status).not.toBe("failed");
   });
+
+  it("folds every event type Rust can emit", () => {
+    // All eleven `MissionEvent` variants in one log. The projection's switch is
+    // exhaustive, so this is the runtime half of that guarantee: the five
+    // document-authoritative / derived-status events are deliberate no-ops and
+    // must not throw, and the six that carry state still apply in seq order.
+    // `frontend_mirror_matches_mission_event_wire` (Rust) is what keeps this
+    // list honest when a twelfth variant lands.
+    const state = compileDurableMissionBundle(bundle([
+      { schemaVersion: 1, missionId: "mission-one", seq: 0, ts: 1, event: { type: "mission_created" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 1, ts: 2, event: { type: "task_created", taskId: "inspect" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 2, ts: 3, event: { type: "task_updated", taskId: "implement" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 3, ts: 4, event: { type: "plan_approved" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 4, ts: 5, event: { type: "attempt_attached", taskId: "inspect", runId: "run-a" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 5, ts: 6, event: { type: "attempt_dispatch_failed", taskId: "inspect", runId: "run-a", message: "offline" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 6, ts: 7, event: { type: "attempt_attached", taskId: "inspect", runId: "run-b" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 7, ts: 8, event: { type: "attempt_interrupted", taskId: "inspect", runId: "run-b", reason: "restart" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 8, ts: 9, event: { type: "attempt_attached", taskId: "inspect", runId: "run-c" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 9, ts: 10, event: { type: "attempt_settled", taskId: "inspect", runId: "run-c", exitCode: 0 } },
+      {
+        schemaVersion: 1,
+        missionId: "mission-one",
+        seq: 10,
+        ts: 11,
+        event: { type: "attempt_validation_recorded", taskId: "inspect", runId: "run-c", accepted: true, validation },
+      },
+      { schemaVersion: 1, missionId: "mission-one", seq: 11, ts: 12, event: { type: "mission_completed" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 12, ts: 13, event: { type: "mission_parked", reason: "operator" } },
+    ]));
+
+    // Three attempts on one Task — Task id and Run id are different lifecycle
+    // objects, and only the accepted attempt gates the dependency.
+    expect(state.tasks.inspect.attempts.map((a) => a.runId)).toEqual(["run-a", "run-b", "run-c"]);
+    expect(state.tasks.inspect.acceptedRunId).toBe("run-c");
+    expect(state.tasks.implement.status).toBe("ready");
+  });
+
+  it("projects events in seq order, not array order", () => {
+    // Rust appends by `seq`; a reader that trusted array order would apply the
+    // acceptance before the attachment and lose the accepted run.
+    const state = compileDurableMissionBundle(bundle([
+      {
+        schemaVersion: 1,
+        missionId: "mission-one",
+        seq: 2,
+        ts: 3,
+        event: { type: "attempt_validation_recorded", taskId: "inspect", runId: "run-a", accepted: true, validation },
+      },
+      { schemaVersion: 1, missionId: "mission-one", seq: 1, ts: 2, event: { type: "attempt_attached", taskId: "inspect", runId: "run-a" } },
+      { schemaVersion: 1, missionId: "mission-one", seq: 0, ts: 1, event: { type: "plan_approved" } },
+    ]));
+
+    expect(state.tasks.inspect.acceptedRunId).toBe("run-a");
+    expect(state.tasks.implement.status).toBe("ready");
+  });
 });

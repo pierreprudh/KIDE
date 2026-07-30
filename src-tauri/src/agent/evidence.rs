@@ -5,7 +5,7 @@
 //! from UI state.
 
 use super::transcripts::summarize_validation;
-use super::types::{AgentContentBlock, AgentEvent, AgentRunSummary};
+use super::types::{AgentContentBlock, AgentEvent, AgentRunSummary, PermissionRequest};
 
 /// One executed `run_command` (or permission-backed dynamic command): the
 /// command line the model asked for and whether it succeeded.
@@ -333,20 +333,15 @@ fn event_ts(event: &AgentEvent) -> i64 {
 
 /// Best human label for a permission request: the command line when present,
 /// else whatever name-ish field the gate's caller put in the payload.
-fn permission_label(request: &serde_json::Value) -> String {
-    if let Some(cmd) = request
-        .get("input")
-        .and_then(|i| i.get("command"))
-        .and_then(|c| c.as_str())
-    {
+fn permission_label(request: &PermissionRequest) -> String {
+    if let Some(cmd) = request.command() {
         return format!("run `{cmd}`");
     }
-    for key in ["toolName", "name", "title"] {
-        if let Some(v) = request.get(key).and_then(|v| v.as_str()) {
-            return v.to_string();
-        }
+    if request.tool_name.is_empty() {
+        "(unknown request)".to_string()
+    } else {
+        request.tool_name.clone()
     }
-    "(unknown request)".to_string()
 }
 
 fn decision_behavior(decision: &serde_json::Value) -> String {
@@ -557,7 +552,7 @@ mod tests {
         let events = vec![
             AgentEvent::PermissionRequested {
                 run_id: id.into(),
-                request: serde_json::json!({ "input": { "command": "npm test" } }),
+                request: PermissionRequest::for_command("p1", "tc1", "npm test"),
                 ts: 1_000,
             },
             AgentEvent::PermissionResolved {

@@ -146,53 +146,84 @@ export function compileDurableMissionBundle(bundle: DurableMissionBundle): Missi
 
   for (const line of [...bundle.events].sort((a, b) => a.seq - b.seq)) {
     const event = line.event;
-    if (event.type === "plan_approved") {
-      state = missionReducer(state, {
-        type: "mission_plan_approved",
-        missionId: line.missionId,
-        ts: line.ts,
-      });
-    } else if (event.type === "attempt_attached") {
-      state = missionReducer(state, {
-        type: "task_run_attached",
-        taskId: event.taskId,
-        runId: event.runId,
-        ts: line.ts,
-      });
-    } else if (event.type === "attempt_dispatch_failed") {
-      state = missionReducer(state, {
-        type: "task_attempt_dispatch_failed",
-        taskId: event.taskId,
-        runId: event.runId,
-        message: event.message,
-        ts: line.ts,
-      });
-    } else if (event.type === "attempt_interrupted") {
-      state = missionReducer(state, {
-        type: "task_attempt_interrupted",
-        taskId: event.taskId,
-        runId: event.runId,
-        reason: event.reason,
-        ts: line.ts,
-      });
-    } else if (event.type === "attempt_settled") {
-      state = missionReducer(state, {
-        type: "task_attempt_settled",
-        taskId: event.taskId,
-        runId: event.runId,
-        exitCode: event.exitCode,
-        signal: event.signal,
-        ts: line.ts,
-      });
-    } else if (event.type === "attempt_validation_recorded") {
-      state = missionReducer(state, {
-        type: "task_attempt_validated",
-        taskId: event.taskId,
-        runId: event.runId,
-        accepted: event.accepted,
-        validation: event.validation,
-        ts: line.ts,
-      });
+    // Exhaustive on purpose. This chain used to be an if/else that handled six
+    // of the eleven Rust variants and fell off the end for the rest, so a new
+    // `MissionEvent` in Rust reached the operator as nothing at all. The
+    // `never` assignment below turns that into a tsc error instead; the
+    // no-op cases are spelled out so "ignored" is a decision on the record
+    // rather than an omission.
+    switch (event.type) {
+      // The mission and its tasks come from `mission.md` / `tasks/*.md`, which
+      // Rust rewrites on every change — those documents are the authority for
+      // identity and shape, so their creation events add nothing to replay.
+      case "mission_created":
+      case "task_created":
+      case "task_updated":
+        break;
+      // Mission status is derived from task statuses by `deriveMissionStatus`,
+      // so the terminal mission events carry no state the fold doesn't already
+      // hold. Rust still needs them on disk: they're what `resume` reads to
+      // decide whether a mission is finished.
+      case "mission_completed":
+      case "mission_parked":
+        break;
+      case "plan_approved":
+        state = missionReducer(state, {
+          type: "mission_plan_approved",
+          missionId: line.missionId,
+          ts: line.ts,
+        });
+        break;
+      case "attempt_attached":
+        state = missionReducer(state, {
+          type: "task_run_attached",
+          taskId: event.taskId,
+          runId: event.runId,
+          ts: line.ts,
+        });
+        break;
+      case "attempt_dispatch_failed":
+        state = missionReducer(state, {
+          type: "task_attempt_dispatch_failed",
+          taskId: event.taskId,
+          runId: event.runId,
+          message: event.message,
+          ts: line.ts,
+        });
+        break;
+      case "attempt_interrupted":
+        state = missionReducer(state, {
+          type: "task_attempt_interrupted",
+          taskId: event.taskId,
+          runId: event.runId,
+          reason: event.reason,
+          ts: line.ts,
+        });
+        break;
+      case "attempt_settled":
+        state = missionReducer(state, {
+          type: "task_attempt_settled",
+          taskId: event.taskId,
+          runId: event.runId,
+          exitCode: event.exitCode,
+          signal: event.signal,
+          ts: line.ts,
+        });
+        break;
+      case "attempt_validation_recorded":
+        state = missionReducer(state, {
+          type: "task_attempt_validated",
+          taskId: event.taskId,
+          runId: event.runId,
+          accepted: event.accepted,
+          validation: event.validation,
+          ts: line.ts,
+        });
+        break;
+      default: {
+        const unhandled: never = event;
+        throw new Error(`unhandled mission event: ${JSON.stringify(unhandled)}`);
+      }
     }
   }
 

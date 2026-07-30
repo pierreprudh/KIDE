@@ -104,9 +104,9 @@ pub struct StartRunRequest {
     /// failing check is returned to the model as a not-ok tool result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_after_edit_command: Option<String>,
-    /// Commands or wildcard command rules pre-approved for `run_command` by
-    /// the project allowlist, so trusted commands skip the approval prompt.
-    #[serde(default)]
+    /// Backend-populated project approvals. Renderer input is deliberately
+    /// ignored: a compromised webview must not be able to mint command trust.
+    #[serde(default, skip_deserializing)]
     pub command_allowlist: Vec<String>,
     /// Whether file edits pause for diff review before applying. `None` or
     /// `Some(true)` keeps the default review-every-edit behavior; `Some(false)`
@@ -296,9 +296,84 @@ pub struct AgentUsage {
     pub cost_usd: Option<f64>,
 }
 
+/// One button on a permission card. `option_id` goes out as `optionId` — the
+/// name the frontend mirror got wrong for as long as this was an untyped
+/// `serde_json::Value` and nothing read the field.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionOption {
+    pub option_id: String,
+    pub label: String,
+    pub behavior: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scope: Option<String>,
+}
+
+/// The payload of `AgentEvent::PermissionRequested`: what the run wants to do,
+/// why, and the choices offered. `input` stays open because it is
+/// capability-specific — the command gate sends
+/// `{command, cwd, externalPaths, matchedAllowRule}`, a network capability
+/// sends whatever it declared.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequest {
+    pub id: String,
+    pub run_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub input: serde_json::Value,
+    pub summary: String,
+    pub reason: String,
+    pub options: Vec<PermissionOption>,
+}
+
+impl PermissionRequest {
+    /// The command this gate is asking about, when the capability is the
+    /// command gate. `None` for network and other capabilities.
+    pub fn command(&self) -> Option<&str> {
+        self.input.get("command").and_then(|c| c.as_str())
+    }
+
+    /// A command-gate request, for tests that only care about the command and
+    /// the ids that pair the request with its resolution.
+    #[cfg(test)]
+    pub fn for_command(id: &str, tool_call_id: &str, command: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            run_id: String::new(),
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: "run_command".to_string(),
+            input: serde_json::json!({ "command": command }),
+            summary: format!("run `{command}`"),
+            reason: String::new(),
+            options: Vec::new(),
+        }
+    }
+}
+
+/// Every `code` the Harness puts on an `AgentError`, declared once.
+///
+/// `code` stays a `String` on the struct so a transcript written by an older
+/// build still deserializes — but nothing in this build should invent a code
+/// outside this list. The frontend mirror (`AgentError["code"]` in
+/// `src/agent/types.ts`) must list exactly these, and
+/// `frontend_mirror_matches_agent_wire` fails the build if it drifts.
+pub mod error_code {
+    pub const ABORTED: &str = "aborted";
+    pub const MAX_TURNS: &str = "max_turns";
+    pub const PROVIDER_UNAVAILABLE: &str = "provider_unavailable";
+    pub const STEERING_GAVE_UP: &str = "steering_gave_up";
+
+    /// The set the drift test compares against the frontend mirror. Nothing in
+    /// the running app iterates it — it exists so the contract has one home.
+    #[allow(dead_code)]
+    pub const ALL: [&str; 4] = [ABORTED, MAX_TURNS, PROVIDER_UNAVAILABLE, STEERING_GAVE_UP];
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentError {
+    /// One of [`error_code::ALL`].
     pub code: String,
     pub message: String,
     pub detail: Option<String>,
@@ -389,7 +464,7 @@ pub enum AgentEvent {
     },
     PermissionRequested {
         run_id: String,
-        request: serde_json::Value,
+        request: PermissionRequest,
         ts: i64,
     },
     PermissionResolved {
@@ -512,6 +587,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn renderer_cannot_deserialize_command_approvals() {
+        let request: StartRunRequest = serde_json::from_value(serde_json::json!({
+            "workspaceRoot": "/tmp/project",
+            "mode": "goal",
+            "provider": "mock",
+            "model": "mock",
+            "initialText": "test",
+            "commandAllowlist": ["rm -rf important"]
+        }))
+        .unwrap();
+        assert!(
+            request.command_allowlist.is_empty(),
+            "command trust must be loaded by native code, never supplied over IPC"
+        );
+    }
+
+    #[test]
     fn agent_usage_serializes_camel_case_and_omits_nones() {
         let u = AgentUsage {
             prompt_tokens: Some(120),
@@ -588,5 +680,139 @@ mod tests {
         };
         let v = serde_json::to_value(&event).expect("serialize");
         assert!(v.get("usage").is_none(), "got: {v}");
+    }
+
+    /// Read `src/agent/types.ts` — the frontend's hand-written mirror of the
+    /// wire types in this file.
+    fn frontend_mirror() -> String {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/agent/types.ts"),
+        )
+        .expect("read src/agent/types.ts")
+    }
+
+    /// The body of a `export type X = …;` union in the mirror, as source text.
+    fn mirror_union(ts: &str, name: &str) -> String {
+        let marker = format!("export type {name} =");
+        let start = ts
+            .find(&marker)
+            .unwrap_or_else(|| panic!("{marker} in src/agent/types.ts"))
+            + marker.len();
+        // Every declaration in the mirror is top-level, so the next one
+        // begins the first `\nexport ` after this union ends.
+        let end = ts[start..]
+            .find("\nexport ")
+            .map(|i| start + i)
+            .unwrap_or(ts.len());
+        ts[start..end].to_string()
+    }
+
+    /// Every double-quoted string in a slice of mirror source.
+    fn quoted(src: &str) -> Vec<String> {
+        src.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(String::from)
+            .collect()
+    }
+
+    fn snake_case(variant: &str) -> String {
+        let mut out = String::new();
+        for (i, ch) in variant.char_indices() {
+            if ch.is_ascii_uppercase() {
+                if i != 0 {
+                    out.push('_');
+                }
+                out.push(ch.to_ascii_lowercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    /// The `AgentEvent` variant names declared in *this* file, read from source.
+    ///
+    /// Reading the source rather than keeping a hand-written list is what makes
+    /// this test self-maintaining: a new variant added below shows up here for
+    /// free, so the mirror has to gain it too or the build fails.
+    fn rust_event_types() -> Vec<String> {
+        let rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/types.rs"),
+        )
+        .expect("read src/agent/types.rs");
+        let start = rs
+            .find("pub enum AgentEvent {")
+            .expect("AgentEvent enum in this file");
+        let body = &rs[start..];
+        let end = body.find("\n}").expect("end of AgentEvent enum");
+        body[..end]
+            .lines()
+            // rustfmt puts each variant at exactly one indent level, and doc
+            // comments start with `///`, so this matches variants only.
+            .filter_map(|line| line.strip_prefix("    ")?.strip_suffix(" {"))
+            .filter(|name| name.starts_with(|c: char| c.is_ascii_uppercase()))
+            .map(snake_case)
+            .collect()
+    }
+
+    #[test]
+    fn frontend_mirror_matches_agent_wire() {
+        // `AgentEvent` is the only way any surface learns what a Run is doing,
+        // and its two halves are typed by hand in two languages. Nothing else
+        // checks them: a variant added in Rust and forgotten in TypeScript
+        // reaches every consumer as an unhandled `switch` case and silently
+        // fails to render. This is the seam that makes that a build failure.
+        // Same trick as `delegate::tests::frontend_delegate_ids_match_all`.
+        let ts = frontend_mirror();
+        let union = mirror_union(&ts, "AgentEvent");
+        // The union's members carry other string literals too (inline field
+        // unions like `"allow" | "deny"`), so match on the discriminant's
+        // `type: "…"` prefix rather than on every quoted string.
+        let mut frontend: Vec<String> = union
+            .match_indices("type: \"")
+            .map(|(i, m)| {
+                let rest = &union[i + m.len()..];
+                rest[..rest.find('"').expect("closing quote")].to_string()
+            })
+            .collect();
+        frontend.sort();
+        frontend.dedup();
+
+        let mut backend = rust_event_types();
+        backend.sort();
+
+        assert_eq!(
+            backend, frontend,
+            "AgentEvent drifted between src-tauri/src/agent/types.rs and \
+src/agent/types.ts — update both"
+        );
+    }
+
+    #[test]
+    fn frontend_mirror_matches_error_codes() {
+        // The mirror used to declare ten codes: three real, seven invented,
+        // and it was missing `steering_gave_up` — which the loop monitor does
+        // emit. A closed union that lists codes nobody sends is worse than no
+        // union, because it reads as a checked contract.
+        let ts = frontend_mirror();
+        let start = ts
+            .find("export type AgentError = {")
+            .expect("AgentError in src/agent/types.ts");
+        let body = &ts[start..];
+        let end = body
+            .find("message:")
+            .expect("message field after code union");
+        let mut frontend = quoted(&body[..end]);
+        frontend.sort();
+
+        let mut backend: Vec<String> = error_code::ALL.iter().map(|c| c.to_string()).collect();
+        backend.sort();
+
+        assert_eq!(
+            backend, frontend,
+            "AgentError.code drifted between error_code::ALL and \
+src/agent/types.ts — update both"
+        );
     }
 }

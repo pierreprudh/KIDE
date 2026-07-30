@@ -1,19 +1,17 @@
 //! Project-persistent approvals for `run_command`.
 //!
 //! The run loop still asks before a new command executes. When the user chooses
-//! "Approve for this project", the exact command is stored in the workspace so
-//! future Klide runs can skip that prompt. The file also accepts wildcard rules
-//! (`rules[].pattern`) so a project can intentionally allow command families
-//! such as `cargo test *` without teaching the run loop about JSON shape.
+//! "Approve for this project", the exact command is stored in private Klide app
+//! data, never in the repository. The record is bound to the current repository
+//! fingerprint by [`super::approval_store`], so a checkout change re-prompts.
 
-use crate::workspace::Workspace;
 use serde::{Deserialize, Serialize};
-
-const ALLOWLIST_PATH: &str = ".klide/command-allowlist.json";
+use std::path::Path;
 
 #[derive(Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CommandAllowlist {
+    fingerprint: String,
     #[serde(default)]
     commands: Vec<String>,
     #[serde(default)]
@@ -32,9 +30,12 @@ pub struct MatchedCommandRule {
     pub exact: bool,
 }
 
-pub fn list(workspace_root: &str) -> Result<Vec<String>, String> {
-    let ws = Workspace::new(workspace_root)?;
-    let path = ws.resolve_new(ALLOWLIST_PATH)?;
+pub fn list(runs_dir: &Path, workspace_root: &str) -> Result<Vec<String>, String> {
+    let Some(location) = super::approval_store::location(runs_dir, workspace_root, "commands")?
+    else {
+        return Ok(Vec::new());
+    };
+    let path = location.path;
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -42,6 +43,9 @@ pub fn list(workspace_root: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("Unable to read command allowlist: {e}"))?;
     let parsed: CommandAllowlist =
         serde_json::from_str(&text).map_err(|e| format!("Invalid command allowlist JSON: {e}"))?;
+    if parsed.fingerprint != location.fingerprint {
+        return Ok(Vec::new());
+    }
     Ok(normalize(
         parsed
             .commands
@@ -51,35 +55,41 @@ pub fn list(workspace_root: &str) -> Result<Vec<String>, String> {
     ))
 }
 
-pub fn add(workspace_root: &str, command: &str) -> Result<(), String> {
+pub fn add(runs_dir: &Path, workspace_root: &str, command: &str) -> Result<(), String> {
     let command = command.trim();
     if command.is_empty() {
         return Ok(());
     }
-    let ws = Workspace::new(workspace_root)?;
-    let mut parsed = read_allowlist(&ws)?;
+    let location = super::approval_store::location(runs_dir, workspace_root, "commands")?
+        .ok_or_else(|| {
+            "Project approvals require a Git repository with a manageable working tree".to_string()
+        })?;
+    let mut parsed = read_allowlist(&location)?;
     if !parsed.commands.iter().any(|c| c == command) {
         parsed.commands.push(command.to_string());
     }
-    write_allowlist(&ws, parsed)
+    write_allowlist(&location.path, parsed)
 }
 
-pub fn add_rule(workspace_root: &str, pattern: &str) -> Result<(), String> {
+pub fn add_rule(runs_dir: &Path, workspace_root: &str, pattern: &str) -> Result<(), String> {
     let pattern = pattern.trim();
     if pattern.is_empty() {
         return Ok(());
     }
     if !has_wildcard(pattern) {
-        return add(workspace_root, pattern);
+        return add(runs_dir, workspace_root, pattern);
     }
-    let ws = Workspace::new(workspace_root)?;
-    let mut parsed = read_allowlist(&ws)?;
+    let location = super::approval_store::location(runs_dir, workspace_root, "commands")?
+        .ok_or_else(|| {
+            "Project approvals require a Git repository with a manageable working tree".to_string()
+        })?;
+    let mut parsed = read_allowlist(&location)?;
     if !parsed.rules.iter().any(|r| r.pattern == pattern) {
         parsed.rules.push(CommandRule {
             pattern: pattern.to_string(),
         });
     }
-    write_allowlist(&ws, parsed)
+    write_allowlist(&location.path, parsed)
 }
 
 pub fn match_rule(
@@ -118,28 +128,35 @@ fn metachars_covered(pattern: &str, command: &str) -> bool {
         .all(|c| !command.contains(*c) || pattern.contains(*c))
 }
 
-fn read_allowlist(ws: &Workspace) -> Result<CommandAllowlist, String> {
-    let path = ws.resolve_new(ALLOWLIST_PATH)?;
-    if !path.exists() {
-        return Ok(CommandAllowlist::default());
+fn read_allowlist(
+    location: &super::approval_store::ApprovalLocation,
+) -> Result<CommandAllowlist, String> {
+    if !location.path.exists() {
+        return Ok(CommandAllowlist {
+            fingerprint: location.fingerprint.clone(),
+            ..CommandAllowlist::default()
+        });
     }
-    let text = std::fs::read_to_string(&path)
+    let text = std::fs::read_to_string(&location.path)
         .map_err(|e| format!("Unable to read command allowlist: {e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("Invalid command allowlist JSON: {e}"))
+    let parsed: CommandAllowlist =
+        serde_json::from_str(&text).map_err(|e| format!("Invalid command allowlist JSON: {e}"))?;
+    if parsed.fingerprint == location.fingerprint {
+        Ok(parsed)
+    } else {
+        Ok(CommandAllowlist {
+            fingerprint: location.fingerprint.clone(),
+            ..CommandAllowlist::default()
+        })
+    }
 }
 
-fn write_allowlist(ws: &Workspace, mut allowlist: CommandAllowlist) -> Result<(), String> {
-    let path = ws.resolve_new(ALLOWLIST_PATH)?;
+fn write_allowlist(path: &Path, mut allowlist: CommandAllowlist) -> Result<(), String> {
     allowlist.commands = normalize(allowlist.commands);
     allowlist.rules = normalize_rules(allowlist.rules);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Unable to create .klide folder: {e}"))?;
-    }
     let text = serde_json::to_string_pretty(&allowlist)
         .map_err(|e| format!("Unable to serialize command allowlist: {e}"))?;
-    std::fs::write(&path, format!("{text}\n"))
-        .map_err(|e| format!("Unable to write command allowlist: {e}"))
+    super::approval_store::write_private(path, format!("{text}\n").as_bytes())
 }
 
 fn normalize(commands: Vec<String>) -> Vec<String> {
@@ -205,66 +222,123 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::approval_store;
+    use std::path::PathBuf;
+    use std::process::Command;
 
-    fn temp_workspace(name: &str) -> String {
+    fn temp_workspace(name: &str) -> (String, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "klide-command-allowlist-{name}-{}",
             std::process::id()
         ));
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-command-allowlist-runs-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runs_dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.to_string_lossy().to_string()
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Klide",
+                "-c",
+                "user.email=test@klide.local",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        (dir.to_string_lossy().to_string(), runs_dir)
     }
 
     #[test]
     fn missing_allowlist_is_empty() {
-        let root = temp_workspace("missing");
-        assert_eq!(list(&root).unwrap(), Vec::<String>::new());
+        let (root, runs_dir) = temp_workspace("missing");
+        assert_eq!(list(&runs_dir, &root).unwrap(), Vec::<String>::new());
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[test]
     fn add_persists_unique_sorted_commands() {
-        let root = temp_workspace("add");
-        add(&root, "cargo test").unwrap();
-        add(&root, " npm run build ").unwrap();
-        add(&root, "cargo test").unwrap();
+        let (root, runs_dir) = temp_workspace("add");
+        add(&runs_dir, &root, "cargo test").unwrap();
+        add(&runs_dir, &root, " npm run build ").unwrap();
+        add(&runs_dir, &root, "cargo test").unwrap();
         assert_eq!(
-            list(&root).unwrap(),
+            list(&runs_dir, &root).unwrap(),
             vec!["cargo test".to_string(), "npm run build".to_string()]
         );
-        let text =
-            std::fs::read_to_string(format!("{root}/{ALLOWLIST_PATH}")).expect("allowlist file");
+        let location = approval_store::location(&runs_dir, &root, "commands")
+            .unwrap()
+            .unwrap();
+        let text = std::fs::read_to_string(location.path).expect("allowlist file");
         assert!(text.contains("\"commands\""));
+        assert!(!std::path::Path::new(&root).join(".klide").exists());
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[test]
     fn wildcard_rules_are_loaded_and_matched() {
-        let root = temp_workspace("rules");
-        add(&root, "cargo check").unwrap();
-        add_rule(&root, "cargo test *").unwrap();
+        let (root, runs_dir) = temp_workspace("rules");
+        add(&runs_dir, &root, "cargo check").unwrap();
+        add_rule(&runs_dir, &root, "cargo test *").unwrap();
 
         assert_eq!(
-            list(&root).unwrap(),
+            list(&runs_dir, &root).unwrap(),
             vec!["cargo check".to_string(), "cargo test *".to_string()]
         );
         assert_eq!(
-            match_rule(&list(&root).unwrap(), "cargo check", "cargo check")
-                .expect("exact")
-                .exact,
+            match_rule(
+                &list(&runs_dir, &root).unwrap(),
+                "cargo check",
+                "cargo check"
+            )
+            .expect("exact")
+            .exact,
             true
         );
         let wildcard = match_rule(
-            &list(&root).unwrap(),
+            &list(&runs_dir, &root).unwrap(),
             "cargo test --all",
             "cargo test --all",
         )
         .expect("wildcard");
         assert_eq!(wildcard.pattern, "cargo test *");
         assert!(!wildcard.exact);
-        assert!(match_rule(&list(&root).unwrap(), "npm test", "npm test").is_none());
+        assert!(match_rule(&list(&runs_dir, &root).unwrap(), "npm test", "npm test").is_none());
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
+    }
+
+    #[test]
+    fn repository_change_invalidates_project_approval() {
+        let (root, runs_dir) = temp_workspace("invalidate");
+        add(&runs_dir, &root, "cargo test").unwrap();
+        assert_eq!(list(&runs_dir, &root).unwrap(), vec!["cargo test"]);
+
+        std::fs::write(
+            std::path::Path::new(&root).join("new-tool.sh"),
+            "echo changed",
+        )
+        .unwrap();
+        assert!(
+            list(&runs_dir, &root).unwrap().is_empty(),
+            "untracked repository content changes must force a new prompt"
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
     }
 
     #[test]

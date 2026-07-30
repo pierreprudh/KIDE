@@ -764,7 +764,8 @@ export function Sidebar({
       type: "item",
       label: "Reveal in Finder",
       onSelect: () => {
-        invoke("reveal_entry", { path }).catch((e) =>
+        if (!root) return;
+        invoke("reveal_entry", { workspaceRoot: root, path }).catch((e) =>
           reportFsError("Reveal failed", e)
         );
       },
