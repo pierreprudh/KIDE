@@ -5,7 +5,7 @@
 // line-anchored comment and rendering the plain-text contract the agent sees
 // — plus the one PTY write helper. Rendering/selection UI lives in
 // components/diffView.tsx; routing policy lives in the host surface.
-import { invoke } from "@tauri-apps/api/core";
+import { writeDelegatePty } from "./ipc/delegatePty";
 import type { DiffBlock } from "./components/diffView";
 
 /** One line-anchored review comment. `side: "old"` means every selected line
@@ -95,8 +95,5 @@ export function formatDiffComment(c: DiffLineComment): string {
  *  markers so multiline text lands as one paste (every delegate TUI enables
  *  bracketed paste), then a carriage return submits it. */
 export async function sendTextToDelegatePty(sessionId: string, text: string): Promise<void> {
-  await invoke("delegate_pty_write", {
-    sessionId,
-    data: `\x1b[200~${text}\x1b[201~\r`,
-  });
+  await writeDelegatePty(sessionId, `\x1b[200~${text}\x1b[201~\r`);
 }

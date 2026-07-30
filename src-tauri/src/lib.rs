@@ -267,14 +267,11 @@ fn account_save_current(provider: String, name: String) -> Result<accounts::Acco
 }
 
 #[tauri::command]
-fn account_activate(
-    provider: String,
-    name: String,
-    delegate_state: tauri::State<DelegatePtyState>,
-) -> Result<(), String> {
+fn account_activate(app: tauri::AppHandle, provider: String, name: String) -> Result<(), String> {
     // Live-run guard: a running delegate refreshes its token and writes back
-    // to the store we're about to swap, so refuse while one is live.
-    if delegate_state.has_live_session(&provider) {
+    // to the store we're about to swap, so refuse while one is live. Asks both
+    // hosts — a ptyd-hosted session is exactly the case that outlives the app.
+    if pty::provider_has_live_session(&app, &provider) {
         return Err(format!(
             "A {} session is live in Klide — finish or stop it before switching accounts.",
             provider

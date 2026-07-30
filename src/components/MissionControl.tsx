@@ -1,7 +1,16 @@
 import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { listProviderModels } from "../ipc/aiProviders";
+import {
+  attachDelegatePty,
+  listLiveDelegateSessions,
+  listRecentDelegateSessions,
+  resizeDelegatePty,
+  stopDelegatePty,
+  writeDelegatePty,
+  type LiveDelegateSession,
+  type RecentDelegateSession,
+} from "../ipc/delegatePty";
 import { Tooltip } from "./Tooltip";
 import { Kbd } from "./Kbd";
 import { keysFor } from "../shortcuts";
@@ -11,7 +20,6 @@ import "@xterm/xterm/css/xterm.css";
 import {
   addTask,
   dispatchTask,
-  getTaskBuffer,
   getTaskSessions,
   lastAgent,
   lastModel,
@@ -2843,32 +2851,32 @@ function TaskTerminal({ sessionId, theme }: { sessionId: string; theme: ThemeId 
     // until the CLI's next full redraw.
     const syncSize = () => {
       fit.fit();
-      void invoke("delegate_pty_resize", { sessionId, rows: term.rows, cols: term.cols });
+      void resizeDelegatePty(sessionId, term.rows, term.cols);
     };
     syncSize();
-    term.write(getTaskBuffer(sessionId));
     term.focus();
 
-    const unlisten = listen<{ sessionId: string; data: string }>(
-      "delegate-pty:data",
-      (e) => {
-        if (e.payload.sessionId === sessionId) term.write(e.payload.data);
-      }
-    );
+    // Was: paint a frontend-side buffer, then stream chunks with no seq gate and
+    // no input guard. That dropped anything arriving between the paint and the
+    // listener, and typed the replay's stale cursor answers back into the CLI.
+    // Rust's scrollback is the authority and carries the seq — same handshake as
+    // the AI panel's terminal now.
+    const attachment = attachDelegatePty({ sessionId, term, onReady: syncSize });
     term.onData((data) => {
-      void invoke("delegate_pty_write", { sessionId, data });
+      if (attachment.isReplaying()) return;
+      void writeDelegatePty(sessionId, data);
     });
 
     const resize = new ResizeObserver(syncSize);
     resize.observe(ref.current);
 
     return () => {
-      unlisten.then((u) => u());
+      attachment.dispose();
       resize.disconnect();
       term.dispose();
     };
     // `theme` re-creates the terminal so cssVar() picks up the new palette —
-    // same pattern as TerminalPanel. The replay buffer restores the content.
+    // same pattern as TerminalPanel. The snapshot restores the content.
   }, [sessionId, theme]);
 
   return (
@@ -4390,39 +4398,6 @@ function ProjectOption({ label, active, muted, onClick }: { label: string; activ
 const PAGE = 20;
 const RUN_REFRESH_MS = 7_500;
 
-// One live delegate PTY, mirror of Rust's `LiveDelegateSession`.
-type LiveDelegateSession = {
-  sessionId: string;
-  convoId: string;
-  provider: string;
-  cwd: string | null;
-  task: string | null;
-  model: string | null;
-  startedMs: number;
-  updatedMs: number;
-  /** Hook-reported when the CLI has Klide's status hooks (working/blocked/
-   *  waiting — see Rust delegate/status.rs); otherwise the PTY idle-timer
-   *  heuristic (running/idle). */
-  status: "running" | "idle" | "working" | "blocked" | "waiting";
-  bufferedBytes: number;
-};
-
-// One persisted-but-ended delegate session, mirror of Rust's
-// `RecentDelegateSession`. Its PTY died (CLI finished, or the app restarted)
-// but its scrollback survives on disk — reopening repaints the terminal
-// history, and resumes the CLI session when `resumeSessionId` is known.
-type RecentDelegateSession = {
-  sessionId: string;
-  convoId: string;
-  provider: string;
-  cwd: string | null;
-  task: string | null;
-  model: string | null;
-  resumeSessionId: string | null;
-  startedMs: number;
-  endedMs: number | null;
-};
-
 /** Only surface recently-ended sessions (the interrupted-by-restart case);
  *  older history stays reachable through the run board, not the strip. */
 const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -4671,7 +4646,7 @@ function LiveSessionsStrip({
                 onClick={(e) => {
                   e.stopPropagation();
                   for (const s of idleSessions) {
-                    void invoke("delegate_pty_stop", { sessionId: s.sessionId });
+                    void stopDelegatePty(s.sessionId);
                   }
                 }}
               >
@@ -4877,13 +4852,13 @@ export function MissionControl({
     let cancelled = false;
     const poll = async () => {
       try {
-        const live = await invoke<LiveDelegateSession[]>("delegate_pty_live_sessions");
+        const live = await listLiveDelegateSessions();
         if (!cancelled) setLiveSessions(live);
       } catch {
         if (!cancelled) setLiveSessions([]); // outside Tauri / command missing
       }
       try {
-        const recent = await invoke<RecentDelegateSession[]>("delegate_pty_recent_sessions");
+        const recent = await listRecentDelegateSessions();
         if (!cancelled) setRecentSessions(recent);
       } catch {
         if (!cancelled) setRecentSessions([]);

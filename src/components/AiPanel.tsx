@@ -105,6 +105,7 @@ import {
 import type { Msg, QueuedTurn, Conversation } from "./ai/types";
 import { Z } from "../zLayers";
 import { notify } from "../toast";
+import { delegateSessionId, stopDelegatePty, writeDelegatePty } from "../ipc/delegatePty";
 
 function LocalServerStartingRow({ providerLabel, centered = false }: { providerLabel: string; centered?: boolean }) {
   const hairline = (
@@ -1508,7 +1509,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     // pending send to bail once the server is ready (see send()).
     if (serverStarting) cancelledWarmupRef.current = true;
     abortActiveHarnessRun();
-    if (providerDelegatesWork) { void invoke("delegate_pty_stop", { sessionId: `${currentId}:${provider}` }); }
+    if (providerDelegatesWork) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
     // Bump the queue generation so any in-flight runProcessQueue sees its
     // tokens as stale and bails before it can start another turn.
     queueGenerationRef.current += 1;
@@ -1724,7 +1725,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   }, [actionsOpen]);
 
   function newConversation() {
-    if (providerDelegatesWork) { void invoke("delegate_pty_stop", { sessionId: `${currentId}:${provider}` }); }
+    if (providerDelegatesWork) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
     // Mark the previous chat as done on Mission Control so a "new chat"
     // doesn't leave a stale "running" row. View switches no longer hit
     // this path (the panel just unmounts/remounts).
@@ -2771,7 +2772,7 @@ This user request requires workspace inspection. Before answering, you MUST call
       // Delegate TUIs take text only — images aren't wired to their stdin.
       if (!text.trim()) return;
       setInput(""); setMention(null); setSlash(null); setNextSendMode(null);
-      await invoke("delegate_pty_write", { sessionId: `${currentId}:${provider}`, data: `${text}\r` });
+      await writeDelegatePty(delegateSessionId(currentId, provider), `${text}\r`);
       return;
     }
     cancelledWarmupRef.current = false;
@@ -3153,7 +3154,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         >
         {providerDelegatesWork ? (
           <DelegateTerminalSurface
-            sessionId={`${currentId}:${provider}`}
+            sessionId={delegateSessionId(currentId, provider)}
             providerId={provider}
             provider={providerName(provider)}
             workspaceRoot={workspaceRoot}
