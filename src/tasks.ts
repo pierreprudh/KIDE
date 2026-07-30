@@ -5,8 +5,7 @@
 // task survives switching views — the PTY on the Rust side outlives any
 // component. Mission Control reads this store via useSyncExternalStore.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { onDelegateExit, spawnDelegatePty, stopDelegatePty } from "./ipc/delegatePty";
 import { readValidatedArray } from "./persistedStore";
 import type { RunStatus } from "./runs";
 import { isDelegateId, type DelegateId } from "./delegates";
@@ -86,9 +85,12 @@ function persistTasks() {
 }
 
 let sessions: TaskSession[] = readTasks();
-// Raw PTY output per dispatched task, so re-opening a task replays its
-// scrollback instead of showing a blank terminal.
-const buffers = new Map<string, string>();
+// Session ids this module dispatched, so the app-wide exit event only flips
+// tasks we own (the AI panel runs its own delegates through the same PTY).
+// This used to also hold a copy of each session's output for replay; Rust's
+// scrollback is the authority for that and carries the `seq` the replay
+// handshake needs, so the terminal reads it via `attachDelegatePty` instead.
+const dispatched = new Set<string>();
 const subscribers = new Set<() => void>();
 
 function emitChange() {
@@ -102,29 +104,18 @@ function patch(id: string, fields: Partial<TaskSession>) {
   emitChange();
 }
 
-// One app-wide listener pair, attached lazily on first use. Data chunks only
-// feed the replay buffer (the open terminal streams them itself); the exit
-// event is what flips a task from running → done.
+// One app-wide listener, attached lazily on first use: the exit event is what
+// flips a task from running → done. There used to be a second listener here
+// maintaining a replay buffer, which meant every PTY chunk in the app paid for
+// a string concat (and a 200 KB slice once the buffer filled) to feed something
+// only one terminal read. The terminal now replays from Rust's snapshot.
 let wired = false;
 function wire() {
   if (wired) return;
   wired = true;
-  void listen<{ sessionId: string; data: string }>("delegate-pty:data", (e) => {
-    const { sessionId, data } = e.payload;
-    // Ignore sessions we didn't start (e.g. AiPanel's own delegates).
-    const existing = buffers.get(sessionId);
-    if (existing === undefined) return;
-    // TUI redraws accumulate fast — keep only the most recent output, or a
-    // long-running agent grows the buffer (and every append) without bound.
-    // Replays may open mid-escape-sequence; xterm recovers within a frame.
-    const MAX_BUFFER = 200_000;
-    let next = existing + data;
-    if (next.length > MAX_BUFFER) next = next.slice(next.length - MAX_BUFFER);
-    buffers.set(sessionId, next);
-  });
-  void listen<{ sessionId: string }>("delegate-pty:exit", (e) => {
-    const id = e.payload.sessionId;
-    if (buffers.has(id)) patch(id, { status: "done", startedMs: Date.now() });
+  void onDelegateExit(({ sessionId }) => {
+    // Ignore sessions we didn't dispatch (e.g. the AI panel's own delegates).
+    if (dispatched.has(sessionId)) patch(sessionId, { status: "done", startedMs: Date.now() });
   });
 }
 
@@ -138,10 +129,6 @@ export function subscribeTasks(fn: () => void): () => void {
 
 export function getTaskSessions(): TaskSession[] {
   return sessions;
-}
-
-export function getTaskBuffer(id: string): string {
-  return buffers.get(id) ?? "";
 }
 
 // The agent used for the previous dispatch — quick-send defaults to it so
@@ -204,7 +191,7 @@ export async function dispatchTask(
   if (model && model.trim()) {
     localStorage.setItem(`klide-last-model-${source}`, model.trim());
   }
-  buffers.set(id, "");
+  dispatched.add(id);
   patch(id, {
     source,
     model: model && model.trim() ? model.trim() : null,
@@ -212,8 +199,7 @@ export async function dispatchTask(
     startedMs: Date.now(),
   });
   try {
-    await invoke("delegate_pty_spawn", {
-      sessionId: id,
+    await spawnDelegatePty(id, {
       provider: source,
       workspaceRoot: task.cwd,
       task: task.title,
@@ -229,7 +215,7 @@ export async function dispatchTask(
 // Interrupt a running task (Ctrl-C + exit on the Rust side). The PTY exit
 // event confirms the flip to done; we set it eagerly so the UI reacts at once.
 export async function stopTask(id: string): Promise<void> {
-  await invoke("delegate_pty_stop", { sessionId: id });
+  await stopDelegatePty(id);
   patch(id, { status: "done" });
 }
 
@@ -245,7 +231,7 @@ export function removeTask(id: string): void {
   const task = sessions.find((s) => s.id === id);
   if (!task || task.status === "running") return;
   sessions = sessions.filter((s) => s.id !== id);
-  buffers.delete(id);
+  dispatched.delete(id);
   persistTasks();
   emitChange();
 }

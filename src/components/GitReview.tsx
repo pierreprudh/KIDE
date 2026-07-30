@@ -26,6 +26,7 @@ import {
   type DiffLineComment,
 } from "../diffComments";
 import { notify } from "../toast";
+import { listLiveDelegateSessions } from "../ipc/delegatePty";
 import { renderMarkdown } from "./markdown";
 
 type GitCommit = {
@@ -251,9 +252,7 @@ const DiffViewer = memo(function DiffViewer({ workspaceRoot, open }: DiffViewerP
     async (comment: DiffLineComment) => {
       const text = formatDiffComment(comment);
       try {
-        const live = await invoke<
-          { sessionId: string; provider: string; cwd: string | null }[]
-        >("delegate_pty_live_sessions");
+        const live = await listLiveDelegateSessions();
         const exact = live.find((s) => s.cwd === workspaceRoot);
         const target = exact ?? live.find((s) => !s.cwd) ?? null;
         if (target) {

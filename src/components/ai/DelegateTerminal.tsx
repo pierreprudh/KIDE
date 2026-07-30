@@ -1,12 +1,11 @@
 import { useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { ProviderId } from "../../agent/types";
 import { cssVar } from "./utils";
 import { notify } from "../../toast";
+import { attachDelegatePty, resizeDelegatePty, writeDelegatePty } from "../../ipc/delegatePty";
 
 export function DelegateConsole({
   provider,
@@ -102,80 +101,27 @@ export function DelegateTerminalSurface({
 
     const syncSize = () => {
       fit.fit();
-      void invoke("delegate_pty_resize", { sessionId, rows: term.rows, cols: term.cols });
+      void resizeDelegatePty(sessionId, term.rows, term.cols);
     };
 
-    // Replay-on-reattach: a delegate session keeps running in Rust even after
-    // this surface unmounts (panel switch, layout change). On (re)mount we must
-    // repaint the history it produced while we were gone instead of coming back
-    // blank. Ordering matters to avoid dropping or duplicating output:
-    //   1. subscribe FIRST, buffering live chunks (don't write yet)
-    //   2. spawn (a no-op that returns the existing session if already live)
-    //   3. fetch the snapshot (history bytes + high-water seq)
-    //   4. paint history, then flush buffered chunks with seq > snapshot seq
-    //   5. go live, dropping any chunk already covered (seq <= writtenThrough)
-    let cancelled = false;
-    let applied = false;
-    let writtenThrough = -1;
-    // Replayed history contains terminal queries (cursor-position ESC[6n,
-    // device-attribute / color probes) the TUI sent on a previous attach.
-    // xterm.js answers them while parsing the replay; piping those stale
-    // answers into the PTY shows up as typed junk ("3R…") in the delegate's
-    // input. Swallow onData until every replay chunk has been parsed.
-    let replaying = true;
-    const pending: { seq: number; data: string }[] = [];
-
-    const unlisten = listen<{ sessionId: string; data: string; seq: number }>(
-      "delegate-pty:data",
-      (e) => {
-        if (e.payload.sessionId !== sessionId) return;
-        if (!applied) { pending.push(e.payload); return; }
-        if (e.payload.seq > writtenThrough) {
-          term.write(e.payload.data);
-          writtenThrough = e.payload.seq;
-        }
-      },
-    );
-
-    const start = async () => {
-      // Make sure the listener is registered before we spawn/snapshot, so no
-      // live chunk slips through the gap.
-      await unlisten;
-      if (cancelled) return;
-      try {
-        if (!attachOnly) {
-          await invoke("delegate_pty_spawn", {
-            sessionId,
+    // The replay handshake (subscribe → spawn → snapshot → flush by seq → live)
+    // lives in ipc/delegatePty so all three delegate surfaces share one
+    // implementation. See that module for why the ordering matters.
+    const attachment = attachDelegatePty({
+      sessionId,
+      term,
+      spawn: attachOnly
+        ? undefined
+        : {
             provider: providerId,
             workspaceRoot,
             parentRunId,
             resumeSessionId: resumeSessionId ?? null,
             model: model ?? null,
             task: task ?? null,
-          });
-        }
-        if (cancelled) return;
-        const snap = await invoke<{ data: string; seq: number; live: boolean }>(
-          "delegate_pty_snapshot",
-          { sessionId },
-        );
-        if (cancelled) return;
-        if (snap.data) term.write(snap.data);
-        writtenThrough = snap.seq;
-        for (const p of pending) {
-          if (p.seq > writtenThrough) {
-            term.write(p.data);
-            writtenThrough = p.seq;
-          }
-        }
-        pending.length = 0;
-        applied = true;
-        // Writes are parsed FIFO, so this callback fires only after the
-        // snapshot + buffered chunks above are fully processed.
-        term.write("", () => { replaying = false; });
-        syncSize();
-      } catch (err) {
-        replaying = false;
+          },
+      onReady: syncSize,
+      onError: (err) => {
         const msg = err instanceof Error ? err.message : String(err);
         term.writeln(`\x1b[31mFailed to ${attachOnly ? "load" : "start"} ${provider}: ${msg}\x1b[0m`);
         notify(
@@ -184,14 +130,16 @@ export function DelegateTerminalSurface({
             : `Couldn't start ${provider} — check it's installed and on your PATH.`,
           { tone: "error" }
         );
-      }
-    };
-    void start();
+      },
+    });
 
     if (!readOnly) {
       term.onData((data) => {
-        if (replaying) return;
-        void invoke("delegate_pty_write", { sessionId, data });
+        // Gated on the replay: xterm answers the terminal queries inside the
+        // replayed history, and those stale answers would land in the agent's
+        // input as typed junk.
+        if (attachment.isReplaying()) return;
+        void writeDelegatePty(sessionId, data);
       });
     }
 
@@ -200,8 +148,7 @@ export function DelegateTerminalSurface({
     requestAnimationFrame(syncSize);
 
     return () => {
-      cancelled = true;
-      unlisten.then((u) => u());
+      attachment.dispose();
       resize.disconnect();
       term.dispose();
     };

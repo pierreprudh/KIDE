@@ -26,6 +26,7 @@ import { StatusBar } from "./components/StatusBar";
 import { MissionControlSkeleton } from "./components/MissionControlSkeleton";
 import ToastHost from "./components/ToastHost";
 import { notify } from "./toast";
+import { onDelegateExit } from "./ipc/delegatePty";
 import { eventsToConversation } from "./components/ai/eventsToMsgs";
 import { loadPanelSession } from "./components/ai/utils";
 import type { AgentEvent, ProviderId } from "./agent/types";
@@ -1667,7 +1668,7 @@ function App() {
   useEffect(() => {
     if (!workspaceRoot || !("__TAURI_INTERNALS__" in window)) return;
     const listeners = createListenerScope();
-    listeners.add(listen("delegate-pty:exit", () => {
+    listeners.add(onDelegateExit(() => {
       refreshGitStatus(workspaceRoot);
     }));
     return listeners.dispose;
