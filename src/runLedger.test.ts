@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildChildIndex,
+  buildRaceRowIndex,
   buildRunLedger,
+  clusterRaceRows,
+  filterLedgerEntries,
+  groupLedgerBySection,
+  isClaudeInternalSubagent,
   presentProjects,
   projectMatchesFilter,
   runLedgerKey,
@@ -11,6 +17,7 @@ import type { KlideConvo } from "./klideConvos";
 import type { TaskSession } from "./tasks";
 
 const ROOT = "/Users/pierre/Documents/Private/KIDE";
+const ROOT_NAME = "KIDE";
 
 function diskRun(over: Partial<Run> = {}): Run {
   return {
@@ -213,5 +220,200 @@ describe("projectMatchesFilter", () => {
 describe("presentProjects", () => {
   it("includes projects recoverable from cwd", () => {
     expect(presentProjects([{ project: null, cwd: "/Users/pierre/Documents/Private/KIDE" }])).toEqual(["KIDE"]);
+  });
+});
+
+describe("board model", () => {
+  const raceGroups = [
+    { id: "race-1", prompt: "Add a README section", members: [{ runId: "a" }, { runId: "b" }] },
+  ];
+
+  it("indexes race members with stable letters", () => {
+    const index = buildRaceRowIndex(raceGroups);
+    expect(index.get("a")).toMatchObject({ groupId: "race-1", memberIndex: 0, label: "A", size: 2 });
+    expect(index.get("b")?.label).toBe("B");
+    expect(index.get("c")).toBeUndefined();
+  });
+
+  it("pulls race siblings adjacent without disturbing everyone else", () => {
+    // A race must read as one comparison block. Recency alone scatters the two
+    // members around whatever else finished between them.
+    const rows = [
+      diskRun({ id: "a", updatedMs: 500 }),
+      diskRun({ id: "unrelated", updatedMs: 400 }),
+      diskRun({ id: "b", updatedMs: 300 }),
+    ].map((r) => build({ runs: [r] })[0]);
+
+    const clustered = clusterRaceRows(rows, buildRaceRowIndex(raceGroups));
+    expect(clustered.map((r) => r.id)).toEqual(["a", "b", "unrelated"]);
+    // Each row appears exactly once — the sibling pull must not duplicate.
+    expect(new Set(clustered.map((r) => r.id)).size).toBe(3);
+  });
+
+  it("leaves rows untouched when nothing is racing", () => {
+    const rows = build({ runs: [diskRun({ id: "x" }), diskRun({ id: "y" })] });
+    expect(clusterRaceRows(rows, new Map()).map((r) => r.id)).toEqual(["x", "y"]);
+  });
+
+  it("composes every filter, including the live-strip exclusion", () => {
+    const entries = build({
+      runs: [
+        diskRun({ id: "live", source: "klide" }),
+        diskRun({ id: "codex-run", source: "codex", title: "parser work" }),
+        diskRun({ id: "elsewhere", cwd: "/Users/pierre/Documents/Other", project: "Other" }),
+      ],
+    });
+
+    const filter = {
+      liveConvoIds: new Set(["live"]),
+      source: "all" as const,
+      project: ROOT_NAME,
+      workspaceRoot: ROOT,
+    };
+    // "live" is rendered in the Live now strip; listing it again would double it.
+    expect(filterLedgerEntries(entries, filter).map((e) => e.id)).toEqual(["codex-run"]);
+
+    // Each predicate composes with the others.
+    expect(
+      filterLedgerEntries(entries, { ...filter, source: "codex" }).map((e) => e.id)
+    ).toEqual(["codex-run"]);
+    expect(
+      filterLedgerEntries(entries, { ...filter, query: "parser" }).map((e) => e.id)
+    ).toEqual(["codex-run"]);
+    expect(filterLedgerEntries(entries, { ...filter, query: "nothing-matches" })).toEqual([]);
+  });
+
+  it("sorts sections newest-first with a stable id tiebreak", () => {
+    // The tiebreak is why rows already on screen don't reshuffle when older
+    // runs page in: without it the order followed [tasks, convos, runs].
+    const entries = build({
+      runs: [
+        diskRun({ id: "b", updatedMs: 100 }),
+        diskRun({ id: "a", updatedMs: 100 }),
+        diskRun({ id: "newer", updatedMs: 900 }),
+      ],
+    });
+    const sections = groupLedgerBySection(entries);
+    expect(sections.done.map((e) => e.id)).toEqual(["newer", "b", "a"]);
+
+    // Re-grouping a shuffled input gives byte-identical order.
+    const shuffled = groupLedgerBySection([entries[1], entries[2], entries[0]]);
+    expect(shuffled.done.map((e) => e.id)).toEqual(["newer", "b", "a"]);
+  });
+
+  it("routes runs to the section their lifecycle implies", () => {
+    const sections = groupLedgerBySection(
+      build({
+        tasks: [task({ id: "todo", status: "queued" })],
+        runs: [
+          diskRun({ id: "failed", status: "error" }),
+          diskRun({ id: "finished", status: "done" }),
+        ],
+      })
+    );
+    expect(sections.blocked.map((e) => e.id)).toEqual(["failed"]);
+    expect(sections.done.map((e) => e.id)).toEqual(["finished"]);
+    expect(sections.running.map((e) => e.id)).toEqual(["todo"]);
+  });
+});
+
+describe("buildChildIndex", () => {
+  it("nests children under a visible parent", () => {
+    const all = build({
+      runs: [diskRun({ id: "parent" }), diskRun({ id: "kid", parentId: "parent" })],
+    });
+    const index = buildChildIndex(all, all);
+
+    expect(index.hasChildren("parent")).toBe(true);
+    expect(index.childrenOf("parent").map((e) => e.id)).toEqual(["kid"]);
+    // The child renders nested, so it must not also appear at the top level.
+    expect(index.topLevel(all).map((e) => e.id)).toEqual(["parent"]);
+  });
+
+  it("keeps a child flat when the filter hid its parent", () => {
+    // Subagent-only view: the parent is filtered out, so its children have no
+    // row to nest under. Dropping them would make the view empty.
+    const all = build({
+      runs: [diskRun({ id: "parent" }), diskRun({ id: "kid", parentId: "parent" })],
+    });
+    const visible = all.filter((e) => e.id === "kid");
+    const index = buildChildIndex(all, visible);
+
+    // The parent link is still known even though the parent isn't shown.
+    expect(index.hasChildren("parent")).toBe(true);
+    expect(index.topLevel(visible).map((e) => e.id)).toEqual(["kid"]);
+  });
+
+  it("orders children oldest-first, as steps the parent took", () => {
+    const all = build({
+      runs: [
+        diskRun({ id: "parent" }),
+        diskRun({ id: "second", parentId: "parent", createdMs: 200 }),
+        diskRun({ id: "first", parentId: "parent", createdMs: 100 }),
+      ],
+    });
+    const index = buildChildIndex(all, all);
+    expect(index.childrenOf("parent").map((e) => e.id)).toEqual(["first", "second"]);
+  });
+
+  it("reports no children for a childless run", () => {
+    const all = build({ runs: [diskRun({ id: "lonely" })] });
+    const index = buildChildIndex(all, all);
+    expect(index.hasChildren("lonely")).toBe(false);
+    expect(index.childrenOf("lonely")).toEqual([]);
+  });
+});
+
+describe("canResume", () => {
+  it("is one rule the board and the detail pane both read", () => {
+    // Four spellings before this: two on the board, two in the detail pane.
+    const resumable = (over: Parameters<typeof diskRun>[0]) =>
+      build({ runs: [diskRun(over)] })[0].capabilities.canResume;
+
+    expect(resumable({ source: "klide", status: "done" })).toBe(true);
+    expect(resumable({ source: "codex", status: "done" })).toBe(true);
+    // A run still going has nothing to resume — reattach, don't restart.
+    expect(resumable({ source: "codex", status: "running" })).toBe(false);
+    // But one blocked on input is exactly what you want to resume.
+    expect(resumable({ source: "codex", status: "waiting" })).toBe(true);
+  });
+
+  it("refuses Claude's internal subagent transcripts", () => {
+    // `<parent>/subagents/<agent>.jsonl` holds turns inside the parent session,
+    // not a session of its own, so there is no id to --resume.
+    const internal = build({
+      runs: [
+        diskRun({
+          id: "sub",
+          source: "claude-code",
+          path: "/Users/p/.claude/projects/proj/parent-1/subagents/explore.jsonl",
+          status: "done",
+        }),
+      ],
+    })[0];
+    expect(isClaudeInternalSubagent(internal)).toBe(true);
+    expect(internal.capabilities.canResume).toBe(false);
+
+    // A top-level Claude session is resumable.
+    const top = build({
+      runs: [
+        diskRun({
+          id: "top",
+          source: "claude-code",
+          path: "/Users/p/.claude/projects/proj/parent-1.jsonl",
+          status: "done",
+        }),
+      ],
+    })[0];
+    expect(isClaudeInternalSubagent(top)).toBe(false);
+    expect(top.capabilities.canResume).toBe(true);
+  });
+
+  it("has nothing to resume for a convo with no transcript on disk", () => {
+    // A convo-origin entry is one the ledger found no disk twin for, so the
+    // harness has no transcript to continue from.
+    const [entry] = build({ convos: [convo({ id: "fresh", status: "error" })] });
+    expect(entry.origin).toBe("klide-convo");
+    expect(entry.capabilities.canResume).toBe(false);
   });
 });

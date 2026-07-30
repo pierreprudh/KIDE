@@ -62,7 +62,6 @@ import {
   STATUS_LABEL,
   type Run,
   type RunBoardReasonTone,
-  type RunBoardSection,
   type RunKind,
   type RunMessage,
   type RunSource,
@@ -70,16 +69,17 @@ import {
   type RunToolCall,
 } from "../runs";
 import {
+  buildChildIndex,
+  buildRaceRowIndex,
   buildRunLedger,
+  filterLedgerEntries,
+  groupLedgerBySection,
   handoffTargetsFor,
   presentProjects,
   presentRunSources,
-  projectMatchesFilter,
   projectName,
   readRunLedgerMetadata,
-  runMatchesLedgerQuery,
   runLedgerKey,
-  sourceMatchesFilter,
   writeRunLedgerMetadata,
   type ProjectFilter,
   type RunLedgerEntry,
@@ -164,10 +164,6 @@ function patchForFile(diff: string, path: string): string {
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function isClaudeInternalSubagent(run: Pick<Run, "source" | "path">): boolean {
-  return run.source === "claude-code" && run.path.includes("/subagents/");
 }
 
 // Minimal status text for places that need an explicit state. No colored
@@ -1293,44 +1289,6 @@ function MetaRow({ label, value }: { label: string; value: string }) {
       </dd>
     </>
   );
-}
-
-/** A run's race membership, precomputed for the board rows. */
-type RaceRowInfo = {
-  groupId: string;
-  memberIndex: number;
-  /** "A", "B", … — the member's stable letter within its race. */
-  label: string;
-  size: number;
-  prompt: string;
-};
-
-/** Keep race siblings adjacent within a section: the first-seen member of a
- *  group pulls the rest up next to it (in member order), so a race reads as
- *  one comparison block instead of scattered rows. Non-members keep their
- *  recency order. */
-function clusterRaceRows(
-  rows: RunLedgerEntry[],
-  info: Map<string, RaceRowInfo>,
-): RunLedgerEntry[] {
-  const out: RunLedgerEntry[] = [];
-  const emitted = new Set<string>();
-  for (const row of rows) {
-    if (emitted.has(row.id)) continue;
-    const ri = info.get(row.id);
-    if (!ri) {
-      out.push(row);
-      continue;
-    }
-    const siblings = rows
-      .filter((r) => info.get(r.id)?.groupId === ri.groupId)
-      .sort((a, b) => (info.get(a.id)?.memberIndex ?? 0) - (info.get(b.id)?.memberIndex ?? 0));
-    for (const s of siblings) {
-      out.push(s);
-      emitted.add(s.id);
-    }
-  }
-  return out;
 }
 
 /** Side-by-side stats for a race's members: metric labels down the left, one
@@ -3342,9 +3300,10 @@ function RunDetail({
   onSaveMemory?: (run: { id: string; source: string; provider?: string | null; model: string | null; cwd: string | null }) => void;
   summarizingFromRunId?: string | null;
 }) {
-  // All 3 external CLIs support resume flags today: `claude --resume <id>`,
-  // `codex resume <id>`, and `opencode -s <id>`. The Rust seam builds the
-  // right command for each, so the UI just needs to be honest about it.
+  // Which flag resumes which CLI is the Delegate seam's business
+  // (`delegate/mod.rs`, test-pinned per adapter). This copy used to restate the
+  // three commands inline and had already gone stale — it said "all 3" after omp
+  // made it four. The UI only needs to know a resume is possible.
   const resumable = isDelegateId(run.source) && run.capabilities.canResume;
   // The full set of CLI sources we can offer as "Open in {source}". Klide
   // runs hand off to one of these with compact task state as the prompt.
@@ -5037,17 +4996,19 @@ export function MissionControl({
       .map((name) => ({ name, hasRuns: withRuns.has(name) }));
   }, [allRuns, currentProject]);
 
-  const filtered = useMemo(() => {
-    return linkedRuns.filter(
-      (r) =>
-        // A live, in-process session is shown in the "Live now" strip — don't
-        // also list it in the board sections below.
-        !liveConvoIds.has(r.id) &&
-        sourceMatchesFilter(r, sourceFilter) &&
-        projectMatchesFilter(r, projectFilter, workspaceRoot) &&
-        runMatchesLedgerQuery(r, sessionQuery)
-    );
-  }, [linkedRuns, liveConvoIds, sourceFilter, projectFilter, workspaceRoot, sessionQuery]);
+  const filtered = useMemo(
+    () =>
+      filterLedgerEntries(linkedRuns, {
+        // A live, in-process session shows in the "Live now" strip — don't also
+        // list it in the board sections below.
+        liveConvoIds,
+        source: sourceFilter,
+        project: projectFilter,
+        workspaceRoot,
+        query: sessionQuery,
+      }),
+    [linkedRuns, liveConvoIds, sourceFilter, projectFilter, workspaceRoot, sessionQuery]
+  );
 
   // Race membership for the board: runId → its group + "A"/"B" label. Drives
   // the row mark + spine and keeps siblings adjacent, so a race reads as one
@@ -5055,44 +5016,18 @@ export function MissionControl({
   const [raceTick, setRaceTick] = useState(0);
   useEffect(() => subscribeRaces(() => setRaceTick((t) => t + 1)), []);
   const raceInfoByRunId = useMemo(() => {
-    const map = new Map<string, RaceRowInfo>();
-    for (const g of listRaces()) {
-      g.members.forEach((m, i) => {
-        map.set(m.runId, {
-          groupId: g.id,
-          memberIndex: i,
-          label: String.fromCharCode(65 + i),
-          size: g.members.length,
-          prompt: g.prompt,
-        });
-      });
-    }
-    return map;
+    return buildRaceRowIndex(listRaces());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raceTick]);
 
-  const grouped = useMemo(() => {
-    const by: Record<RunBoardSection, RunLedgerEntry[]> = {
-      running: [],
-      blocked: [],
-      ready_for_review: [],
-      done: [],
-    };
-    for (const r of filtered) by[boardSectionForRun(r)].push(r);
-    // Order each section by recency with a stable id tiebreak. Without this the
-    // row order followed the [tasks, convos, runs] concatenation, so paging in
-    // older runs — or swapping a live convo for its on-disk twin — reshuffled
-    // rows already on screen. Newest on top; ties break deterministically by id.
-    for (const section of Object.keys(by) as RunBoardSection[]) {
-      by[section].sort(
-        (a, b) => b.updatedMs - a.updatedMs || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
-      );
-      if (raceInfoByRunId.size > 0) {
-        by[section] = clusterRaceRows(by[section], raceInfoByRunId);
-      }
-    }
-    return by;
-  }, [filtered, raceInfoByRunId]);
+  const grouped = useMemo(
+    () => groupLedgerBySection(filtered, raceInfoByRunId),
+    [filtered, raceInfoByRunId]
+  );
+
+  // Subagent nesting. Built from ALL linked runs, not the filtered set, so a
+  // child still knows its parent exists when the filter hides it.
+  const childIndex = useMemo(() => buildChildIndex(linkedRuns, filtered), [linkedRuns, filtered]);
 
   // Keep a valid selection as the filter/data changes — unless pinned.
   useEffect(() => {
@@ -5499,26 +5434,10 @@ export function MissionControl({
             )
           )}
           {(() => {
-            // Build parent → children map from ALL linked runs (not filtered).
-            // This ensures children know their parent exists even when the parent
-            // is hidden by the source filter (e.g. showing only "subagent").
-            const childrenByParent = new Map<string, RunLedgerEntry[]>();
-            const visibleParentIds = new Set(filtered.map((r) => r.id));
-            for (const r of linkedRuns) {
-              if (r.parentId) {
-                const kids = childrenByParent.get(r.parentId) ?? [];
-                kids.push(r);
-                childrenByParent.set(r.parentId, kids);
-              }
-            }
-            const hasChildren = (id: string) => (childrenByParent.get(id)?.length ?? 0) > 0;
             return BOARD_SECTION_ORDER.map((section) => {
               const list = grouped[section];
               if (list.length === 0) return null;
-              // Hide children whose parent is in the visible list (they render nested).
-              // Keep children whose parent is filtered out as flat items so
-              // they don't vanish in subagent-only view.
-              const visible = list.filter((r) => !r.parentId || !visibleParentIds.has(r.parentId));
+              const visible = childIndex.topLevel(list);
               if (visible.length === 0) return null;
               return (
                 <div key={section} style={{ marginBottom: 14 }}>
@@ -5562,20 +5481,13 @@ export function MissionControl({
                     const task = tasks.find((t) => t.id === run.id);
                     const sendable =
                       task && (task.status === "queued" || task.status === "error");
+                    // When a resume is possible is `capabilities.canResume`;
+                    // `source` only picks which affordance it routes to.
                     const resumable =
-                      run.source === "klide" &&
-                      run.kind === "run" &&
-                      run.status !== "running" &&
-                      onResumeKlideRun;
+                      run.source === "klide" && run.capabilities.canResume && onResumeKlideRun;
                     const cliResumable =
-                      run.kind === "run" &&
-                      isDelegateId(run.source) &&
-                      !isClaudeInternalSubagent(run) &&
-                      run.status !== "running" &&
-                      onOpenInAiPanel;
-                    const children = (childrenByParent.get(run.id) ?? [])
-                      .slice()
-                      .sort((a, b) => a.createdMs - b.createdMs);
+                      isDelegateId(run.source) && run.capabilities.canResume && onOpenInAiPanel;
+                    const children = childIndex.childrenOf(run.id);
                     const expanded = children.length > 0 && expandedSubagentParents.has(run.id);
                     const parentSelected = run.id === selectedId;
                     const parentDismissible = section === "blocked" || runAttentionReason(run) !== null;
@@ -5648,7 +5560,7 @@ export function MissionControl({
                             hasMemory={memoryRunIds.has(run.id)}
                             onSelect={() => {
                               selectRun(run);
-                              if (hasChildren(run.id)) toggleSubagentStack(run.id);
+                              if (childIndex.hasChildren(run.id)) toggleSubagentStack(run.id);
                             }}
                             dismissAction={
                               parentDismissible
@@ -5758,11 +5670,7 @@ export function MissionControl({
                                   const childSendable =
                                     childTask && (childTask.status === "queued" || childTask.status === "error");
                                   const childCliResumable =
-                                    child.kind === "run" &&
-                                    isDelegateId(child.source) &&
-                                    !isClaudeInternalSubagent(child) &&
-                                    child.status !== "running" &&
-                                    onOpenInAiPanel;
+                                    isDelegateId(child.source) && child.capabilities.canResume && onOpenInAiPanel;
                                   const childDismissible =
                                     boardSectionForRun(child) === "blocked" || runAttentionReason(child) !== null;
                                   const isLast = ci === children.length - 1;
