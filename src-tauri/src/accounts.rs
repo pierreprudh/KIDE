@@ -37,6 +37,25 @@ pub const CODEX: &str = "codex";
 pub const CLAUDE: &str = "claude-code";
 pub const OPENCODE: &str = "opencode";
 
+/// Delegates with no account store, and why.
+///
+/// Klide only ever snapshots credentials a CLI has already written down, so a
+/// delegate that keeps none has nothing to capture and correctly gets no entry
+/// in [`provider`]. That makes the registry shorter than `delegate::ALL`, which
+/// reads like an oversight — a 2026-07-27 architecture review flagged exactly
+/// this, reporting `omp` as "silently absent from the account seam". It isn't:
+/// omp resolves provider keys from the shell environment (see its `check_auth`),
+/// so there is no file and no keychain item that switching could swap.
+///
+/// Stating it here, next to the registry, is what makes the asymmetry legible.
+/// `every_delegate_is_accounted_for` then turns it into a decision a fifth CLI
+/// cannot skip: either it gets a provider, or it gets a reason.
+/// Read only by `every_delegate_is_accounted_for`; it exists so the decision has
+/// a home, not to be branched on at runtime.
+#[allow(dead_code)]
+const NO_ACCOUNT_STORE: [(&str, &str); 1] =
+    [("omp", "resolves provider keys from the shell environment")];
+
 /// macOS Keychain service Claude Code stores its OAuth tokens under.
 const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 /// Keychain service Klide stores *its* captured Claude account tokens under,
@@ -1121,5 +1140,48 @@ mod tests {
         let err = restore_claude(&FakeStore::default(), &dir, &dir.join("claude.json"), &account)
             .unwrap_err();
         assert!(err.contains("no stored credentials"), "got: {err}");
+    }
+
+    #[test]
+    fn every_delegate_is_accounted_for() {
+        // The account registry is deliberately shorter than `delegate::ALL`:
+        // a CLI that writes no credentials has nothing to snapshot. That is only
+        // safe as long as the difference is a recorded decision rather than an
+        // omission — an architecture review already misread it once and reported
+        // omp as missing from the seam.
+        //
+        // So every delegate must resolve to either a provider or a stated
+        // reason. Adding a fifth CLI fails here until someone chooses.
+        for delegate in crate::delegate::ALL {
+            let id = delegate.id();
+            let has_provider = provider(id).is_some();
+            let exemption = NO_ACCOUNT_STORE.iter().find(|(cli, _)| *cli == id);
+            match (has_provider, exemption) {
+                (true, None) | (false, Some(_)) => {}
+                (false, None) => panic!(
+                    "delegate {id:?} has no account provider and no entry in \
+NO_ACCOUNT_STORE — give it one, or record why it needs none"
+                ),
+                (true, Some((_, reason))) => panic!(
+                    "delegate {id:?} has an account provider but is also listed \
+in NO_ACCOUNT_STORE as {reason:?} — remove the exemption"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_account_registry_covers_every_credential_writing_delegate() {
+        // The three that do keep credentials, spelled out so a renamed id can't
+        // quietly drop a CLI out of the switcher.
+        for id in [CODEX, CLAUDE, OPENCODE] {
+            assert!(provider(id).is_some(), "no account provider for {id:?}");
+            assert!(
+                crate::delegate::lookup(id).is_some(),
+                "{id:?} is an account provider but not a delegate — the two \
+registries use the same ids"
+            );
+        }
+        assert!(provider("nope").is_none());
     }
 }
