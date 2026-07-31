@@ -450,6 +450,15 @@ export function usePanelLayout(opts: {
   }
 
   function setAiPanelProvider(id: string, provider: ProviderId) {
+    // Provider changes can originate outside AiPanel (notably the Focus home
+    // composer). AiPanel restores from these keys on mount, so persist before
+    // the host state update or the first Focus send can boot the old provider.
+    try {
+      localStorage.setItem(`klide.provider.${id}`, provider);
+      localStorage.setItem("klide.provider", provider);
+    } catch {
+      /* storage unavailable — the in-memory panel state still updates */
+    }
     setAiPanels((panels) => {
       // Self-heal an empty list — see setAiPanelModel.
       const seed = panels.length === 0

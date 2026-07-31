@@ -3542,32 +3542,1014 @@ textarea.klide-diff-comment-input:focus-visible {
 }
 
 /* ============================================================ Focus mode */
-/* The chat-first main screen: rail + hero home + fullscreen conversation.
-   Motion is choreography, not decoration: the rail settles in from its
-   hairline, hero elements rise in beats (title → composer → cards, the
-   welcome keyframe), and home ⇄ chat crossfades as one surface. */
+/* The chat-first main screen: a quiet project/thread rail, a calm start stage,
+   and a persistent task composer. The structure deliberately sits between a
+   thread-first command centre and an artifact-first agent workspace while
+   keeping Klide's warm bone/sage identity. */
+
+.klide-focus-shell {
+  position: relative;
+  isolation: isolate;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--bg-elevated) 26%, transparent), transparent 48%),
+    radial-gradient(circle at 58% 43%, color-mix(in srgb, var(--bg-elevated) 76%, transparent) 0, transparent 44%),
+    var(--bg);
+}
+
+.klide-focus-shell::before,
+.klide-focus-shell::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.68;
+  transform-origin: center;
+  animation: klide-focus-ambient-in 900ms var(--ease-soft) both;
+}
+
+.klide-focus-shell::before {
+  top: -24%;
+  right: -8%;
+  width: min(720px, 56vw);
+  aspect-ratio: 1;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent-soft) 38%, transparent) 0,
+    color-mix(in srgb, var(--accent) 5%, transparent) 34%,
+    transparent 70%
+  );
+}
+
+.klide-focus-shell::after {
+  bottom: -34%;
+  left: 18%;
+  width: min(620px, 48vw);
+  aspect-ratio: 1;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--bg-elevated) 82%, transparent) 0,
+    transparent 68%
+  );
+  animation-delay: 80ms;
+}
 
 .klide-focus-rail {
-  animation: klide-focus-rail-in var(--motion-slow) var(--ease-soft) both;
+  position: relative;
+  z-index: 2;
+  width: 252px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 8px 8px;
+  border-right: 1px solid var(--panel-border);
+  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
+  box-shadow:
+    inset -1px 0 0 color-mix(in srgb, var(--panel-highlight) 68%, transparent),
+    16px 0 42px rgba(28, 28, 28, 0.025);
+  backdrop-filter: blur(30px) saturate(1.16);
+  -webkit-backdrop-filter: blur(30px) saturate(1.16);
+  animation: klide-focus-rail-in 480ms var(--ease-soft) both;
+}
+
+.klide-focus-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 2px 7px 8px;
+  margin-bottom: 3px;
+}
+
+.klide-focus-brand-mark {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--panel-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--panel-glass));
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.04em;
+  box-shadow:
+    inset 0 1px 0 var(--panel-highlight),
+    0 5px 14px color-mix(in srgb, var(--accent) 8%, transparent);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
+
+.klide-focus-brand-name {
+  min-width: 0;
+  flex: 1;
+  color: var(--fg-strong);
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+
+.klide-focus-brand-action {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  border-radius: 9px;
+}
+
+.klide-focus-brand-action:hover,
+.klide-focus-brand-action[aria-expanded="true"] {
+  color: var(--fg-strong);
+  background: var(--bg-hover);
+}
+
+.klide-focus-nav-row {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--fg-subtle);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.klide-focus-nav-row:hover {
+  color: var(--fg-strong);
+  background: var(--bg-hover);
+}
+
+.klide-focus-nav-row[data-active="true"] {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--bg-hover) 72%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--border) 74%, transparent);
+  font-weight: 600;
+  box-shadow: var(--shadow-raised);
+}
+
+.klide-focus-section-label {
+  margin: 20px 0 6px;
+  padding: 0 10px;
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.065em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  opacity: 0.78;
+}
+
+.klide-focus-convo-row {
+  position: relative;
+  width: 100%;
+  height: 31px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--fg-subtle);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.klide-focus-provider-groups {
+  padding: 2px 0 3px;
+}
+
+.klide-focus-provider-history + .klide-focus-provider-history {
+  margin-top: 1px;
+}
+
+.klide-focus-provider-history-row {
+  width: 100%;
+  height: 31px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px 0 22px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--fg-subtle);
+  font-size: 11.5px;
+  text-align: left;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.klide-focus-provider-history-row:hover,
+.klide-focus-provider-history-row:focus-visible {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--bg-hover) 72%, transparent);
+}
+
+.klide-focus-provider-history-logo {
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  opacity: 0.88;
+}
+
+.klide-focus-provider-history-name {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  color: inherit;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-provider-history-readonly {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-size: 9px;
+  letter-spacing: 0.025em;
+  opacity: 0.58;
+}
+
+.klide-focus-provider-history-count {
+  min-width: 14px;
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  opacity: 0.62;
+}
+
+.klide-focus-provider-history-chevron {
+  flex-shrink: 0;
+  opacity: 0.46;
+  transform: rotate(0deg);
+  transition: transform var(--motion-med) var(--ease-out);
+}
+
+.klide-focus-provider-history-row[aria-expanded="true"] .klide-focus-provider-history-chevron {
+  transform: rotate(90deg);
+}
+
+.klide-focus-provider-history[data-readonly="true"] .klide-focus-provider-history-row {
+  color: color-mix(in srgb, var(--fg-subtle) 84%, transparent);
+}
+
+.klide-focus-provider-conversations {
+  margin-left: 13px;
+}
+
+.klide-focus-convo-tree {
+  --focus-tree-line: color-mix(in srgb, var(--fg-subtle) 34%, transparent);
+  position: relative;
+}
+
+.klide-focus-convo-spine {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 17px;
+  width: 1px;
+  height: calc(100% - 15px);
+  pointer-events: none;
+  /* The transparent 4px after each row midpoint creates the requested
+     breath below every horizontal branch without masking the glass rail. */
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--focus-tree-line) 0 16px,
+    transparent 16px 20px,
+    var(--focus-tree-line) 20px 31px
+  );
+}
+
+.klide-focus-convo-tree .klide-focus-convo-row::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 15px;
+  left: 17px;
+  width: 11px;
+  height: 1px;
+  pointer-events: none;
+  background: var(--focus-tree-line);
+}
+
+.klide-focus-convo-provider {
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  opacity: 0.82;
+  transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-med) var(--ease-spring);
+}
+
+.klide-focus-convo-row:hover .klide-focus-convo-provider,
+.klide-focus-convo-row:focus-visible .klide-focus-convo-provider {
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+.klide-focus-convo-row:hover {
+  color: var(--fg-strong);
+  background: var(--bg-hover);
+}
+
+.klide-focus-convo-row[data-selected="true"] {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--accent-soft) 42%, var(--bg-hover));
+}
+
+.klide-focus-convo-tree .klide-focus-convo-row[data-selected="true"]::before {
+  background: color-mix(in srgb, var(--accent) 62%, var(--focus-tree-line));
+}
+
+.klide-focus-convo-time {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.66;
+}
+
+.klide-focus-profile {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 9px 10px 2px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.klide-focus-main {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.klide-focus-current-surface {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.klide-focus-current-surface[data-hidden="true"] {
+  display: none;
+}
+
+.klide-focus-ai-surface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel-glass) 24%, transparent);
+  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.klide-focus-ai-header {
+  min-height: 46px;
+  border-bottom-color: var(--panel-border) !important;
+  background: color-mix(in srgb, var(--panel-glass) 74%, transparent) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 72%, transparent);
+  backdrop-filter: blur(26px) saturate(1.18);
+  -webkit-backdrop-filter: blur(26px) saturate(1.18);
+}
+
+.klide-focus-history-reader {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel-glass) 18%, transparent);
+}
+
+.klide-focus-history-header {
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px clamp(18px, 3vw, 42px);
+  border-bottom: 1px solid var(--panel-border);
+  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 72%, transparent);
+  backdrop-filter: blur(28px) saturate(1.18);
+  -webkit-backdrop-filter: blur(28px) saturate(1.18);
+}
+
+.klide-focus-history-back {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--fg-subtle);
+  background: transparent;
+  transition: transform 220ms var(--ease-spring), opacity 180ms var(--ease-out);
+}
+
+.klide-focus-history-back:hover {
+  color: var(--fg-strong);
+  border-color: var(--panel-border);
+  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
+  transform: translateX(-2px);
+}
+
+.klide-focus-history-provider {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  color: var(--fg-strong);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--panel-highlight) 84%, transparent), transparent 50%),
+    color-mix(in srgb, var(--panel-glass) 78%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--panel-highlight),
+    0 8px 22px rgba(28, 28, 28, 0.045);
+}
+
+.klide-focus-history-heading {
+  min-width: 0;
+  flex: 1;
+}
+
+.klide-focus-history-heading h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--fg-strong);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.014em;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-history-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.klide-focus-history-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.klide-focus-history-meta span + span::before {
+  content: "·";
+  margin-right: 6px;
+  opacity: 0.52;
+}
+
+.klide-focus-history-readonly {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-size: 11px;
+}
+
+.klide-focus-history-continue {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--panel-border));
+  border-radius: 10px;
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--panel-glass));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 84%, transparent);
+  font-size: 12px;
+  font-weight: 550;
+  transition: transform 240ms var(--ease-spring), opacity 180ms var(--ease-out);
+}
+
+.klide-focus-history-continue:hover {
+  transform: translateY(-1px);
+}
+
+.klide-focus-history-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 30px 28px 76px;
+  overscroll-behavior: contain;
+}
+
+.klide-focus-history-transcript {
+  width: min(780px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 19px;
+  margin: 0 auto;
+}
+
+.klide-focus-history-turn,
+.klide-focus-history-process {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
+
+.klide-focus-history-turn {
+  width: min(680px, 92%);
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.klide-focus-history-turn[data-role="user"] {
+  align-self: flex-end;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.klide-focus-history-avatar {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 9px;
+  color: var(--fg-subtle);
+  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 72%, transparent);
+}
+
+.klide-focus-history-turn-body {
+  min-width: 0;
+}
+
+.klide-focus-history-role {
+  margin: 0 2px 5px;
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  font-weight: 550;
+}
+
+.klide-focus-history-turn[data-role="user"] .klide-focus-history-role {
+  text-align: right;
+}
+
+.klide-focus-history-bubble {
+  overflow: hidden;
+  padding: 11px 13px;
+  border: 1px solid var(--panel-border);
+  border-radius: 13px 13px 13px 5px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--panel-glass) 74%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 78%, transparent),
+    0 8px 24px rgba(28, 28, 28, 0.035);
+  font-size: 13px;
+  line-height: 1.58;
+  backdrop-filter: blur(18px) saturate(1.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+}
+
+.klide-focus-history-turn[data-role="user"] .klide-focus-history-bubble {
+  border-radius: 13px 13px 5px 13px;
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--panel-glass));
+}
+
+.klide-focus-history-process {
+  width: min(650px, calc(100% - 40px));
+  margin-left: 40px;
+  padding-left: 12px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 25%, var(--panel-border));
+  color: var(--fg-subtle);
+  font-size: 12px;
+}
+
+.klide-focus-history-empty {
+  padding: 70px 20px;
+  color: var(--fg-subtle);
+  font-size: 13px;
+  text-align: center;
+}
+
+.klide-focus-home {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 18px 28px 22px;
+}
+
+.klide-focus-stage {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 0 24px;
+}
+
+.klide-focus-hero-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 17px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--panel-border));
+  border-radius: 13px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--panel-highlight) 82%, transparent), transparent 48%),
+    color-mix(in srgb, var(--accent-soft) 58%, var(--panel-glass));
+  color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 var(--panel-highlight),
+    0 10px 30px color-mix(in srgb, var(--accent) 10%, transparent);
+  backdrop-filter: blur(18px) saturate(1.18);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+}
+
+.klide-focus-hero-mark span {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.055em;
+  transform: translateX(-0.5px);
+}
+
+.klide-focus-stage h1 {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: clamp(24px, 2.3vw, 30px);
+  font-weight: 400;
+  letter-spacing: -0.026em;
+  line-height: 1.15;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.klide-focus-card-area {
+  width: min(800px, 100%);
+  margin-top: 34px;
+}
+
+.klide-focus-card-label {
+  margin: 0 2px 9px;
+  color: var(--fg-subtle);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.035em;
+}
+
+.klide-focus-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.klide-focus-home-card {
+  position: relative;
+  min-width: 0;
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 13px 14px;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--panel-glass) 78%, transparent);
+  color: var(--fg-strong);
+  text-align: left;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 88%, transparent),
+    0 10px 30px rgba(28, 28, 28, 0.035);
+  backdrop-filter: blur(20px) saturate(1.14);
+  -webkit-backdrop-filter: blur(20px) saturate(1.14);
+  animation: klide-focus-card-in 520ms var(--ease-soft) calc(150ms + var(--focus-card-delay, 0ms)) both;
+  transition: transform 320ms var(--ease-spring), border-color 220ms var(--ease-out), box-shadow 320ms var(--ease-soft);
+}
+
+.klide-focus-home-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--panel-highlight) 86%, transparent), transparent 42%),
+    radial-gradient(circle at 86% 8%, color-mix(in srgb, var(--accent-soft) 40%, transparent), transparent 45%);
+  opacity: 0.34;
+  transition: opacity 280ms var(--ease-out);
+}
+
+.klide-focus-home-card:hover {
+  transform: translateY(-4px) scale(1.012);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  box-shadow:
+    inset 0 1px 0 var(--panel-highlight),
+    0 18px 40px rgba(28, 28, 28, 0.075);
+}
+
+.klide-focus-home-card:hover::before,
+.klide-focus-home-card:focus-visible::before {
+  opacity: 0.76;
+}
+
+.klide-focus-home-card:active {
+  transform: translateY(-1px) scale(0.985);
+  transition-duration: 100ms;
+}
+
+.klide-focus-home-card-icon {
+  position: relative;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--panel-border));
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--panel-glass));
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 76%, transparent);
+}
+
+.klide-focus-home-card-title {
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--fg-strong);
+  font-size: 12.5px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-home-card-sub {
+  position: relative;
+  z-index: 1;
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.klide-focus-home-card-arrow {
+  position: absolute;
+  top: 12px;
+  right: 13px;
+  color: var(--fg-subtle);
+  font-size: 13px;
+  opacity: 0;
+  transform: translate(-3px, 3px);
+  transition: opacity 220ms var(--ease-out), transform 320ms var(--ease-spring);
+}
+
+.klide-focus-home-card:hover .klide-focus-home-card-arrow,
+.klide-focus-home-card:focus-visible .klide-focus-home-card-arrow {
+  opacity: 0.72;
+  transform: translate(0, 0);
+}
+
+.klide-focus-composer-dock {
+  width: min(760px, 100%);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 2px;
+  animation: klide-focus-composer-in 640ms var(--ease-spring) 90ms both;
+}
+
+.klide-focus-context-strip {
+  align-self: center;
+  width: calc(100% - 26px);
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 0 13px 1px;
+  border: 1px solid var(--panel-border);
+  border-bottom: none;
+  border-radius: 13px 13px 0 0;
+  background: color-mix(in srgb, var(--panel-glass) 76%, transparent);
+  color: var(--fg-subtle);
+  font-size: 11.5px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 78%, transparent);
+  backdrop-filter: blur(24px) saturate(1.15);
+  -webkit-backdrop-filter: blur(24px) saturate(1.15);
+  transform: translateY(1px);
+}
+
+.klide-focus-context-strip span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-composer {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--panel-glass) 88%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 92%, transparent),
+    0 1px 2px rgba(28, 28, 28, 0.025),
+    0 18px 48px rgba(28, 28, 28, 0.065);
+  backdrop-filter: blur(28px) saturate(1.18);
+  -webkit-backdrop-filter: blur(28px) saturate(1.18);
+  transition:
+    border-color 240ms var(--ease-out),
+    box-shadow 340ms var(--ease-soft),
+    transform 340ms var(--ease-spring);
+}
+
+.klide-focus-composer::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 52%;
+  pointer-events: none;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-highlight) 58%, transparent), transparent);
+  opacity: 0.34;
+  transition: opacity 280ms var(--ease-out);
+}
+
+.klide-focus-composer[data-focused="true"] {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent),
+    inset 0 1px 0 var(--panel-highlight),
+    0 22px 54px rgba(28, 28, 28, 0.085);
+  transform: translateY(-2px) scale(1.002);
+}
+
+.klide-focus-composer[data-focused="true"]::before {
+  opacity: 0.68;
+}
+
+.klide-focus-composer textarea {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 64px;
+  max-height: 168px;
+  display: block;
+  resize: none;
+  padding: 14px 15px 10px;
+  border: none;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.klide-focus-composer textarea::placeholder {
+  color: var(--fg-subtle);
+  opacity: 0.7;
+}
+
+.klide-focus-composer textarea:focus-visible {
+  outline: none !important;
+}
+
+.klide-focus-composer-footer {
+  position: relative;
+  z-index: 1;
+  min-height: 43px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 6px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--panel-border) 82%, transparent);
+}
+
+.klide-focus-provider-control {
+  min-width: 0;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.klide-focus-model-controls {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.klide-focus-send {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  margin-left: 4px;
+  border: 1px solid var(--panel-border);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--panel-glass) 86%, transparent);
+  color: var(--fg-subtle);
+  cursor: default;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 78%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: transform 240ms var(--ease-spring), opacity 180ms var(--ease-out);
+}
+
+.klide-focus-send[data-ready="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--control-primary-fg);
+  cursor: pointer;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.klide-focus-send[data-ready="true"]:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px) scale(1.025);
+}
+
+@keyframes klide-focus-ambient-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 0.68;
+    transform: scale(1);
+  }
 }
 
 @keyframes klide-focus-rail-in {
   from {
     opacity: 0;
-    transform: translateX(-8px);
+    transform: translateX(-14px) scale(0.992);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateX(0) scale(1);
   }
 }
 
 .klide-focus-rise {
-  animation: klide-welcome-rise 0.5s var(--ease-soft) both;
+  animation: klide-welcome-rise 480ms var(--ease-soft) both;
 }
 
 .klide-focus-rise[data-beat="1"] {
-  animation-delay: 70ms;
+  animation-delay: 80ms;
 }
 
 .klide-focus-rise[data-beat="2"] {
@@ -3575,32 +4557,111 @@ textarea.klide-diff-comment-input:focus-visible {
 }
 
 .klide-focus-chat-in {
-  animation: klide-focus-chat-in var(--motion-slow) var(--ease-out) both;
+  animation: klide-focus-chat-in 460ms var(--ease-soft) both;
 }
 
 @keyframes klide-focus-chat-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(12px) scale(0.995);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes klide-focus-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes klide-focus-composer-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
 /* The rail's search field reveals as chrome; rows lean on background/color
    transitions — no per-row keyframes. */
 .klide-focus-search {
-  animation: chrome-enter var(--motion-med) var(--ease-out) both;
+  animation: chrome-enter 320ms var(--ease-soft) both;
+}
+
+@media (max-width: 1080px) {
+  .klide-focus-rail {
+    width: 232px;
+  }
+  .klide-focus-home {
+    padding-inline: 22px;
+  }
+  .klide-focus-card-grid {
+    gap: 8px;
+  }
+  .klide-focus-home-card {
+    min-height: 108px;
+    padding-inline: 12px;
+  }
+}
+
+@media (max-height: 720px) {
+  .klide-focus-home {
+    padding-top: 10px;
+    padding-bottom: 12px;
+  }
+  .klide-focus-stage {
+    padding-top: 8px;
+    padding-bottom: 15px;
+  }
+  .klide-focus-hero-mark {
+    width: 36px;
+    height: 36px;
+    margin-bottom: 12px;
+  }
+  .klide-focus-card-area {
+    margin-top: 24px;
+  }
+  .klide-focus-home-card {
+    min-height: 98px;
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .klide-focus-rail,
+  .klide-focus-shell::before,
+  .klide-focus-shell::after,
   .klide-focus-rise,
   .klide-focus-chat-in,
-  .klide-focus-search {
+  .klide-focus-search,
+  .klide-focus-home-card,
+  .klide-focus-composer-dock {
     animation: none;
+  }
+  .klide-focus-home-card,
+  .klide-focus-home-card::before,
+  .klide-focus-home-card-arrow,
+  .klide-focus-convo-provider,
+  .klide-focus-provider-history-row,
+  .klide-focus-provider-history-chevron,
+  .klide-focus-history-back,
+  .klide-focus-history-continue,
+  .klide-focus-composer,
+  .klide-focus-composer::before,
+  .klide-focus-send {
+    transition: none;
   }
 }
 
