@@ -2060,4 +2060,53 @@ diff --git a/f b/f
         assert_eq!(parse_porcelain_timestamp(""), 0); // empty → 0
         assert_eq!(parse_porcelain_timestamp("not-a-number"), 0); // junk → 0
     }
+
+    /// Every `git_*` command the app registers must have a wrapper in
+    /// `src/ipc/git.ts`.
+    ///
+    /// The wire had 37 raw `invoke("git_…")` sites across nine files before that
+    /// adapter existed, and the drift that produced was not hypothetical: three
+    /// TypeScript type names had wandered from the Rust structs they mirror,
+    /// `GitBranchDiffSummary` was written out verbatim in two components, and
+    /// `git_diff` was declared two different ways — once fully, once as an inline
+    /// `{additions, deletions}`. This test is what stops the next command from
+    /// starting that over: adding one to the `invoke_handler` without a wrapper
+    /// fails the build.
+    #[test]
+    fn every_git_command_has_a_frontend_wrapper() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("read src/lib.rs");
+        let adapter =
+            std::fs::read_to_string(root.join("../src/ipc/git.ts")).expect("read src/ipc/git.ts");
+
+        // The registration list is `generate_handler![ … ]`; take the git names
+        // out of it rather than off the `pub(crate) fn` definitions, since
+        // registration is what actually exposes a command to the frontend.
+        let start = lib
+            .find("generate_handler!")
+            .expect("generate_handler! in lib.rs");
+        let end = lib[start..].find(']').expect("end of handler list") + start;
+        let mut registered: Vec<&str> = lib[start..end]
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|token| token.starts_with("git_"))
+            .collect();
+        registered.sort_unstable();
+        registered.dedup();
+        assert!(
+            registered.len() >= 20,
+            "only found {} git commands — the parse is wrong, not the code",
+            registered.len()
+        );
+
+        let missing: Vec<&str> = registered
+            .iter()
+            .copied()
+            .filter(|command| !adapter.contains(&format!("\"{command}\"")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "registered but absent from src/ipc/git.ts: {missing:?} — add a wrapper \
+there instead of calling invoke() directly"
+        );
+    }
 }

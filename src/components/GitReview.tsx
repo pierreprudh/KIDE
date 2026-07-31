@@ -17,7 +17,6 @@ import {
   DETAIL_PCT_DEFAULT,
   DETAIL_PCT_KEY,
   GitHistoryGraph,
-  type CommitDetails,
 } from "./GitHistoryGraph";
 import { parseDiffBlocks, DiffView } from "./diffView";
 import {
@@ -27,90 +26,34 @@ import {
 } from "../diffComments";
 import { notify } from "../toast";
 import { listLiveDelegateSessions } from "../ipc/delegatePty";
+import {
+  gitCheckoutBranch,
+  gitCommit,
+  gitCommitDetails,
+  gitDiff,
+  gitDiscard,
+  gitFetch,
+  gitLog,
+  gitPrCheckout,
+  gitPrList,
+  gitPrMerge,
+  gitPrOpen,
+  gitPrView,
+  gitPull,
+  gitPush,
+  gitStage,
+  gitStash,
+  gitStashList,
+  gitStatus as fetchGitStatus,
+  gitUnstage,
+  type CommitDetails,
+  type GitBranch,
+  type GitLog,
+  type GitStash,
+  type PullRequest,
+  type PullRequestDetails,
+} from "../ipc/git";
 import { renderMarkdown } from "./markdown";
-
-type GitCommit = {
-  hash: string;
-  shortHash: string;
-  subject: string;
-  author: string;
-  authorEmail: string;
-  /** Unix seconds. */
-  timestamp: number;
-  refs: string[];
-};
-
-type GitBranch = {
-  name: string;
-  isCurrent: boolean;
-  isRemote: boolean;
-  ahead: number;
-  behind: number;
-  lastSubject: string;
-};
-
-type GitLog = {
-  branch: string;
-  upstream: string | null;
-  ahead: number;
-  behind: number;
-  /** Unix millis. */
-  lastFetchMs: number | null;
-  commits: GitCommit[];
-  branches: GitBranch[];
-};
-
-type GitStash = {
-  index: number;
-  branch: string;
-  message: string;
-  /** Unix seconds. */
-  timestamp: number;
-};
-
-type PullRequest = {
-  number: number;
-  title: string;
-  state: string;
-  isDraft: boolean;
-  author: string;
-  headRef: string;
-  baseRef: string;
-  url: string;
-  additions: number;
-  deletions: number;
-  changedFiles: number;
-  comments: number;
-  commentAuthors: string[];
-  /** Unix millis. */
-  updatedAtMs: number;
-  badge: "open" | "merged" | "closed" | "draft";
-  isCurrentBranch: boolean;
-};
-
-type PrComment = {
-  author: string;
-  body: string;
-  /** Unix millis. */
-  createdAtMs: number;
-};
-
-type PrCommit = {
-  shortHash: string;
-  headline: string;
-  author: string;
-  /** Unix millis. */
-  createdAtMs: number;
-};
-
-type PullRequestDetails = PullRequest & {
-  body: string;
-  mergeable: string;
-  commentThread: PrComment[];
-  commits: PrCommit[];
-  /** Unix millis. */
-  createdAtMs: number;
-};
 
 type PullRequestFilter = "open" | "draft" | "merged" | "all";
 
@@ -214,10 +157,7 @@ const DiffViewer = memo(function DiffViewer({ workspaceRoot, open }: DiffViewerP
     setLoading(true);
     setError(null);
     let cancelled = false;
-    invoke<{ path: string; diff: string; additions: number; deletions: number }>(
-      "git_diff",
-      { workspaceRoot, path: openPath, staged: openStaged }
-    )
+    gitDiff(workspaceRoot, openPath, openStaged)
       .then((d) => {
         if (!cancelled) setDiff(d);
       })
@@ -1349,7 +1289,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
       return;
     }
     let cancelled = false;
-    invoke<CommitDetails>("git_commit_details", { workspaceRoot, hash: selectedCommit })
+    gitCommitDetails(workspaceRoot, selectedCommit)
       .then((d) => { if (!cancelled) setCommitDetail(d); })
       .catch(() => { if (!cancelled) setCommitDetail(null); });
     return () => { cancelled = true; };
@@ -1366,7 +1306,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
     if (!workspaceRoot) return;
     setLogLoading(true);
     try {
-      const next = await invoke<GitLog>("git_log", { workspaceRoot, limit: 60 });
+      const next = await gitLog(workspaceRoot, 60);
       setLog(next);
     } catch (e) {
       setActionMessage({ kind: "err", text: e instanceof Error ? e.message : String(e) });
@@ -1378,7 +1318,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   const refreshStashes = useCallback(async () => {
     if (!workspaceRoot) return;
     try {
-      const list = await invoke<GitStash[]>("git_stash_list", { workspaceRoot });
+      const list = await gitStashList(workspaceRoot);
       setStashes(list);
     } catch {
       setStashes([]);
@@ -1390,7 +1330,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
     setPrsLoading(true);
     setPrError(null);
     try {
-      const list = await invoke<PullRequest[]>("git_pr_list", { workspaceRoot });
+      const list = await gitPrList(workspaceRoot);
       setPrs(list);
     } catch (e) {
       setPrError(e instanceof Error ? e.message : String(e));
@@ -1416,7 +1356,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
       return;
     }
     try {
-      const next = await invoke<GitStatus>("git_status", { workspaceRoot });
+      const next = await fetchGitStatus(workspaceRoot);
       setLocalStatus(next);
       await onRefreshGitStatusRef.current();
     } catch (e) {
@@ -1492,21 +1432,21 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function stageFile(path: string) {
     if (!workspaceRoot) return;
     try {
-      await withAction("Staged", () => invoke("git_stage", { workspaceRoot, path }));
+      await withAction("Staged", () => gitStage(workspaceRoot, path));
       await refreshStatus();
     } catch { /* message already shown */ }
   }
   async function unstageFile(path: string) {
     if (!workspaceRoot) return;
     try {
-      await withAction("Unstaged", () => invoke("git_unstage", { workspaceRoot, path }));
+      await withAction("Unstaged", () => gitUnstage(workspaceRoot, path));
       await refreshStatus();
     } catch { /* message already shown */ }
   }
   async function discardFile(path: string) {
     if (!workspaceRoot) return;
     try {
-      await withAction("Discarded", () => invoke("git_discard", { workspaceRoot, path }));
+      await withAction("Discarded", () => gitDiscard(workspaceRoot, path));
       await refreshStatus();
       if (open?.path === path) setOpen(null);
     } catch { /* message already shown */ }
@@ -1514,14 +1454,14 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function stageAll() {
     if (!workspaceRoot) return;
     try {
-      await withAction("Staged all", () => invoke("git_stage", { workspaceRoot, path: "." }));
+      await withAction("Staged all", () => gitStage(workspaceRoot, "."));
       await refreshStatus();
     } catch { /* message already shown */ }
   }
   async function unstageAll() {
     if (!workspaceRoot) return;
     try {
-      await withAction("Unstaged all", () => invoke("git_unstage", { workspaceRoot, path: "." }));
+      await withAction("Unstaged all", () => gitUnstage(workspaceRoot, "."));
       await refreshStatus();
     } catch { /* message already shown */ }
   }
@@ -1530,7 +1470,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
     if (!workspaceRoot || !commitMessage.trim() || stagedFiles.length === 0) return;
     setCommitLoading(true);
     try {
-      await withAction("Committed", () => invoke("git_commit", { workspaceRoot, message: commitMessage }));
+      await withAction("Committed", () => gitCommit(workspaceRoot, commitMessage));
       setCommitMessage("");
       setOpen(null);
       await refreshStatus();
@@ -1541,7 +1481,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function fetch() {
     if (!workspaceRoot) return;
     try {
-      await withAction("Fetched", () => invoke("git_fetch", { workspaceRoot, remote: null }));
+      await withAction("Fetched", () => gitFetch(workspaceRoot));
       await refreshLog();
       await refreshPrs();
     } catch { /* message already shown */ }
@@ -1549,7 +1489,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function pull() {
     if (!workspaceRoot) return;
     try {
-      await withAction("Pulled", () => invoke("git_pull", { workspaceRoot }));
+      await withAction("Pulled", () => gitPull(workspaceRoot));
       await refreshLog();
       await refreshStatus();
     } catch { /* message already shown */ }
@@ -1557,7 +1497,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function push() {
     if (!workspaceRoot) return;
     try {
-      await withAction("Pushed", () => invoke("git_push", { workspaceRoot }));
+      await withAction("Pushed", () => gitPush(workspaceRoot));
       await refreshLog();
       await refreshPrs();
     } catch { /* message already shown */ }
@@ -1568,7 +1508,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
       return;
     }
     try {
-      await withAction(`Switched to ${name}`, () => invoke("git_checkout_branch", { workspaceRoot, branch: name }));
+      await withAction(`Switched to ${name}`, () => gitCheckoutBranch(workspaceRoot, name));
       setBranchMenuOpen(false);
       setOpen(null);
       await refreshLog();
@@ -1578,7 +1518,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function stashPush() {
     if (!workspaceRoot) return;
     try {
-      await withAction("Stashed", () => invoke("git_stash", { workspaceRoot, action: "push", message: "WIP" }));
+      await withAction("Stashed", () => gitStash(workspaceRoot, "push", "WIP"));
       await refreshStashes();
       await refreshStatus();
     } catch { /* message already shown */ }
@@ -1586,7 +1526,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function stashPop() {
     if (!workspaceRoot) return;
     try {
-      await withAction("Stash popped", () => invoke("git_stash", { workspaceRoot, action: "pop" }));
+      await withAction("Stash popped", () => gitStash(workspaceRoot, "pop"));
       await refreshStashes();
       await refreshStatus();
     } catch { /* message already shown */ }
@@ -1604,7 +1544,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
     setSelectedPr(null);
     setPrDetailLoading(true);
     try {
-      const detail = await invoke<PullRequestDetails>("git_pr_view", { workspaceRoot, number: n });
+      const detail = await gitPrView(workspaceRoot, n);
       setSelectedPr(detail);
     } catch (e) {
       setActionMessage({ kind: "err", text: e instanceof Error ? e.message : String(e) });
@@ -1616,14 +1556,14 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function openPrInBrowser(n: number) {
     if (!workspaceRoot) return;
     try {
-      const url = await withAction("Opened in browser", () => invoke<string>("git_pr_open", { workspaceRoot, number: n }));
+      const url = await withAction("Opened in browser", () => gitPrOpen(workspaceRoot, n));
       void url;
     } catch { /* message already shown */ }
   }
   async function checkoutPr(n: number) {
     if (!workspaceRoot) return;
     try {
-      await withAction(`Checked out #${n}`, () => invoke("git_pr_checkout", { workspaceRoot, number: n }));
+      await withAction(`Checked out #${n}`, () => gitPrCheckout(workspaceRoot, n));
       await refreshLog();
       await refreshStatus();
       await refreshPrs();
@@ -1634,7 +1574,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
     if (!workspaceRoot) return;
     if (!confirm(`Merge PR #${n}?`)) return;
     try {
-      await withAction(`Merged #${n}`, () => invoke("git_pr_merge", { workspaceRoot, number: n, method: "merge" }));
+      await withAction(`Merged #${n}`, () => gitPrMerge(workspaceRoot, n));
       await refreshPrs();
       await refreshLog();
       await refreshStatus();

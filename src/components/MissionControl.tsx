@@ -1,6 +1,7 @@
 import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listProviderModels } from "../ipc/aiProviders";
+import { gitBranchDiff, type GitBranchDiff } from "../ipc/git";
 import {
   attachDelegatePty,
   listLiveDelegateSessions,
@@ -119,20 +120,6 @@ const ArtifactInspector = lazy(() =>
   import("./ArtifactInspector").then((module) => ({ default: module.ArtifactInspector }))
 );
 
-type GitBranchDiffSummary = {
-  baseBranch: string;
-  branch: string;
-  mergeBase: string;
-  diff: string;
-  additions: number;
-  deletions: number;
-  files: Array<{
-    path: string;
-    status: string;
-    additions: number;
-    deletions: number;
-  }>;
-};
 
 function patchForFile(diff: string, path: string): string {
   const lines = diff.replace(/\n$/, "").split("\n");
@@ -3313,7 +3300,7 @@ function RunDetail({
   const [exportState, setExportState] = useState<"idle" | "copying" | "copied" | "error">("idle");
   const [evidenceState, setEvidenceState] = useState<"idle" | "exporting" | "saved" | "error">("idle");
   const [compareState, setCompareState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [branchDiff, setBranchDiff] = useState<GitBranchDiffSummary | null>(null);
+  const [branchDiff, setBranchDiff] = useState<GitBranchDiff | null>(null);
   const [compareError, setCompareError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -3381,11 +3368,7 @@ function RunDetail({
     setCompareState("loading");
     setCompareError(null);
     try {
-      const next = await invoke<GitBranchDiffSummary>("git_branch_diff", {
-        workspaceRoot,
-        branch: run.branch,
-        baseBranch: null,
-      });
+      const next = await gitBranchDiff(workspaceRoot, run.branch);
       setBranchDiff(next);
       setCompareState("ready");
     } catch (err) {

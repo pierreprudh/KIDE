@@ -12,8 +12,7 @@
 // projects progress and reattaches to operator permission/diff pauses.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import type { GitStatus } from "../gitTypes";
+import { gitDiff, gitStatus } from "../ipc/git";
 import { listProviderModels } from "../ipc/aiProviders";
 import {
   routeTask,
@@ -706,17 +705,13 @@ function DelegateReviewChanges({ workspaceRoot }: { workspaceRoot: string | null
     let cancelled = false;
     (async () => {
       try {
-        const status = await invoke<GitStatus>("git_status", { workspaceRoot });
+        const status = await gitStatus(workspaceRoot);
         // Cap the per-file diff fan-out so a pathological changeset can't stall
         // the review — the rest still show as touched, just without counts.
         const rows = await Promise.all(
           status.files.slice(0, 60).map(async (file) => {
             try {
-              const diff = await invoke<{ additions: number; deletions: number }>("git_diff", {
-                workspaceRoot,
-                path: file.path,
-                staged: file.staged,
-              });
+              const diff = await gitDiff(workspaceRoot, file.path, file.staged);
               return { path: file.path, status: file.status, additions: diff.additions, deletions: diff.deletions };
             } catch {
               return { path: file.path, status: file.status, additions: 0, deletions: 0 };

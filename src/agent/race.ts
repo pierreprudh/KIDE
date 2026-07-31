@@ -12,10 +12,10 @@
 // - Command permissions still gate. A run that hits one pauses and surfaces
 //   in Mission Control's attention queue, where resuming opens a panel.
 
-import { invoke } from "@tauri-apps/api/core";
 import { errMessage } from "../errors";
 import { addRace, type RaceGroup, type RaceMember } from "../races";
 import { worktreeName, type WorktreeInfo } from "../worktrees";
+import { gitWorktreeAdd, gitWorktreeRemove } from "../ipc/git";
 import { startAgentRun } from "./client";
 import type { ProviderId } from "./types";
 
@@ -39,11 +39,7 @@ export async function dispatchRace(opts: {
     const branch = `klide/race-${stamp}-${i + 1}`;
     let worktree: WorktreeInfo | null = null;
     try {
-      worktree = await invoke<WorktreeInfo>("git_worktree_add", {
-        workspaceRoot: opts.workspaceRoot,
-        branch,
-        copyFiles: null,
-      });
+      worktree = await gitWorktreeAdd(opts.workspaceRoot, branch);
       const session = await startAgentRun(
         {
           workspaceRoot: worktree.path,
@@ -78,10 +74,7 @@ export async function dispatchRace(opts: {
       // report the cleanup failure instead of deleting work.
       if (worktree) {
         try {
-          await invoke("git_worktree_remove", {
-            workspaceRoot: opts.workspaceRoot,
-            path: worktree.path,
-            force: false,
+          await gitWorktreeRemove(opts.workspaceRoot, worktree.path, {
             cleanFiles: worktree.bootstrapped,
             deleteBranch: worktree.branch,
           });

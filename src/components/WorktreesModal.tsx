@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { Z } from "../zLayers";
 import type { WorktreeInfo } from "../worktrees";
+import { gitWorktreeList, gitWorktreeMerge, gitWorktreeRemove } from "../ipc/git";
 
 // Worktrees — the fleet's review/merge surface. Lists the repo's git
 // worktrees and lets you open one in a pinned AI panel, merge its branch back
@@ -35,7 +35,7 @@ export function WorktreesModal({ open, workspaceRoot, onOpenWorktree, onNotice, 
     if (!workspaceRoot) return;
     setLoading(true);
     try {
-      const list = await invoke<Worktree[]>("git_worktree_list", { workspaceRoot });
+      const list = await gitWorktreeList(workspaceRoot);
       setWorktrees(list);
     } catch (err) {
       onNotice(`Couldn't list worktrees: ${err instanceof Error ? err.message : String(err)}`);
@@ -63,7 +63,7 @@ export function WorktreesModal({ open, workspaceRoot, onOpenWorktree, onNotice, 
     if (!workspaceRoot || !branch) return;
     setBusyPath(path);
     try {
-      const msg = await invoke<string>("git_worktree_merge", { workspaceRoot, branch });
+      const msg = await gitWorktreeMerge(workspaceRoot, branch);
       onNotice(msg);
     } catch (err) {
       onNotice(err instanceof Error ? err.message : String(err));
@@ -76,7 +76,7 @@ export function WorktreesModal({ open, workspaceRoot, onOpenWorktree, onNotice, 
     if (!workspaceRoot) return;
     setBusyPath(path);
     try {
-      await invoke("git_worktree_remove", { workspaceRoot, path, force: false });
+      await gitWorktreeRemove(workspaceRoot, path);
       onNotice(`Removed worktree ${basename(path)}.`);
       await refresh();
     } catch (err) {
