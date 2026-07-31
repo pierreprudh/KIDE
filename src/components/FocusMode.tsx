@@ -1,19 +1,17 @@
-// FocusMode — the third main screen: a chat-first workspace in the Codex /
-// Claude-desktop pattern, spoken in Klide's language. A quiet left rail
-// (conversations grouped by project, profile at the foot), and a main canvas
-// that is either the hero home (greeting + one large composer + pick-up-where-
-// you-left-off cards) or the live conversation (the same fully-wired AiPanel
-// instance the other layouts use, in its fullscreen "focus" design variant —
-// centered reading column, roomier type — passed in via `renderChat`).
+// FocusMode — Klide's chat-first workspace, blending the project/thread
+// command-centre pattern with an artifact-first agent home. A quiet left rail
+// groups conversations by project; the main canvas pairs a centered start /
+// resume stage with a persistent bottom composer. A live conversation reuses
+// the fully-wired AiPanel in its fullscreen "focus" design variant — centered
+// reading column, roomier type — passed in via `renderChat`.
 //
 // Identity rules honoured here: bone surfaces, hairline borders, sage accent
-// only, no chips/pills/status dots — state is plain text, middots, color, and
-// a 2px spine. Motion is choreography, not decoration: the rail settles in
-// from its hairline, hero elements rise in three beats (title → composer →
-// cards, `klide-focus-rise`), and home ⇄ chat crossfades as one surface
-// (`klide-focus-chat-in`). All of it collapses under prefers-reduced-motion.
+// only, no chips/pills/status dots. Motion is choreography, not decoration:
+// the rail settles from its hairline, hero elements and task cards arrive in
+// short beats, the composer springs up once, and home ⇄ chat crossfades as one
+// surface. All of it collapses under prefers-reduced-motion.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listProviderModels } from "../ipc/aiProviders";
@@ -21,9 +19,10 @@ import { Z } from "../zLayers";
 import { loadConversations, relativeTime, isSubsequence } from "./ai/utils";
 import type { Conversation } from "./ai/types";
 import type { ProviderId } from "../agent/types";
-import { PROVIDER_GROUPS, DEFAULT_MODELS, providerName } from "../agent/providers";
+import { PROVIDER_GROUPS, DEFAULT_MODELS, isDelegateProvider, providerName } from "../agent/providers";
 import { ModelPicker } from "./ai/ModelPicker";
 import { ProviderLogo } from "./ai/icons";
+import { renderMessageBody } from "./ai/ChatMessage";
 
 type Props = {
   workspaceRoot: string | null;
@@ -130,11 +129,32 @@ function SendIcon() {
   );
 }
 
+function BranchIcon() {
+  return (
+    <svg {...iconProps} width={13} height={13}>
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="18" cy="6" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <path d="M6 7v10" />
+      <path d="M8 7c5 0 3 8 8 8h2" />
+    </svg>
+  );
+}
+
+function LocalIcon() {
+  return (
+    <svg {...iconProps} width={13} height={13}>
+      <rect x="3" y="4" width="18" height="13" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 17v4" />
+    </svg>
+  );
+}
+
 /* ---------------------------------------------------------------- sidebar */
 
-// Rows follow the Settings sidebar design: 29px tall, radius 9, active =
-// strong text + weight, inactive = subtle; hover fill only when inactive.
-// No spine, no accent icons — weight and color carry "current".
+// One shared rail row for navigation and workspace disclosure. Hover/focus
+// styling lives in CSS so pointer movement does not trigger React renders.
 function NavRow({
   icon,
   label,
@@ -149,33 +169,14 @@ function NavRow({
   /** When defined, the row is a disclosure — a small chevron turns with it. */
   expanded?: boolean;
 }) {
-  const [hover, setHover] = useState(false);
   return (
     <button
       type="button"
       onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      aria-current={active ? "true" : undefined}
+      aria-current={active ? "page" : undefined}
       aria-expanded={expanded}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 9,
-        width: "100%",
-        height: 29,
-        textAlign: "left",
-        padding: "0 10px",
-        borderRadius: 9,
-        border: "1px solid transparent",
-        background: hover && !active ? "var(--bg-hover)" : "transparent",
-        color: active ? "var(--fg-strong)" : "var(--fg-subtle)",
-        fontSize: 13,
-        fontWeight: active ? 600 : 400,
-        cursor: "pointer",
-        transition:
-          "background var(--motion-fast) var(--ease-out), color 0.15s var(--ease-out)",
-      }}
+      className="klide-focus-nav-row"
+      data-active={active || undefined}
     >
       <span style={{ width: 16, height: 16, display: "grid", placeItems: "center", flexShrink: 0 }}>
         {icon}
@@ -210,19 +211,9 @@ function NavRow({
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div
-      style={{
-        padding: "0 10px",
-        marginTop: 20,
-        marginBottom: 5,
-        fontSize: 9,
-        letterSpacing: 0.4,
-        textTransform: "uppercase",
-        color: "var(--fg-dim)",
-      }}
-    >
+    <h2 className="klide-focus-section-label">
       {children}
-    </div>
+    </h2>
   );
 }
 
@@ -230,37 +221,32 @@ function ConvoRow({
   convo,
   onOpen,
   indent = false,
+  selected = false,
 }: {
   convo: Conversation;
   onOpen: () => void;
   indent?: boolean;
+  selected?: boolean;
 }) {
-  const [hover, setHover] = useState(false);
+  const conversationProvider = convo.provider ?? "ollama";
+
   return (
     <button
       type="button"
       onClick={onOpen}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
       title={convo.title}
-      style={{
-        display: "flex",
-        alignItems: "baseline",
-        gap: 8,
-        width: "100%",
-        height: 27,
-        textAlign: "left",
-        padding: indent ? "0 10px 0 35px" : "0 10px",
-        borderRadius: 9,
-        border: "none",
-        background: hover ? "var(--bg-hover)" : "transparent",
-        color: hover ? "var(--fg-strong)" : "var(--fg-subtle)",
-        fontSize: 12.5,
-        cursor: "pointer",
-        transition:
-          "background var(--motion-fast) var(--ease-out), color 0.15s var(--ease-out)",
-      }}
+      className="klide-focus-convo-row"
+      data-selected={selected || undefined}
+      aria-current={selected ? "page" : undefined}
+      style={{ paddingLeft: indent ? 35 : 10 }}
     >
+      <span
+        className="klide-focus-convo-provider"
+        title={providerName(conversationProvider)}
+        aria-hidden="true"
+      >
+        <ProviderLogo id={conversationProvider} size={13} />
+      </span>
       <span
         style={{
           flex: 1,
@@ -273,10 +259,233 @@ function ConvoRow({
       >
         {convo.title || "Untitled"}
       </span>
-      <span style={{ flexShrink: 0, fontSize: 10.5, color: "var(--fg-dim)" }}>
+      <span className="klide-focus-convo-time">
         {relativeTime(convo.updatedAt)}
       </span>
     </button>
+  );
+}
+
+type ProviderHistory = {
+  provider: ProviderId;
+  conversations: Conversation[];
+  updatedAt: number;
+};
+
+function groupHistoryByProvider(conversations: Conversation[]): ProviderHistory[] {
+  const groups = new Map<ProviderId, Conversation[]>();
+
+  for (const conversation of conversations) {
+    const conversationProvider = conversation.provider ?? "ollama";
+    const existing = groups.get(conversationProvider);
+    if (existing) existing.push(conversation);
+    else groups.set(conversationProvider, [conversation]);
+  }
+
+  return Array.from(groups, ([groupProvider, groupedConversations]) => {
+    groupedConversations.sort((a, b) => b.updatedAt - a.updatedAt);
+    return {
+      provider: groupProvider,
+      conversations: groupedConversations,
+      updatedAt: groupedConversations[0]?.updatedAt ?? 0,
+    };
+  }).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function providerHistoryKey(project: string, historyProvider: ProviderId): string {
+  return `${project}\u0000${historyProvider}`;
+}
+
+function ProviderHistoryGroup({
+  group,
+  expanded,
+  selectedConversationId,
+  onToggle,
+  onOpen,
+}: {
+  group: ProviderHistory;
+  expanded: boolean;
+  selectedConversationId?: string;
+  onToggle: () => void;
+  onOpen: (conversation: Conversation) => void;
+}) {
+  const readOnly = isDelegateProvider(group.provider);
+  const countLabel = `${group.conversations.length} ${group.conversations.length === 1 ? "conversation" : "conversations"}`;
+
+  return (
+    <div
+      className="klide-focus-provider-history"
+      data-readonly={readOnly || undefined}
+    >
+      <button
+        type="button"
+        className="klide-focus-provider-history-row"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        title={`${providerName(group.provider)} · ${countLabel}${readOnly ? " · Read only" : ""}`}
+      >
+        <span className="klide-focus-provider-history-logo" aria-hidden="true">
+          <ProviderLogo id={group.provider} size={14} />
+        </span>
+        <span className="klide-focus-provider-history-name">
+          {providerName(group.provider)}
+        </span>
+        {readOnly ? (
+          <span className="klide-focus-provider-history-readonly">Read only</span>
+        ) : null}
+        <span
+          className="klide-focus-provider-history-count"
+          aria-label={countLabel}
+        >
+          {group.conversations.length}
+        </span>
+        <svg
+          className="klide-focus-provider-history-chevron"
+          width="9"
+          height="9"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m9 6 6 6-6 6" />
+        </svg>
+      </button>
+
+      {expanded ? (
+        <div className="klide-focus-convo-tree klide-focus-provider-conversations">
+          <span className="klide-focus-convo-spine" aria-hidden="true" />
+          {group.conversations.map((conversation) => (
+            <ConvoRow
+              key={conversation.id}
+              convo={conversation}
+              indent
+              selected={selectedConversationId === conversation.id}
+              onOpen={() => onOpen(conversation)}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function HistoryReader({
+  conversation,
+  onClose,
+  onContinue,
+}: {
+  conversation: Conversation;
+  onClose: () => void;
+  onContinue: () => void;
+}) {
+  const provider = conversation.provider ?? "ollama";
+  const delegate = isDelegateProvider(provider);
+  const project = conversation.cwd ? basename(conversation.cwd) : null;
+
+  return (
+    <section
+      className="klide-focus-history-reader klide-focus-chat-in"
+      aria-label={`Conversation history: ${conversation.title || "Untitled"}`}
+    >
+      <header className="klide-focus-history-header">
+        <button
+          type="button"
+          className="klide-focus-history-back"
+          onClick={onClose}
+          aria-label="Back from conversation history"
+          title="Back"
+        >
+          <svg {...iconProps} width={16} height={16}>
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        </button>
+
+        <span className="klide-focus-history-provider" aria-hidden="true">
+          <ProviderLogo id={provider} size={20} />
+        </span>
+
+        <div className="klide-focus-history-heading">
+          <h1>{conversation.title || "Untitled conversation"}</h1>
+          <div className="klide-focus-history-meta">
+            <span>{providerName(provider)}</span>
+            {conversation.model ? <span>{conversation.model}</span> : null}
+            {project ? <span>{project}</span> : null}
+            <span>{new Date(conversation.updatedAt).toLocaleString()}</span>
+          </div>
+        </div>
+
+        {delegate ? (
+          <span
+            className="klide-focus-history-readonly"
+            title="Delegate and CLI conversations are temporarily read-only in Focus mode"
+          >
+            CLI history · read only
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="klide-focus-history-continue"
+            onClick={onContinue}
+          >
+            Continue
+            <svg {...iconProps} width={14} height={14}>
+              <path d="M5 12h14" />
+              <path d="m13 6 6 6-6 6" />
+            </svg>
+          </button>
+        )}
+      </header>
+
+      <div className="klide-focus-history-scroll">
+        <div className="klide-focus-history-transcript">
+          {conversation.msgs.length === 0 ? (
+            <div className="klide-focus-history-empty">
+              This conversation has no saved messages.
+            </div>
+          ) : (
+            conversation.msgs.map((message, index) => {
+              const process = message.role === "tool" || message.role === "system";
+              if (process) {
+                return (
+                  <div
+                    key={`${message.role}-${index}`}
+                    className="klide-focus-history-process"
+                  >
+                    {renderMessageBody(message)}
+                  </div>
+                );
+              }
+              const user = message.role === "user";
+              return (
+                <article
+                  key={`${message.role}-${index}`}
+                  className="klide-focus-history-turn"
+                  data-role={message.role}
+                >
+                  {!user ? (
+                    <span className="klide-focus-history-avatar" aria-hidden="true">
+                      <ProviderLogo id={provider} size={16} />
+                    </span>
+                  ) : null}
+                  <div className="klide-focus-history-turn-body">
+                    <div className="klide-focus-history-role">
+                      {user ? "You" : providerName(provider)}
+                    </div>
+                    <div className="klide-focus-history-bubble">
+                      {renderMessageBody(message)}
+                    </div>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -309,6 +518,7 @@ export function FocusMode({
 }: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [historyConversation, setHistoryConversation] = useState<Conversation | null>(null);
   // "Ask both" strip composer — local draft, cleared on send.
   const [raceAsk, setRaceAsk] = useState("");
   const [username, setUsername] = useState<string>("");
@@ -319,6 +529,18 @@ export function FocusMode({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     () => new Set(workspaceRoot ? [workspaceRoot] : [])
   );
+  // Absence means "follow the active provider". Explicit booleans preserve
+  // the user's disclosure choice independently for every project/provider.
+  const [expandedProviderGroups, setExpandedProviderGroups] = useState<Map<string, boolean>>(
+    () => new Map()
+  );
+
+  useEffect(() => {
+    if (!isDelegateProvider(provider)) return;
+    // Keep the unstable delegate/PTY route out of Focus even when a previous
+    // standard-panel session left one selected.
+    onProviderChange("ollama");
+  }, [provider, onProviderChange]);
 
   useEffect(() => {
     if (!workspaceRoot) return;
@@ -335,6 +557,37 @@ export function FocusMode({
       const next = new Set(prev);
       if (next.has(p)) next.delete(p);
       else next.add(p);
+      return next;
+    });
+  }
+
+  function toggleProviderHistory(project: string, historyProvider: ProviderId) {
+    const key = providerHistoryKey(project, historyProvider);
+    setExpandedProviderGroups((prev) => {
+      const next = new Map(prev);
+      const isExpanded = next.get(key) ?? historyProvider === provider;
+      next.set(key, !isExpanded);
+      return next;
+    });
+  }
+
+  function openHistoryConversation(conversation: Conversation) {
+    setHistoryConversation(conversation);
+    const conversationProject = conversation.cwd;
+    if (!conversationProject) return;
+
+    const historyProvider = conversation.provider ?? "ollama";
+    setExpandedProjects((prev) => {
+      if (prev.has(conversationProject)) return prev;
+      const next = new Set(prev);
+      next.add(conversationProject);
+      return next;
+    });
+    setExpandedProviderGroups((prev) => {
+      const key = providerHistoryKey(conversationProject, historyProvider);
+      if (prev.get(key) === true) return prev;
+      const next = new Map(prev);
+      next.set(key, true);
       return next;
     });
   }
@@ -371,6 +624,13 @@ export function FocusMode({
     }
     return byProject;
   }, [convos]);
+  const providerHistoriesByProject = useMemo(() => {
+    const byProject = new Map<string, ProviderHistory[]>();
+    for (const [project, projectHistory] of convosByProject) {
+      byProject.set(project, groupHistoryByProvider(projectHistory));
+    }
+    return byProject;
+  }, [convosByProject]);
   const projectConvos = useMemo(
     () => (workspaceRoot ? convosByProject.get(workspaceRoot) ?? [] : []),
     [convosByProject, workspaceRoot]
@@ -390,38 +650,54 @@ export function FocusMode({
   const searching = searchOpen && query.trim().length > 0;
 
   return (
-    <div style={{ flex: 1, display: "flex", minWidth: 0, minHeight: 0 }}>
+    <div className="klide-focus-shell">
       {/* ── Left rail ─────────────────────────────────────────────── */}
-      <aside
-        className="klide-focus-rail"
-        style={{
-          width: 248,
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          minHeight: 0,
-          borderRight: "1px solid var(--border)",
-          padding: "12px 8px 8px",
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-          <NavRow icon={<NewChatIcon />} label="New chat" onClick={onNewChat} />
-          <NavRow
-            icon={<SearchIcon />}
-            label="Search"
-            active={searchOpen}
+      <aside className="klide-focus-rail" aria-label="Focus navigation">
+        <div className="klide-focus-brand">
+          <span className="klide-focus-brand-mark" aria-hidden="true">K</span>
+          <span className="klide-focus-brand-name">Klide</span>
+          <button
+            type="button"
+            className="klide-focus-brand-action"
+            aria-label={searchOpen ? "Close conversation search" : "Search conversations"}
+            aria-expanded={searchOpen}
             onClick={() => {
               setSearchOpen((v) => !v);
               setQuery("");
             }}
+          >
+            <SearchIcon />
+          </button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          <NavRow
+            icon={<NewChatIcon />}
+            label="New task"
+            onClick={() => {
+              setHistoryConversation(null);
+              onNewChat();
+            }}
           />
-          <NavRow icon={<BoardIcon />} label="Mission Control" onClick={onOpenMissionControl} />
+          <NavRow
+            icon={<BoardIcon />}
+            label="Mission Control"
+            onClick={() => {
+              setHistoryConversation(null);
+              onOpenMissionControl();
+            }}
+          />
         </div>
 
         {searchOpen && (
           <input
             ref={searchRef}
             className="klide-focus-search"
+            type="search"
+            name="conversation-search"
+            aria-label="Search conversations"
+            autoComplete="off"
+            spellCheck={false}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -439,7 +715,6 @@ export function FocusMode({
               border: "1px solid var(--border)",
               background: "var(--bg-elevated)",
               color: "var(--fg-strong)",
-              outline: "none",
             }}
           />
         )}
@@ -449,12 +724,17 @@ export function FocusMode({
             <>
               <SectionLabel>Results</SectionLabel>
               {filtered.length === 0 ? (
-                <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-dim)" }}>
+                <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-subtle)" }}>
                   No conversations match.
                 </div>
               ) : (
                 filtered.map((c) => (
-                  <ConvoRow key={c.id} convo={c} onOpen={() => onOpenConversation(c)} />
+                  <ConvoRow
+                    key={c.id}
+                    convo={c}
+                    selected={historyConversation?.id === c.id}
+                    onOpen={() => openHistoryConversation(c)}
+                  />
                 ))
               )}
             </>
@@ -462,7 +742,7 @@ export function FocusMode({
             <>
               <SectionLabel>Projects</SectionLabel>
               {projects.length === 0 && (
-                <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-dim)" }}>
+                <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-subtle)" }}>
                   Open a folder to start.
                 </div>
               )}
@@ -470,6 +750,7 @@ export function FocusMode({
                 const isActive = p === workspaceRoot;
                 const isExpanded = expandedProjects.has(p);
                 const history = convosByProject.get(p) ?? [];
+                const providerHistories = providerHistoriesByProject.get(p) ?? [];
                 return (
                   <div key={p}>
                     <NavRow
@@ -481,25 +762,36 @@ export function FocusMode({
                         // Switching makes a project current; clicking the
                         // current one just folds its history open/closed.
                         if (isActive) toggleProject(p);
-                        else onSwitchProject(p);
+                        else {
+                          setHistoryConversation(null);
+                          onSwitchProject(p);
+                        }
                       }}
                     />
-                    {isExpanded &&
-                      history
-                        .slice(0, 8)
-                        .map((c) => (
-                          <ConvoRow
-                            key={c.id}
-                            convo={c}
-                            indent
-                            onOpen={() => onOpenConversation(c)}
-                          />
-                        ))}
-                    {isExpanded && history.length === 0 && (
-                      <div style={{ padding: "2px 10px 4px 35px", fontSize: 11.5, color: "var(--fg-dim)" }}>
+                    {isExpanded && history.length > 0 ? (
+                      <div className="klide-focus-provider-groups">
+                        {providerHistories.map((providerHistory) => {
+                          const key = providerHistoryKey(p, providerHistory.provider);
+                          const providerExpanded =
+                            expandedProviderGroups.get(key) ?? providerHistory.provider === provider;
+                          return (
+                            <ProviderHistoryGroup
+                              key={providerHistory.provider}
+                              group={providerHistory}
+                              expanded={providerExpanded}
+                              selectedConversationId={historyConversation?.id}
+                              onToggle={() => toggleProviderHistory(p, providerHistory.provider)}
+                              onOpen={openHistoryConversation}
+                            />
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {isExpanded && history.length === 0 ? (
+                      <div style={{ padding: "2px 10px 4px 35px", fontSize: 11.5, color: "var(--fg-subtle)", opacity: 0.72 }}>
                         No conversations yet.
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}
@@ -508,15 +800,7 @@ export function FocusMode({
         </div>
 
         {/* Profile foot — local identity, flat avatar (allowed circle). */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 9,
-            padding: "10px 10px 4px",
-            borderTop: "1px solid var(--border)",
-          }}
-        >
+        <div className="klide-focus-profile">
           <span
             aria-hidden
             style={{
@@ -545,13 +829,28 @@ export function FocusMode({
             >
               {username || "Local profile"}
             </span>
-            <span style={{ fontSize: 10.5, color: "var(--fg-dim)" }}>{hostname}</span>
+            <span style={{ fontSize: 10.5, color: "var(--fg-subtle)", opacity: 0.72 }}>{hostname}</span>
           </span>
         </div>
       </aside>
 
       {/* ── Canvas ────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <main className="klide-focus-main">
+        {historyConversation ? (
+          <HistoryReader
+            conversation={historyConversation}
+            onClose={() => setHistoryConversation(null)}
+            onContinue={() => {
+              const conversation = historyConversation;
+              setHistoryConversation(null);
+              onOpenConversation(conversation);
+            }}
+          />
+        ) : null}
+        <div
+          className="klide-focus-current-surface"
+          data-hidden={historyConversation ? true : undefined}
+        >
         {chatActive ? (
           <div
             className="klide-focus-chat-in"
@@ -626,6 +925,10 @@ export function FocusMode({
                 })}
                 {onRaceFollowUp && (
                   <input
+                    type="text"
+                    name="race-follow-up"
+                    aria-label={raceTabs.length > 1 ? "Ask all racing agents" : "Ask the racing agent"}
+                    autoComplete="off"
                     value={raceAsk}
                     onChange={(e) => setRaceAsk(e.target.value)}
                     onKeyDown={(e) => {
@@ -648,7 +951,6 @@ export function FocusMode({
                       border: "1px solid var(--border)",
                       borderRadius: "var(--radius-sm)",
                       padding: "4px 8px",
-                      outline: "none",
                       transition: "border-color var(--motion-fast) var(--ease-out)",
                     }}
                     onFocus={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; }}
@@ -697,7 +999,8 @@ export function FocusMode({
             onContextWindowChange={onContextWindowChange}
           />
         )}
-      </div>
+        </div>
+      </main>
     </div>
   );
 }
@@ -1124,7 +1427,9 @@ function InlineMenu({
 // panel's picker shows, minus the not-yet-available rows. Each row carries
 // its provider mark, ModelPicker-style.
 const PROVIDER_OPTIONS: MenuOption[] = PROVIDER_GROUPS.flatMap((group) => {
-  const items = group.items.filter((item) => item.available);
+  // Focus currently supports native API/local runs only. Delegate CLIs mount a
+  // separate PTY surface and stay out of this picker until that path is stable.
+  const items = group.items.filter((item) => item.available && !isDelegateProvider(item.id));
   if (items.length === 0) return [];
   return [
     { label: group.label, value: `__heading_${group.label}`, heading: true },
@@ -1172,23 +1477,79 @@ function contextLabel(window: number | undefined): string {
 
 /* ------------------------------------------------------------------- home */
 
-const STARTERS: { title: string; sub: string; prompt: string }[] = [
+type StarterKind = "explore" | "build" | "review" | "fix" | "resume";
+
+const STARTERS: { title: string; sub: string; prompt: string; kind: StarterKind }[] = [
   {
-    title: "Explain this codebase",
-    sub: "A guided tour of the structure and key modules",
+    title: "Explore the codebase",
+    sub: "Understand the architecture and key decisions",
     prompt: "Give me a tour of this codebase: the structure, the key modules, and how they fit together.",
+    kind: "explore",
   },
   {
-    title: "Review my working diff",
-    sub: "Look over uncommitted changes before a commit",
+    title: "Build a feature",
+    sub: "Turn an idea into a working implementation",
+    prompt: "Help me build a feature. Start by asking what outcome I want, then inspect the codebase and propose a focused implementation.",
+    kind: "build",
+  },
+  {
+    title: "Review changes",
+    sub: "Find risks and improvements before commit",
     prompt: "Review my uncommitted changes and point out bugs, risks, and cleanups before I commit.",
+    kind: "review",
   },
   {
-    title: "Plan a change",
-    sub: "Turn an idea into concrete steps first",
-    prompt: "Help me plan a change: ask me what I want to build, then propose concrete steps.",
+    title: "Fix a problem",
+    sub: "Diagnose a bug, failure, or regression",
+    prompt: "Help me diagnose and fix a problem. Ask for the symptoms, reproduce it, and propose the smallest reliable fix.",
+    kind: "fix",
   },
 ];
+
+function StarterIcon({ kind }: { kind: StarterKind }) {
+  if (kind === "build") {
+    return (
+      <svg {...iconProps} width={17} height={17}>
+        <path d="m14 4 6 6-10 10H4v-6z" />
+        <path d="m12 6 6 6" />
+      </svg>
+    );
+  }
+  if (kind === "review") {
+    return (
+      <svg {...iconProps} width={17} height={17}>
+        <path d="M4 5h10" />
+        <path d="M4 10h8" />
+        <path d="M4 15h6" />
+        <path d="m15 16 2 2 4-5" />
+      </svg>
+    );
+  }
+  if (kind === "fix") {
+    return (
+      <svg {...iconProps} width={17} height={17}>
+        <path d="m14 6 4-4 4 4-4 4" />
+        <path d="M18 6h-7a7 7 0 1 0 7 7" />
+      </svg>
+    );
+  }
+  if (kind === "resume") {
+    return (
+      <svg {...iconProps} width={17} height={17}>
+        <path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6" />
+        <path d="M4 4v4.6h4.6" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...iconProps} width={17} height={17}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-4-4" />
+      <path d="M8 11h6" />
+      <path d="M11 8v6" />
+    </svg>
+  );
+}
 
 function FocusHome({
   projectName,
@@ -1258,53 +1619,80 @@ function FocusHome({
   const canSend = draft.trim().length > 0;
 
   return (
-    <div
-      style={{
-        flex: 1,
-        minHeight: 0,
-        overflowY: "auto",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "32px 32px 40px",
-      }}
-    >
-      <h1
-        className="klide-focus-rise"
-        style={{
-          margin: "0 0 28px",
-          fontSize: 26,
-          fontWeight: 400,
-          color: "var(--fg-strong)",
-          textAlign: "center",
-          letterSpacing: "-0.015em",
-        }}
-      >
-        {projectName ? `What should we build in ${projectName}?` : "What should we build?"}
-      </h1>
+    <div className="klide-focus-home">
+      <section className="klide-focus-stage" aria-labelledby="klide-focus-title">
+        <div className="klide-focus-rise klide-focus-hero-mark" aria-hidden="true">
+          <span>K</span>
+        </div>
+        <h1 id="klide-focus-title" className="klide-focus-rise">
+          {projectName ? `What should we build in ${projectName}?` : "What should we build?"}
+        </h1>
 
-      {/* Composer — the AI panel's chatbox, verbatim: same card, same
-          textarea metrics, same footer anatomy (hairline top rule, left
-          identity, right controls), plus the provider trigger the hero
-          needs. Model choice IS the panel's ModelPicker component. */}
-      <div className="klide-focus-rise" data-beat="1" style={{ width: "min(660px, 100%)" }}>
-        <div
-          style={{
-            position: "relative",
-            border: `1px solid ${focused ? "var(--accent)" : "var(--border-strong)"}`,
-            borderRadius: "var(--radius-lg)",
-            background: "var(--bg-elevated)",
-            boxShadow: focused
-              ? "0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), 0 4px 16px rgba(38, 38, 32, 0.08)"
-              : "0 1px 3px rgba(38, 38, 32, 0.05)",
-            transition:
-              "border-color var(--motion-med) var(--ease-out), box-shadow var(--motion-med) var(--ease-out)",
-          }}
-        >
-          <div style={{ overflow: "hidden", borderRadius: "var(--radius-lg)" }}>
+        <div className="klide-focus-rise klide-focus-card-area" data-beat="1">
+          <div className="klide-focus-card-label">
+            {recent.length > 0 ? "Continue where you left off" : "Start with a direction"}
+          </div>
+          <div className="klide-focus-card-grid">
+            {(recent.length > 0
+              ? recent.map((c) => ({
+                  key: c.id,
+                  title: c.title || "Untitled conversation",
+                  sub: `${relativeTime(c.updatedAt)} · Resume`,
+                  kind: "resume" as StarterKind,
+                  provider: c.provider ?? "ollama",
+                  onClick: () => onOpenConversation(c),
+                }))
+              : STARTERS.map((s) => ({
+                  key: s.title,
+                  title: s.title,
+                  sub: s.sub,
+                  kind: s.kind,
+                  provider: undefined,
+                  onClick: () => onSubmit(s.prompt),
+                }))
+            ).map((card, index) => (
+              <HomeCard
+                key={card.key}
+                title={card.title}
+                sub={card.sub}
+                kind={card.kind}
+                provider={card.provider}
+                index={index}
+                onClick={card.onClick}
+              />
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* The persistent task dock combines Codex's context ribbon with
+          Claude's bottom-anchored composer. */}
+      <div className="klide-focus-composer-dock">
+        <div className="klide-focus-context-strip" role="group" aria-label="Task context">
+          {projectName && (
+            <span>
+              <FolderIcon />
+              {projectName}
+            </span>
+          )}
+          <span>
+            <LocalIcon />
+            Local
+          </span>
+          {branch && (
+            <span>
+              <BranchIcon />
+              {branch}
+            </span>
+          )}
+        </div>
+
+        <div className="klide-focus-composer" data-focused={focused || undefined}>
           <textarea
             ref={taRef}
+            name="task-prompt"
+            aria-label="Describe a task or ask a question"
+            autoComplete="off"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onFocus={() => setFocused(true)}
@@ -1315,39 +1703,12 @@ function FocusHome({
                 submit();
               }
             }}
-            placeholder="Ask anything…"
+            placeholder="Describe a task or ask a question…"
             rows={2}
-            style={{
-              width: "100%",
-              minHeight: 52,
-              maxHeight: 168,
-              resize: "none",
-              background: "transparent",
-              border: "none",
-              color: "var(--fg-strong)",
-              font: "inherit",
-              fontSize: 13.5,
-              lineHeight: 1.55,
-              padding: "12px 14px 8px",
-              outline: "none",
-              display: "block",
-              boxSizing: "border-box",
-            }}
           />
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 6,
-              padding: "6px 8px",
-              borderTop: "1px solid color-mix(in srgb, var(--border) 30%, transparent)",
-              flexWrap: "nowrap",
-            }}
-          >
-            {/* Left: where this conversation will run — provider trigger in
-                the panel's delegate-identity style (logo + name). */}
-            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: "0 0 auto" }}>
+
+          <div className="klide-focus-composer-footer">
+            <div className="klide-focus-provider-control">
               <InlineMenu
                 label="Provider"
                 display={providerName(provider)}
@@ -1366,8 +1727,8 @@ function FocusHome({
                 }}
               />
             </div>
-            {/* Right: model · effort · context · send — the panel's cluster. */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2, flex: "1 1 auto", minWidth: 0 }}>
+
+            <div className="klide-focus-model-controls">
               <ModelPicker
                 provider={provider}
                 model={model}
@@ -1407,135 +1768,51 @@ function FocusHome({
               <button
                 type="button"
                 onClick={submit}
-                aria-label="Send"
+                aria-label="Send task"
                 disabled={!canSend}
-                style={{
-                  width: 30,
-                  height: 30,
-                  flexShrink: 0,
-                  marginLeft: 4,
-                  display: "grid",
-                  placeItems: "center",
-                  borderRadius: "50%",
-                  border: canSend ? "none" : "1px solid var(--border)",
-                  background: canSend ? "var(--accent)" : "var(--bg-elevated)",
-                  color: canSend ? "var(--control-primary-fg)" : "var(--fg-dim)",
-                  cursor: canSend ? "pointer" : "default",
-                  transition:
-                    "background var(--motion-med) var(--ease-out), color var(--motion-med) var(--ease-out)",
-                }}
+                className="klide-focus-send"
+                data-ready={canSend || undefined}
               >
                 <SendIcon />
               </button>
             </div>
           </div>
-          </div>
         </div>
-
-        {/* Context line — where this conversation will run. */}
-        <div
-          style={{
-            marginTop: 12,
-            display: "flex",
-            justifyContent: "center",
-            gap: 7,
-            fontSize: 11,
-            fontFamily: "var(--font-mono)",
-            color: "var(--fg-subtle)",
-          }}
-        >
-          {projectName && <span>{projectName}</span>}
-          {projectName && branch && <span style={{ color: "var(--fg-dim)" }}>·</span>}
-          {branch && <span>{branch}</span>}
-          {(projectName || branch) && <span style={{ color: "var(--fg-dim)" }}>·</span>}
-          <span>working locally</span>
-        </div>
-      </div>
-
-      {/* Pick-up cards: recent project conversations, else starters. */}
-      <div
-        className="klide-focus-rise"
-        data-beat="2"
-        style={{
-          marginTop: 44,
-          display: "flex",
-          gap: 12,
-          width: "min(760px, 100%)",
-          justifyContent: "center",
-          flexWrap: "wrap",
-        }}
-      >
-        {(recent.length > 0
-          ? recent.map((c) => ({
-              key: c.id,
-              title: c.title || "Untitled conversation",
-              sub: `${relativeTime(c.updatedAt)} · resume`,
-              onClick: () => onOpenConversation(c),
-            }))
-          : STARTERS.map((s) => ({
-              key: s.title,
-              title: s.title,
-              sub: s.sub,
-              onClick: () => onSubmit(s.prompt),
-            }))
-        ).map((card) => (
-          <HomeCard key={card.key} title={card.title} sub={card.sub} onClick={card.onClick} />
-        ))}
       </div>
     </div>
   );
 }
 
-function HomeCard({ title, sub, onClick }: { title: string; sub: string; onClick: () => void }) {
-  const [hover, setHover] = useState(false);
+function HomeCard({
+  title,
+  sub,
+  kind,
+  provider,
+  index,
+  onClick,
+}: {
+  title: string;
+  sub: string;
+  kind: StarterKind;
+  provider?: ProviderId;
+  index: number;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        flex: "1 1 200px",
-        maxWidth: 240,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-start",
-        gap: 4,
-        padding: "13px 14px",
-        borderRadius: 12,
-        border: `1px solid ${hover ? "var(--border-strong)" : "var(--border)"}`,
-        background: hover ? "var(--bg-hover)" : "transparent",
-        cursor: "pointer",
-        textAlign: "left",
-        transition:
-          "background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out)",
-      }}
+      className="klide-focus-home-card"
+      style={{ "--focus-card-delay": `${index * 35}ms` } as CSSProperties}
     >
-      <span
-        style={{
-          fontSize: 12.5,
-          color: "var(--fg-strong)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          maxWidth: "100%",
-        }}
-      >
-        {title}
+      <span className="klide-focus-home-card-icon">
+        {kind === "resume"
+          ? <ProviderLogo id={provider ?? "ollama"} size={17} />
+          : <StarterIcon kind={kind} />}
       </span>
-      <span
-        style={{
-          fontSize: 11,
-          color: "var(--fg-subtle)",
-          lineHeight: 1.45,
-          display: "-webkit-box",
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: "vertical",
-          overflow: "hidden",
-        }}
-      >
-        {sub}
-      </span>
+      <span className="klide-focus-home-card-title">{title}</span>
+      <span className="klide-focus-home-card-sub">{sub}</span>
+      <span className="klide-focus-home-card-arrow" aria-hidden="true">↗</span>
     </button>
   );
 }

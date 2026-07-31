@@ -802,8 +802,8 @@ export function AiPanel({
   // Portalled to <body> like the composer popovers: the menu is taller than
   // the panel's clip region (`.floating-panel` is overflow: hidden), so an
   // in-tree absolute menu gets cut off and its own scrollbar never engages.
-  // Opens downward from the header, so the position is top-anchored with the
-  // max height clamped to the space left below the trigger.
+  // Standard panels open down from the header; Focus mode moves this same
+  // control into the bottom composer and opens it upward instead.
   const {
     open: providerOpen,
     pos: providerMenuPos,
@@ -811,10 +811,17 @@ export function AiPanel({
     menuRef: providerMenuRef,
     openMenu: openProviderMenu,
     close: closeProviderMenu,
-  } = usePortalMenu<{ top: number; left: number; maxHeight: number }>({
+  } = usePortalMenu<{ top?: number; bottom?: number; left: number; maxHeight: number }>({
     computePos: (rect) => {
       const pad = 8;
       const width = 200; // menu minWidth — used for the viewport clamp
+      if (variant === "focus") {
+        return {
+          bottom: Math.round(window.innerHeight - rect.top + 6),
+          left: Math.round(Math.min(Math.max(pad, rect.left), window.innerWidth - width - pad)),
+          maxHeight: Math.round(Math.min(440, rect.top - 6 - pad)),
+        };
+      }
       return {
         top: Math.round(rect.bottom + 6),
         left: Math.round(Math.min(Math.max(pad, rect.left), window.innerWidth - width - pad)),
@@ -835,6 +842,18 @@ export function AiPanel({
   const providerGroups = useMemo(
     () => providerGroupsWithCustom(customProviders, customCli),
     [customProviders, customCli]
+  );
+  const providerGroupsForSurface = useMemo(
+    () =>
+      variant === "focus"
+        ? providerGroups
+            .map((group) => ({
+              ...group,
+              items: group.items.filter((item) => !isDelegateProvider(item.id)),
+            }))
+            .filter((group) => group.items.length > 0)
+        : providerGroups,
+    [providerGroups, variant],
   );
   // Hosted ("API") providers that have no key configured — badged in the picker
   // so a missing key is visible *before* selecting + sending, not after a failed
@@ -857,7 +876,7 @@ export function AiPanel({
     // Probe key status for hosted ("API") providers so we can badge the ones
     // that aren't configured yet. Best-effort; a failed probe just isn't badged.
     void (async () => {
-      const apiGroup = providerGroups.find((g) => g.label === "API");
+      const apiGroup = providerGroupsForSurface.find((g) => g.label === "API");
       if (!apiGroup) return;
       const missing = new Set<string>();
       await Promise.all(
@@ -872,10 +891,11 @@ export function AiPanel({
     })();
     // Open compact: expand only the stack holding the active provider.
     // (Outside-click close lives in usePortalMenu.)
-    const activeGroup = providerGroups.find((g) => g.items.some((it) => it.id === provider));
+    const activeGroup = providerGroupsForSurface.find((g) => g.items.some((it) => it.id === provider));
     setExpandedGroups(new Set(activeGroup ? [activeGroup.label] : []));
   }, [providerOpen]);
   function selectProvider(id: ProviderId) {
+    if (variant === "focus" && isDelegateProvider(id)) return;
     const nextModel = switchModelForProvider(id);
     transitionConversation({ type: "configured", provider: id, model: nextModel });
     onProviderChange?.(id);
@@ -2937,6 +2957,68 @@ This user request requires workspace inspection. Before answering, you MUST call
   const canSend = !!input.trim() && !serverStarting;
   // Hover-revealed "Send to both" over the send button (race panels only).
   const [raceSendHover, setRaceSendHover] = useState(false);
+  // One provider selector, placed in the panel header normally and in the
+  // composer footer for Focus mode. Keeping a single JSX value ensures the
+  // menu state, trigger ref, and provider mutation path never drift.
+  const providerControl = (
+    <div style={{ position: "relative", minWidth: 0, textTransform: "none", letterSpacing: 0 }}>
+      <button ref={providerTriggerRef} onClick={() => (providerOpen ? closeProviderMenu() : openProviderMenu())}
+        title={isLocalProvider ? (connected ? `${providerName(provider)} · connected` : `${providerName(provider)} · not reachable`) : isDelegateProvider(provider) ? (connected ? `${providerName(provider)} · CLI available` : `${providerName(provider)} · check CLI install/auth`) : (connected ? `${providerName(provider)} · connected` : `${providerName(provider)} · check API key`)}
+        aria-label={`Provider: ${providerName(provider)}`}
+        aria-haspopup="menu" aria-expanded={providerOpen}
+        style={{ display: "flex", alignItems: "center", gap: 7, maxWidth: 200, height: 24, padding: "0 6px", borderRadius: "var(--radius-sm)", background: providerOpen ? "var(--bg-hover)" : "transparent", color: providerOpen ? "var(--fg-strong)" : "var(--fg-subtle)", cursor: "pointer", transition: "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)" }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(e) => { if (!providerOpen) { e.currentTarget.style.color = "var(--fg-subtle)"; e.currentTarget.style.background = "transparent"; } }}>
+        <ProviderLogo id={provider} size={14} />
+        <span style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{providerName(provider)}</span>
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--fg-dim)" }}><path d="M6 9l6 6 6-6" /></svg>
+      </button>
+      {providerOpen && providerMenuPos && createPortal(
+        <div ref={providerMenuRef} role="menu" className="popover-enter" style={{ position: "fixed", top: providerMenuPos.top, bottom: providerMenuPos.bottom, left: providerMenuPos.left, minWidth: 200, maxHeight: providerMenuPos.maxHeight, overflowY: "auto", overscrollBehavior: "contain", background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-md)", boxShadow: "0 6px 24px rgba(38, 38, 32, 0.14)", padding: 4, zIndex: Z.popover }}>
+          {providerGroupsForSurface.map((group) => {
+            const expanded = expandedGroups.has(group.label);
+            const hasActive = group.items.some((it) => it.id === provider);
+            return (
+            <div key={group.label} style={{ marginBottom: 2 }}>
+              <button type="button" onClick={() => toggleGroup(group.label)} aria-expanded={expanded}
+                style={{ position: "sticky", top: 0, zIndex: 1, width: "100%", display: "flex", alignItems: "center", gap: 6, background: "color-mix(in srgb, var(--bg-elevated) 72%, transparent)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", border: "none", cursor: "pointer", fontSize: 9.5, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: !expanded && hasActive ? "var(--fg-strong)" : "var(--fg-dim)", padding: "6px 8px 5px", textAlign: "left", transition: "color 120ms ease" }}
+                onMouseEnter={(e) => { if (!(!expanded && hasActive)) e.currentTarget.style.color = "var(--fg-subtle)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = !expanded && hasActive ? "var(--fg-strong)" : "var(--fg-dim)"; }}>
+                <span style={{ display: "grid", placeItems: "center", flexShrink: 0, transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 140ms cubic-bezier(0.4, 0, 0.2, 1)" }}>
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+                </span>
+                <span style={{ flex: 1 }}>{group.label}</span>
+                <span style={{ fontWeight: 500, opacity: 0.5, fontVariantNumeric: "tabular-nums" }}>{group.items.length}</span>
+              </button>
+              {expanded && group.items.map((item) => {
+                const active = item.id === provider;
+                return (
+                  <button key={item.id} role="menuitem" disabled={!item.available} onClick={() => item.available && selectProvider(item.id)}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: "var(--radius-sm)", background: active ? "var(--bg-hover)" : "transparent", color: item.available ? "var(--fg-strong)" : "var(--fg-dim)", cursor: item.available ? "pointer" : "default", fontSize: 12, textAlign: "left", transition: "background 120ms ease" }}
+                    onMouseEnter={(e) => { if (item.available && !active) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                    onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+                    <span style={{ display: "grid", placeItems: "center", flexShrink: 0, color: item.available ? "var(--fg-subtle)" : "var(--fg-dim)" }}><ProviderLogo id={item.id} size={15} /></span>
+                    {(() => {
+                      const keyless = item.available && keylessProviders.has(item.id);
+                      return (
+                        <span
+                          title={keyless ? "No API key set — add one in Settings" : undefined}
+                          style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: keyless ? "line-through" : undefined, textDecorationThickness: keyless ? "1px" : undefined, color: keyless ? "var(--fg-dim)" : undefined }}
+                        >{item.name}</span>
+                      );
+                    })()}
+                    {active && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--fg-subtle)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>}
+                  </button>
+                );
+              })}
+            </div>
+            );
+          })}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
 
   return (
     <>
@@ -2952,7 +3034,10 @@ This user request requires workspace inspection. Before answering, you MUST call
       </div>,
       document.body,
     )}
-    <aside className="floating-panel" style={{ width: fill ? "100%" : width, height: fill ? "100%" : undefined, margin: fill ? 0 : "4px 4px 4px 0", display: fill || visible ? "flex" : "none", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}
+    <aside
+      className={variant === "focus" ? "klide-focus-ai-surface" : "floating-panel"}
+      aria-label="AI conversation"
+      style={{ width: fill ? "100%" : width, height: fill ? "100%" : undefined, margin: fill ? 0 : "4px 4px 4px 0", display: fill || visible ? "flex" : "none", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}
       onDragOver={(e) => { if (canAttachImages && Array.from(e.dataTransfer?.types ?? []).includes("Files")) { e.preventDefault(); setImageDragOver(true); } }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setImageDragOver(false); }}
       onDrop={(e) => {
@@ -2967,64 +3052,12 @@ This user request requires workspace inspection. Before answering, you MUST call
           <div style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)", background: "var(--bg-elevated)", padding: "6px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>Drop image to attach</div>
         </div>
       )}
-      <header style={{ padding: "8px 10px", fontSize: 11, color: "var(--fg-subtle)", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 500, borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, position: "relative", zIndex: 40 }}>
-        <div style={{ position: "relative", minWidth: 0, textTransform: "none", letterSpacing: 0 }}>
-          <button ref={providerTriggerRef} onClick={() => (providerOpen ? closeProviderMenu() : openProviderMenu())}
-            title={isLocalProvider ? (connected ? `${providerName(provider)} · connected` : `${providerName(provider)} · not reachable`) : isDelegateProvider(provider) ? (connected ? `${providerName(provider)} · CLI available` : `${providerName(provider)} · check CLI install/auth`) : (connected ? `${providerName(provider)} · connected` : `${providerName(provider)} · check API key`)}
-            aria-haspopup="menu" aria-expanded={providerOpen}
-            style={{ display: "flex", alignItems: "center", gap: 7, maxWidth: 200, height: 24, padding: "0 6px", borderRadius: "var(--radius-sm)", background: providerOpen ? "var(--bg-hover)" : "transparent", color: providerOpen ? "var(--fg-strong)" : "var(--fg-subtle)", cursor: "pointer", transition: "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)" }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-            onMouseLeave={(e) => { if (!providerOpen) { e.currentTarget.style.color = "var(--fg-subtle)"; e.currentTarget.style.background = "transparent"; } }}>
-            <ProviderLogo id={provider} size={14} />
-            <span style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{providerName(provider)}</span>
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--fg-dim)" }}><path d="M6 9l6 6 6-6" /></svg>
-          </button>
-          {providerOpen && providerMenuPos && createPortal(
-            <div ref={providerMenuRef} role="menu" className="popover-enter" style={{ position: "fixed", top: providerMenuPos.top, left: providerMenuPos.left, minWidth: 200, maxHeight: providerMenuPos.maxHeight, overflowY: "auto", overscrollBehavior: "contain", background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-md)", boxShadow: "0 6px 24px rgba(38, 38, 32, 0.14)", padding: 4, zIndex: Z.popover }}>
-              {providerGroups.map((group) => {
-                const expanded = expandedGroups.has(group.label);
-                const hasActive = group.items.some((it) => it.id === provider);
-                return (
-                <div key={group.label} style={{ marginBottom: 2 }}>
-                  <button type="button" onClick={() => toggleGroup(group.label)} aria-expanded={expanded}
-                    style={{ position: "sticky", top: 0, zIndex: 1, width: "100%", display: "flex", alignItems: "center", gap: 6, background: "color-mix(in srgb, var(--bg-elevated) 72%, transparent)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", border: "none", cursor: "pointer", fontSize: 9.5, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: !expanded && hasActive ? "var(--fg-strong)" : "var(--fg-dim)", padding: "6px 8px 5px", textAlign: "left", transition: "color 120ms ease" }}
-                    onMouseEnter={(e) => { if (!(!expanded && hasActive)) e.currentTarget.style.color = "var(--fg-subtle)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = !expanded && hasActive ? "var(--fg-strong)" : "var(--fg-dim)"; }}>
-                    <span style={{ display: "grid", placeItems: "center", flexShrink: 0, transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 140ms cubic-bezier(0.4, 0, 0.2, 1)" }}>
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
-                    </span>
-                    <span style={{ flex: 1 }}>{group.label}</span>
-                    <span style={{ fontWeight: 500, opacity: 0.5, fontVariantNumeric: "tabular-nums" }}>{group.items.length}</span>
-                  </button>
-                  {expanded && group.items.map((item) => {
-                    const active = item.id === provider;
-                    return (
-                      <button key={item.id} role="menuitem" disabled={!item.available} onClick={() => item.available && selectProvider(item.id)}
-                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: "var(--radius-sm)", background: active ? "var(--bg-hover)" : "transparent", color: item.available ? "var(--fg-strong)" : "var(--fg-dim)", cursor: item.available ? "pointer" : "default", fontSize: 12, textAlign: "left", transition: "background 120ms ease" }}
-                        onMouseEnter={(e) => { if (item.available && !active) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                        onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}>
-                        <span style={{ display: "grid", placeItems: "center", flexShrink: 0, color: item.available ? "var(--fg-subtle)" : "var(--fg-dim)" }}><ProviderLogo id={item.id} size={15} /></span>
-                        {(() => {
-                          const keyless = item.available && keylessProviders.has(item.id);
-                          return (
-                            <span
-                              title={keyless ? "No API key set — add one in Settings" : undefined}
-                              style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: keyless ? "line-through" : undefined, textDecorationThickness: keyless ? "1px" : undefined, color: keyless ? "var(--fg-dim)" : undefined }}
-                            >{item.name}</span>
-                          );
-                        })()}
-                        {active && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--fg-subtle)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>}
-                      </button>
-                    );
-                  })}
-                </div>
-                );
-              })}
-            </div>,
-            document.body
-          )}
-        </div>
-        {isLocalProvider && (serverError || (!serverStarting && !serverRunning)) && (
+      {variant !== "focus" ? (
+      <header
+        style={{ padding: "8px 10px", fontSize: 11, color: "var(--fg-subtle)", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 500, borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, position: "relative", zIndex: 40 }}
+      >
+        {providerControl}
+        {isLocalProvider && (serverError || (!serverStarting && !serverRunning)) ? (
           <div
             title={serverError ?? `${providerName(provider)} stopped`}
             style={{
@@ -3039,7 +3072,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           >
             {serverError ?? "Stopped"}
           </div>
-        )}
+        ) : null}
         <div style={{ display: "flex", alignItems: "center", gap: 2, textTransform: "none", letterSpacing: 0 }}>
           <div ref={actionsRef} style={{ position: "relative" }}>
             <button
@@ -3145,6 +3178,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           )}
         </div>
       </header>
+      ) : null}
 
       <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
         <div
@@ -3807,10 +3841,17 @@ This user request requires workspace inspection. Before answering, you MUST call
           />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: width < 360 ? 4 : 6, padding: "6px 8px", borderTop: "1px solid color-mix(in srgb, var(--border) 30%, transparent)", flexWrap: "nowrap" }}>
             <div style={{ display: "flex", alignItems: "center", gap: width < 360 ? 4 : 6, minWidth: 0, flex: "0 0 auto", flexWrap: "nowrap", overflow: "hidden" }}>
-              {providerDelegatesWork ? (
-                <div title={`Speaking to ${providerName(provider)} delegate`} style={{ height: 24, display: "inline-flex", alignItems: "center", gap: 6, padding: "0 4px", color: "var(--fg-subtle)", fontSize: 11, fontWeight: 500, flexShrink: 0 }}>
-                  <ProviderLogo id={provider} size={13} /><span>{providerName(provider)}</span>
+              {variant === "focus" ? (
+                <div className="klide-focus-provider-control">
+                  {providerControl}
                 </div>
+              ) : null}
+              {providerDelegatesWork ? (
+                variant !== "focus" ? (
+                  <div title={`Speaking to ${providerName(provider)} delegate`} style={{ height: 24, display: "inline-flex", alignItems: "center", gap: 6, padding: "0 4px", color: "var(--fg-subtle)", fontSize: 11, fontWeight: 500, flexShrink: 0 }}>
+                    <ProviderLogo id={provider} size={13} /><span>{providerName(provider)}</span>
+                  </div>
+                ) : null
               ) : (
                 <div style={{ position: "relative", flexShrink: 0 }}>
                   <button ref={modeTriggerRef} type="button" onClick={() => { if (!streaming) { if (modeOpen) closeModeMenu(); else openModeMenu(); } }} disabled={streaming}

@@ -265,7 +265,7 @@ export function StatusBar({
           onOpenGrid={onOpenGrid}
         />
       )}
-      {showLayoutControls && (
+      {showLayoutControls && !focusMode && (
         <Tooltip label="Reset panel layout to default">
         <button
           onClick={onResetLayout}
@@ -276,8 +276,12 @@ export function StatusBar({
         </button>
         </Tooltip>
       )}
-      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--fg-subtle)" }}>UTF-8</span>
-      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--fg-subtle)" }}>LF</span>
+      {!focusMode && (
+        <>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--fg-subtle)" }}>UTF-8</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--fg-subtle)" }}>LF</span>
+        </>
+      )}
     </footer>
   );
 }
