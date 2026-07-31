@@ -186,7 +186,18 @@ impl RunParser for ClaudeRunParser {
 }
 
 fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
-    let content = std::fs::read_to_string(path).ok()?;
+    // Claude transcripts inline full tool output, so a long session runs to tens
+    // of megabytes on one line apiece. Slurping the file and building a
+    // `serde_json::Value` for every line is what made a single 90 MB transcript
+    // dominate a page. Stream it and skip JSON-parsing oversized lines instead —
+    // the same guard `parse_codex_run` already carries.
+    //
+    // An oversized line is a tool-result blob in practice, so it still counts as
+    // a turn (read off the raw bytes) but contributes no tokens, tool paths, or
+    // title. That trade is deliberate: those live on the small metadata lines.
+    const MAX_PARSE_LINE: usize = 32 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
     let id = path.file_stem()?.to_string_lossy().to_string();
     let parent_id = claude_subagent_parent_id(path);
     let is_subagent_log = parent_id.is_some();
@@ -197,8 +208,18 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     let mut files: HashSet<String> = HashSet::new();
     let mut subagent_count: u32 = 0;
     let mut last_event: Option<String> = None;
-    for line in content.lines() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
+    for line in std::io::BufRead::lines(reader) {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if line.len() > MAX_PARSE_LINE {
+            if oversized_line_counts_as_turn(&line, is_subagent_log) {
+                count += 1;
+            }
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -324,6 +345,17 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
         last_event,
         parent_id,
     })
+}
+
+/// Whether an oversized transcript line is one of the operator's turns, decided
+/// from the raw bytes because the point of the size guard is to not parse it.
+/// Mirrors the `counts_as_main` rule the parsed path applies: sidechain lines are
+/// a sub-agent's own chatter and belong to the child's message count, not this
+/// run's — unless this *is* the sub-agent's transcript, where they're all it has.
+fn oversized_line_counts_as_turn(line: &str, is_subagent_log: bool) -> bool {
+    let is_turn = line.contains(r#""type":"user""#) || line.contains(r#""type":"assistant""#);
+    let is_sidechain = line.contains(r#""isSidechain":true"#);
+    is_turn && (is_subagent_log || !is_sidechain)
 }
 
 fn claude_subagent_parent_id(path: &std::path::Path) -> Option<String> {
@@ -453,6 +485,38 @@ mod tests {
         r#"not json"#,
         "\n",
     );
+
+    /// Claude inlines whole tool results, so a long session carries multi-megabyte
+    /// lines. The parser streams past them instead of deserializing them, but they
+    /// are still turns — the count has to come off the raw bytes.
+    #[test]
+    fn oversized_lines_still_count_as_turns_without_being_parsed() {
+        let home = temp_home("oversized");
+        let p = home.join("big.jsonl");
+        let blob = "x".repeat(64 * 1024);
+        let oversized_turn = format!(r#"{{"type":"user","message":{{"content":"{blob}"}}}}"#);
+        // A sidechain turn is the sub-agent's own chatter; in a *parent*
+        // transcript it must not inflate the parent's count, oversized or not.
+        let oversized_sidechain = format!(
+            r#"{{"type":"assistant","isSidechain":true,"message":{{"content":"{blob}"}}}}"#
+        );
+        std::fs::write(
+            &p,
+            format!("{FIXTURE}{oversized_turn}\n{oversized_sidechain}\n"),
+        )
+        .unwrap();
+
+        let run = parse_run(&p).unwrap();
+
+        // 2 small turns from FIXTURE + the oversized user turn; sidechain excluded.
+        assert_eq!(run.message_count, 3);
+        // Metadata still comes off the small lines.
+        assert_eq!(run.cwd.as_deref(), Some("/Users/x/proj"));
+        assert_eq!(run.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(run.title, "fix the login bug");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn chat_args_run_headless_with_accept_edits() {

@@ -25,7 +25,7 @@ pub use claude_code::ClaudeCode;
 pub use codex::Codex;
 pub use omp::Omp;
 pub use opencode::OpenCode;
-pub(crate) use runs::worktree_label;
+pub(crate) use runs::{retain_candidates_in_workspace, worktree_label};
 pub use runs::{AgentRun, RunCandidate, RunMessage};
 
 /// The frontend's "no model picked" sentinel (`DEFAULT_MODELS` in
@@ -149,6 +149,21 @@ pub trait Delegate: Sync {
     /// candidates from all delegates first, then parses only one page.
     fn discover_runs(&self, home: &str) -> Vec<RunCandidate>;
 
+    /// The candidates that could belong to `workspace_root`, narrowed as cheaply
+    /// as this CLI's storage layout allows. Discovery owns this because only the
+    /// adapter knows where the answer is stored — a column, a directory name, a
+    /// transcript header.
+    ///
+    /// The contract is one-sided: over-including is fine (the caller confirms
+    /// every parsed run's real `cwd`), but dropping a candidate that does belong
+    /// to the workspace makes the run vanish from the board. When in doubt, keep.
+    ///
+    /// The default probes each transcript's head for its `cwd`, which is where
+    /// all three JSONL delegates record it.
+    fn discover_runs_for_workspace(&self, home: &str, workspace_root: &str) -> Vec<RunCandidate> {
+        retain_candidates_in_workspace(self.discover_runs(home), workspace_root)
+    }
+
     /// A parser for this delegate's runs. One is created per page, not per
     /// candidate, so adapters can hold resources that are expensive to open
     /// (OpenCode's SQLite connection, Codex's title index) across the page.
@@ -228,9 +243,20 @@ pub fn list_runs_for_workspace(
     list_runs_matching(home, limit, offset, Some(workspace_root))
 }
 
-fn normalize_path(path: &str) -> String {
+pub(crate) fn normalize_path(path: &str) -> String {
     path.trim().trim_end_matches('/').to_string()
 }
+
+/// How many candidates a single page may parse and then discard as
+/// not-this-workspace before the scan gives up.
+///
+/// `discover_runs_for_workspace` should have narrowed the set already, so misses
+/// here are the cost of an adapter that couldn't answer cheaply. This bound is
+/// what keeps that fallback from degenerating into "parse every log on disk":
+/// a project with fewer runs than a page holds never satisfies the `limit`
+/// break, so without a ceiling the loop walks the entire history — the exact
+/// shape that froze the board on a newly-opened project.
+const MAX_WORKSPACE_MISSES: usize = 128;
 
 fn run_matches_workspace(run: &AgentRun, workspace_root: &str) -> bool {
     run.cwd
@@ -247,7 +273,11 @@ fn list_runs_matching(
 ) -> Vec<AgentRun> {
     let mut candidates: Vec<(usize, RunCandidate)> = Vec::new();
     for (i, delegate) in ALL.iter().enumerate() {
-        for c in delegate.discover_runs(home) {
+        let found = match workspace_root {
+            Some(root) => delegate.discover_runs_for_workspace(home, root),
+            None => delegate.discover_runs(home),
+        };
+        for c in found {
             candidates.push((i, c));
         }
     }
@@ -256,6 +286,7 @@ fn list_runs_matching(
     let mut parsers: Vec<Option<Box<dyn RunParser>>> = ALL.iter().map(|_| None).collect();
     let mut runs: Vec<AgentRun> = Vec::new();
     let mut matched = 0usize;
+    let mut misses = 0usize;
     for (i, c) in candidates {
         let Some(run) = parsers[i]
             .get_or_insert_with(|| ALL[i].run_parser(home))
@@ -265,6 +296,10 @@ fn list_runs_matching(
         };
         if let Some(root) = workspace_root {
             if !run_matches_workspace(&run, root) {
+                misses += 1;
+                if misses >= MAX_WORKSPACE_MISSES {
+                    break;
+                }
                 continue;
             }
         }
@@ -562,6 +597,133 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// The bug this pins: matching a workspace used to require a *full parse* of
+    /// every candidate, because `cwd` only appears after parsing. A project with
+    /// fewer runs than a page holds never satisfies the `limit` break, so opening
+    /// the board on a fresh project walked the entire on-disk history — hundreds
+    /// of megabytes — to find nothing. Narrowing at discovery is what fixes it.
+    #[test]
+    fn workspace_discovery_narrows_before_parsing() {
+        let home = std::env::temp_dir().join("klide-delegate-test-narrowing");
+        let workspace = std::env::temp_dir().join("klide-delegate-test-narrow-ws");
+        let _ = std::fs::remove_dir_all(&home);
+        let proj = home.join(".claude/projects/-tmp-narrow");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join("mine.jsonl"),
+            format!(
+                r#"{{"type":"user","ts":1,"cwd":"{}","message":{{"content":"mine"}}}}"#,
+                workspace.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        for i in 0..50 {
+            std::fs::write(
+                proj.join(format!("other-{i}.jsonl")),
+                r#"{"type":"user","ts":1,"cwd":"/tmp/some-other-project","message":{"content":"x"}}"#,
+            )
+            .unwrap();
+        }
+
+        let home_str = home.to_str().unwrap();
+        assert_eq!(ClaudeCode.discover_runs(home_str).len(), 51);
+        let narrowed =
+            ClaudeCode.discover_runs_for_workspace(home_str, workspace.to_str().unwrap());
+        assert_eq!(
+            narrowed.len(),
+            1,
+            "the 50 other-project transcripts must be dropped before anyone parses them"
+        );
+        assert!(narrowed[0].key.ends_with("mine.jsonl"));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The narrowing contract is one-sided on purpose: a candidate whose cwd
+    /// isn't cheaply readable must survive, or a run silently vanishes from the
+    /// board. Over-including only costs one parse.
+    #[test]
+    fn narrowing_keeps_candidates_whose_cwd_is_not_cheaply_readable() {
+        let home = std::env::temp_dir().join("klide-delegate-test-narrow-unknown");
+        let _ = std::fs::remove_dir_all(&home);
+        let proj = home.join(".claude/projects/-tmp-unknown");
+        std::fs::create_dir_all(&proj).unwrap();
+        // No cwd anywhere in the head — the pre-filter can't judge this one.
+        std::fs::write(
+            proj.join("headless.jsonl"),
+            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        // cwd present but JSON-escaped — we refuse to decode escapes by hand.
+        std::fs::write(
+            proj.join("escaped.jsonl"),
+            r#"{"type":"user","cwd":"/tmp/od\\d","message":{"content":"hi"}}"#,
+        )
+        .unwrap();
+
+        let kept = ClaudeCode.discover_runs_for_workspace(home.to_str().unwrap(), "/tmp/anything");
+        assert_eq!(kept.len(), 2, "unknown cwd must not exclude a candidate");
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// OpenCode stores the workspace as a column, so it narrows in SQL — and the
+    /// same keep-when-unknown rule applies to a NULL directory.
+    #[test]
+    fn opencode_narrows_in_sql_and_keeps_unknown_directories() {
+        let home = std::env::temp_dir().join("klide-delegate-test-oc-narrow");
+        let _ = std::fs::remove_dir_all(&home);
+        let oc = home.join(".local/share/opencode");
+        std::fs::create_dir_all(&oc).unwrap();
+        let conn = rusqlite::Connection::open(oc.join("opencode.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT, title TEXT, directory TEXT, model TEXT, \
+                 time_updated INTEGER, time_created INTEGER, parent_id TEXT);
+             INSERT INTO session VALUES ('oss-mine', 'mine', '/tmp/ws', NULL, 3000, 3000, NULL);
+             INSERT INTO session VALUES ('oss-slash', 'mine', '/tmp/ws/', NULL, 2500, 2500, NULL);
+             INSERT INTO session VALUES ('oss-other', 'other', '/tmp/elsewhere', NULL, 2000, 2000, NULL);
+             INSERT INTO session VALUES ('oss-null', 'unknown', NULL, NULL, 1000, 1000, NULL);",
+        )
+        .unwrap();
+
+        let mut ids: Vec<String> = OpenCode
+            .discover_runs_for_workspace(home.to_str().unwrap(), "/tmp/ws")
+            .into_iter()
+            .map(|c| c.key)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["oss-mine", "oss-null", "oss-slash"]);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The backstop, stated as behaviour: once a page has parsed and discarded
+    /// `MAX_WORKSPACE_MISSES` candidates it stops rather than walking the rest of
+    /// the history. This *can* truncate a page — that is the accepted trade for
+    /// never freezing the board when an adapter can't narrow cheaply.
+    #[test]
+    fn workspace_scan_stops_after_too_many_misses() {
+        let home = std::env::temp_dir().join("klide-delegate-test-miss-ceiling");
+        let _ = std::fs::remove_dir_all(&home);
+        let proj = home.join(".claude/projects/-tmp-misses");
+        std::fs::create_dir_all(&proj).unwrap();
+        // Each decoy hides its cwd from the pre-filter, so it survives narrowing
+        // and is only rejected after a full parse — a miss.
+        let decoys = MAX_WORKSPACE_MISSES + 20;
+        for i in 0..decoys {
+            std::fs::write(
+                proj.join(format!("decoy-{i:04}.jsonl")),
+                "{\"type\":\"user\",\"message\":{\"content\":\"no cwd here\"}}\n",
+            )
+            .unwrap();
+        }
+
+        let scoped = list_runs_for_workspace(home.to_str().unwrap(), 20, 0, "/tmp/never-matches");
+        assert!(scoped.is_empty());
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
