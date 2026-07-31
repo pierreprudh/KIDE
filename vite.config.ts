@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
@@ -28,6 +28,17 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+  },
+  test: {
+    // Coding-agent worktrees live at `.claude/worktrees/<name>/` — inside the
+    // repo, and hidden from `git status` by `.git/info/exclude`. Each one holds
+    // a full copy of `src/`, so vitest's default include globbed their tests
+    // too and every local run silently doubled: 26 files became 52, 215 tests
+    // became 430. CI never saw it (fresh checkout, no worktrees), which is the
+    // worst shape for a wrong number — it only lies on the machine you develop
+    // on. `KIDE-worktrees/` siblings are outside the root and were never
+    // affected.
+    exclude: [...configDefaults.exclude, "**/.claude/worktrees/**"],
   },
   build: {
     // Keep the app shell readable in production output. Monaco's workers stay
