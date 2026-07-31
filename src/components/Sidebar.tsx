@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, FocusEvent, KeyboardEvent } from "react";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { FileTypeIcon } from "./fileMarks";
-import type { GitFile, GitStatus } from "../gitTypes";
+import type { GitFile } from "../gitTypes";
+import { gitStatus } from "../ipc/git";
 
 type Props = {
   onOpen: (path: string, content: string) => void;
@@ -418,7 +419,7 @@ export function Sidebar({
 
   async function refreshGitStatus(workspaceRoot: string): Promise<GitFile[]> {
     try {
-      const status = await invoke<GitStatus>("git_status", { workspaceRoot });
+      const status = await gitStatus(workspaceRoot);
       setGitFiles(status.files);
       return status.files;
     } catch {

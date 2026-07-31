@@ -27,6 +27,12 @@ import { MissionControlSkeleton } from "./components/MissionControlSkeleton";
 import ToastHost from "./components/ToastHost";
 import { notify } from "./toast";
 import { onDelegateExit } from "./ipc/delegatePty";
+import {
+  gitStatus as fetchGitStatus,
+  gitWorktreeAdd,
+  gitWorktreeMerge,
+  gitWorktreeRemove,
+} from "./ipc/git";
 import { eventsToConversation } from "./components/ai/eventsToMsgs";
 import { loadPanelSession } from "./components/ai/utils";
 import type { AgentEvent, ProviderId } from "./agent/types";
@@ -76,7 +82,6 @@ import { raceForRun, removeRace, type RaceGroup } from "./races";
 import {
   worktreeSetupSummary,
   worktreeName,
-  type WorktreeInfo,
   type WorktreeSetupDone,
 } from "./worktrees";
 import { createListenerScope } from "./tauriEvents";
@@ -1063,7 +1068,7 @@ function App() {
       return;
     }
     try {
-      const next = await invoke<GitStatus>("git_status", { workspaceRoot: root });
+      const next = await fetchGitStatus(root);
       setGitStatus(next);
     } catch {
       setGitStatus(null);
@@ -1198,10 +1203,7 @@ function App() {
         return;
       }
       const branch = `klide/fork-${Date.now().toString(36)}`;
-      const wt = await invoke<WorktreeInfo>(
-        "git_worktree_add",
-        { workspaceRoot: baseRoot, branch, copyFiles: null }
-      );
+      const wt = await gitWorktreeAdd(baseRoot, branch);
       openForkedConversation(run, forkConversationFromRun(run, messages, wt.path, {
         branch: wt.branch,
         worktree: worktreeName(wt),
@@ -1220,10 +1222,7 @@ function App() {
     }
     try {
       const branch = `klide/turn-${Date.now().toString(36)}`;
-      const wt = await invoke<WorktreeInfo>(
-        "git_worktree_add",
-        { workspaceRoot: root, branch, copyFiles: null }
-      );
+      const wt = await gitWorktreeAdd(root, branch);
       const forked: Conversation = {
         ...convo,
         cwd: wt.path,
@@ -1272,20 +1271,14 @@ function App() {
       : `Merge ${run.branch} into the main checkout, then remove its worktree?`;
     if (!confirm(confirmMsg)) return;
     try {
-      const msg = await invoke<string>("git_worktree_merge", { workspaceRoot, branch: run.branch });
+      const msg = await gitWorktreeMerge(workspaceRoot, run.branch);
       // Teardown is best-effort and post-merge: the work is already in main, so
       // a cleanup hiccup must not read as a failed merge. Collect what we
       // couldn't remove and report it alongside the success.
       const failures: string[] = [];
       const removeWorktree = async (path: string, branch: string, force: boolean) => {
         try {
-          await invoke("git_worktree_remove", {
-            workspaceRoot,
-            path,
-            force,
-            cleanFiles: null,
-            deleteBranch: branch,
-          });
+          await gitWorktreeRemove(workspaceRoot, path, { force, deleteBranch: branch });
         } catch (e) {
           failures.push(`${branch}: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -1468,10 +1461,7 @@ function App() {
     }
     const name = branch?.trim() || `klide/wt-${Date.now().toString(36)}`;
     try {
-      const wt = await invoke<WorktreeInfo>(
-        "git_worktree_add",
-        { workspaceRoot, branch: name, copyFiles: null }
-      );
+      const wt = await gitWorktreeAdd(workspaceRoot, name);
       setView("workbench");
       if (!aiVisible) togglePanel("ai");
       appendAiPanel({ cwd: wt.path });

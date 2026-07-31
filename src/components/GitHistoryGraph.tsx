@@ -15,6 +15,7 @@
 import { Component, memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { layoutGraph, splitRefs, type GraphCommit, type GraphRow } from "../gitGraph";
+import { gitGraph, type CommitDetails } from "../ipc/git";
 import { parseDiffBlocks, DiffView, FileStatusIcon } from "./diffView";
 import { renderMarkdown } from "./markdown";
 import { ProviderLogo } from "./ai/icons";
@@ -318,23 +319,6 @@ const headerCellStyle: React.CSSProperties = {
   letterSpacing: "0.06em",
   textTransform: "uppercase",
   color: "var(--fg-dim)",
-};
-
-type CommitFile = { path: string; status: string; additions: number; deletions: number };
-
-export type CommitDetails = {
-  hash: string;
-  shortHash: string;
-  subject: string;
-  body: string;
-  author: string;
-  authorEmail: string;
-  timestamp: number;
-  refs: string[];
-  files: CommitFile[];
-  diff: string;
-  additions: number;
-  deletions: number;
 };
 
 const DETAIL_DIFF_LIMIT = 1200;
@@ -754,7 +738,7 @@ const GitHistoryGraphInner = memo(function GitHistoryGraphInner({ workspaceRoot,
   useEffect(() => {
     if (!workspaceRoot) return;
     let cancelled = false;
-    invoke<GraphCommit[]>("git_graph", { workspaceRoot, limit: 300 })
+    gitGraph(workspaceRoot, 300)
       .then((c) => {
         if (cancelled) return;
         setCommits(c);

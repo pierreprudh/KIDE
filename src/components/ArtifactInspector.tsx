@@ -1,35 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
-import { invoke } from "@tauri-apps/api/core";
 import type { CheckpointEntry } from "../agent/types";
 import type { ThemeId } from "../theme";
 import { getMonacoThemeId, prepareMonaco } from "../theme";
-import type { GitStatus } from "../gitTypes";
+import { gitBranchDiff, gitDiff, gitStatus } from "../ipc/git";
 import { readWorkspaceTextFile, writeWorkspaceTextFile } from "../workspaceFs";
 import { notify } from "../toast";
 import { DiffView, parseDiffBlocks, type FileCount } from "./diffView";
-
-type GitBranchDiffSummary = {
-  baseBranch: string;
-  branch: string;
-  mergeBase: string;
-  diff: string;
-  additions: number;
-  deletions: number;
-  files: Array<{
-    path: string;
-    status: string;
-    additions: number;
-    deletions: number;
-  }>;
-};
-
-type GitFileDiff = {
-  path: string;
-  diff: string;
-  additions: number;
-  deletions: number;
-};
 
 export type ArtifactRequest =
   | {
@@ -297,14 +274,10 @@ function RunReviewSurface({ request }: { request: Extract<ArtifactRequest, { kin
     let cancelled = false;
 
     async function workingTreeReview() {
-      const status = await invoke<GitStatus>("git_status", { workspaceRoot: request.workspaceRoot });
+      const status = await gitStatus(request.workspaceRoot);
       const rows = await Promise.all(
         status.files.map(async (file) => {
-          const result = await invoke<GitFileDiff>("git_diff", {
-            workspaceRoot: request.workspaceRoot,
-            path: file.path,
-            staged: file.staged,
-          });
+          const result = await gitDiff(request.workspaceRoot, file.path, file.staged);
           return { file, result };
         })
       );
@@ -329,11 +302,7 @@ function RunReviewSurface({ request }: { request: Extract<ArtifactRequest, { kin
         let next = null;
         if (request.branch) {
           try {
-            const branch = await invoke<GitBranchDiffSummary>("git_branch_diff", {
-              workspaceRoot: request.workspaceRoot,
-              branch: request.branch,
-              baseBranch: null,
-            });
+            const branch = await gitBranchDiff(request.workspaceRoot, request.branch);
             if (branch.diff.trim()) {
               next = {
                 diff: branch.diff,
