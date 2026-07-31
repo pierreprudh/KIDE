@@ -327,11 +327,13 @@ impl AccountProvider for ClaudeProvider {
         name: &str,
         _existing: Option<&Account>,
     ) -> Result<(Vec<String>, Option<String>), String> {
-        let (kref, file) = capture_claude(dir, name)?;
+        let cfg = claude_config_path().ok_or("Could not resolve home directory")?;
+        let (kref, file) = capture_claude(&Keyring, dir, &cfg, name)?;
         Ok((vec![file], Some(kref)))
     }
-    fn restore(&self, _dir: &Path, account: &Account) -> Result<(), String> {
-        restore_claude(account)
+    fn restore(&self, dir: &Path, account: &Account) -> Result<(), String> {
+        let cfg = claude_config_path().ok_or("Could not resolve home directory")?;
+        restore_claude(&Keyring, dir, &cfg, account)
     }
 }
 
@@ -574,44 +576,109 @@ fn capture_files(
     Ok(out)
 }
 
+/// The two keychain operations the Claude account flow needs.
+///
+/// A seam, because the alternative is untestable: this code reads and
+/// **overwrites Claude Code's live credential item**, so exercising it against a
+/// real keychain would mean a test that can log the developer out of Claude.
+/// With the seam, the ordering and failure handling get covered by a fake and
+/// production keeps using the OS keychain.
+///
+/// Deliberately not `providers.rs`'s `keyring_entry`: that helper is bound to one
+/// service name and memoises reads for the process lifetime. Both are wrong here
+/// — this flow spans two services, and caching a credential we are about to
+/// replace is how you hand out a token that no longer exists.
+trait SecretStore {
+    fn get(&self, service: &str, user: &str) -> Result<String, String>;
+    fn set(&self, service: &str, user: &str, secret: &str) -> Result<(), String>;
+}
+
+/// The production adapter: the OS keychain.
+struct Keyring;
+
+impl SecretStore for Keyring {
+    fn get(&self, service: &str, user: &str) -> Result<String, String> {
+        keyring::Entry::new(service, user)
+            .and_then(|e| e.get_password())
+            .map_err(|e| e.to_string())
+    }
+
+    fn set(&self, service: &str, user: &str, secret: &str) -> Result<(), String> {
+        keyring::Entry::new(service, user)
+            .and_then(|e| e.set_password(secret))
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The non-secret half of a Claude login: which account it is, no tokens.
+///
+/// Split out because this is what lands on disk. Anything that leaks a token
+/// into the snapshot file would be a plaintext credential at rest, so the field
+/// list is pinned by `claude_snapshot_carries_identity_but_never_tokens`.
+fn claude_account_snapshot(config: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "oauthAccount": config.get("oauthAccount").cloned().unwrap_or(serde_json::Value::Null),
+        "userID": config.get("userID").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
+/// Splice a snapshot's identity back into an existing `~/.claude.json`.
+///
+/// Everything else in that file is the user's own Claude Code configuration, so
+/// this replaces exactly two keys and leaves the rest untouched. A config that
+/// isn't a JSON object is refused rather than overwritten — the file is the
+/// user's, and guessing at its shape is how you destroy it.
+fn splice_claude_identity(
+    config: &mut serde_json::Value,
+    snapshot: &serde_json::Value,
+) -> Result<(), String> {
+    let Some(obj) = config.as_object_mut() else {
+        return Err("~/.claude.json isn't a JSON object — not switching.".to_string());
+    };
+    for key in ["oauthAccount", "userID"] {
+        obj.insert(
+            key.into(),
+            snapshot.get(key).cloned().unwrap_or(serde_json::Value::Null),
+        );
+    }
+    Ok(())
+}
+
 /// Capture Claude's split login: read the OAuth tokens from Claude Code's
 /// keychain item into Klide's own keychain item, and snapshot the
 /// `oauthAccount` block + `userID` (account metadata, no tokens) to a file for
 /// a future restore. Returns `(keychain_ref, snapshot_filename)`. Reading
 /// Claude's keychain item may pop a one-time macOS prompt.
-fn capture_claude(dir: &std::path::Path, name: &str) -> Result<(String, String), String> {
+fn capture_claude(
+    store: &dyn SecretStore,
+    dir: &std::path::Path,
+    config_path: &std::path::Path,
+    name: &str,
+) -> Result<(String, String), String> {
     let user = claude_keychain_username();
-    let tokens = keyring::Entry::new(CLAUDE_KEYCHAIN_SERVICE, &user)
-        .and_then(|e| e.get_password())
-        .map_err(|e| {
-            format!(
-                "Couldn't read Claude Code's keychain credentials: {e}. \
-                 Make sure you're logged in (`claude` → /login) and allow the keychain prompt."
-            )
-        })?;
+    let tokens = store.get(CLAUDE_KEYCHAIN_SERVICE, &user).map_err(|e| {
+        format!(
+            "Couldn't read Claude Code's keychain credentials: {e}. \
+             Make sure you're logged in (`claude` → /login) and allow the keychain prompt."
+        )
+    })?;
 
     // Store the tokens in Klide's own keychain item, not on disk.
-    keyring::Entry::new(KLIDE_CLAUDE_SERVICE, name)
-        .and_then(|e| e.set_password(&tokens))
+    store
+        .set(KLIDE_CLAUDE_SERVICE, name, &tokens)
         .map_err(|e| format!("Couldn't store the account in Klide's keychain: {e}"))?;
 
     // Snapshot the non-secret account block so a future activation can splice
     // it back into ~/.claude.json.
-    let config_bytes = std::fs::read(
-        claude_config_path().ok_or_else(|| "Could not resolve home directory".to_string())?,
-    )
-    .map_err(|e| format!("Could not read ~/.claude.json: {e}"))?;
+    let config_bytes =
+        std::fs::read(config_path).map_err(|e| format!("Could not read ~/.claude.json: {e}"))?;
     let config: serde_json::Value = serde_json::from_slice(&config_bytes)
         .map_err(|e| format!("~/.claude.json isn't valid JSON: {e}"))?;
-    let snapshot = serde_json::json!({
-        "oauthAccount": config.get("oauthAccount").cloned().unwrap_or(serde_json::Value::Null),
-        "userID": config.get("userID").cloned().unwrap_or(serde_json::Value::Null),
-    });
     let stem = slugify(name);
     let file = format!("{stem}.account.json");
     write_private(
         &dir.join(&file),
-        &serde_json::to_vec_pretty(&snapshot).map_err(|e| e.to_string())?,
+        &serde_json::to_vec_pretty(&claude_account_snapshot(&config)).map_err(|e| e.to_string())?,
     )?;
 
     Ok((name.to_string(), file))
@@ -671,18 +738,20 @@ fn restore_files(
     Ok(())
 }
 
-fn restore_claude(account: &Account) -> Result<(), String> {
+fn restore_claude(
+    store: &dyn SecretStore,
+    dir: &std::path::Path,
+    cfg_path: &std::path::Path,
+    account: &Account,
+) -> Result<(), String> {
     let kref = account
         .keychain_ref
         .as_deref()
         .ok_or_else(|| "This Claude snapshot has no stored credentials.".to_string())?;
-    let tokens = keyring::Entry::new(KLIDE_CLAUDE_SERVICE, kref)
-        .and_then(|e| e.get_password())
-        .map_err(|e| {
-            format!("Couldn't read the saved Claude credentials from Klide's keychain: {e}")
-        })?;
+    let tokens = store.get(KLIDE_CLAUDE_SERVICE, kref).map_err(|e| {
+        format!("Couldn't read the saved Claude credentials from Klide's keychain: {e}")
+    })?;
 
-    let dir = store_dir(CLAUDE).ok_or_else(|| "Could not resolve home directory".to_string())?;
     let file = account
         .files
         .first()
@@ -693,40 +762,27 @@ fn restore_claude(account: &Account) -> Result<(), String> {
     )
     .map_err(|e| format!("Account snapshot isn't valid JSON: {e}"))?;
 
-    let cfg_path =
-        claude_config_path().ok_or_else(|| "Could not resolve home directory".to_string())?;
     let cfg_bytes =
-        std::fs::read(&cfg_path).map_err(|e| format!("Could not read ~/.claude.json: {e}"))?;
+        std::fs::read(cfg_path).map_err(|e| format!("Could not read ~/.claude.json: {e}"))?;
     // One-deep backup so a botched splice is recoverable.
     let backup = std::path::PathBuf::from(format!("{}.klide-bak", cfg_path.display()));
     let _ = std::fs::write(&backup, &cfg_bytes);
     let mut cfg: serde_json::Value = serde_json::from_slice(&cfg_bytes)
         .map_err(|e| format!("~/.claude.json isn't valid JSON: {e}"))?;
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "oauthAccount".into(),
-            snap.get("oauthAccount")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
-        );
-        obj.insert(
-            "userID".into(),
-            snap.get("userID")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
-        );
-    } else {
-        return Err("~/.claude.json isn't a JSON object — not switching.".to_string());
-    }
+    splice_claude_identity(&mut cfg, &snap)?;
     let new_cfg = serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?;
 
     // Swap the keychain tokens first, then the config. Both have backups
     // (Klide's keychain item is untouched; ~/.claude.json has the .klide-bak),
     // so a failure between the two is recoverable rather than silently wrong.
-    keyring::Entry::new(CLAUDE_KEYCHAIN_SERVICE, &claude_keychain_username())
-        .and_then(|e| e.set_password(&tokens))
+    store
+        .set(
+            CLAUDE_KEYCHAIN_SERVICE,
+            &claude_keychain_username(),
+            &tokens,
+        )
         .map_err(|e| format!("Couldn't write Claude Code's keychain credentials: {e}"))?;
-    atomic_write_private(&cfg_path, &new_cfg)
+    atomic_write_private(cfg_path, &new_cfg)
 }
 
 fn not_logged_in_msg(p: &dyn AccountProvider) -> String {
@@ -815,5 +871,255 @@ mod tests {
         assert_eq!(slugify("Work Account"), "work-account");
         assert_eq!(slugify("  Pierre@OntraaK  "), "pierre-ontraak");
         assert_eq!(slugify("///"), "account");
+    }
+
+    // ── The Claude account flow ──────────────────────────────────────────────
+    // This is the highest-blast-radius path in the app: activating an account
+    // overwrites Claude Code's live credential item and splices the user's own
+    // ~/.claude.json. It had no tests, because reaching the keychain from a test
+    // would mean a test that can log the developer out. The `SecretStore` seam
+    // is what makes it coverable.
+
+    /// An in-memory `SecretStore`, plus a record of the write order.
+    #[derive(Default)]
+    struct FakeStore {
+        secrets: std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
+        writes: std::sync::Mutex<Vec<String>>,
+        fail_writes_to: Option<String>,
+    }
+
+    impl FakeStore {
+        fn with(service: &str, user: &str, secret: &str) -> Self {
+            let me = Self::default();
+            me.secrets.lock().unwrap().insert(
+                (service.to_string(), user.to_string()),
+                secret.to_string(),
+            );
+            me
+        }
+        fn read(&self, service: &str, user: &str) -> Option<String> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .get(&(service.to_string(), user.to_string()))
+                .cloned()
+        }
+    }
+
+    impl SecretStore for FakeStore {
+        fn get(&self, service: &str, user: &str) -> Result<String, String> {
+            self.read(service, user)
+                .ok_or_else(|| format!("no such item: {service}/{user}"))
+        }
+        fn set(&self, service: &str, user: &str, secret: &str) -> Result<(), String> {
+            if self.fail_writes_to.as_deref() == Some(service) {
+                return Err("keychain denied".to_string());
+            }
+            self.writes.lock().unwrap().push(service.to_string());
+            self.secrets.lock().unwrap().insert(
+                (service.to_string(), user.to_string()),
+                secret.to_string(),
+            );
+            Ok(())
+        }
+    }
+
+    fn claude_account(keychain_ref: Option<&str>) -> Account {
+        Account {
+            name: "work".into(),
+            saved_ms: 0,
+            identity: AccountIdentity::default(),
+            files: vec!["work.account.json".into()],
+            keychain_ref: keychain_ref.map(str::to_string),
+        }
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("klide-accounts-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn claude_snapshot_carries_identity_but_never_tokens() {
+        // The snapshot is written to disk in the clear, so its field list is a
+        // security boundary: exactly the two identity keys, nothing adjacent.
+        let config = serde_json::json!({
+            "oauthAccount": { "emailAddress": "p@example.com" },
+            "userID": "user-1",
+            "accessToken": "SECRET-DO-NOT-PERSIST",
+            "primaryApiKey": "sk-SECRET",
+            "editorMode": "vim",
+        });
+        let snap = claude_account_snapshot(&config);
+
+        assert_eq!(snap["oauthAccount"]["emailAddress"], "p@example.com");
+        assert_eq!(snap["userID"], "user-1");
+        let text = serde_json::to_string(&snap).unwrap();
+        assert!(!text.contains("SECRET"), "snapshot leaked a credential: {text}");
+        assert_eq!(
+            snap.as_object().unwrap().len(),
+            2,
+            "only the two identity keys belong on disk: {text}"
+        );
+    }
+
+    #[test]
+    fn splice_replaces_identity_and_leaves_the_rest_alone() {
+        // ~/.claude.json is the user's own config. Switching accounts may touch
+        // the two identity keys and nothing else.
+        let mut config = serde_json::json!({
+            "oauthAccount": { "emailAddress": "old@example.com" },
+            "userID": "old-user",
+            "editorMode": "vim",
+            "mcpServers": { "keep": { "command": "x" } },
+        });
+        let snap = serde_json::json!({
+            "oauthAccount": { "emailAddress": "new@example.com" },
+            "userID": "new-user",
+        });
+
+        splice_claude_identity(&mut config, &snap).expect("splice");
+        assert_eq!(config["oauthAccount"]["emailAddress"], "new@example.com");
+        assert_eq!(config["userID"], "new-user");
+        assert_eq!(config["editorMode"], "vim");
+        assert_eq!(config["mcpServers"]["keep"]["command"], "x");
+    }
+
+    #[test]
+    fn splice_refuses_a_config_that_is_not_an_object() {
+        // Rather than overwrite a file whose shape we don't understand.
+        let mut config = serde_json::json!(["not", "an", "object"]);
+        let err = splice_claude_identity(&mut config, &serde_json::json!({})).unwrap_err();
+        assert!(err.contains("isn't a JSON object"), "got: {err}");
+        assert_eq!(config, serde_json::json!(["not", "an", "object"]));
+    }
+
+    #[test]
+    fn capture_moves_tokens_into_klides_own_item_and_never_to_disk() {
+        let dir = temp_dir("capture");
+        let cfg = dir.join("claude.json");
+        std::fs::write(
+            &cfg,
+            serde_json::to_vec(&serde_json::json!({
+                "oauthAccount": { "emailAddress": "p@example.com" },
+                "userID": "user-1",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let user = claude_keychain_username();
+        let store = FakeStore::with(CLAUDE_KEYCHAIN_SERVICE, &user, "TOKEN-123");
+
+        let (kref, file) = capture_claude(&store, &dir, &cfg, "work").expect("capture");
+
+        assert_eq!(kref, "work");
+        // The tokens land in Klide's item, and Claude's own item is untouched.
+        assert_eq!(store.read(KLIDE_CLAUDE_SERVICE, "work").as_deref(), Some("TOKEN-123"));
+        assert_eq!(store.read(CLAUDE_KEYCHAIN_SERVICE, &user).as_deref(), Some("TOKEN-123"));
+        // And nothing secret reached the snapshot file.
+        let on_disk = std::fs::read_to_string(dir.join(&file)).unwrap();
+        assert!(!on_disk.contains("TOKEN-123"), "tokens hit the disk: {on_disk}");
+        assert!(on_disk.contains("p@example.com"));
+    }
+
+    #[test]
+    fn capture_reports_a_logged_out_cli_instead_of_saving_an_empty_account() {
+        let dir = temp_dir("capture-logged-out");
+        let cfg = dir.join("claude.json");
+        std::fs::write(&cfg, b"{}").unwrap();
+
+        let err = capture_claude(&FakeStore::default(), &dir, &cfg, "work").unwrap_err();
+        assert!(err.contains("Couldn't read Claude Code's keychain"), "got: {err}");
+        assert!(err.contains("/login"), "the message should say how to fix it: {err}");
+    }
+
+    #[test]
+    fn restore_swaps_the_keychain_then_the_config_and_backs_the_config_up() {
+        let dir = temp_dir("restore");
+        let cfg = dir.join("claude.json");
+        std::fs::write(
+            &cfg,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "oauthAccount": { "emailAddress": "old@example.com" },
+                "userID": "old-user",
+                "editorMode": "vim",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("work.account.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "oauthAccount": { "emailAddress": "new@example.com" },
+                "userID": "new-user",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = FakeStore::with(KLIDE_CLAUDE_SERVICE, "work", "TOKEN-NEW");
+        let account = claude_account(Some("work"));
+
+        restore_claude(&store, &dir, &cfg, &account).expect("restore");
+
+        // Claude Code's live item now holds the saved tokens.
+        assert_eq!(
+            store.read(CLAUDE_KEYCHAIN_SERVICE, &claude_keychain_username()).as_deref(),
+            Some("TOKEN-NEW")
+        );
+        // The config got the new identity and kept the user's own settings.
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cfg).unwrap()).unwrap();
+        assert_eq!(after["oauthAccount"]["emailAddress"], "new@example.com");
+        assert_eq!(after["editorMode"], "vim");
+        // The pre-switch config is recoverable.
+        let backup: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(format!("{}.klide-bak", cfg.display())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(backup["oauthAccount"]["emailAddress"], "old@example.com");
+    }
+
+    #[test]
+    fn restore_leaves_the_config_alone_when_the_keychain_write_fails() {
+        // The ordering is deliberate: keychain first, config second. If the
+        // keychain write fails, the config must still describe the account whose
+        // tokens are actually installed — otherwise Claude Code reads one
+        // identity with another's credentials.
+        let dir = temp_dir("restore-keychain-fails");
+        let cfg = dir.join("claude.json");
+        let original = serde_json::json!({
+            "oauthAccount": { "emailAddress": "old@example.com" },
+            "userID": "old-user",
+        });
+        std::fs::write(&cfg, serde_json::to_vec_pretty(&original).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("work.account.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "oauthAccount": { "emailAddress": "new@example.com" },
+                "userID": "new-user",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut store = FakeStore::with(KLIDE_CLAUDE_SERVICE, "work", "TOKEN-NEW");
+        store.fail_writes_to = Some(CLAUDE_KEYCHAIN_SERVICE.to_string());
+        let account = claude_account(Some("work"));
+
+        let err = restore_claude(&store, &dir, &cfg, &account).unwrap_err();
+        assert!(err.contains("Couldn't write Claude Code's keychain"), "got: {err}");
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cfg).unwrap()).unwrap();
+        assert_eq!(after, original, "the config was rewritten despite the failure");
+    }
+
+    #[test]
+    fn restore_refuses_an_account_with_no_stored_credentials() {
+        let dir = temp_dir("restore-no-kref");
+        let account = claude_account(None);
+        let err = restore_claude(&FakeStore::default(), &dir, &dir.join("claude.json"), &account)
+            .unwrap_err();
+        assert!(err.contains("no stored credentials"), "got: {err}");
     }
 }
