@@ -809,8 +809,13 @@ fn reveal_entry(workspace_root: String, path: String) -> Result<(), String> {
 
 use crate::delegate::{AgentRun, Delegate, RunMessage};
 
+/// Paging the board walks the delegate log directories and parses transcripts —
+/// filesystem work measured in hundreds of megabytes on a busy machine. A sync
+/// command would do all of that **on the main thread** and freeze the webview
+/// (the `gh pr list` lesson), so the scan goes to the blocking pool and the
+/// command only awaits it.
 #[tauri::command]
-fn list_agent_runs(
+async fn list_agent_runs(
     app: tauri::AppHandle,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -819,12 +824,17 @@ fn list_agent_runs(
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let limit = limit.unwrap_or(10);
     let offset = offset.unwrap_or(0);
-    let mut runs = workspace_root
+    let scope = workspace_root
         .as_deref()
         .map(str::trim)
         .filter(|root| !root.is_empty())
-        .map(|root| delegate::list_runs_for_workspace(&home, limit, offset, root))
-        .unwrap_or_else(|| delegate::list_runs(&home, limit, offset));
+        .map(str::to_string);
+    let mut runs = tokio::task::spawn_blocking(move || match scope {
+        Some(root) => delegate::list_runs_for_workspace(&home, limit, offset, &root),
+        None => delegate::list_runs(&home, limit, offset),
+    })
+    .await
+    .map_err(|e| format!("Unable to list agent runs: {e}"))?;
 
     // Inject parent ids from the spawn mappings recorded at dispatch time.
     // Try by Klide's internal ID first, then by the external session ID (for

@@ -128,6 +128,66 @@ pub struct RunCandidate {
     pub mtime_ms: i64,
 }
 
+/// How much of a transcript's head to scan for session metadata. Every JSONL
+/// delegate writes its `cwd` in the opening records, so this is enough to answer
+/// "which project is this run?" — and small enough that asking it of every
+/// candidate on disk stays cheap.
+const HEAD_PROBE_BYTES: usize = 64 * 1024;
+
+/// Pull a JSON string field out of a transcript's opening bytes without parsing
+/// the file — or even a whole line. Codex's `session_meta` line embeds the full
+/// base instructions, so it can run to tens of kilobytes; a needle search over a
+/// bounded head read sidesteps that instead of deserializing it.
+///
+/// Returns `None` whenever the answer isn't cheaply available (unreadable file,
+/// field absent from the head, or an escaped value we won't decode by hand).
+/// Callers must treat `None` as "don't know", never as "doesn't match".
+pub(crate) fn head_json_string(path: &std::path::Path, field: &str) -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    // `take` + `read_to_end` rather than one `read`: a single read may come back
+    // short, which would hide a `cwd` that is present and quietly cost us a parse.
+    let mut buf = Vec::with_capacity(HEAD_PROBE_BYTES);
+    file.take(HEAD_PROBE_BYTES as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
+    // A multi-byte character straddling the cut would fail a strict decode, so
+    // decode lossily — the needle and the path around it are ASCII.
+    let head = String::from_utf8_lossy(&buf);
+    let needle = format!("\"{field}\":\"");
+    let start = head.find(&needle)? + needle.len();
+    let value = &head[start..];
+    let end = value.find('"')?;
+    let value = &value[..end];
+    // A backslash means the value is escaped; decoding JSON escapes by hand is
+    // how subtle bugs get in. Fall back to "don't know" and let the caller pay
+    // for a real parse.
+    (!value.contains('\\')).then(|| value.to_string())
+}
+
+/// Keep only the candidates whose transcript names `workspace_root` as its cwd.
+///
+/// This is the pre-filter that makes a workspace-scoped page affordable: without
+/// it, matching a workspace requires fully parsing every run on disk, because
+/// `cwd` only surfaces after the parse. A candidate whose cwd can't be read
+/// cheaply is **kept** — over-including costs one wasted parse, while
+/// under-including would silently drop a run off the board.
+pub(crate) fn retain_candidates_in_workspace(
+    candidates: Vec<RunCandidate>,
+    workspace_root: &str,
+) -> Vec<RunCandidate> {
+    let want = super::normalize_path(workspace_root);
+    candidates
+        .into_iter()
+        .filter(
+            |c| match head_json_string(std::path::Path::new(&c.key), "cwd") {
+                Some(cwd) => super::normalize_path(&cwd) == want,
+                None => true,
+            },
+        )
+        .collect()
+}
+
 pub(crate) fn mtime_ms(path: &std::path::Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -409,12 +469,14 @@ mod tests {
         )
         .expect("read src/runs.ts");
         let marker = format!("{name} = ");
-        let start = ts.find(&marker).unwrap_or_else(|| panic!("{name} in src/runs.ts")) + marker.len();
+        let start = ts
+            .find(&marker)
+            .unwrap_or_else(|| panic!("{name} in src/runs.ts"))
+            + marker.len();
         let expr = &ts[start..start + ts[start..].find(';').expect("terminating ;")];
         // Values are written either plain (`120_000`) or as a product
         // (`5 * 60_000`); both spellings are legible, so accept both.
-        expr
-            .split('*')
+        expr.split('*')
             .map(|part| {
                 part.trim()
                     .replace('_', "")

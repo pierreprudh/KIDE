@@ -146,6 +146,33 @@ impl Delegate for OpenCode {
         out
     }
 
+    /// OpenCode stores the workspace as a column, so narrowing is a `WHERE`
+    /// clause rather than a per-candidate probe. The trailing-slash tolerance
+    /// matches `normalize_path`; sessions with a NULL directory are kept, since
+    /// the contract says an unknown workspace must not exclude a candidate.
+    fn discover_runs_for_workspace(&self, home: &str, workspace_root: &str) -> Vec<RunCandidate> {
+        let want = crate::delegate::normalize_path(workspace_root);
+        let mut out = Vec::new();
+        if let Some(conn) = connect(home) {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT id, time_updated FROM session \
+                 WHERE directory IS NULL OR rtrim(directory, '/') = ?1",
+            ) {
+                if let Ok(rows) = stmt.query_map([&want], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                }) {
+                    for (id, time_updated) in rows.flatten() {
+                        out.push(RunCandidate {
+                            key: id,
+                            mtime_ms: time_updated,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The connection is opened once per page — opening the SQLite file for
     /// every candidate would dominate the page time.
     fn run_parser(&self, home: &str) -> Box<dyn RunParser> {
