@@ -312,16 +312,6 @@ function ModelProviderBadge({ model }: { model: string | null }) {
 // Official brand marks served from /public, so each run wears its tool's real
 // logo instead of a flat color. Used for model badges in the RunRow subtitle
 // and for source avatars (Claude Code, Codex).
-function DeepSeekLogo({ size = 13 }: { size?: number }) {
-  return (
-    <img
-      src="/deepseek-logo.png"
-      alt=""
-      aria-hidden="true"
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
-}
 function MiniMaxLogo({ size = 13 }: { size?: number }) {
   return (
     <img
@@ -422,7 +412,7 @@ function AnthropicMark({ size = 13 }: { size?: number }) {
   );
 }
 
-type LogoComp = typeof DeepSeekLogo;
+type LogoComp = typeof MiniMaxLogo;
 type AppUserInfo = { username: string; hostname: string; homeDir: string };
 
 // Regex-based model → logo mapping. Keys are tested as RegExp against the model name.
@@ -433,8 +423,9 @@ type AppUserInfo = { username: string; hostname: string; homeDir: string };
 function OpenAiLogo({ size = 13 }: { size?: number }) {
   return <ProviderLogo id="openai" size={size} />;
 }
+// DeepSeek isn't here: it's a maker with models on several runtimes, so its
+// mark lives in modelBrand.tsx (checked first, below) alongside Qwen/Mistral.
 const MODEL_LOGO_RULES: { pattern: RegExp; Comp: LogoComp }[] = [
-  { pattern: /deepseek/i, Comp: DeepSeekLogo },
   { pattern: /minimax/i, Comp: MiniMaxLogo },
   { pattern: /kimi/i, Comp: KimiLogo },
   // Anthropic API models (claude-*) → the Anthropic company mark, NOT the
@@ -498,6 +489,7 @@ const PROVIDER_LABEL: Partial<Record<ProviderId, string>> = {
   gemini: "Gemini",
   mistral: "Mistral",
   xai: "xAI",
+  deepseek: "DeepSeek",
   openrouter: "OpenRouter",
 };
 
@@ -505,6 +497,7 @@ const PROVIDER_ACCENT: Partial<Record<ProviderId, string>> = {
   "claude-code": "#D97757",
   anthropic: "#D97757",
   openrouter: "#4A6CF7",
+  deepseek: "#4D6BFE",
   omp: "#7C6BAE",
   codex: "var(--fg-strong)",
   opencode: "var(--fg-strong)",

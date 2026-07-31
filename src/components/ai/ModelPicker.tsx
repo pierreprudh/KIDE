@@ -114,6 +114,7 @@ function providerCaption(id: ProviderId): string {
     case "gemini": return "Google Gemini";
     case "mistral": return "Mistral";
     case "xai": return "xAI Grok";
+    case "deepseek": return "DeepSeek";
     case "openrouter": return "OpenRouter";
     case "claude-code": return "Claude Code";
     case "codex": return "Codex";

@@ -27,6 +27,7 @@ export type ProviderId =
   | "gemini"
   | "mistral"
   | "xai"
+  | "deepseek"
   | "openrouter"
   // Self-hosted (custom) OpenAI-compatible endpoints. The id is minted at
   // runtime (`custom:<slug>`); config lives in the Rust custom-provider

@@ -36,7 +36,7 @@ If a UI element doesn't serve clarity, it doesn't ship.
 | Terminal | **xterm.js** + Rust **portable-pty** | Real shell, not a sandbox |
 | Frontend | **React 19 + TypeScript + Vite** | |
 | Local AI | **Ollama** (`localhost:11434`) + **MLX** (`mlx_lm.server` on `:8080`) | Both run the full tool harness; default `llama3.1:8b` |
-| Online AI | Anthropic, OpenAI, Mistral, xAI + self-hosted OpenAI-wire endpoints | Keys in macOS Keychain; self-hosted tokens via `${VAR}` refs |
+| Online AI | Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted OpenAI-wire endpoints | Keys in macOS Keychain; self-hosted tokens via `${VAR}` refs |
 | Auto-install | `npx skills add <owner/repo>` | Skill install + uninstall via Rust commands |
 
 ## Repo layout
@@ -98,7 +98,7 @@ Klide/
 │   │       └── DelegateTerminal.tsx
 │   ├── agent/
 │   │   ├── types.ts             Agent protocol types (events, diffs, permissions)
-│   │   ├── providers.ts         Provider definitions (12 providers)
+│   │   ├── providers.ts         Provider definitions (16 providers)
 │   │   ├── client.ts            Frontend agent harness client
 │   │   ├── race.ts              Same-task multi-run dispatch into isolated worktrees
 │   │   ├── durableMissions.ts   Mission IPC + Markdown/events → MissionState projection
@@ -264,7 +264,7 @@ ToolEntry { kind, schema, run_read, run_write_preview }
 - [x] Monaco editor with syntax highlighting, Cmd+S, 5 themes
 - [x] Status bar — file path, language, git branch, theme/terminal/layout toggles, dot separators
 - [x] Terminal panel with real shell via Rust portable-pty
-- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI + self-hosted endpoints, 14 built-in tools, inline diff review + auto-accept toggle
+- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted endpoints, 14 built-in tools, inline diff review + auto-accept toggle
 - [x] Agent mode — goal/plan modes, diff-reviewed edits, tool loop
 - [x] Git panel — full-view Git Review workbench (staging + diffs)
 - [x] Mission Control — aggregate agent run board (Claude Code, Codex, OpenCode, Oh My Pi, Klide) with handoff to AI panel

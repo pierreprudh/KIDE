@@ -63,6 +63,7 @@ export const PROVIDER_CATALOG: readonly ProviderDefinition[] = [
   { id: "gemini", name: "Google Gemini", group: "api", runtime: "hosted", available: false, defaultModel: "gemini-2.5-pro" },
   { id: "mistral", name: "Mistral", group: "api", runtime: "hosted", available: true, defaultModel: "mistral-large-latest" },
   { id: "xai", name: "xAI Grok", group: "api", runtime: "hosted", available: true, defaultModel: "grok-4" },
+  { id: "deepseek", name: "DeepSeek", group: "api", runtime: "hosted", available: true, defaultModel: "deepseek-chat" },
   { id: "openrouter", name: "OpenRouter", group: "api", runtime: "hosted", available: true, defaultModel: "openai/gpt-4o" },
 ] as const;
 

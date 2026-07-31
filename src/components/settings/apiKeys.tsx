@@ -27,6 +27,7 @@ export const API_KEY_PROVIDERS: {
   { id: "openai", title: "OpenAI", envVar: "OPENAI_API_KEY", placeholder: "sk-..." },
   { id: "mistral", title: "Mistral", envVar: "MISTRAL_API_KEY", placeholder: "..." },
   { id: "xai", title: "xAI Grok", envVar: "XAI_API_KEY", placeholder: "xai-..." },
+  { id: "deepseek", title: "DeepSeek", envVar: "DEEPSEEK_API_KEY", placeholder: "sk-..." },
   { id: "openrouter", title: "OpenRouter", envVar: "OPENROUTER_API_KEY", placeholder: "sk-or-..." },
 ];
 

@@ -400,6 +400,7 @@ function trailerProvider(trailer: string): ProviderId | null {
   if (/gemini/.test(v)) return "gemini";
   if (/mistral/.test(v)) return "mistral";
   if (/(grok|xai)/.test(v)) return "xai";
+  if (/deepseek/.test(v)) return "deepseek";
   return null;
 }
 

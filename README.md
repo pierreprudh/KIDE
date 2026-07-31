@@ -67,7 +67,7 @@ Klide has three capability modes:
 | **Review and evidence** | Diff comments sent to agents, command approval, checkpoints, validation status, files touched, tokens, cost, and stop reasons |
 | **Parallel work** | Git worktrees, worktree setup recipes, agent races on the same task, evidence comparison, and merge controls |
 | **Editor and shell** | Monaco editor, file explorer, tabs, search, command palette, Git review, commit graph, and persistent PTY terminals |
-| **Models** | Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, OpenRouter, and OpenAI-compatible endpoints |
+| **Models** | Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter, and OpenAI-compatible endpoints |
 | **Project context** | `AGENTS.md`, `CLAUDE.md`, file mentions, skills, dynamic tools, and reviewed project memory |
 | **Local security** | Workspace-rooted file access, operating-system keychain storage, project command allowlists, and network permissions |
 

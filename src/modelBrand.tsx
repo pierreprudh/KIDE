@@ -46,6 +46,11 @@ export function MistralLogo({ size = 14 }: LogoProps) {
   return <ImgLogo src="/mistral-logo.png" themeClass="color-logo-img" size={size} />;
 }
 
+// DeepSeek's whale is brand blue — keep colour.
+export function DeepSeekLogo({ size = 14 }: LogoProps) {
+  return <ImgLogo src="/deepseek-logo.png" themeClass="color-logo-img" size={size} />;
+}
+
 // Llama models are Meta's — wear the Meta infinity mark (blue, keep colour).
 export function LlamaLogo({ size = 14 }: LogoProps) {
   return <ImgLogo src="/meta-logo.png" themeClass="color-logo-img" size={size} />;
@@ -63,6 +68,9 @@ const BRAND_RULES: { pattern: RegExp; brand: ModelBrand }[] = [
   { pattern: /qwen/i, brand: { name: "Qwen", href: "https://qwen.ai/", Logo: QwenLogo } },
   { pattern: /llama/i, brand: { name: "Llama", href: "https://www.llama.com/", Logo: LlamaLogo } },
   { pattern: /mistral|mixtral|codestral|ministral|magistral|devstral/i, brand: { name: "Mistral AI", href: "https://mistral.ai/", Logo: MistralLogo } },
+  // Covers the hosted ids (deepseek-chat / deepseek-reasoner), the Ollama pulls
+  // (deepseek-r1:8b, deepseek-coder:6.7b) and OpenRouter's `deepseek/…` slugs.
+  { pattern: /deepseek/i, brand: { name: "DeepSeek", href: "https://www.deepseek.com/", Logo: DeepSeekLogo } },
 ];
 
 // Resolve a model name to its maker brand + a homepage link. Models pulled
