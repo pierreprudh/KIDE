@@ -51,6 +51,35 @@ function readNumberSetting(key: string, fallback: number, min: number, max: numb
 }
 
 /**
+ * A layout may only be written back for the workspace it was *hydrated from*.
+ *
+ * The in-memory `panelLayout` starts as `{}` and only becomes the real layout
+ * once the hydrate effect has loaded it — which needs a measured workbench.
+ * Focus mode never mounts the workbench (no `workbenchRef`, so `workbenchSize`
+ * stays 0×0), so a session that boots straight into Focus has an *empty*
+ * layout while its saved layout sits untouched on disk. Focus still renders a
+ * real AI panel, and AiPanel reports its restored provider/model to the host on
+ * mount — which routes through `setAiPanelProvider`/`setAiPanelModel` and turns
+ * that empty layout into `{ ai: [ai-main] }`. Without this guard that
+ * half-formed layout is non-empty, so it gets persisted over the saved one:
+ * every other AI panel rect plus explorer/terminal/`anchored` is destroyed, and
+ * leaving Focus hydrates the wreckage — one panel left, free mode, panels gone.
+ *
+ * Same shape on a project switch: `workspaceRoot` changes a render before the
+ * new root hydrates, so an unguarded write would stamp the previous project's
+ * layout onto the new project's key.
+ */
+export function canPersistLayout(
+  workspaceRoot: string | null,
+  hydratedRoot: string | null,
+  layout: PanelLayout
+): boolean {
+  if (!workspaceRoot) return false;
+  if (Object.keys(layout).length === 0) return false;
+  return hydratedRoot === workspaceRoot;
+}
+
+/**
  * Owns the workbench's panel geometry: the measured workbench size, the
  * persisted `PanelLayout` for the current workspace, the live AI-panel list,
  * and the z-stack focus. Every rect mutation routes through here and is
@@ -256,14 +285,13 @@ export function usePanelLayout(opts: {
   // Stamp the current workbench size so a later re-open at a different size
   // can scale the layout proportionally (see `scaleLayout` on hydrate).
   useEffect(() => {
-    if (!workspaceRoot) return;
-    if (Object.keys(panelLayout).length === 0) return;
+    if (!canPersistLayout(workspaceRoot, layoutHydratedRoot, panelLayout)) return;
     const stamped =
       workbenchSize.w > 0 && workbenchSize.h > 0
         ? { ...panelLayout, workbenchW: workbenchSize.w, workbenchH: workbenchSize.h }
         : panelLayout;
     savePanelLayout(workspaceRoot, stamped);
-  }, [panelLayout, workspaceRoot, workbenchSize.w, workbenchSize.h]);
+  }, [panelLayout, workspaceRoot, workbenchSize.w, workbenchSize.h, layoutHydratedRoot]);
 
   // Keep panels proportional to the workbench as it resizes — like a native
   // macOS app, where growing the window grows the panels with it instead of
