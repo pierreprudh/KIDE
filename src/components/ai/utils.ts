@@ -110,6 +110,12 @@ export function fuzzyFiles(files: string[], query: string): string[] {
 }
 
 const CONVOS_KEY = "klide-conversations";
+export const CONVERSATIONS_CHANGED_EVENT = "klide:conversations-changed";
+export type ConversationChangedDetail = {
+  conversationId: string;
+  provider: ProviderId;
+  cwd: string | null;
+};
 const MAX_CONVERSATIONS = 100;
 
 export function loadConversations<T>(key?: string): T[] {
@@ -137,12 +143,43 @@ export function loadConversations<T>(key?: string): T[] {
   }
 }
 
-export function saveConversations<T>(list: T[], key?: string) {
+export function saveConversations<T>(
+  list: T[],
+  key?: string,
+  notify = true,
+  detail?: ConversationChangedDetail,
+) {
   try {
-    localStorage.setItem(key ?? CONVOS_KEY, JSON.stringify(list));
+    const storageKey = key ?? CONVOS_KEY;
+    localStorage.setItem(storageKey, JSON.stringify(list));
+    // The native `storage` event does not fire in the window that performed
+    // the write. Focus and AiPanel live in that same window, so publish one
+    // lightweight navigation event when the visible conversation index
+    // changes (new row, reordered row, title/model/provider/folder update).
+    if (notify && storageKey === CONVOS_KEY && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(CONVERSATIONS_CHANGED_EVENT, { detail }));
+    }
   } catch {
     /* storage full or unavailable */
   }
+}
+
+function conversationIndexChanged(
+  conversation: Conversation,
+  existing: Conversation[],
+): boolean {
+  const previousIndex = existing.findIndex((item) => item.id === conversation.id);
+  if (previousIndex !== 0) return true;
+  const previous = existing[0];
+  return (
+    !previous ||
+    previous.title !== conversation.title ||
+    previous.provider !== conversation.provider ||
+    previous.model !== conversation.model ||
+    previous.cwd !== conversation.cwd ||
+    previous.branch !== conversation.branch ||
+    previous.worktree !== conversation.worktree
+  );
 }
 
 export function upsertConversation(
@@ -157,8 +194,24 @@ export function persistConversation(
   conv: Conversation,
   existing?: Conversation[],
 ): Conversation[] {
-  const next = upsertConversation(conv, existing);
-  saveConversations(next);
+  const current = existing ?? loadConversations<Conversation>();
+  const next = upsertConversation(conv, current);
+  // Streaming persists on every token. Avoid making Focus rebuild its rail on
+  // every text delta; the first snapshot already contains the selected model,
+  // so notify only when navigation-visible metadata or ordering changes.
+  const navigationChanged = conversationIndexChanged(conv, current);
+  saveConversations(
+    next,
+    undefined,
+    navigationChanged,
+    navigationChanged
+      ? {
+          conversationId: conv.id,
+          provider: conv.provider ?? "ollama",
+          cwd: conv.cwd ?? null,
+        }
+      : undefined,
+  );
   return next;
 }
 

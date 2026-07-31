@@ -106,7 +106,7 @@ import { ModelPicker } from "./ai/ModelPicker";
 import { dispatchRace, PartialRaceError, type RaceAgentPick } from "../agent/race";
 import { listRaces, raceForRun, subscribeRaces, type RaceGroup, type RaceMember } from "../races";
 import { refreshCustomCli } from "../customCli";
-import { modelBrand } from "../modelBrand";
+import { resolveModelLogo as resolveKnownModelLogo } from "../modelIdentity";
 import { renderMarkdown } from "./markdown";
 import { buildRunHandoff } from "../agentHandoff";
 import { notify } from "../toast";
@@ -312,27 +312,6 @@ function ModelProviderBadge({ model }: { model: string | null }) {
 // Official brand marks served from /public, so each run wears its tool's real
 // logo instead of a flat color. Used for model badges in the RunRow subtitle
 // and for source avatars (Claude Code, Codex).
-function MiniMaxLogo({ size = 13 }: { size?: number }) {
-  return (
-    <img
-      src="/minimax-logo.png"
-      alt=""
-      aria-hidden="true"
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
-}
-// Kimi's K mark ships as two single-color variants (white for dark themes,
-// black for light). Reuse the opencode-logo theme-swap classes from tokens.css
-// — they stack both <img>s and show only the right one per theme.
-function KimiLogo({ size = 13 }: { size?: number }) {
-  return (
-    <span className="opencode-logo" style={{ width: size, height: size, flexShrink: 0 }} aria-hidden="true">
-      <img className="opencode-logo-light" src="/kimi-logo-light.svg" alt="" />
-      <img className="opencode-logo-dark" src="/kimi-logo-dark.svg" alt="" />
-    </span>
-  );
-}
 function ClaudeCodeLogo({ size = 13 }: { size?: number }) {
   return (
     <img
@@ -370,18 +349,6 @@ function CodexLogo({ size = 13 }: { size?: number }) {
     />
   );
 }
-function ZaiLogo({ size = 13 }: { size?: number }) {
-  return (
-    <img
-      className="white-logo-img"
-      src="/zai-logo.png"
-      alt=""
-      aria-hidden="true"
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
-}
-
 // Oh My Pi mark — uses the same ProviderLogo(id="omp") as the AI panel
 // dropdown, so the run list and the AI panel show the same mark.
 function OmpLogo({ size = 13 }: { size?: number }) {
@@ -412,34 +379,7 @@ function AnthropicMark({ size = 13 }: { size?: number }) {
   );
 }
 
-type LogoComp = typeof MiniMaxLogo;
 type AppUserInfo = { username: string; hostname: string; homeDir: string };
-
-// Regex-based model → logo mapping. Keys are tested as RegExp against the model name.
-// The first match wins, so order matters (more specific patterns first).
-// OpenAI brand mark (the inline SVG from icons.tsx) for API models, kept
-// distinct from the Codex *CLI product* logo. A Klide conversation on the
-// OpenAI API (gpt-*, o1/o3/o4 reasoning models) is not Codex.
-function OpenAiLogo({ size = 13 }: { size?: number }) {
-  return <ProviderLogo id="openai" size={size} />;
-}
-// DeepSeek isn't here: it's a maker with models on several runtimes, so its
-// mark lives in modelBrand.tsx (checked first, below) alongside Qwen/Mistral.
-const MODEL_LOGO_RULES: { pattern: RegExp; Comp: LogoComp }[] = [
-  { pattern: /minimax/i, Comp: MiniMaxLogo },
-  { pattern: /kimi/i, Comp: KimiLogo },
-  // Anthropic API models (claude-*) → the Anthropic company mark, NOT the
-  // Claude Code *CLI product* logo. A Klide conversation on the Anthropic API
-  // is not a Claude Code session; the CLI logo stays reserved for source
-  // === "claude-code" (handled directly in SourceLogo/ConversationAvatar).
-  { pattern: /claude/i, Comp: AnthropicMark },
-  // Codex CLI only — keep this before the OpenAI rule so a literal "codex"
-  // model still wears the Codex mark.
-  { pattern: /codex/i, Comp: CodexLogo },
-  // OpenAI API models (gpt-4o, gpt-5, o1/o3/o4) → the OpenAI mark, not Codex.
-  { pattern: /^gpt-|^o[134]\b|^o[134]-/i, Comp: OpenAiLogo },
-  { pattern: /glm|z-?ai/i, Comp: ZaiLogo },
-];
 
 // Resolve the logo for a model name → the model's provider/brand mark.
 // Brand marks first (DeepSeek, Claude, OpenAI/gpt, …), then provider-image
@@ -447,22 +387,8 @@ const MODEL_LOGO_RULES: { pattern: RegExp; Comp: LogoComp }[] = [
 // families (lfm2.5, llama, qwen, gemma, …). Returns null when unrecognized so
 // callers can fall back to the Klide spark.
 function resolveModelLogo(model: string, size: number): React.ReactElement | null {
-  // Maker brand first (LiquidAI, Qwen, Llama, Mistral, Hugging Face) so a
-  // model wears its own company's mark, not the runtime's.
-  const brand = modelBrand(model);
-  if (brand) {
-    const Logo = brand.Logo;
-    return <Logo size={size} />;
-  }
-  const rule = MODEL_LOGO_RULES.find((r) => r.pattern.test(model));
-  if (rule) {
-    const Logo = rule.Comp;
-    return <Logo size={size} />;
-  }
-  // Gemma is Google's — it wears the Google mark regardless of runtime, so an
-  // MLX- or Ollama-served Gemma no longer wrongly borrows the Ollama logo.
-  if (/gemini|gemma/i.test(model)) return <ProviderLogo id="gemini" size={size} />;
-  if (/grok/i.test(model)) return <ProviderLogo id="xai" size={size} />;
+  const knownLogo = resolveKnownModelLogo(model, size);
+  if (knownLogo) return knownLogo;
   // Remaining on-device families (phi, nomic, …) with no distinct maker mark
   // fall back to the local-runtime (Ollama) glyph.
   if (/phi-?\d|nomic|mxbai|granite|smollm|starcoder/i.test(model))
@@ -2114,11 +2040,7 @@ function ConversationAvatar({
   user?: boolean;
 }) {
   const initials = user ? initialsOf(label || "Me") : null;
-  const modelLogoRule =
-    source === "opencode" && model
-      ? MODEL_LOGO_RULES.find((r) => r.pattern.test(model))
-      : null;
-  const ModelLogo = modelLogoRule?.Comp;
+  const modelLogo = source === "opencode" ? resolveKnownModelLogo(model, 21) : null;
   const logo =
     source === "klide" && provider ? (
       <SourceLogo source={source} provider={provider} model={model} size={21} />
@@ -2126,8 +2048,8 @@ function ConversationAvatar({
       <ClaudeCodeLogo size={21} />
     ) : source === "codex" ? (
       <CodexLogo size={21} />
-    ) : source === "opencode" && ModelLogo ? (
-      <ModelLogo size={21} />
+    ) : source === "opencode" && modelLogo ? (
+      modelLogo
     ) : (
       <SourceLogo source={source} size={21} />
     );

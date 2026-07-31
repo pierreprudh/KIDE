@@ -85,6 +85,8 @@ import {
   type WorktreeSetupDone,
 } from "./worktrees";
 import { createListenerScope } from "./tauriEvents";
+import { linkedProjectForPath } from "./projectPaths";
+import { promoteWorkedFolder, rememberOpenedFolder } from "./recentFolders";
 import "./styles/tokens.css";
 
 const MissionControl = lazy(() => import("./components/MissionControl").then((m) => ({ default: m.MissionControl })));
@@ -1607,12 +1609,14 @@ function App() {
   }
   void updateSkills;
 
-  // Record every opened workspace as most-recent — covers folders opened from
-  // the welcome screen, the sidebar, or restored sessions alike. Capped at 8.
+  // Navigation must not reshuffle the project rail. A newly discovered folder
+  // is appended; actual task activity promotes it through `markFolderWorked`.
   useEffect(() => {
     if (!workspaceRoot) return;
     setRecentFolders((prev) => {
-      const next = [workspaceRoot, ...prev.filter((p) => p !== workspaceRoot)].slice(0, 8);
+      const owningProject = linkedProjectForPath(workspaceRoot, prev) ?? workspaceRoot;
+      const next = rememberOpenedFolder(prev, owningProject);
+      if (next === prev) return prev;
       try {
         localStorage.setItem("klide.recentFolders", JSON.stringify(next));
       } catch {
@@ -1621,6 +1625,21 @@ function App() {
       return next;
     });
   }, [workspaceRoot]);
+
+  function markFolderWorked(path: string | null | undefined) {
+    if (!path) return;
+    setRecentFolders((prev) => {
+      const owningProject = linkedProjectForPath(path, prev) ?? path;
+      const next = promoteWorkedFolder(prev, owningProject);
+      if (next === prev) return prev;
+      try {
+        localStorage.setItem("klide.recentFolders", JSON.stringify(next));
+      } catch {
+        /* storage unavailable — skip */
+      }
+      return next;
+    });
+  }
 
   // Let the backend know which folder is open, so `${VAR}` token references
   // for self-hosted endpoints resolve from this project's `.env`.
@@ -2143,15 +2162,36 @@ function App() {
                     // project along — resuming it against the wrong workspace
                     // would point every tool at the wrong tree.
                     endFocusRaceWatch();
+                    markFolderWorked(convo.cwd);
                     if (convo.cwd && convo.cwd !== workspaceRoot) changeRoot(convo.cwd);
                     targetResume(aiPanels[0]?.id ?? "ai-main", convo);
                     setFocusChatActive(true);
                   }}
                   onSubmit={(text) => {
+                    markFolderWorked(workspaceRoot);
                     setFocusInitialMessage(text);
                     setFocusChatActive(true);
                   }}
                   onOpenMissionControl={() => setView("runs")}
+                  /* Focus's rail reaches the shared destinations through the
+                     very same handler the activity bar uses — one Git view,
+                     one Memory modal, one Settings. */
+                  onOpenPanel={(panel) => {
+                    // Skills is the one exception: togglePanel treats it as a
+                    // sidebar view and collapses the free-mode explorer on the
+                    // way. Focus has no sidebar, so open the modal directly and
+                    // leave the panel layout untouched.
+                    if (panel === "skills") {
+                      setSkillsVisible((cur) => !cur);
+                      return;
+                    }
+                    togglePanel(panel);
+                  }}
+                  onExitFocus={() => {
+                    setFocusMode(false);
+                    setAnchoredLayout(false);
+                    exitGrid();
+                  }}
                   raceTabs={raceWatchTabs}
                   activeRaceTab={focusActiveTabId}
                   onSelectRaceTab={selectRaceTab}
@@ -2704,6 +2744,10 @@ function App() {
           </>
         )}
       </div>
+      {/* Focus is chrome-free: no status bar. Its rail carries navigation and
+          a single icon back to the Free layout. Overlay views opened from
+          Focus (Mission Control, Git, Settings) bring the bar back. */}
+      {!(focusMode && view === "workbench") && (
       <StatusBar
         path={active?.path ?? null}
         language={language}
@@ -2741,6 +2785,7 @@ function App() {
             : null
         }
       />
+      )}
       {skillsVisible && sidebarSlot2 !== "skills" && (
         <Suspense fallback={null}>
           <SkillsModal

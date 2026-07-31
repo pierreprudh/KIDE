@@ -16,13 +16,26 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listProviderModels } from "../ipc/aiProviders";
 import { Z } from "../zLayers";
-import { loadConversations, relativeTime, isSubsequence } from "./ai/utils";
+import {
+  CONVERSATIONS_CHANGED_EVENT,
+  loadConversations,
+  relativeTime,
+  isSubsequence,
+  type ConversationChangedDetail,
+} from "./ai/utils";
 import type { Conversation } from "./ai/types";
 import type { ProviderId } from "../agent/types";
 import { PROVIDER_GROUPS, DEFAULT_MODELS, isDelegateProvider, providerName } from "../agent/providers";
 import { ModelPicker } from "./ai/ModelPicker";
 import { ProviderLogo } from "./ai/icons";
 import { renderMessageBody } from "./ai/ChatMessage";
+import { modelIdentity } from "../modelIdentity";
+import { providerHistoryExpanded } from "../focusHistory";
+import {
+  linkedFolderLabel,
+  linkedProjectForPath,
+  normalizeProjectPath,
+} from "../projectPaths";
 
 type Props = {
   workspaceRoot: string | null;
@@ -36,6 +49,13 @@ type Props = {
   onOpenConversation: (convo: Conversation) => void;
   onSubmit: (text: string) => void;
   onOpenMissionControl: () => void;
+  /** The rail's shared destinations — the same handler the free-mode activity
+   *  bar calls, so Focus opens the identical Git view / Memory / Skills /
+   *  Settings / Profile surfaces instead of parallel ones. */
+  onOpenPanel: (panel: "git" | "memory" | "skills" | "settings" | "profile" | "orchestrator") => void;
+  /** Leave Focus for the Free (floating-panel) layout. Focus has no status
+   *  bar, so this rail icon is the only way out. */
+  onExitFocus: () => void;
   renderChat: () => ReactNode;
   /** Race watch — one tab per racing agent over the chat canvas. Empty or
    *  absent means the normal single-conversation chat. The parent keeps every
@@ -102,12 +122,89 @@ function SearchIcon() {
   );
 }
 
+/** The layout picker's Free-layout mark, minus its connector line — two offset
+ *  panels read clearly at 14px where the extra stroke was just noise. */
+function FreeLayoutIcon() {
+  return (
+    <svg {...iconProps} width={14} height={14} strokeWidth={1.5}>
+      <rect x="3.5" y="3.5" width="8.5" height="8.5" rx="1.4" />
+      <rect x="12" y="12" width="8.5" height="8.5" rx="1.4" />
+    </svg>
+  );
+}
+
 function BoardIcon() {
   return (
     <svg {...iconProps}>
-      <rect x="3.5" y="4" width="17" height="16" rx="2" />
-      <path d="M3.5 9h17" />
-      <path d="M9.5 9v11" />
+      <circle cx="12" cy="12" r="7.5" opacity="0.5" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
+      <circle cx="19.5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="5" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/* The destinations Focus shares with the free-mode rail keep that rail's
+   glyphs, so the same thing never has two marks in one app. */
+
+function OrchestratorIcon() {
+  return (
+    <svg {...iconProps} strokeWidth={1.5}>
+      <path d="M4 6.5h4.5" />
+      <path d="M15.5 6.5H20" />
+      <circle cx="12" cy="6.5" r="2.4" />
+      <path d="M4 17.5h4.5" />
+      <path d="M15.5 17.5H20" />
+      <circle cx="12" cy="17.5" r="2.4" />
+      <path d="M12 8.9v6.2" />
+    </svg>
+  );
+}
+
+function GitIcon() {
+  return (
+    <svg {...iconProps} strokeWidth={1.5}>
+      <circle cx="6" cy="5" r="2.4" />
+      <circle cx="6" cy="19" r="2.4" />
+      <circle cx="18" cy="12" r="2.4" />
+      <path d="M6 7.4v9.2" />
+      <path d="M8.1 6.2A8.2 8.2 0 0 1 15.7 10" />
+    </svg>
+  );
+}
+
+function MemoryIcon() {
+  return (
+    <svg {...iconProps} strokeWidth={1.5}>
+      <path d="M5 3.5h11.5a1 1 0 0 1 1 1V20l-3-1.5L11.5 20l-3-1.5L5 20V3.5z" />
+      <path d="M8 8h6" />
+      <path d="M8 12h6" />
+      <path d="M8 16h4" />
+    </svg>
+  );
+}
+
+function SkillsIcon() {
+  return (
+    <svg {...iconProps} strokeWidth={1.5}>
+      <path d="M15 4l1.1 3L19 8l-2.9 1L15 12l-1.1-3L11 8l2.9-1L15 4z" />
+      <path d="M6.5 12l.8 2.2L9.5 15l-2.2.8L6.5 18l-.8-2.2L3.5 15l2.2-.8L6.5 12z" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg {...iconProps} strokeWidth={1.5}>
+      <path d="M4 6h10" />
+      <path d="M18 6h2" />
+      <path d="M16 4v4" />
+      <path d="M4 12h3" />
+      <path d="M11 12h9" />
+      <path d="M9 10v4" />
+      <path d="M4 18h11" />
+      <path d="M19 18h1" />
+      <path d="M17 16v4" />
     </svg>
   );
 }
@@ -148,6 +245,28 @@ function LocalIcon() {
       <path d="M8 21h8" />
       <path d="M12 17v4" />
     </svg>
+  );
+}
+
+function TreeBranch() {
+  return (
+    <span className="klide-focus-tree-branch" aria-hidden="true">
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 16 16"
+        fill="none"
+        shapeRendering="geometricPrecision"
+      >
+        <path
+          d="M.5.5v5c0 5 4 9 9 9h6"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+    </span>
   );
 }
 
@@ -228,7 +347,8 @@ function ConvoRow({
   indent?: boolean;
   selected?: boolean;
 }) {
-  const conversationProvider = convo.provider ?? "ollama";
+  const identity = modelIdentity(convo.model);
+  const ModelLogo = identity?.Logo;
 
   return (
     <button
@@ -238,15 +358,18 @@ function ConvoRow({
       className="klide-focus-convo-row"
       data-selected={selected || undefined}
       aria-current={selected ? "page" : undefined}
-      style={{ paddingLeft: indent ? 35 : 10 }}
+      style={{ paddingLeft: indent ? 38 : 10 }}
     >
-      <span
-        className="klide-focus-convo-provider"
-        title={providerName(conversationProvider)}
-        aria-hidden="true"
-      >
-        <ProviderLogo id={conversationProvider} size={13} />
-      </span>
+      {indent ? <TreeBranch /> : null}
+      {ModelLogo ? (
+        <span
+          className="klide-focus-convo-model"
+          title={identity.name}
+          aria-hidden="true"
+        >
+          <ModelLogo size={15} />
+        </span>
+      ) : null}
       <span
         style={{
           flex: 1,
@@ -310,12 +433,15 @@ function ProviderHistoryGroup({
   onOpen: (conversation: Conversation) => void;
 }) {
   const readOnly = isDelegateProvider(group.provider);
+  const containsSelectedConversation = selectedConversationId !== undefined &&
+    group.conversations.some((conversation) => conversation.id === selectedConversationId);
   const countLabel = `${group.conversations.length} ${group.conversations.length === 1 ? "conversation" : "conversations"}`;
 
   return (
     <div
       className="klide-focus-provider-history"
       data-readonly={readOnly || undefined}
+      data-contains-selected={containsSelectedConversation || undefined}
     >
       <button
         type="button"
@@ -324,8 +450,9 @@ function ProviderHistoryGroup({
         aria-expanded={expanded}
         title={`${providerName(group.provider)} · ${countLabel}${readOnly ? " · Read only" : ""}`}
       >
+        <TreeBranch />
         <span className="klide-focus-provider-history-logo" aria-hidden="true">
-          <ProviderLogo id={group.provider} size={14} />
+          <ProviderLogo id={group.provider} size={16} />
         </span>
         <span className="klide-focus-provider-history-name">
           {providerName(group.provider)}
@@ -339,25 +466,24 @@ function ProviderHistoryGroup({
         >
           {group.conversations.length}
         </span>
-        <svg
-          className="klide-focus-provider-history-chevron"
-          width="9"
-          height="9"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="m9 6 6 6-6 6" />
-        </svg>
+        <span className="klide-focus-provider-history-chevron" aria-hidden="true">
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        </span>
       </button>
 
       {expanded ? (
         <div className="klide-focus-convo-tree klide-focus-provider-conversations">
-          <span className="klide-focus-convo-spine" aria-hidden="true" />
           {group.conversations.map((conversation) => (
             <ConvoRow
               key={conversation.id}
@@ -375,16 +501,21 @@ function ProviderHistoryGroup({
 
 function HistoryReader({
   conversation,
+  projectRoot,
   onClose,
   onContinue,
 }: {
   conversation: Conversation;
+  projectRoot?: string | null;
   onClose: () => void;
   onContinue: () => void;
 }) {
   const provider = conversation.provider ?? "ollama";
   const delegate = isDelegateProvider(provider);
-  const project = conversation.cwd ? basename(conversation.cwd) : null;
+  const project = projectRoot
+    ? basename(projectRoot)
+    : conversation.cwd ? basename(conversation.cwd) : null;
+  const folder = linkedFolderLabel(conversation.cwd, projectRoot);
 
   return (
     <section
@@ -413,7 +544,8 @@ function HistoryReader({
           <div className="klide-focus-history-meta">
             <span>{providerName(provider)}</span>
             {conversation.model ? <span>{conversation.model}</span> : null}
-            {project ? <span>{project}</span> : null}
+            {project ? <span title={projectRoot ?? undefined}>{project}</span> : null}
+            {folder ? <span title={conversation.cwd ?? undefined}>{folder}</span> : null}
             <span>{new Date(conversation.updatedAt).toLocaleString()}</span>
           </div>
         </div>
@@ -501,6 +633,8 @@ export function FocusMode({
   onOpenConversation,
   onSubmit,
   onOpenMissionControl,
+  onOpenPanel,
+  onExitFocus,
   renderChat,
   raceTabs,
   activeRaceTab,
@@ -516,6 +650,19 @@ export function FocusMode({
   contextWindow,
   onContextWindowChange,
 }: Props) {
+  const activeProjectRoot = normalizeProjectPath(workspaceRoot);
+  const focusProjects = useMemo(() => {
+    const seen = new Set<string>();
+    const roots: string[] = [];
+    for (const project of projects) {
+      const normalized = normalizeProjectPath(project);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      roots.push(normalized);
+    }
+    if (activeProjectRoot && !seen.has(activeProjectRoot)) roots.push(activeProjectRoot);
+    return roots;
+  }, [activeProjectRoot, projects]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [historyConversation, setHistoryConversation] = useState<Conversation | null>(null);
@@ -527,7 +674,7 @@ export function FocusMode({
   // Several projects can hold their history open at once. The active project
   // opens itself; the rest remember their state for the session.
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
-    () => new Set(workspaceRoot ? [workspaceRoot] : [])
+    () => new Set(activeProjectRoot ? [activeProjectRoot] : [])
   );
   // Absence means "follow the active provider". Explicit booleans preserve
   // the user's disclosure choice independently for every project/provider.
@@ -543,14 +690,14 @@ export function FocusMode({
   }, [provider, onProviderChange]);
 
   useEffect(() => {
-    if (!workspaceRoot) return;
+    if (!activeProjectRoot) return;
     setExpandedProjects((prev) => {
-      if (prev.has(workspaceRoot)) return prev;
+      if (prev.has(activeProjectRoot)) return prev;
       const next = new Set(prev);
-      next.add(workspaceRoot);
+      next.add(activeProjectRoot);
       return next;
     });
-  }, [workspaceRoot]);
+  }, [activeProjectRoot]);
 
   function toggleProject(p: string) {
     setExpandedProjects((prev) => {
@@ -571,9 +718,101 @@ export function FocusMode({
     });
   }
 
+  useEffect(() => {
+    invoke<{ username: string; hostname: string }>("app_user_info")
+      .then((u) => {
+        setUsername(u.username);
+        setHostname(u.hostname);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (searchOpen) searchRef.current?.focus();
+  }, [searchOpen]);
+
+  const [convos, setConvos] = useState<Conversation[]>(
+    () => loadConversations<Conversation>(),
+  );
+
+  // Same-window localStorage writes do not emit the browser's `storage`
+  // event. AiPanel publishes this focused index event after the first durable
+  // snapshot, so a brand-new conversation arrives with its model logo while
+  // Focus stays mounted. View changes still reload as a defensive fallback.
+  useEffect(() => {
+    const reload = (event: Event) => {
+      setConvos(loadConversations<Conversation>());
+      const detail = (event as CustomEvent<ConversationChangedDetail | undefined>).detail;
+      if (!detail) return;
+      const project = linkedProjectForPath(detail.cwd, focusProjects);
+      if (!project) return;
+
+      // Work in a secondary AI panel still belongs in the Focus rail. Reveal
+      // the owning project/provider rather than leaving the new row hidden
+      // because the primary panel happens to use another provider.
+      setExpandedProjects((previous) => {
+        if (previous.has(project)) return previous;
+        const next = new Set(previous);
+        next.add(project);
+        return next;
+      });
+      setExpandedProviderGroups((previous) => {
+        const key = providerHistoryKey(project, detail.provider);
+        if (previous.get(key) === true) return previous;
+        const next = new Map(previous);
+        next.set(key, true);
+        return next;
+      });
+    };
+    window.addEventListener(CONVERSATIONS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, reload);
+  }, [focusProjects]);
+  useEffect(() => {
+    setConvos(loadConversations<Conversation>());
+  }, [chatActive, searchOpen]);
+
+  const projectName = activeProjectRoot ? basename(activeProjectRoot) : null;
+  const folderedHistory = useMemo(() => {
+    const byProject = new Map<string, Conversation[]>();
+    const projectByConversationId = new Map<string, string>();
+    for (const c of convos) {
+      const linkedProject = linkedProjectForPath(c.cwd, focusProjects);
+      if (!linkedProject) continue;
+      projectByConversationId.set(c.id, linkedProject);
+      const list = byProject.get(linkedProject);
+      if (list) list.push(c);
+      else byProject.set(linkedProject, [c]);
+    }
+    return { byProject, projectByConversationId };
+  }, [convos, focusProjects]);
+  const convosByProject = folderedHistory.byProject;
+  const linkedProjectByConversationId = folderedHistory.projectByConversationId;
+  const providerHistoriesByProject = useMemo(() => {
+    const byProject = new Map<string, ProviderHistory[]>();
+    for (const [project, projectHistory] of convosByProject) {
+      byProject.set(project, groupHistoryByProvider(projectHistory));
+    }
+    return byProject;
+  }, [convosByProject]);
+  const projectConvos = useMemo(
+    () => (activeProjectRoot ? convosByProject.get(activeProjectRoot) ?? [] : []),
+    [activeProjectRoot, convosByProject]
+  );
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return convos
+      .filter(
+        (c) =>
+          (c.title || "").toLowerCase().includes(q) ||
+          isSubsequence(q, (c.title || "").toLowerCase())
+      )
+      .slice(0, 20);
+  }, [convos, query]);
+
   function openHistoryConversation(conversation: Conversation) {
     setHistoryConversation(conversation);
-    const conversationProject = conversation.cwd;
+    const conversationProject = linkedProjectByConversationId.get(conversation.id);
     if (!conversationProject) return;
 
     const historyProvider = conversation.provider ?? "ollama";
@@ -591,61 +830,6 @@ export function FocusMode({
       return next;
     });
   }
-
-  useEffect(() => {
-    invoke<{ username: string; hostname: string }>("app_user_info")
-      .then((u) => {
-        setUsername(u.username);
-        setHostname(u.hostname);
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (searchOpen) searchRef.current?.focus();
-  }, [searchOpen]);
-
-  // Reload the conversation list whenever we come back to the home screen —
-  // a chat that just happened should appear without a manual refresh.
-  const convos = useMemo(
-    () => loadConversations<Conversation>(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chatActive, searchOpen]
-  );
-
-  const projectName = workspaceRoot ? basename(workspaceRoot) : null;
-  const convosByProject = useMemo(() => {
-    const byProject = new Map<string, Conversation[]>();
-    for (const c of convos) {
-      if (!c.cwd) continue;
-      const list = byProject.get(c.cwd);
-      if (list) list.push(c);
-      else byProject.set(c.cwd, [c]);
-    }
-    return byProject;
-  }, [convos]);
-  const providerHistoriesByProject = useMemo(() => {
-    const byProject = new Map<string, ProviderHistory[]>();
-    for (const [project, projectHistory] of convosByProject) {
-      byProject.set(project, groupHistoryByProvider(projectHistory));
-    }
-    return byProject;
-  }, [convosByProject]);
-  const projectConvos = useMemo(
-    () => (workspaceRoot ? convosByProject.get(workspaceRoot) ?? [] : []),
-    [convosByProject, workspaceRoot]
-  );
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    return convos
-      .filter(
-        (c) =>
-          (c.title || "").toLowerCase().includes(q) ||
-          isSubsequence(q, (c.title || "").toLowerCase())
-      )
-      .slice(0, 20);
-  }, [convos, query]);
 
   const searching = searchOpen && query.trim().length > 0;
 
@@ -687,6 +871,14 @@ export function FocusMode({
               onOpenMissionControl();
             }}
           />
+          <NavRow
+            icon={<OrchestratorIcon />}
+            label="Orchestrator"
+            onClick={() => {
+              setHistoryConversation(null);
+              onOpenPanel("orchestrator");
+            }}
+          />
         </div>
 
         {searchOpen && (
@@ -719,7 +911,13 @@ export function FocusMode({
           />
         )}
 
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", marginTop: 2 }}>
+        {/* Section break — a gradient hairline, not another written label
+            (the same recipe the free-mode rail uses between its zones). It
+            separates the actions above from the workspace list below, so the
+            search field stays attached to what it filters. */}
+        <div aria-hidden="true" className="klide-focus-rail-divider" />
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           {searching ? (
             <>
               <SectionLabel>Results</SectionLabel>
@@ -741,13 +939,13 @@ export function FocusMode({
           ) : (
             <>
               <SectionLabel>Projects</SectionLabel>
-              {projects.length === 0 && (
+              {focusProjects.length === 0 && (
                 <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-subtle)" }}>
                   Open a folder to start.
                 </div>
               )}
-              {projects.map((p) => {
-                const isActive = p === workspaceRoot;
+              {focusProjects.map((p) => {
+                const isActive = p === activeProjectRoot;
                 const isExpanded = expandedProjects.has(p);
                 const history = convosByProject.get(p) ?? [];
                 const providerHistories = providerHistoriesByProject.get(p) ?? [];
@@ -772,8 +970,12 @@ export function FocusMode({
                       <div className="klide-focus-provider-groups">
                         {providerHistories.map((providerHistory) => {
                           const key = providerHistoryKey(p, providerHistory.provider);
-                          const providerExpanded =
-                            expandedProviderGroups.get(key) ?? providerHistory.provider === provider;
+                          const providerExpanded = providerHistoryExpanded(
+                            expandedProviderGroups.get(key),
+                            providerHistory.provider,
+                            provider,
+                            providerHistories[0]?.provider,
+                          );
                           return (
                             <ProviderHistoryGroup
                               key={providerHistory.provider}
@@ -799,8 +1001,57 @@ export function FocusMode({
           )}
         </div>
 
-        {/* Profile foot — local identity, flat avatar (allowed circle). */}
-        <div className="klide-focus-profile">
+        {/* Foot — the rail's utility zone, mirroring the free-mode rail's
+            bottom half: shared destinations as one quiet icon strip (labels
+            live in their tooltips, as they do on the collapsed rail), the
+            layout switch pushed to the far edge, then identity. */}
+        <div className="klide-focus-foot-strip">
+          {(
+            [
+              ["git", "Git", GitIcon],
+              ["memory", "Memory", MemoryIcon],
+              ["skills", "Skills", SkillsIcon],
+              ["settings", "Settings", SettingsIcon],
+            ] as const
+          ).map(([panel, label, Icon]) => (
+            <button
+              key={panel}
+              type="button"
+              className="klide-focus-foot-action"
+              aria-label={label}
+              title={label}
+              onClick={() => {
+                setHistoryConversation(null);
+                onOpenPanel(panel);
+              }}
+            >
+              <Icon />
+            </button>
+          ))}
+          {/* Focus has no status bar; this is the way back to the panel
+              workspace. Set apart at the trailing edge — it changes the shell,
+              the others only open a surface. */}
+          <button
+            type="button"
+            className="klide-focus-foot-action"
+            style={{ marginLeft: "auto" }}
+            aria-label="Leave Focus — Free layout"
+            title="Leave Focus — Free layout"
+            onClick={onExitFocus}
+          >
+            <FreeLayoutIcon />
+          </button>
+        </div>
+
+        {/* Profile foot — local identity, flat avatar (allowed circle).
+            Clicking it opens the same Profile modal the free-mode rail does. */}
+        <button
+          type="button"
+          className="klide-focus-profile"
+          aria-label="Open profile"
+          title="Profile"
+          onClick={() => onOpenPanel("profile")}
+        >
           <span
             aria-hidden
             style={{
@@ -831,7 +1082,7 @@ export function FocusMode({
             </span>
             <span style={{ fontSize: 10.5, color: "var(--fg-subtle)", opacity: 0.72 }}>{hostname}</span>
           </span>
-        </div>
+        </button>
       </aside>
 
       {/* ── Canvas ────────────────────────────────────────────────── */}
@@ -839,6 +1090,7 @@ export function FocusMode({
         {historyConversation ? (
           <HistoryReader
             conversation={historyConversation}
+            projectRoot={linkedProjectByConversationId.get(historyConversation.id)}
             onClose={() => setHistoryConversation(null)}
             onContinue={() => {
               const conversation = historyConversation;
@@ -1639,7 +1891,7 @@ function FocusHome({
                   title: c.title || "Untitled conversation",
                   sub: `${relativeTime(c.updatedAt)} · Resume`,
                   kind: "resume" as StarterKind,
-                  provider: c.provider ?? "ollama",
+                  model: c.model,
                   onClick: () => onOpenConversation(c),
                 }))
               : STARTERS.map((s) => ({
@@ -1647,7 +1899,7 @@ function FocusHome({
                   title: s.title,
                   sub: s.sub,
                   kind: s.kind,
-                  provider: undefined,
+                  model: undefined,
                   onClick: () => onSubmit(s.prompt),
                 }))
             ).map((card, index) => (
@@ -1656,7 +1908,7 @@ function FocusHome({
                 title={card.title}
                 sub={card.sub}
                 kind={card.kind}
-                provider={card.provider}
+                model={card.model}
                 index={index}
                 onClick={card.onClick}
               />
@@ -1787,17 +2039,20 @@ function HomeCard({
   title,
   sub,
   kind,
-  provider,
+  model,
   index,
   onClick,
 }: {
   title: string;
   sub: string;
   kind: StarterKind;
-  provider?: ProviderId;
+  model?: string | null;
   index: number;
   onClick: () => void;
 }) {
+  const identity = kind === "resume" ? modelIdentity(model) : null;
+  const ModelLogo = identity?.Logo;
+
   return (
     <button
       type="button"
@@ -1805,11 +2060,21 @@ function HomeCard({
       className="klide-focus-home-card"
       style={{ "--focus-card-delay": `${index * 35}ms` } as CSSProperties}
     >
-      <span className="klide-focus-home-card-icon">
-        {kind === "resume"
-          ? <ProviderLogo id={provider ?? "ollama"} size={17} />
-          : <StarterIcon kind={kind} />}
-      </span>
+      {kind === "resume" ? (
+        ModelLogo ? (
+          <span
+            className="klide-focus-home-card-icon"
+            title={identity.name}
+            aria-hidden="true"
+          >
+            <ModelLogo size={17} />
+          </span>
+        ) : null
+      ) : (
+        <span className="klide-focus-home-card-icon" aria-hidden="true">
+          <StarterIcon kind={kind} />
+        </span>
+      )}
       <span className="klide-focus-home-card-title">{title}</span>
       <span className="klide-focus-home-card-sub">{sub}</span>
       <span className="klide-focus-home-card-arrow" aria-hidden="true">↗</span>
