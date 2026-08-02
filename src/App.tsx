@@ -2186,6 +2186,11 @@ function App() {
                 its own layout, so it's excluded. */}
             {(!activeGrid || focusMode) && (
               <div
+                // Its top inset is the title-bar band (`.klide-app-row` rule),
+                // and in free/anchored mode that band is the widest thing the
+                // window can be grabbed by — the rail alone is 56px. Children
+                // are their own event targets and keep their clicks.
+                data-tauri-drag-region
                 style={{
                   display: view === "workbench" ? "flex" : "none",
                   flex: 1,

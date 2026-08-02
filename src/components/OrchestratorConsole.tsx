@@ -1203,7 +1203,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
   }
 
   return (
-    <div style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: "var(--bg)", color: "var(--fg)" }} className="shell-enter">
+    <div data-tauri-drag-region style={{ flex: 1, minWidth: 0, height: "100%", overflow: "auto", background: "var(--bg)", color: "var(--fg)" }} className="shell-enter">
       {/* Console-scoped motion stays quiet: state changes fade, while the board
           itself remains still and easy to scan. */}
       <style>{`
