@@ -16,10 +16,6 @@ A local-first coding workspace for running local models and subscription coding 
 
 [**Get started**](#get-started) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Architecture](#trust-and-architecture) &nbsp;·&nbsp; [Contributing](#contributing)
 
-<br/>
-
-<img src=".github/assets/free-mode.png" alt="Klide in free mode: Ollama, OpenRouter, and OpenCode panels running beside the editor" width="1200" />
-
 </div>
 
 ## One workspace for every coding agent
