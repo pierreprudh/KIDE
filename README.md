@@ -16,10 +16,6 @@ A local-first coding workspace for running local models and subscription coding 
 
 [**Get started**](#get-started) &nbsp;·&nbsp; [Features](#features) &nbsp;·&nbsp; [Architecture](#trust-and-architecture) &nbsp;·&nbsp; [Contributing](#contributing)
 
-<br/>
-
-<img src=".github/assets/workbench.png" alt="Klide running Ollama, OpenRouter, MLX, and OpenCode in one workspace" width="1200" />
-
 </div>
 
 ## One workspace for every coding agent
@@ -31,6 +27,28 @@ Klide keeps three questions in view:
 - **What is running?** Mission Control tracks Klide runs and delegate command-line interface (CLI) sessions
 - **What needs attention?** Waiting, blocked, failed, and reviewable work rises to the top
 - **What changed?** Each run keeps its files, branch, transcript, validation state, cost, and memory evidence
+
+## Three ways to work
+
+Klide opens on the surface that matches the task, and all three share the same runs, transcripts, and review state.
+
+### Welcome — start or resume a project
+
+Recent folders, clone, and new project on one quiet screen. `⌘1`–`⌘5` reopen a recent workspace without touching the mouse.
+
+<img src=".github/assets/welcome.png" alt="Klide welcome screen with recent projects" width="900" />
+
+### Focus — one task, one conversation
+
+A rail of projects, providers, and past conversations on the left; a single centered conversation in the middle. Resume any thread, see the branch you are on, and keep the Git strip in the corner.
+
+<img src=".github/assets/focus.png" alt="Klide focus mode with the conversation rail and a centered task prompt" width="900" />
+
+### Free mode — every agent on one canvas
+
+Floating, resizable panels over the editor. Run several providers and delegate CLIs side by side, compare their answers, and keep the file you are reviewing open behind them.
+
+<img src=".github/assets/free-mode.png" alt="Klide free mode with three agent panels and the editor" width="900" />
 
 ## Why Klide
 
@@ -67,6 +85,7 @@ Klide has three capability modes:
 | **Review and evidence** | Diff comments sent to agents, command approval, checkpoints, validation status, files touched, tokens, cost, and stop reasons |
 | **Parallel work** | Git worktrees, worktree setup recipes, agent races on the same task, evidence comparison, and merge controls |
 | **Editor and shell** | Monaco editor, file explorer, tabs, search, command palette, Git review, commit graph, and persistent PTY terminals |
+| **Workspace surfaces** | Welcome launcher, focus mode, free-mode floating panels, fixed layout presets, and a freeform grid builder |
 | **Models** | Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter, and OpenAI-compatible endpoints |
 | **Project context** | `AGENTS.md`, `CLAUDE.md`, file mentions, skills, dynamic tools, and reviewed project memory |
 | **Local security** | Workspace-rooted file access, operating-system keychain storage, project command allowlists, and network permissions |

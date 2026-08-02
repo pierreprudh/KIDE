@@ -133,6 +133,47 @@ describe("restoreConversationSession", () => {
     expect(restored.messages).toEqual([]);
   });
 
+  it("starts a Focus hero submission from the selected Provider/model instead of a restored panel binding", () => {
+    localStorage.setItem(
+      "klide-conversations",
+      JSON.stringify([
+        {
+          id: "failed-openrouter-run",
+          title: "Failed",
+          msgs: [],
+          updatedAt: 10,
+          provider: "openrouter",
+          model: "sakana/fugu-ultra",
+          cwd: "/workspace",
+        },
+      ]),
+    );
+    localStorage.setItem(
+      "klide.panelSession.ai-main",
+      JSON.stringify({
+        convoId: "failed-openrouter-run",
+        provider: "openrouter",
+        workspaceRoot: "/workspace",
+      }),
+    );
+
+    const restored = restoreConversationSession({
+      panelId: "ai-main",
+      provider: "custom:ontraak-prod",
+      model: "qwen3.6:latest",
+      workspaceRoot: "/workspace",
+      startFresh: true,
+      createId: () => "fresh-prod-run",
+    });
+
+    expect(restored).toMatchObject({
+      conversationId: "fresh-prod-run",
+      messages: [],
+      provider: "custom:ontraak-prod",
+      model: "qwen3.6:latest",
+    });
+  });
+
   it("keeps a Delegate panel binding even before it has renderable messages", () => {
     localStorage.setItem(
       "klide.panelSession.delegate-panel",

@@ -39,6 +39,9 @@ export type RestoreConversationSessionInput = {
   provider: ProviderId;
   model: string;
   workspaceRoot: string | null;
+  /** A composer handoff that semantically starts a new Conversation must not
+   *  inherit this panel's durable binding or latest saved Conversation. */
+  startFresh?: boolean;
   createId?: () => string;
 };
 
@@ -77,8 +80,23 @@ export function restoreConversationSession({
   provider,
   model,
   workspaceRoot,
+  startFresh = false,
   createId = genId,
 }: RestoreConversationSessionInput): ConversationSession {
+  if (startFresh) {
+    return {
+      conversationId: createId(),
+      messages: [],
+      provider,
+      model,
+      workspaceRoot,
+      branch: null,
+      worktree: null,
+      forkedFrom: null,
+      run: { active: false, activity: null },
+    };
+  }
+
   const conversations = loadConversations<Conversation>();
   const byId = new Map(conversations.map((conversation) => [conversation.id, conversation]));
   const explicitId = initialConversationId || null;

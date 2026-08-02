@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { gitGraph } from "../ipc/git";
 import { layoutGraph, type GraphCommit, type GraphRow } from "../gitGraph";
 
@@ -161,6 +161,8 @@ export const FocusGitIsland = memo(function FocusGitIsland({
   const [commits, setCommits] = useState<GraphCommit[] | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const islandRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLElement>(null);
   const [pinging, setPinging] = useState(false);
 
   // Hold the swell for exactly as long as the CSS takes to reach full size
@@ -220,9 +222,25 @@ export const FocusGitIsland = memo(function FocusGitIsland({
     [commits]
   );
 
+  function toggleExpanded() {
+    const island = islandRef.current;
+    const preview = previewRef.current;
+    if (island && preview && preview.offsetWidth > 0 && preview.offsetHeight > 0) {
+      // Both windows share the same top-right anchor. Measuring their layout
+      // boxes at the moment of interaction makes the large window land on the
+      // compact one exactly at every viewport size; the old fixed X/Y scale
+      // visibly jumped whenever the canvas dimensions differed from its
+      // original tuning viewport.
+      preview.style.setProperty("--git-preview-scale-x", String(island.offsetWidth / preview.offsetWidth));
+      preview.style.setProperty("--git-preview-scale-y", String(island.offsetHeight / preview.offsetHeight));
+    }
+    setExpanded((current) => !current);
+  }
+
   return (
     <>
       <div
+        ref={islandRef}
         className="klide-focus-git-island"
         data-preview-open={expanded || undefined}
         data-ping={pinging ? "true" : undefined}
@@ -262,7 +280,7 @@ export const FocusGitIsland = memo(function FocusGitIsland({
       >
         <button
           type="button"
-          onClick={() => setExpanded((current) => !current)}
+          onClick={toggleExpanded}
           aria-label={expanded ? "Shrink Git preview" : "Expand Git preview"}
           aria-expanded={expanded}
           title={expanded ? "Shrink" : "Expand"}
@@ -285,6 +303,7 @@ export const FocusGitIsland = memo(function FocusGitIsland({
       </div>
 
       <aside
+        ref={previewRef}
         className="klide-focus-git-preview"
         data-open={expanded || undefined}
         aria-hidden={!expanded}

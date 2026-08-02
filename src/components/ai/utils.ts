@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ProviderId } from "../../agent/types";
 import type { Conversation, Msg } from "./types";
 import { estimateProjectContextTokens } from "../../contextTray";
+import { notify as notifyUser } from "../../toast";
 
 export function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -119,6 +120,19 @@ export type ConversationChangedDetail = {
   cwd: string | null;
 };
 const MAX_CONVERSATIONS = 100;
+let conversationStorageFailureNotified = false;
+let conversationStoragePressureNotified = false;
+
+function isQuotaExceeded(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { name?: unknown; code?: unknown };
+  return (
+    value.name === "QuotaExceededError" ||
+    value.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    value.code === 22 ||
+    value.code === 1014
+  );
+}
 
 export function loadConversations<T>(key?: string): T[] {
   try {
@@ -150,19 +164,51 @@ export function saveConversations<T>(
   key?: string,
   notify = true,
   detail?: ConversationChangedDetail,
-) {
-  try {
-    const storageKey = key ?? CONVOS_KEY;
-    localStorage.setItem(storageKey, JSON.stringify(list));
-    // The native `storage` event does not fire in the window that performed
-    // the write. Focus and AiPanel live in that same window, so publish one
-    // lightweight navigation event when the visible conversation index
-    // changes (new row, reordered row, title/model/provider/folder update).
-    if (notify && storageKey === CONVOS_KEY && typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent(CONVERSATIONS_CHANGED_EVENT, { detail }));
+): T[] {
+  const storageKey = key ?? CONVOS_KEY;
+  let candidate = list;
+  while (true) {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(candidate));
+      const pruned = list.length - candidate.length;
+      conversationStorageFailureNotified = false;
+      if (pruned > 0 && storageKey === CONVOS_KEY) {
+        if (!conversationStoragePressureNotified) {
+          notifyUser(
+            `Local conversation history was full, so Klide removed ${pruned} older snapshot${pruned === 1 ? "" : "s"}. Durable Run transcripts remain in Mission Control.`,
+            { tone: "warn" },
+          );
+        }
+        conversationStoragePressureNotified = true;
+      } else {
+        conversationStoragePressureNotified = false;
+      }
+      // The native `storage` event does not fire in the window that performed
+      // the write. Focus and AiPanel live in that same window, so publish one
+      // lightweight navigation event when the visible conversation index
+      // changes (new row, reordered row, title/model/provider/folder update).
+      if ((notify || pruned > 0) && storageKey === CONVOS_KEY && typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(CONVERSATIONS_CHANGED_EVENT, { detail }));
+      }
+      return candidate;
+    } catch (error) {
+      // A Conversation snapshot is only the local reader cache; the Harness
+      // Transcript remains durable on disk. Under quota pressure, keep the
+      // newest contiguous history and retry by removing one oldest snapshot
+      // at a time. Never discard the current/newest Conversation itself.
+      if (storageKey === CONVOS_KEY && isQuotaExceeded(error) && candidate.length > 1) {
+        candidate = candidate.slice(0, -1);
+        continue;
+      }
+      if (!conversationStorageFailureNotified) {
+        notifyUser(
+          "Klide could not save the local conversation index. The durable Run transcript is still on disk.",
+          { tone: "error" },
+        );
+        conversationStorageFailureNotified = true;
+      }
+      return loadConversations<T>(storageKey);
     }
-  } catch {
-    /* storage full or unavailable */
   }
 }
 
@@ -217,15 +263,21 @@ export function upsertConversation(
 
 export function persistConversation(
   conv: Conversation,
-  existing?: Conversation[],
+  _stalePanelSnapshot?: Conversation[],
 ): Conversation[] {
-  const current = existing ?? loadConversations<Conversation>();
+  // Every mounted panel has its own React history state. That state is useful
+  // for rendering but is not a safe write base: two panels can mount from the
+  // same snapshot, then the second writer would erase the first. Re-read the
+  // one durable browser store synchronously for every merge. The optional
+  // argument remains only so older callers cannot reintroduce last-writer-wins
+  // while they migrate; it is intentionally ignored.
+  const current = loadConversations<Conversation>();
   const next = upsertConversation(conv, current);
   // Streaming persists on every token. Avoid making Focus rebuild its rail on
   // every text delta; the first snapshot already contains the selected model,
   // so notify only when navigation-visible metadata or ordering changes.
   const navigationChanged = conversationIndexChanged(conv, current);
-  saveConversations(
+  return saveConversations(
     next,
     undefined,
     navigationChanged,
@@ -237,7 +289,6 @@ export function persistConversation(
         }
       : undefined,
   );
-  return next;
 }
 
 const DELEGATE_PROVIDER_IDS = new Set(["claude-code", "codex", "opencode"]);
