@@ -3,6 +3,8 @@ import { memoryStorage } from "../../testStorage";
 import type { Conversation } from "./types";
 import {
   CONVERSATIONS_CHANGED_EVENT,
+  conversationDuration,
+  conversationStartedAt,
   persistConversation,
 } from "./utils";
 
@@ -71,5 +73,39 @@ describe("persistConversation navigation updates", () => {
     persistConversation(conversation({ model: "claude-sonnet-4-6" }), saved);
 
     expect(updates).toBe(1);
+  });
+});
+
+describe("conversation start time", () => {
+  it("takes the start from the first stamped message and holds it across saves", () => {
+    const first = persistConversation(
+      conversation({ msgs: [{ role: "user", content: "Build the feature", ts: 1_000 }], updatedAt: 1_000 }),
+    );
+    expect(first[0].createdAt).toBe(1_000);
+
+    // Streaming rewrites `updatedAt` on every token; the start must not move.
+    const later = persistConversation(
+      conversation({
+        msgs: [
+          { role: "user", content: "Build the feature", ts: 1_000 },
+          { role: "assistant", content: "on it", ts: 9_000 },
+        ],
+        updatedAt: 9_000,
+      }),
+      first,
+    );
+    expect(later[0].createdAt).toBe(1_000);
+    expect(conversationDuration(later[0])).toBe(8_000);
+  });
+
+  it("keeps a legacy record's start rather than resetting it to the save time", () => {
+    // Written before timestamps existed: no createdAt, no message `ts`.
+    const legacy: Conversation[] = [conversation({ updatedAt: 5_000 })];
+    const saved = persistConversation(conversation({ updatedAt: 12_000 }), legacy);
+    expect(saved[0].createdAt).toBe(5_000);
+  });
+
+  it("falls back to the last-activity time for a record with nothing to date it", () => {
+    expect(conversationStartedAt(conversation({ updatedAt: 42 }))).toBe(42);
   });
 });

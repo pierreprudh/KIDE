@@ -83,6 +83,8 @@ export function relativeTime(ts: number): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
+export { formatSpan } from "../../time";
+
 export function isSubsequence(needle: string, hay: string): boolean {
   let i = 0;
   for (let j = 0; j < hay.length && i < needle.length; j++) {
@@ -182,11 +184,34 @@ function conversationIndexChanged(
   );
 }
 
+/** When the conversation began, epoch ms. Prefers the stored `createdAt`, then
+ *  the first message that carries its own timestamp, and finally `updatedAt` —
+ *  the last of which is only right for a one-turn thread, but it is the best a
+ *  record written before timestamps existed can offer. */
+export function conversationStartedAt(conv: Conversation): number {
+  if (typeof conv.createdAt === "number") return conv.createdAt;
+  const firstStamped = conv.msgs?.find((m) => typeof (m as { ts?: number }).ts === "number");
+  return (firstStamped as { ts?: number } | undefined)?.ts ?? conv.updatedAt;
+}
+
+/** How long the conversation has been running, ms — start to last activity. */
+export function conversationDuration(conv: Conversation): number {
+  return Math.max(0, conv.updatedAt - conversationStartedAt(conv));
+}
+
 export function upsertConversation(
   conv: Conversation,
   existing: Conversation[] = loadConversations<Conversation>(),
 ): Conversation[] {
-  const next = [conv, ...existing.filter((c) => c.id !== conv.id)];
+  const previous = existing.find((c) => c.id === conv.id);
+  // `updatedAt` is rewritten on every token, so the start has to be carried
+  // forward explicitly or the thread loses it on the next save. An existing
+  // record's start always wins — a resumed conversation begins when it was
+  // first sent, not when it was reopened.
+  const createdAt = previous
+    ? conversationStartedAt(previous)
+    : (conv.createdAt ?? conversationStartedAt(conv));
+  const next = [{ ...conv, createdAt }, ...existing.filter((c) => c.id !== conv.id)];
   return next.slice(0, MAX_CONVERSATIONS);
 }
 

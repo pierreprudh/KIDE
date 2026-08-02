@@ -225,7 +225,7 @@ export function convoToLedgerEntry(
     messageCount: c.messages?.length ?? 0,
     lastEvent: convoLastEvent(c.messages ?? []),
     updatedMs: c.updatedMs,
-    createdMs: c.updatedMs,
+    createdMs: c.createdMs ?? c.updatedMs,
   };
   return withCapabilities(run, "klide-convo", metadata);
 }

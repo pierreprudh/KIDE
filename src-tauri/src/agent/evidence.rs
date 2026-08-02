@@ -486,6 +486,7 @@ mod tests {
                     completion_tokens: Some(300),
                     ..Default::default()
                 }),
+                timing: None,
                 ts: 65_000,
             },
             AgentEvent::RunResult {

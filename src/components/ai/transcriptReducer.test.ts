@@ -109,6 +109,23 @@ describe("finalizeAssistantMessage", () => {
     expect(r.meta.ttftMs).toBe(200); // firstTokenAt - turnStartedAt
   });
 
+  it("prefers the harness's measured timing over the panel's wall clock", () => {
+    // The panel's own window is 1000ms wide, but the harness measured the
+    // provider call itself: 250ms, first token at 60ms. The panel's numbers
+    // include whatever the run did between the turn boundary and the reply.
+    const msgs: Msg[] = [{ role: "assistant", content: "" }];
+    const event = {
+      ...assistantMessage([{ type: "text", text: "hello" }]),
+      timing: { modelMs: 250, ttftMs: 60 },
+      ts: 1_700_000_000_000,
+    };
+    const r = finalizeAssistantMessage({ ...base, msgs, pricing: null, event });
+    expect(r.meta.modelMs).toBe(250);
+    expect(r.meta.ttftMs).toBe(60);
+    expect(r.meta.ms).toBe(1000); // wall clock is still reported alongside
+    expect(r.msgs[r.index]).toMatchObject({ ts: 1_700_000_000_000 });
+  });
+
   it("prefers provider usage over estimates and surfaces measured prompt tokens", () => {
     const msgs: Msg[] = [{ role: "assistant", content: "" }];
     const r = finalizeAssistantMessage({

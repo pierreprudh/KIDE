@@ -24,6 +24,7 @@ export type Pricing = { inputPerMillion: number; outputPerMillion: number } | nu
 /** Per-message footer metrics (matches the `meta` field on an assistant Msg). */
 export type AssistantMeta = {
   ms?: number;
+  modelMs?: number;
   tokens?: number;
   promptTokens?: number;
   ttftMs?: number;
@@ -189,8 +190,17 @@ export function finalizeAssistantMessage(input: {
     args: "input" in b ? b.input : {},
   }));
 
+  // Wall clock for the turn: what the user waited, tools and diff reviews
+  // included. `modelMs` is the provider's own share, measured in the harness
+  // around the request — so a turn that paused on a diff review no longer
+  // reports that pause as model time. TTFT comes from the harness too, where
+  // the first chunk actually lands; the panel's own first-delta stamp is the
+  // fallback for older transcripts and non-harness turns.
   const turnMs = now - timing.turnStartedAt;
-  const ttftMs = timing.firstTokenAt !== null ? timing.firstTokenAt - timing.turnStartedAt : undefined;
+  const modelMs = event.timing?.modelMs;
+  const ttftMs =
+    event.timing?.ttftMs ??
+    (timing.firstTokenAt !== null ? timing.firstTokenAt - timing.turnStartedAt : undefined);
 
   const located = locateAssistant(input.msgs, input.nextAssistantIdx, delegate);
   const next = [...located.msgs];
@@ -212,10 +222,11 @@ export function finalizeAssistantMessage(input: {
     measuredUsage = { prompt: usage.promptTokens, completion };
   }
 
-  // tok/s over decode time (turn minus TTFT). Prefer the provider's own
-  // eval_duration when available: it's pure decode time, wall-clock can be
-  // dragged out by tool calls and rendering.
-  const decodeMs = ttftMs !== undefined ? turnMs - ttftMs : turnMs;
+  // tok/s over decode time. Prefer the provider's own eval_duration, then the
+  // harness-measured provider time minus TTFT; panel wall-clock is the last
+  // resort because tool calls and rendering inflate it.
+  const decodeBaseMs = modelMs ?? turnMs;
+  const decodeMs = ttftMs !== undefined ? decodeBaseMs - ttftMs : decodeBaseMs;
   let tps: number | undefined;
   if (
     usage?.completionTokens !== undefined &&
@@ -240,7 +251,7 @@ export function finalizeAssistantMessage(input: {
           1_000_000
         : undefined;
 
-  const meta: AssistantMeta = { ms: turnMs, tokens, promptTokens: usage?.promptTokens, ttftMs, tps, exact, costUsd };
+  const meta: AssistantMeta = { ms: turnMs, modelMs, tokens, promptTokens: usage?.promptTokens, ttftMs, tps, exact, costUsd };
   next[located.index] = {
     role: "assistant",
     content: msgContent,
@@ -248,6 +259,9 @@ export function finalizeAssistantMessage(input: {
     toolCalls: tcCalls.length ? tcCalls : undefined,
     ...delegate,
     meta,
+    // The event's own stamp, so a live message and the same message replayed
+    // from the transcript carry the same timestamp.
+    ts: event.ts,
   };
   return { msgs: next, index: located.index, meta, measuredPromptTokens, measuredUsage };
 }

@@ -625,6 +625,9 @@ export function AiPanel({
     if (streaming && last.streaming && last.count === msgs.length && last.meta === metaKey) return;
     lastPublishRef.current = { count: msgs.length, streaming, meta: metaKey };
     const firstUser = msgs.find((m) => m.role === "user");
+    const firstStamped = msgs.find((m) => typeof (m as { ts?: number }).ts === "number") as
+      | { ts: number }
+      | undefined;
     publishKlideConvo({
       id: currentId,
       // An idle convo that finished its turn is "done", not "waiting" — a
@@ -645,6 +648,9 @@ export function AiPanel({
           : []
       ),
       updatedMs: Date.now(),
+      // The board's row spans first message → last activity; without this the
+      // start defaulted to "now" and every Klide run looked instantaneous.
+      createdMs: firstStamped?.ts,
     });
   }, [msgs, streaming, provider, model, workspaceRoot, currentId, currentForkedFrom, conversationGitMeta]);
 
@@ -2581,7 +2587,9 @@ This user request requires workspace inspection. Before answering, you MUST call
   function enqueueTurn(turn: QueuedTurn) {
     queueRef.current = [...queueRef.current, turn];
     setQueuedTurns(queueRef.current);
-    const queuedMessage: Msg = { role: "user", content: turn.text, attachments: turn.attachments.length ? turn.attachments : undefined, projectContext: turn.projectContext, queueState: "queued", queueId: turn.clientId, subagent: turn.subagent };
+    // Stamped at send, not at dispatch: a turn can sit queued behind a running
+    // one, and the conversation's start time is when the user actually asked.
+    const queuedMessage: Msg = { role: "user", content: turn.text, attachments: turn.attachments.length ? turn.attachments : undefined, projectContext: turn.projectContext, queueState: "queued", queueId: turn.clientId, subagent: turn.subagent, ts: Date.now() };
     msgsRef.current = [...msgsRef.current, queuedMessage];
     setMsgs(msgsRef.current);
     // The user just hit send. Even if they were scrolled up reading old

@@ -55,10 +55,16 @@ export function eventsToConversation(
     });
   }
 
+  // A transcript knows exactly when it started and when it last moved — take
+  // both from the events rather than stamping "now" on a run that may have
+  // finished days ago.
+  const first = events[0];
+  const last = events[events.length - 1];
   return {
     id: runId,
     title,
     msgs,
-    updatedAt: Date.now(),
+    updatedAt: typeof last?.ts === "number" ? last.ts : Date.now(),
+    createdAt: typeof first?.ts === "number" ? first.ts : undefined,
   };
 }

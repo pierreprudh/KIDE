@@ -1,6 +1,7 @@
 import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listProviderModels } from "../ipc/aiProviders";
+import { formatSpan } from "../time";
 import { gitBranchDiff, type GitBranchDiff } from "../ipc/git";
 import {
   attachDelegatePty,
@@ -3859,6 +3860,12 @@ function RunDetail({
         <MetaRow label="Project" value={run.project ?? "—"} />
         <MetaRow label="Branch" value={run.branch ?? "—"} />
         <MetaRow label="Messages" value={String(run.messageCount)} />
+        <MetaRow label="Started" value={new Date(run.createdMs).toLocaleString()} />
+        {/* Klide conversations only got a real start once `createdMs` stopped
+            being a copy of `updatedMs`; without it every row read as instant. */}
+        {run.updatedMs > run.createdMs ? (
+          <MetaRow label="Duration" value={formatSpan(run.updatedMs - run.createdMs)} />
+        ) : null}
         <MetaRow label="Updated" value={relativeTime(run.updatedMs)} />
       </dl>
 

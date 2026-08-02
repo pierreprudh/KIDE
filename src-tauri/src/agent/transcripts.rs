@@ -469,6 +469,7 @@ mod tests {
                 completion_tokens: Some(completion),
                 ..Default::default()
             }),
+            timing: None,
             ts: 1,
         }
     }
@@ -481,6 +482,7 @@ mod tests {
                 text: text.to_string(),
             }],
             usage: None,
+            timing: None,
             ts: 1,
         }
     }
@@ -583,6 +585,7 @@ mod tests {
             message_id: "m".to_string(),
             content: vec![],
             usage: None,
+            timing: None,
             ts: 1,
         }];
         let (input, output, files) = summarize_event_stats(&events);

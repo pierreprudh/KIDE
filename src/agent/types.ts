@@ -90,6 +90,18 @@ export type AgentUsage = {
   costUsd?: number;
 };
 
+/** Provider-turn timing measured by the Rust harness around the provider call
+ *  itself, carried on `assistant_message`. `modelMs` is the honest duration:
+ *  it excludes tool execution and any pause waiting on diff review, both of
+ *  which land between one event's `ts` and the next. */
+export type AgentTurnTiming = {
+  /** Provider request → final response, ms. */
+  modelMs: number;
+  /** Provider request → first streamed token, ms. Absent when the turn never
+   *  streamed a delta (non-streaming providers). */
+  ttftMs?: number;
+};
+
 export type PermissionOption = {
   /** The wire name is `optionId`, not `id` — see `standard_gate_options` in
    *  `src-tauri/src/agent/mod.rs`. This mirror said `id` for as long as nobody
@@ -190,6 +202,10 @@ export type AgentEvent =
       content: AgentContentBlock[];
       /** Real provider-reported token accounting for this turn. */
       usage?: AgentUsage;
+      /** Measured provider timing for this turn. Absent on messages the
+       *  harness authored itself (turn-limit / give-up notices) and on
+       *  transcripts written before timing was recorded. */
+      timing?: AgentTurnTiming;
       ts: number;
     }
   | {

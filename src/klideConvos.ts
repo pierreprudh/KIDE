@@ -4,7 +4,12 @@
 // convo stays on the board after its panel closes or the view switches.
 
 import type { Conversation, Msg } from "./components/ai/types";
-import { deriveTitle, loadConversations, persistConversation } from "./components/ai/utils";
+import {
+  conversationStartedAt,
+  deriveTitle,
+  loadConversations,
+  persistConversation,
+} from "./components/ai/utils";
 import { readValidatedArray } from "./persistedStore";
 import type { RunMessage, RunStatus } from "./runs";
 
@@ -20,6 +25,9 @@ export type KlideConvo = {
   forkedFrom?: Conversation["forkedFrom"];
   messages: RunMessage[];
   updatedMs: number;
+  /** When the conversation started, epoch ms. Mission Control used to copy
+   *  `updatedMs` here, which made every Klide row look instantaneous. */
+  createdMs?: number;
 };
 
 const STORAGE_KEY = "klide.missionConvos";
@@ -73,6 +81,7 @@ function conversationToConvo(c: Conversation): KlideConvo | null {
     forkedFrom: c.forkedFrom ?? null,
     messages,
     updatedMs: c.updatedAt,
+    createdMs: conversationStartedAt(c),
   };
 }
 
@@ -141,7 +150,14 @@ export function getKlideConvos(): KlideConvo[] {
 // change — cheap, since snapshots are small and the board only re-renders
 // when the array identity changes.
 export function publishKlideConvo(convo: KlideConvo): void {
-  convos = [convo, ...convos.filter((c) => c.id !== convo.id)].slice(0, MAX_CONVOS);
+  // Snapshots replace the whole record, so the start has to be carried across
+  // or a live conversation would restart its clock on every message.
+  const previous = convos.find((c) => c.id === convo.id);
+  const next = {
+    ...convo,
+    createdMs: previous?.createdMs ?? convo.createdMs ?? convo.updatedMs,
+  };
+  convos = [next, ...convos.filter((c) => c.id !== convo.id)].slice(0, MAX_CONVOS);
   persistConvos();
   emitChange();
 }

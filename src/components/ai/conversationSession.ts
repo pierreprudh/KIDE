@@ -195,11 +195,16 @@ export function snapshotConversationSession(
 ): Conversation | null {
   const messages = messagesForPersist(session.messages);
   if (messages.length === 0) return null;
+  // The first stamped message is the thread's start. `upsertConversation`
+  // keeps whatever the stored record already had, so this only ever sets it
+  // on the first save.
+  const firstStamped = messages.find((m) => typeof (m as { ts?: number }).ts === "number");
   return {
     id: session.conversationId,
     title: deriveTitle(messages),
     msgs: messages,
     updatedAt,
+    createdAt: (firstStamped as { ts?: number } | undefined)?.ts ?? updatedAt,
     provider: session.provider,
     model: session.model,
     cwd: session.workspaceRoot,

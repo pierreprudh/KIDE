@@ -8,6 +8,7 @@ import type {
   AgentAttachment,
   AgentContentBlock,
   AgentEvent,
+  AgentTurnTiming,
   AgentUsage,
 } from "./types";
 import type { Msg } from "../components/ai/types";
@@ -23,8 +24,16 @@ export type FoldedToolCall = {
 };
 
 export type AssistantMeta = {
-  /** Wall-clock duration from the previous turn boundary (user or tool). */
+  /** Wall-clock duration from the previous turn boundary (user or tool).
+   *  Includes tool execution and diff-review waiting — see `modelMs` for the
+   *  provider's own share of it. */
   ms?: number;
+  /** Provider request → response, ms, as measured in the harness. Absent on
+   *  harness-authored messages and on transcripts written before the harness
+   *  recorded turn timing. */
+  modelMs?: number;
+  /** Provider request → first streamed token, ms. */
+  ttftMs?: number;
   /** Completion tokens — exact from `AgentUsage` when present, else a
    *  length-based estimate. The mapper decides whether to expose this. */
   tokens?: number;
@@ -43,6 +52,8 @@ export type FoldedRow =
       kind: "user";
       text: string;
       attachments?: AgentAttachment[];
+      /** The `user_message` event's `ts`, epoch ms. */
+      ts?: number;
     }
   | {
       kind: "assistant";
@@ -50,6 +61,8 @@ export type FoldedRow =
       thinking?: string;
       toolCalls: FoldedToolCall[];
       meta?: AssistantMeta;
+      /** The `assistant_message` event's `ts`, epoch ms. */
+      ts?: number;
     }
   | {
       kind: "compaction";
@@ -131,6 +144,7 @@ export function foldAgentEvents(events: AgentEvent[]): FoldedRow[] {
         kind: "user",
         text: event.text,
         attachments: event.attachments?.length ? event.attachments : undefined,
+        ts: event.ts,
       });
       continue;
     }
@@ -147,7 +161,7 @@ export function foldAgentEvents(events: AgentEvent[]): FoldedRow[] {
           : undefined;
       turnStartTs = event.ts;
       const usage = event.usage;
-      const meta = computeMeta(text, thinking, ms, usage);
+      const meta = computeMeta(text, thinking, ms, usage, event.timing);
 
       rows.push({
         kind: "assistant",
@@ -160,6 +174,7 @@ export function foldAgentEvents(events: AgentEvent[]): FoldedRow[] {
           status: "unknown" as const,
         })),
         meta: meta ?? undefined,
+        ts: event.ts,
       });
       continue;
     }
@@ -209,19 +224,29 @@ function computeMeta(
   thinking: string | undefined,
   ms: number | undefined,
   usage: AgentUsage | undefined,
+  timing: AgentTurnTiming | undefined,
 ): AssistantMeta | null {
   const hasUsage = usage?.completionTokens !== undefined;
   const estimated = Math.round((text.length + (thinking?.length ?? 0)) / 4);
   const tokens = hasUsage ? usage!.completionTokens! : estimated;
+  // Decode window, best source first: the provider's own eval duration, then
+  // the harness-measured provider time minus TTFT. Wall clock is never used —
+  // on replay it includes every tool call and diff-review pause of the turn.
+  const decodeMs =
+    usage?.evalDurationMs !== undefined && usage.evalDurationMs > 0
+      ? usage.evalDurationMs
+      : timing !== undefined
+        ? timing.modelMs - (timing.ttftMs ?? 0)
+        : undefined;
   const tps =
-    hasUsage &&
-    usage?.evalDurationMs !== undefined &&
-    usage.evalDurationMs > 0
-      ? Math.round(usage.completionTokens! / (usage.evalDurationMs / 1000))
+    tokens > 0 && decodeMs !== undefined && decodeMs > 100
+      ? Math.round(tokens / (decodeMs / 1000))
       : undefined;
-  if (ms === undefined && !tokens && tps === undefined) return null;
+  if (ms === undefined && !tokens && tps === undefined && timing === undefined) return null;
   return {
     ms,
+    modelMs: timing?.modelMs,
+    ttftMs: timing?.ttftMs,
     tokens: tokens || undefined,
     tokensEstimate: hasUsage ? undefined : estimated || undefined,
     tps,
@@ -265,6 +290,7 @@ export function foldedToMsgs(rows: FoldedRow[]): Msg[] {
         role: "user",
         content: row.text,
         attachments: row.attachments,
+        ts: row.ts,
       });
       continue;
     }
@@ -303,12 +329,15 @@ export function foldedToMsgs(rows: FoldedRow[]): Msg[] {
       meta: row.meta
         ? {
             ms: row.meta.ms,
+            modelMs: row.meta.modelMs,
+            ttftMs: row.meta.ttftMs,
             tokens: row.meta.tokens,
             tps: row.meta.tps,
             exact: row.meta.exact,
             costUsd: row.meta.costUsd,
           }
         : undefined,
+      ts: row.ts,
     });
     for (const t of row.toolCalls) {
       if (!t.result) continue;

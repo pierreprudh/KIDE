@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { foldAgentEvents, foldedToMsgs, foldedToRunMessages } from "./foldEvents";
-import type { AgentAttachment, AgentContentBlock, AgentEvent, AgentUsage } from "./types";
+import type {
+  AgentAttachment,
+  AgentContentBlock,
+  AgentEvent,
+  AgentTurnTiming,
+  AgentUsage,
+} from "./types";
 import type { Msg } from "../components/ai/types";
 
 // `foldAgentEvents` is the one place the AgentEvent wire format is turned into a
@@ -29,6 +35,7 @@ function assistantMessage(
     thinking?: string;
     toolCalls?: { toolCallId: string; name: string; input?: unknown }[];
     usage?: AgentUsage;
+    timing?: AgentTurnTiming;
   } = {},
 ): AgentEvent {
   const content: AgentContentBlock[] = [];
@@ -48,6 +55,7 @@ function assistantMessage(
     messageId: `a-${ts}`,
     content,
     usage: opts.usage,
+    timing: opts.timing,
     ts: at(),
   };
 }
@@ -246,6 +254,50 @@ describe("foldAgentEvents", () => {
       expect(first.meta?.ms).toBe(500);
       // 250, not 4250 — the second turn is timed from the second user message.
       expect(second.meta?.ms).toBe(250);
+    });
+
+    it("separates the harness-measured model time from the turn's wall clock", () => {
+      // The turn took 30s end to end, but 26s of that was a tool run and the
+      // diff review that followed it. Only `ms` may carry the waiting.
+      const events: AgentEvent[] = [
+        { type: "user_message", runId: RUN, messageId: "u1", text: "edit it", attachments: [], ts: 1_000 },
+        {
+          type: "assistant_message",
+          runId: RUN,
+          messageId: "a1",
+          content: [{ type: "text", text: "done" }],
+          timing: { modelMs: 4_000, ttftMs: 400 },
+          ts: 31_000,
+        },
+      ];
+      const row = foldAgentEvents(events)[1];
+      if (row.kind !== "assistant") throw new Error("expected assistant");
+      expect(row.meta?.ms).toBe(30_000);
+      expect(row.meta?.modelMs).toBe(4_000);
+      expect(row.meta?.ttftMs).toBe(400);
+    });
+
+    it("derives tok/s from measured decode time when the provider reports no eval duration", () => {
+      const rows = foldAgentEvents([
+        assistantMessage("answer", {
+          usage: { completionTokens: 40 },
+          timing: { modelMs: 2_400, ttftMs: 400 },
+        }),
+      ]);
+      const row = rows[0];
+      if (row.kind !== "assistant") throw new Error("expected assistant");
+      // 40 tokens over the 2s that followed the first token.
+      expect(row.meta?.tps).toBe(20);
+    });
+
+    it("carries each row's event timestamp through to the messages", () => {
+      const events: AgentEvent[] = [
+        { type: "user_message", runId: RUN, messageId: "u1", text: "hi", attachments: [], ts: 7_000 },
+        { type: "assistant_message", runId: RUN, messageId: "a1", content: [{ type: "text", text: "yo" }], ts: 7_900 },
+      ];
+      const msgs = foldedToMsgs(foldAgentEvents(events));
+      expect(msgs[0]).toMatchObject({ role: "user", ts: 7_000 });
+      expect(msgs[1]).toMatchObject({ role: "assistant", ts: 7_900 });
     });
   });
 
