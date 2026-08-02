@@ -2,6 +2,59 @@
 
 Notable changes per milestone. Dates are completion dates.
 
+## Unreleased (0.6.1)
+
+Work on the v0.6 line. The orchestration milestone itself — Missions as
+outcomes, budgets, capacity, capability routing, validation contracts — is still
+open; these are the shell and correctness changes landed so far.
+
+### Focus rail
+
+- The rail is a flat surface again: one hairline on its inner edge instead of a
+  30px `backdrop-filter`, a drop shadow and an inset highlight stacked together.
+  Rows moved onto the app-wide soft-fill recipe, and radii, heights and weights
+  onto the token scale.
+- Nesting rebuilt on a single indentation grid, so a child's icon lands exactly
+  where its parent's label began at every level and rail width.
+- The tree reads as one continuous line. The vertical was a CSS border and the
+  curve an SVG stroke in a different colour, with the curve redrawing its own
+  stub over the border, so the join was visible. Both now share one colour
+  token; the turn is an exact quarter-arc, tangent where it leaves the trunk and
+  where it reaches the row; the vertical belongs to each item, so it ends at the
+  last junction instead of dangling past it and climbs to its parent's junction
+  instead of starting a row late.
+- The tree clears row icons on both axes, measured from the icon box rather than
+  the artwork — the horizontal run used to cross any provider mark that fills
+  its box, and the trunk descended through the parent glyph it hung from.
+- Expanding a project draws its tree: trunk grows down, curve unrolls, row
+  fades, overlapping into one wave that runs providers first and then
+  conversations. Rows only fade, because translating one would drag its curve
+  off the trunk for the length of the animation.
+- Project names pin to the top of the rail while their history scrolls, with the
+  pinned state detected from a sentinel — observing the header itself reports
+  "stuck" for any header merely clipped at the bottom of the scroller.
+- The project list is capped with a quiet More toggle, the "Projects" eyebrow is
+  gone, and the rail has its own 6px scrollbar instead of the app-wide 10px one.
+- A Git island on the Focus canvas, rail destination rows and an identity row.
+
+### Menus
+
+- Rust owns the application menu. The frontend had been calling
+  `Menu.default().append(Projects).setAsAppMenu()`, and `Menu.default()` is
+  Tauri's *stock* menu whose macOS File submenu holds nothing but Close Window —
+  so every rebuild, including one per change to the recents list, silently
+  replaced the real menu and took Open Folder, Close Tab, Find in Files, the
+  Command Palette and Settings with it. The frontend now calls
+  `menu_sync_projects` and Rust stays the only writer.
+- File gains Open Project… (⌘O), Open Recent, Save (⌘S) and Close Project; Edit
+  and View are restored.
+
+### Harness and providers
+
+- The harness measures model time per turn, and conversations carry a creation
+  date, so duration is never re-derived from wall-clock time at render.
+- Self-hosted provider endpoints can be renamed from Settings.
+
 ## v0.5.0 — Agent Operations (2026-07-16; closeout 2026-07-21)
 
 - Race the same task across two Harness runs in isolated worktrees, keep sibling
