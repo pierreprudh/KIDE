@@ -2529,14 +2529,8 @@ function FocusHome({
       {/* The persistent task dock combines Codex's context ribbon with
           Claude's bottom-anchored composer. */}
       <div className="klide-focus-composer-dock">
-        <div className="klide-focus-context-strip" role="group" aria-label="Task context">
-          {projectName && (
-            <span>
-              <FolderIcon />
-              {projectName}
-            </span>
-          )}
-          {branch && (
+        {branch && (
+          <div className="klide-focus-context-strip" role="group" aria-label="Task context">
             <button
               type="button"
               onClick={onPingGit}
@@ -2545,8 +2539,8 @@ function FocusHome({
               <BranchIcon />
               {branch}
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         <div className="klide-focus-composer" data-focused={focused || undefined}>
           <textarea
