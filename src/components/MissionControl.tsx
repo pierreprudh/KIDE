@@ -94,6 +94,8 @@ import { CheckpointPanel } from "./CheckpointPanel";
 import { listCheckpoints } from "../agent/client";
 import type { ArtifactRequest } from "./ArtifactInspector";
 import { useArtifactInspector } from "../hooks/useArtifactInspector";
+import { useCustomProviders } from "../hooks/useCustomProviders";
+import { customProviderSync, isCustomProvider } from "../customProviders";
 import { ProviderLogo, RaceMark } from "./ai/icons";
 import type { ProviderId } from "../agent/types";
 import {
@@ -432,7 +434,12 @@ const PROVIDER_ACCENT: Partial<Record<ProviderId, string>> = {
 
 function providerLabel(provider: string | null | undefined): string | null {
   if (!provider) return null;
-  if (provider.startsWith("custom:")) return provider.slice("custom:".length) || "Custom";
+  // Self-hosted endpoints carry a user-editable name in the custom-provider
+  // store; the `custom:` slug is frozen at creation, so it's only the
+  // fallback for a run whose endpoint has since been removed.
+  if (isCustomProvider(provider)) {
+    return customProviderSync(provider)?.label || provider.slice("custom:".length) || "Custom";
+  }
   return PROVIDER_LABEL[provider as ProviderId] ?? provider;
 }
 
@@ -4665,6 +4672,9 @@ export function MissionControl({
 }) {
   const tasks = useSyncExternalStore(subscribeTasks, getTaskSessions);
   const convos = useSyncExternalStore(subscribeKlideConvos, getKlideConvos);
+  // Row titles resolve self-hosted ids through providerName() — repaint when
+  // an endpoint is renamed in Settings.
+  useCustomProviders();
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);

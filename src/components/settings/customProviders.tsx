@@ -10,11 +10,11 @@ import { ChevronDown, ProviderLogo } from "../ai/icons";
 import type { ProviderId } from "../../agent/types";
 import {
   customIdFromLabel,
-  refreshCustomProviders,
   removeCustomProvider,
   upsertCustomProvider,
   type CustomProvider,
 } from "../../customProviders";
+import { useCustomProviders } from "../../hooks/useCustomProviders";
 import {
   customCliIdFromLabel,
   refreshCustomCli,
@@ -279,7 +279,9 @@ export function CustomEndpointsBlock({
 }: {
   onProviderKeyChange?: (id: string) => void;
 }) {
-  const [endpoints, setEndpoints] = useState<CustomProvider[]>([]);
+  // The shared store is the list: it refreshes on mount and republishes after
+  // every mutation, so add / rename / remove need no local copy.
+  const endpoints = useCustomProviders();
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
@@ -288,17 +290,6 @@ export function CustomEndpointsBlock({
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setEndpoints(await refreshCustomProviders());
-    } catch {
-      /* store unreadable → treat as empty */
-    }
-  }, []);
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   function resetForm() {
     setAdding(false);
@@ -329,6 +320,13 @@ export function CustomEndpointsBlock({
     try {
       // Keep an existing id stable on edit; mint one from the label on add.
       const id = editingId ?? customIdFromLabel(label);
+      // On add the id comes from the name, so a repeated name would silently
+      // overwrite the endpoint that already owns that id.
+      if (!editingId && endpoints.some((e) => e.id === id)) {
+        setError("An endpoint with that name already exists — pick another name.");
+        setBusy(false);
+        return;
+      }
       const trimmedToken = token.trim();
       // Self-hosted endpoints don't use the keychain: the token field holds a
       // `${VAR}` reference resolved from the project's .env (or env var). A
@@ -350,7 +348,6 @@ export function CustomEndpointsBlock({
       });
       onProviderKeyChange?.(id);
       resetForm();
-      await load();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -365,7 +362,6 @@ export function CustomEndpointsBlock({
     try {
       await removeCustomProvider(id);
       if (editingId === id) resetForm();
-      await load();
       onProviderKeyChange?.(id);
     } catch (e) {
       setError(String(e));
@@ -381,7 +377,6 @@ export function CustomEndpointsBlock({
     setBusy(true);
     try {
       await upsertCustomProvider({ ...ep, defaultModel: model });
-      await load();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -470,16 +465,25 @@ export function CustomEndpointsBlock({
               <div style={{ fontSize: 13, fontWeight: 700, color: "var(--fg-strong)" }}>
                 {editingId ? "Edit endpoint" : "Add self-hosted endpoint"}
               </div>
+              {/* The name is free to change at any time: it's the display
+                  label only. The id is minted from the name on add and then
+                  frozen, so a rename can't orphan the endpoint's token or the
+                  conversations already pinned to it. */}
               <input
                 value={label}
                 placeholder="Name (e.g. My Gateway)"
                 onChange={(e) => setLabel(e.target.value)}
                 aria-label="Endpoint name"
                 className="klide-field"
-                disabled={editingId !== null}
                 autoFocus
                 style={{ height: 34, padding: "0 12px" }}
               />
+              {editingId && (
+                <div style={{ marginTop: -4, fontSize: 11, color: "var(--fg-subtle)" }}>
+                  Renaming updates the name everywhere; <code>{editingId}</code> stays this
+                  endpoint's id.
+                </div>
+              )}
               <input
                 value={baseUrl}
                 placeholder="Base URL (https://llm.example.com/v1)"

@@ -53,8 +53,8 @@ import { isDelegateId } from "../delegates";
 import {
   isCustomProvider,
   refreshCustomProviders,
-  type CustomProvider,
 } from "../customProviders";
+import { useCustomProviders } from "../hooks/useCustomProviders";
 import {
   refreshCustomCli,
   type CustomCli,
@@ -830,13 +830,13 @@ export function AiPanel({
     },
     closeOnOutsideClick: true,
   });
-  // Self-hosted endpoints, loaded from the Rust store. Refreshed on mount
-  // and whenever the picker opens, so endpoints added in Settings show up
-  // without a panel reload.
-  const [customProviders, setCustomProviders] = useState<CustomProvider[]>([]);
+  // Self-hosted endpoints, read from the shared store. It refreshes on mount
+  // and whenever the picker opens (so endpoints added in Settings show up
+  // without a panel reload), and it publishes changes — a rename in Settings
+  // repaints the header name and the picker while the panel stays open.
+  const customProviders = useCustomProviders();
   const [customCli, setCustomCli] = useState<CustomCli[]>([]);
   useEffect(() => {
-    void refreshCustomProviders().then(setCustomProviders).catch(() => {});
     void refreshCustomCli().then(setCustomCli).catch(() => {});
   }, []);
   const providerGroups = useMemo(
@@ -871,7 +871,7 @@ export function AiPanel({
   }
   useEffect(() => {
     if (!providerOpen) return;
-    void refreshCustomProviders().then(setCustomProviders).catch(() => {});
+    void refreshCustomProviders().catch(() => {});
     void refreshCustomCli().then(setCustomCli).catch(() => {});
     // Probe key status for hosted ("API") providers so we can badge the ones
     // that aren't configured yet. Best-effort; a failed probe just isn't badged.

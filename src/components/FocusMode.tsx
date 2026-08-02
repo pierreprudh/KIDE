@@ -16,6 +16,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listProviderModels } from "../ipc/aiProviders";
 import { Z } from "../zLayers";
+import { useCustomProviders } from "../hooks/useCustomProviders";
 import {
   CONVERSATIONS_CHANGED_EVENT,
   loadConversations,
@@ -650,6 +651,9 @@ export function FocusMode({
   contextWindow,
   onContextWindowChange,
 }: Props) {
+  // Conversation groups + the hero footer name self-hosted endpoints through
+  // providerName(); subscribing keeps those labels live across a rename.
+  useCustomProviders();
   const activeProjectRoot = normalizeProjectPath(workspaceRoot);
   const focusProjects = useMemo(() => {
     const seen = new Set<string>();

@@ -46,6 +46,7 @@ import { ProviderLogo, DotGridLoader } from "./ai/icons";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { notify } from "../toast";
 import { isFavModel, toggleFavModel, subscribeFavModels } from "../favModels";
+import { useCustomProviders } from "../hooks/useCustomProviders";
 import { Z } from "../zLayers";
 
 // ── Budget / privacy modes ──────────────────────────────────────────────────
@@ -837,6 +838,9 @@ function DelegateReviewModal({
 
 // ── Console ───────────────────────────────────────────────────────────────
 export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: string | null }) {
+  // Worker labels resolve self-hosted ids through providerName() — repaint
+  // when an endpoint is renamed in Settings.
+  useCustomProviders();
   const [goal, setGoal] = useState("add rate limiting to the API");
   const [mode, setMode] = useState<ModeKey>("balanced");
   // The current plan (model-produced). Empty until the user plans — the board

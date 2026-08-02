@@ -20,6 +20,7 @@ import { ProviderLogo } from "./icons";
 import { modelBrand } from "../../modelBrand";
 import { Z } from "../../zLayers";
 import { isFavModel, toggleFavModel, subscribeFavModels } from "../../favModels";
+import { useCustomProviders } from "../../hooks/useCustomProviders";
 
 /** Per-model metadata for the picker badges, from `ai_provider_model_meta`.
  *  Only OpenAI-wire aggregators (OpenRouter) populate it; others return []. */
@@ -142,6 +143,9 @@ export function ModelPicker({
   // on any external change.
   const [favTick, setFavTick] = useState(0);
   useEffect(() => subscribeFavModels(() => setFavTick((n) => n + 1)), []);
+  // providerCaption() resolves a `custom:*` id through the self-hosted store,
+  // so the caption has to repaint when that endpoint is renamed.
+  useCustomProviders();
   const isFavorite = (m: string) => isFavModel(provider, m);
   const toggleFavorite = (m: string) => toggleFavModel(provider, m);
   /** Computed from the trigger's bounding rect at open time. The dropdown
