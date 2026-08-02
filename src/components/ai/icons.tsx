@@ -40,6 +40,7 @@ const PROVIDER_LOGO_IMAGE: Partial<Record<ProviderId, string>> = {
   ollama: "/ollama-logo.png",
   gemini: "/gemini-logo.png",
   mistral: "/mistral-logo.png",
+  deepseek: "/deepseek-logo.png",
   "claude-code": "/claude-code-logo.png",
   codex: "/codex-logo.png",
 };
@@ -51,6 +52,9 @@ const PROVIDER_LOGO_IMAGE: Partial<Record<ProviderId, string>> = {
 const PROVIDER_LOGO_IMAGE_CLASS: Partial<Record<ProviderId, string>> = {
   "claude-code": "color-logo-img",
   codex: "white-logo-img",
+  // DeepSeek's whale is brand blue on transparent — inverting it would turn it
+  // into an unreadable yellow.
+  deepseek: "color-logo-img",
 };
 
 export function ProviderLogo({ id, size = 14 }: { id: ProviderId; size?: number }) {

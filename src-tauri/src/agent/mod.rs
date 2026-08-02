@@ -35,7 +35,8 @@ use self::transcripts::{
 use self::types::error_code;
 use self::types::{
     AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentRunStatus,
-    AgentRunSummary, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest, PermissionOption,
+    AgentRunSummary, AgentTurnTiming, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest,
+    PermissionOption,
     PermissionRequest, StartRunRequest, StartRunResponse, SubmitUserTurnRequest, ToolResult,
 };
 use crate::{ai_chat, AiChatResponse, AiUsage, StreamChunk};
@@ -2031,8 +2032,19 @@ async fn run_agent_loop(
         let stream_run_id = id.clone();
         let stream_assistant_id = assistant_id.clone();
         let stream_channel = event_channel.clone();
+        // Time to first token, captured where it actually happens: the first
+        // streamed chunk of this turn. 0 means "no delta yet" (a non-streaming
+        // turn keeps it at 0 and reports no TTFT).
+        let first_token_ms = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let stream_first_token = first_token_ms.clone();
         let stream = Channel::<StreamChunk>::new(move |body| {
             if let Ok(chunk) = body.deserialize::<StreamChunk>() {
+                let _ = stream_first_token.compare_exchange(
+                    0,
+                    now_ms(),
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 let _ = stream_channel.send(AgentEvent::AssistantDelta {
                     run_id: stream_run_id.clone(),
                     message_id: stream_assistant_id.clone(),
@@ -2057,6 +2069,7 @@ async fn run_agent_loop(
 
         // Race the provider stream against user cancellation so abort takes
         // effect mid-request, not only between turns.
+        let request_started_ms = now_ms();
         let provider_result = tokio::select! {
             _ = cancel.cancelled() => {
                 finish_cancelled(&mut emit, sup, &runs_dir, &id, &summary, message_count)?;
@@ -2101,6 +2114,17 @@ async fn run_agent_loop(
             }
         };
 
+        // The provider call is over — close the timing window here, not at the
+        // event's `ts`. Everything after this point (tool execution, waiting on
+        // a diff review) belongs to the run, not to the model.
+        let turn_timing = Some(AgentTurnTiming {
+            model_ms: (now_ms() - request_started_ms).max(0) as u64,
+            ttft_ms: match first_token_ms.load(std::sync::atomic::Ordering::Relaxed) {
+                0 => None,
+                at => Some((at - request_started_ms).max(0) as u64),
+            },
+        });
+
         // Interpret the turn purely: normalize/recover tool calls, stamp ids,
         // and assemble the content blocks. The loop stays responsible for the
         // side effects (push to `messages`, emit events, settle the run).
@@ -2134,6 +2158,7 @@ async fn run_agent_loop(
                     message_id: assistant_id,
                     content,
                     usage: turn_usage,
+                    timing: turn_timing,
                     ts: now_ms(),
                 })?;
                 emit(AgentEvent::RunResult {
@@ -2161,6 +2186,7 @@ async fn run_agent_loop(
                     message_id: assistant_id,
                     content,
                     usage: turn_usage,
+                    timing: turn_timing,
                     ts: now_ms(),
                 })?;
                 tool_calls
@@ -2309,6 +2335,8 @@ async fn run_agent_loop(
                     ),
                 }],
                 usage: None,
+                // Harness-authored, no provider call to time.
+                timing: None,
                 ts: now_ms(),
             })?;
             message_count += 1;
@@ -2411,6 +2439,8 @@ async fn run_agent_loop(
                 ),
             }],
             usage: None,
+            // Harness-authored, no provider call to time.
+            timing: None,
             ts: now_ms(),
         })?;
         message_count += 1;
@@ -3024,6 +3054,7 @@ mod replay_tests {
             message_id: "a".into(),
             content: vec![AgentContentBlock::Text { text: text.into() }],
             usage: None,
+            timing: None,
             ts: 2,
         }
     }
@@ -3043,6 +3074,7 @@ mod replay_tests {
                 },
             ],
             usage: None,
+            timing: None,
             ts: 2,
         }
     }

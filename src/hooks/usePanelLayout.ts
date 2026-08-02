@@ -40,6 +40,42 @@ function storedAiProvider(id: string | undefined): ProviderId | undefined {
   return id && isProviderId(id) ? id : undefined;
 }
 
+/**
+ * Reconcile the stored AI-panel list with the live one. Called on every
+ * resync — layout hydrate, window-resize re-clamp, project switch.
+ *
+ * Rect comes from storage (that's what a resync is for). Everything a *live*
+ * panel owns — provider, model, worktree pin — is carried forward from memory,
+ * because the stored entry is a snapshot of some earlier moment: a panel you
+ * just moved to a self-hosted endpoint would otherwise revert to whatever pair
+ * was last written (`openrouter` + `deepseek/deepseek-v4-flash`) on the next
+ * resize, and with the provider now a live AiPanel prop that reversion lands
+ * inside the running conversation. Storage seeds only a panel with no live
+ * value yet — the first hydrate after launch.
+ */
+export function mergeAiPanels(
+  stored: StoredAiPanel[] | undefined,
+  previous: AiPanelInstance[],
+  fallbackRect: PanelRect,
+): AiPanelInstance[] {
+  const source = stored && stored.length > 0 ? stored : [{ id: "ai-main", rect: fallbackRect }];
+  return source.map((entry, idx) => {
+    const prev = previous.find((p) => p.id === entry.id);
+    return {
+      id: entry.id ?? (idx === 0 ? "ai-main" : newAiPanelId()),
+      rect: entry.rect,
+      provider: prev?.provider ?? storedAiProvider(entry.provider),
+      model: prev?.model ?? entry.model,
+      // `cwd` (worktree pin) lives only in memory — StoredAiPanel never
+      // carries it — so a resync must carry it forward from the previous
+      // in-memory panel, or the panel would silently revert to the global
+      // workspace mid-session and an agent could start writing to the main
+      // checkout.
+      cwd: prev?.cwd,
+    };
+  });
+}
+
 // Local copy of the numeric-setting reader — used only by the one-time
 // legacy-layout migration below. (App keeps its own for editor settings;
 // see candidate #5 for unifying localStorage access.)
@@ -48,6 +84,35 @@ function readNumberSetting(key: string, fallback: number, min: number, max: numb
   if (stored === null) return fallback;
   const raw = Number(stored);
   return Number.isFinite(raw) ? Math.min(max, Math.max(min, raw)) : fallback;
+}
+
+/**
+ * A layout may only be written back for the workspace it was *hydrated from*.
+ *
+ * The in-memory `panelLayout` starts as `{}` and only becomes the real layout
+ * once the hydrate effect has loaded it — which needs a measured workbench.
+ * Focus mode never mounts the workbench (no `workbenchRef`, so `workbenchSize`
+ * stays 0×0), so a session that boots straight into Focus has an *empty*
+ * layout while its saved layout sits untouched on disk. Focus still renders a
+ * real AI panel, and AiPanel reports its restored provider/model to the host on
+ * mount — which routes through `setAiPanelProvider`/`setAiPanelModel` and turns
+ * that empty layout into `{ ai: [ai-main] }`. Without this guard that
+ * half-formed layout is non-empty, so it gets persisted over the saved one:
+ * every other AI panel rect plus explorer/terminal/`anchored` is destroyed, and
+ * leaving Focus hydrates the wreckage — one panel left, free mode, panels gone.
+ *
+ * Same shape on a project switch: `workspaceRoot` changes a render before the
+ * new root hydrates, so an unguarded write would stamp the previous project's
+ * layout onto the new project's key.
+ */
+export function canPersistLayout(
+  workspaceRoot: string | null,
+  hydratedRoot: string | null,
+  layout: PanelLayout
+): boolean {
+  if (!workspaceRoot) return false;
+  if (Object.keys(layout).length === 0) return false;
+  return hydratedRoot === workspaceRoot;
 }
 
 /**
@@ -136,22 +201,7 @@ export function usePanelLayout(opts: {
     stored: StoredAiPanel[] | undefined,
     previous: AiPanelInstance[]
   ): AiPanelInstance[] {
-    const source = stored && stored.length > 0 ? stored : [{ id: "ai-main", rect: fallbackAiRect() }];
-    return source.map((entry, idx) => {
-      const prev = previous.find((p) => p.id === entry.id);
-      return {
-        id: entry.id ?? (idx === 0 ? "ai-main" : newAiPanelId()),
-        rect: entry.rect,
-        provider: storedAiProvider(entry.provider) ?? prev?.provider,
-        model: entry.model ?? prev?.model,
-        // `cwd` (worktree pin) lives only in memory — StoredAiPanel never
-        // carries it — so a resync (window-resize re-clamp, hydrate) must
-        // carry it forward from the previous in-memory panel, or the panel
-        // would silently revert to the global workspace mid-session and an
-        // agent could start writing to the main checkout.
-        cwd: prev?.cwd,
-      };
-    });
+    return mergeAiPanels(stored, previous, fallbackAiRect());
   }
 
   function syncAiPanelsFromRects(stored: StoredAiPanel[] | undefined) {
@@ -256,14 +306,13 @@ export function usePanelLayout(opts: {
   // Stamp the current workbench size so a later re-open at a different size
   // can scale the layout proportionally (see `scaleLayout` on hydrate).
   useEffect(() => {
-    if (!workspaceRoot) return;
-    if (Object.keys(panelLayout).length === 0) return;
+    if (!canPersistLayout(workspaceRoot, layoutHydratedRoot, panelLayout)) return;
     const stamped =
       workbenchSize.w > 0 && workbenchSize.h > 0
         ? { ...panelLayout, workbenchW: workbenchSize.w, workbenchH: workbenchSize.h }
         : panelLayout;
     savePanelLayout(workspaceRoot, stamped);
-  }, [panelLayout, workspaceRoot, workbenchSize.w, workbenchSize.h]);
+  }, [panelLayout, workspaceRoot, workbenchSize.w, workbenchSize.h, layoutHydratedRoot]);
 
   // Keep panels proportional to the workbench as it resizes — like a native
   // macOS app, where growing the window grows the panels with it instead of

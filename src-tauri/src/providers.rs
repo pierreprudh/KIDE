@@ -280,6 +280,31 @@ pub const PROVIDERS: &[ProviderEntry] = &[
         context_window: None,
     },
     ProviderEntry {
+        id: "deepseek",
+        // DeepSeek's platform is OpenAI-wire (`/v1/chat/completions`, function
+        // calling, `stream_options.include_usage`). `deepseek-reasoner` streams
+        // its chain-of-thought in `reasoning_content`, which the shared OpenAI
+        // adapter already routes to the thinking channel — no per-provider code.
+        wire: WireFormat::OpenAi(OpenAiConfig {
+            chat_url: "https://api.deepseek.com/v1/chat/completions",
+            models_url: "https://api.deepseek.com/v1/models",
+            include_tools: true,
+            include_usage_in_stream: true,
+            // The reasoner decides its own thinking budget; DeepSeek exposes no
+            // `reasoning_effort` knob, so Klide never sends one.
+            supports_reasoning_effort: false,
+            include_cost_accounting: false,
+            send_attribution: false,
+        }),
+        key: KeySource::Hosted {
+            env: Some("DEEPSEEK_API_KEY"),
+            env_legacy: None,
+        },
+        models: ModelsHandler::OpenAiModels,
+        subscription: None,
+        context_window: None,
+    },
+    ProviderEntry {
         id: "openrouter",
         wire: WireFormat::OpenAi(OpenAiConfig {
             chat_url: "https://openrouter.ai/api/v1/chat/completions",
@@ -845,6 +870,7 @@ mod tests {
             "openai",
             "mistral",
             "xai",
+            "deepseek",
             "openrouter",
             "claude-code",
             "codex",
@@ -888,7 +914,7 @@ mod tests {
     fn xai_and_openrouter_and_lmstudio_also_ride_openai() {
         // All three of these used to require edits in 4+ match
         // statements. Now they're rows — same shape, different urls.
-        for id in ["xai", "openrouter", "lmstudio"] {
+        for id in ["xai", "openrouter", "lmstudio", "deepseek"] {
             let entry = lookup(id).expect(id);
             assert!(
                 matches!(entry.wire, WireFormat::OpenAi(_)),
@@ -896,6 +922,25 @@ mod tests {
                 entry.wire
             );
         }
+    }
+
+    #[test]
+    fn deepseek_is_openai_wire_without_a_reasoning_effort_knob() {
+        // DeepSeek's platform is OpenAI-wire, so it lands as a row — but its
+        // reasoner picks its own thinking budget. If a future edit flips
+        // `supports_reasoning_effort` on, requests would carry a field DeepSeek
+        // rejects, so pin it here.
+        let entry = lookup("deepseek").expect("deepseek is registered");
+        match entry.wire {
+            WireFormat::OpenAi(cfg) => {
+                assert_eq!(cfg.chat_url, "https://api.deepseek.com/v1/chat/completions");
+                assert!(cfg.include_tools, "deepseek supports function calling");
+                assert!(!cfg.supports_reasoning_effort);
+                assert!(!cfg.include_cost_accounting, "priced from the table");
+            }
+            other => panic!("deepseek must be OpenAI-wire, got {other:?}"),
+        }
+        assert!(matches!(entry.models, ModelsHandler::OpenAiModels));
     }
 
     #[test]
@@ -930,6 +975,7 @@ mod tests {
             ("anthropic", Some("ANTHROPIC_API_KEY"), None),
             ("mistral", Some("MISTRAL_API_KEY"), None),
             ("xai", Some("XAI_API_KEY"), Some("GROK_API_KEY")),
+            ("deepseek", Some("DEEPSEEK_API_KEY"), None),
         ];
         for (id, env, env_legacy) in expectations {
             let entry = lookup(id).expect(id);
@@ -962,6 +1008,7 @@ mod tests {
             "openai",
             "mistral",
             "xai",
+            "deepseek",
             "openrouter",
             "lmstudio",
         ] {

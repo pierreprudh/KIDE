@@ -20,6 +20,10 @@ export type Msg =
        *  tokenizer (Ollama / Anthropic). `exact` is false when the provider has
        *  no tokenizer endpoint and the number is a length-based estimate. */
       tokenInfo?: { count: number; exact: boolean };
+      /** When this turn was sent, epoch ms. Persisted with the conversation, so
+       *  a reopened thread can still place its messages in time. Absent on
+       *  messages written before timestamps were recorded. */
+      ts?: number;
     }
   | {
       role: "assistant";
@@ -36,8 +40,14 @@ export type Msg =
       subagentPending?: boolean;
       /** Quiet per-message footer: duration, tokens, time to first token,
        *  and decode speed. `exact` is true when token/speed numbers come
-       *  from the provider's own usage block rather than a length estimate. */
-      meta?: { ms?: number; tokens?: number; promptTokens?: number; ttftMs?: number; tps?: number; exact?: boolean; costUsd?: number };
+       *  from the provider's own usage block rather than a length estimate.
+       *  `modelMs` is the harness-measured provider time; `ms` is wall clock
+       *  since the previous turn boundary and therefore also counts tool runs
+       *  and diff-review waiting. */
+      meta?: { ms?: number; modelMs?: number; tokens?: number; promptTokens?: number; ttftMs?: number; tps?: number; exact?: boolean; costUsd?: number };
+      /** When this turn landed, epoch ms — the `assistant_message` event's own
+       *  `ts`, so live and replayed transcripts agree. */
+      ts?: number;
     }
   | {
       role: "system";
@@ -86,6 +96,12 @@ export type Conversation = {
   title: string;
   msgs: Msg[];
   updatedAt: number;
+  /** When the conversation began, epoch ms. Set from the first message's own
+   *  `ts` and then preserved across every save — `updatedAt` is overwritten on
+   *  each token, so without this a thread has no start and no duration.
+   *  Optional: conversations stored before this field existed fall back to
+   *  `conversationStartedAt()`. */
+  createdAt?: number;
   provider?: ProviderId;
   model?: string | null;
   cwd?: string | null;

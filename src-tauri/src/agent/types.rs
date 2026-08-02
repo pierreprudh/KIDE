@@ -296,6 +296,23 @@ pub struct AgentUsage {
     pub cost_usd: Option<f64>,
 }
 
+/// Wall-clock timing for one provider turn, measured in the harness around the
+/// provider call itself. `model_ms` is the honest number: it starts when the
+/// request goes out and ends when the response lands, so it excludes tool
+/// execution and any time the run sat paused waiting for diff review. The
+/// frontend used to derive a turn duration by subtracting event timestamps,
+/// which folded all of that waiting into the model's time.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTurnTiming {
+    /// Provider request → final response, ms.
+    pub model_ms: u64,
+    /// Provider request → first streamed token, ms. `None` for a
+    /// non-streaming turn (no delta ever arrived).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ttft_ms: Option<u64>,
+}
+
 /// One button on a permission card. `option_id` goes out as `optionId` — the
 /// name the frontend mirror got wrong for as long as this was an untyped
 /// `serde_json::Value` and nothing read the field.
@@ -440,6 +457,11 @@ pub enum AgentEvent {
         /// wall-clock decode.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         usage: Option<AgentUsage>,
+        /// Measured provider timing for this turn. `None` on messages the
+        /// harness synthesizes itself (turn-limit / give-up notices), which
+        /// never made a provider call.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        timing: Option<AgentTurnTiming>,
         ts: i64,
     },
     ToolCallStarted {
@@ -651,6 +673,7 @@ mod tests {
                 prompt_eval_duration_ms: None,
                 cost_usd: None,
             }),
+            timing: None,
             ts: 1_700_000_000,
         };
         let v = serde_json::to_value(&event).expect("serialize event");
@@ -676,10 +699,45 @@ mod tests {
             message_id: "m1".into(),
             content: vec![],
             usage: None,
+            timing: None,
             ts: 0,
         };
         let v = serde_json::to_value(&event).expect("serialize");
         assert!(v.get("usage").is_none(), "got: {v}");
+    }
+
+    #[test]
+    fn assistant_message_carries_turn_timing_as_camel_case() {
+        // The panel reads `modelMs` / `ttftMs` off this event to report the
+        // provider's own time instead of wall clock. A rename here silently
+        // turns both numbers back into estimates.
+        let event = AgentEvent::AssistantMessage {
+            run_id: "r1".into(),
+            message_id: "m1".into(),
+            content: vec![],
+            usage: None,
+            timing: Some(AgentTurnTiming {
+                model_ms: 4_200,
+                ttft_ms: Some(310),
+            }),
+            ts: 0,
+        };
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["timing"]["modelMs"], 4_200);
+        assert_eq!(v["timing"]["ttftMs"], 310);
+
+        // Harness-authored messages made no provider call, so the key stays off
+        // the wire rather than reporting a zero-length turn.
+        let untimed = AgentEvent::AssistantMessage {
+            run_id: "r1".into(),
+            message_id: "m2".into(),
+            content: vec![],
+            usage: None,
+            timing: None,
+            ts: 0,
+        };
+        let v = serde_json::to_value(&untimed).expect("serialize");
+        assert!(v.get("timing").is_none(), "got: {v}");
     }
 
     /// Read `src/agent/types.ts` — the frontend's hand-written mirror of the

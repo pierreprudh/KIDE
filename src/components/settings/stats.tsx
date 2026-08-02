@@ -30,6 +30,7 @@ export const PROVIDER_BRAND_COLOR: Record<string, string> = {
   anthropic: "var(--chart-1)",
   "claude-code": "var(--chart-1)",
   mistral: "var(--chart-3)",
+  deepseek: "var(--chart-4)",
   openrouter: "var(--chart-5)",
   omp: "var(--chart-7)",
 };

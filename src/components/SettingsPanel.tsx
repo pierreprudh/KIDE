@@ -229,7 +229,7 @@ const settingsIndex: SettingIndexEntry[] = [
   { label: "Test after edit", section: "ai", keywords: "test verify after edit syntax check command" },
   { label: "Auto-draft memory on run done", section: "ai", keywords: "memory draft auto note handoff summarize pending review" },
   { label: "Local servers (Ollama / MLX)", section: "local-ai", keywords: "local ollama mlx server start stop concurrency model" },
-  { label: "API keys", section: "api", keywords: "api key keychain anthropic openai mistral xai token secret" },
+  { label: "API keys", section: "api", keywords: "api key keychain anthropic openai mistral xai deepseek openrouter token secret" },
   { label: "CLI subscriptions", section: "subscription", keywords: "subscription claude code codex opencode omp oh my pi ollama signin login account auth cli" },
   { label: "Editor font size", section: "editor", keywords: "editor font size text monaco" },
   { label: "Line numbers", section: "editor", keywords: "editor line numbers gutter" },
@@ -1647,7 +1647,7 @@ export function SettingsPanel({
                 <Panel>
                   <Row
                     title="API providers"
-                    description="OpenAI, Mistral, and xAI keys are read by the Tauri backend."
+                    description="OpenAI, Mistral, xAI, and DeepSeek keys are read by the Tauri backend."
                     control={
                       <LinkButton onClick={() => goToSection("api")}>
                         Open API

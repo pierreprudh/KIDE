@@ -260,6 +260,9 @@ describe("snapshotConversationSession", () => {
       title: "Inspect the workspace",
       msgs: [userMessage],
       updatedAt: 123,
+      // `userMessage` carries no `ts` (it predates per-message timestamps), so
+      // the snapshot falls back to the save time for the conversation's start.
+      createdAt: 123,
       provider: "ollama",
       model: "qwen3",
       cwd: "/workspace",

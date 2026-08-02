@@ -1,18 +1,12 @@
 // ProfileModal — a centered, SkillsModal-style overlay that surfaces
 // "you, the person using this IDE" with the smallest possible surface:
-// avatar + username + hostname + whether a workspace is active. Intentionally
-// a *local* profile — no account stuff, no sign out, no actions. This is
-// a desktop tool, not a web app.
+// avatar + username + hostname + whether a workspace is active. The identity
+// stays local, but reuses the authenticated GitHub profile picture when one is
+// available — no account controls, sign out, or parallel identity model.
 
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
 import { Z } from "../zLayers";
-
-type AppUserInfo = {
-  username: string;
-  hostname: string;
-  homeDir: string;
-};
+import { initialsOf, useUserInfo } from "../hooks/useUserInfo";
 
 type Props = {
   open: boolean;
@@ -30,35 +24,10 @@ function CloseIcon() {
   );
 }
 
-/* ------------------------------------------------------------------ helpers */
-
-function initialsOf(name: string): string {
-  if (!name) return "?";
-  const cleaned = name.replace(/[^a-zA-Z0-9]+/g, " ").trim();
-  const parts = cleaned.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return name.slice(0, 1).toUpperCase();
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
 /* ============================================================ the modal ===*/
 
 export function ProfileModal({ open, workspaceRoot, onClose }: Props) {
-  const [user, setUser] = useState<AppUserInfo | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const u = await invoke<AppUserInfo>("app_user_info");
-        if (!cancelled) setUser(u);
-      } catch {
-        if (!cancelled) setUser({ username: "", hostname: "", homeDir: "" });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [open]);
+  const { username: localUsername, hostname, avatarUrl } = useUserInfo();
 
   useEffect(() => {
     if (!open) return;
@@ -71,8 +40,7 @@ export function ProfileModal({ open, workspaceRoot, onClose }: Props) {
 
   if (!open) return null;
 
-  const username = user?.username || "you";
-  const hostname = user?.hostname || "";
+  const username = localUsername || "you";
   const hasWorkspace = Boolean(workspaceRoot);
 
   return (
@@ -112,7 +80,7 @@ export function ProfileModal({ open, workspaceRoot, onClose }: Props) {
             position: "relative",
           }}
         >
-          <Avatar name={username} size={48} />
+          <Avatar name={username} avatarUrl={avatarUrl} size={48} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 17, fontWeight: 600, color: "var(--fg-strong)", letterSpacing: "-0.014em" }}>
               {username}
@@ -163,7 +131,7 @@ export function ProfileModal({ open, workspaceRoot, onClose }: Props) {
 
 /* ============================================================ pieces ===*/
 
-function Avatar({ name, size }: { name: string; size: number }) {
+function Avatar({ name, avatarUrl, size }: { name: string; avatarUrl: string; size: number }) {
   const initials = initialsOf(name);
   // Deterministic hue from the name so the same user always gets the
   // same colour, but it's a quiet hue (saturated very low) so it
@@ -175,8 +143,10 @@ function Avatar({ name, size }: { name: string; size: number }) {
     <div
       aria-hidden
       style={{
+        position: "relative",
         width: size,
         height: size,
+        overflow: "hidden",
         borderRadius: "50%",
         flexShrink: 0,
         display: "grid",
@@ -191,6 +161,21 @@ function Avatar({ name, size }: { name: string; size: number }) {
       }}
     >
       {initials}
+      {avatarUrl ? (
+        <img
+          src={avatarUrl}
+          alt=""
+          onError={(event) => { event.currentTarget.style.display = "none"; }}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            borderRadius: "inherit",
+            objectFit: "cover",
+          }}
+        />
+      ) : null}
     </div>
   );
 }

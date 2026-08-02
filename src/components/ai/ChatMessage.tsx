@@ -416,12 +416,19 @@ function formatDuration(ms: number): string {
 
 // Quiet per-message stats — centered under the answer, barely-there by
 // default, full strength on hover (see .klide-msg-meta in tokens.css).
-// Order: tok/s · tokens · time · TTFT.
-function MessageMeta({ meta }: { meta: { ms?: number; tokens?: number; promptTokens?: number; ttftMs?: number; tps?: number; exact?: boolean; costUsd?: number } }) {
+// Order: tok/s · tokens · time · total · TTFT.
+function MessageMeta({ meta }: { meta: { ms?: number; modelMs?: number; tokens?: number; promptTokens?: number; ttftMs?: number; tps?: number; exact?: boolean; costUsd?: number } }) {
   const parts: string[] = [];
   if (meta.tps) parts.push(`${meta.tps} tok/s`);
   if (meta.tokens) parts.push(`${meta.exact ? "" : "~"}${meta.tokens.toLocaleString()} tokens`);
-  if (meta.ms !== undefined) parts.push(formatDuration(meta.ms));
+  // The duration slot is the model's own time when the harness measured it.
+  // Wall clock only earns its own slot when it's meaningfully longer — that
+  // gap is tool execution and time the turn sat waiting on a diff review.
+  const durationMs = meta.modelMs ?? meta.ms;
+  if (durationMs !== undefined) parts.push(formatDuration(durationMs));
+  if (meta.modelMs !== undefined && meta.ms !== undefined && meta.ms - meta.modelMs >= 1000) {
+    parts.push(`${formatDuration(meta.ms)} total`);
+  }
   if (meta.ttftMs !== undefined) parts.push(`TTFT ${formatDuration(meta.ttftMs)}`);
   // Cost last, so the eye lands on it. Sub-cent turns show "<$0.01".
   if (meta.costUsd !== undefined && meta.costUsd > 0) {

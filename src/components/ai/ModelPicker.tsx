@@ -20,6 +20,7 @@ import { ProviderLogo } from "./icons";
 import { modelBrand } from "../../modelBrand";
 import { Z } from "../../zLayers";
 import { isFavModel, toggleFavModel, subscribeFavModels } from "../../favModels";
+import { useCustomProviders } from "../../hooks/useCustomProviders";
 
 /** Per-model metadata for the picker badges, from `ai_provider_model_meta`.
  *  Only OpenAI-wire aggregators (OpenRouter) populate it; others return []. */
@@ -114,6 +115,7 @@ function providerCaption(id: ProviderId): string {
     case "gemini": return "Google Gemini";
     case "mistral": return "Mistral";
     case "xai": return "xAI Grok";
+    case "deepseek": return "DeepSeek";
     case "openrouter": return "OpenRouter";
     case "claude-code": return "Claude Code";
     case "codex": return "Codex";
@@ -141,6 +143,9 @@ export function ModelPicker({
   // on any external change.
   const [favTick, setFavTick] = useState(0);
   useEffect(() => subscribeFavModels(() => setFavTick((n) => n + 1)), []);
+  // providerCaption() resolves a `custom:*` id through the self-hosted store,
+  // so the caption has to repaint when that endpoint is renamed.
+  useCustomProviders();
   const isFavorite = (m: string) => isFavModel(provider, m);
   const toggleFavorite = (m: string) => toggleFavModel(provider, m);
   /** Computed from the trigger's bounding rect at open time. The dropdown
@@ -397,7 +402,7 @@ export function ModelPicker({
           ref={menuRef}
           role="listbox"
           aria-label="Available models"
-          className="popover-enter"
+          className="popover-enter menu-glass"
           style={{
             // Portalled to <body> with viewport coordinates so the menu
             // escapes the AI panel's `overflow: hidden` and the
@@ -412,12 +417,6 @@ export function ModelPicker({
             maxHeight: 360,
             display: "flex",
             flexDirection: "column",
-            background: "var(--panel-glass)",
-            border: "1px solid var(--panel-border)",
-            borderRadius: "var(--radius-md)",
-            boxShadow: "var(--panel-shadow)",
-            backdropFilter: "blur(22px) saturate(1.18)",
-            WebkitBackdropFilter: "blur(22px) saturate(1.18)",
             overflow: "hidden",
             // Sit above the floating-panel tier. Focused panels ride at
             // Z.panel + focus order (usePanelLayout zMap), so a body-portalled
@@ -524,10 +523,10 @@ export function ModelPicker({
               }}
             />
           </div>
-          {/* Model list — two-line rows for clarity. The active row
-              uses the soft accent tint, hover uses bg-hover, and the
-              keyboard cursor parks on the focused row regardless of
-              hover. */}
+          {/* Model list — two-line rows for clarity. Row states come from the
+              glass card's --menu-row-* properties (translucent, so they don't
+              punch through the frost); the keyboard cursor parks on the focused
+              row regardless of hover. */}
           {/* minHeight: 0 lets this flex child shrink to the menu's
               maxHeight — without it, min-height:auto keeps the list at
               content height and the menu's overflow:hidden clips it,
@@ -590,9 +589,9 @@ export function ModelPicker({
                       border: "none",
                       borderRadius: "var(--radius-sm)",
                       background: active
-                        ? "color-mix(in srgb, var(--accent-soft) 80%, transparent)"
+                        ? "var(--menu-row-active)"
                         : focused
-                          ? "var(--bg-hover)"
+                          ? "var(--menu-row-hover)"
                           : "transparent",
                       color: "var(--fg-strong)",
                       textAlign: "left",

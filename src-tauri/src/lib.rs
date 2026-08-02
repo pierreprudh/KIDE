@@ -910,6 +910,155 @@ fn smoke_test_mode() -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Builds the whole application menu, Projects submenu included.
+///
+/// One owner on purpose. The Projects list used to be appended from the
+/// frontend via `Menu.default().append(...).setAsAppMenu()`, but `Menu.default()`
+/// is Tauri's *stock* menu — on macOS its File submenu holds nothing but Close
+/// Window. So every rebuild (mount, and any change to recents or the active
+/// project) silently replaced this menu with the stock one, taking Open Folder,
+/// Save, Close Tab, Find in Files, the Command Palette and Settings with it.
+/// The frontend now calls `menu_sync_projects` and Rust stays the only writer.
+fn build_app_menu<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+    projects: &[String],
+    active: Option<&str>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{
+        CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+    };
+
+    let klide_menu = SubmenuBuilder::new(handle, "Klide")
+        .item(
+            &MenuItemBuilder::with_id("settings", "Settings…")
+                .accelerator("CmdOrCtrl+,")
+                .build(handle)?,
+        )
+        .separator()
+        .item(&PredefinedMenuItem::hide(handle, None)?)
+        .item(&PredefinedMenuItem::hide_others(handle, None)?)
+        .item(&PredefinedMenuItem::show_all(handle, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::quit(handle, None)?)
+        .build()?;
+
+    // Recents live here as well as in Projects: File ▸ Open Recent is where
+    // macOS users look for them, and it costs nothing to list them twice.
+    let mut open_recent = SubmenuBuilder::new(handle, "Open Recent");
+    for path in projects {
+        open_recent = open_recent.item(
+            &CheckMenuItemBuilder::with_id(
+                format!("project:{path}"),
+                path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path),
+            )
+            .checked(active == Some(path.as_str()))
+            .build(handle)?,
+        );
+    }
+    let open_recent = open_recent.build()?;
+
+    let file_menu = SubmenuBuilder::new(handle, "File")
+        .item(
+            &MenuItemBuilder::with_id("open-folder", "Open Project…")
+                .accelerator("CmdOrCtrl+O")
+                .build(handle)?,
+        )
+        .item(&open_recent)
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id("save", "Save")
+                .accelerator("CmdOrCtrl+S")
+                .build(handle)?,
+        )
+        .separator()
+        .item(&MenuItemBuilder::with_id("welcome-screen", "Close Project").build(handle)?)
+        .item(
+            &MenuItemBuilder::with_id("close-tab", "Close Tab")
+                .accelerator("CmdOrCtrl+W")
+                .build(handle)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("close-window", "Close Window")
+                .accelerator("CmdOrCtrl+Shift+W")
+                .build(handle)?,
+        )
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(handle, "Edit")
+        .item(&PredefinedMenuItem::undo(handle, None)?)
+        .item(&PredefinedMenuItem::redo(handle, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::cut(handle, None)?)
+        .item(&PredefinedMenuItem::copy(handle, None)?)
+        .item(&PredefinedMenuItem::paste(handle, None)?)
+        .item(&PredefinedMenuItem::select_all(handle, None)?)
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id("find-in-files", "Find in Files…")
+                .accelerator("CmdOrCtrl+Shift+F")
+                .build(handle)?,
+        )
+        .build()?;
+
+    let view_menu = SubmenuBuilder::new(handle, "View")
+        .item(
+            &MenuItemBuilder::with_id("command-palette", "Command Palette…")
+                .accelerator("CmdOrCtrl+Shift+P")
+                .build(handle)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("toggle-terminal", "Toggle Terminal")
+                .accelerator("CmdOrCtrl+`")
+                .build(handle)?,
+        )
+        .item(&MenuItemBuilder::with_id("toggle-search", "Toggle Search Panel").build(handle)?)
+        .separator()
+        .item(&PredefinedMenuItem::fullscreen(handle, None)?)
+        .build()?;
+
+    let mut projects_menu = SubmenuBuilder::new(handle, "Projects");
+    for path in projects {
+        projects_menu = projects_menu.item(
+            &CheckMenuItemBuilder::with_id(
+                // Distinct id space from Open Recent, or the two entries for the
+                // same project collide and only one of them fires.
+                format!("switch:{path}"),
+                path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path),
+            )
+            .checked(active == Some(path.as_str()))
+            .build(handle)?,
+        );
+    }
+    if !projects.is_empty() {
+        projects_menu = projects_menu.separator();
+    }
+    let projects_menu = projects_menu
+        .item(&MenuItemBuilder::with_id("open-folder", "Open Project…").build(handle)?)
+        .item(&MenuItemBuilder::with_id("welcome-screen", "Welcome Screen").build(handle)?)
+        .build()?;
+
+    MenuBuilder::new(handle)
+        .item(&klide_menu)
+        .item(&file_menu)
+        .item(&edit_menu)
+        .item(&view_menu)
+        .item(&projects_menu)
+        .build()
+}
+
+/// Rebuild the menu with the current recents. Called by the frontend whenever
+/// the recents list or the active project changes.
+#[tauri::command]
+fn menu_sync_projects(
+    app: tauri::AppHandle,
+    projects: Vec<String>,
+    active: Option<String>,
+) -> Result<(), String> {
+    let menu = build_app_menu(&app, &projects, active.as_deref()).map_err(|e| e.to_string())?;
+    app.set_menu(menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(PtyState {
@@ -939,7 +1088,6 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
             use tauri::Manager;
 
             let handle = app.handle();
@@ -980,79 +1128,7 @@ pub fn run() {
                 }
             }
 
-            let open_folder = MenuItemBuilder::with_id("open-folder", "Open Folder…")
-                .accelerator("CmdOrCtrl+O")
-                .build(handle)?;
-            let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab")
-                .accelerator("CmdOrCtrl+W")
-                .build(handle)?;
-            let close_window = MenuItemBuilder::with_id("close-window", "Close Window")
-                .accelerator("CmdOrCtrl+Shift+W")
-                .build(handle)?;
-
-            let file_menu = SubmenuBuilder::new(handle, "File")
-                .item(&open_folder)
-                .separator()
-                .item(&close_tab)
-                .item(&close_window)
-                .build()?;
-
-            let find_item = MenuItemBuilder::with_id("find-in-files", "Find in Files…")
-                .accelerator("CmdOrCtrl+Shift+F")
-                .build(handle)?;
-
-            let edit_menu = SubmenuBuilder::new(handle, "Edit")
-                .item(&PredefinedMenuItem::undo(handle, None)?)
-                .item(&PredefinedMenuItem::redo(handle, None)?)
-                .separator()
-                .item(&PredefinedMenuItem::cut(handle, None)?)
-                .item(&PredefinedMenuItem::copy(handle, None)?)
-                .item(&PredefinedMenuItem::paste(handle, None)?)
-                .item(&PredefinedMenuItem::select_all(handle, None)?)
-                .separator()
-                .item(&find_item)
-                .build()?;
-
-            let cmd_palette = MenuItemBuilder::with_id("command-palette", "Command Palette…")
-                .accelerator("CmdOrCtrl+Shift+P")
-                .build(handle)?;
-            let toggle_terminal = MenuItemBuilder::with_id("toggle-terminal", "Toggle Terminal")
-                .accelerator("CmdOrCtrl+`")
-                .build(handle)?;
-            let toggle_search = MenuItemBuilder::with_id("toggle-search", "Toggle Search Panel")
-                .accelerator("CmdOrCtrl+Shift+F")
-                .build(handle)?;
-
-            let view_menu = SubmenuBuilder::new(handle, "View")
-                .item(&cmd_palette)
-                .item(&toggle_terminal)
-                .item(&toggle_search)
-                .separator()
-                .item(&PredefinedMenuItem::fullscreen(handle, None)?)
-                .build()?;
-
-            let menu = MenuBuilder::new(handle)
-                .item(
-                    &SubmenuBuilder::new(handle, "Klide")
-                        .item(
-                            &MenuItemBuilder::with_id("settings", "Settings…")
-                                .accelerator("CmdOrCtrl+,")
-                                .build(handle)?,
-                        )
-                        .separator()
-                        .item(&PredefinedMenuItem::hide(handle, None)?)
-                        .item(&PredefinedMenuItem::hide_others(handle, None)?)
-                        .item(&PredefinedMenuItem::show_all(handle, None)?)
-                        .separator()
-                        .item(&PredefinedMenuItem::quit(handle, None)?)
-                        .build()?,
-                )
-                .item(&file_menu)
-                .item(&edit_menu)
-                .item(&view_menu)
-                .build()?;
-
-            app.set_menu(menu)?;
+            app.set_menu(build_app_menu(handle, &[], None)?)?;
 
             app.on_menu_event(move |_app_handle, event| {
                 let id = event.id().as_ref();
@@ -1081,7 +1157,23 @@ pub fn run() {
                     "open-folder" => {
                         let _ = _app_handle.emit("menu:open-folder", ());
                     }
-                    _ => {}
+                    "save" => {
+                        let _ = _app_handle.emit("menu:save", ());
+                    }
+                    "welcome-screen" => {
+                        let _ = _app_handle.emit("menu:welcome-screen", ());
+                    }
+                    // Both the File ▸ Open Recent entries and the Projects menu
+                    // switch projects; they only differ by id prefix so the two
+                    // copies of a project do not collide.
+                    other => {
+                        if let Some(path) = other
+                            .strip_prefix("project:")
+                            .or_else(|| other.strip_prefix("switch:"))
+                        {
+                            let _ = _app_handle.emit("menu:open-project", path.to_string());
+                        }
+                    }
                 }
             });
 
@@ -1122,6 +1214,7 @@ pub fn run() {
             models::ai_provider_model_meta,
             ai_subscription_status,
             app_user_info,
+            menu_sync_projects,
             models::ai_context_window,
             models::ai_model_supports_tools,
             models::ai_model_supports_vision,
@@ -1184,6 +1277,7 @@ pub fn run() {
             git::git_log,
             git::git_graph,
             git::git_commit_details,
+            git::github::github_current_user,
             git::github::github_commit_avatars,
             git::git_checkout_branch,
             git::git_fetch,

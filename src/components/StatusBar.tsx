@@ -114,6 +114,9 @@ export function StatusBar({
     <footer
       style={{
         height: "var(--size-status-bar)",
+        // It's the last child of the shell column now, so it has to opt out of
+        // the flex shrink the views above it absorb.
+        flexShrink: 0,
         background: "color-mix(in srgb, var(--bg-elevated) 88%, transparent)",
         borderTop: "1px solid var(--border)",
         display: "flex",

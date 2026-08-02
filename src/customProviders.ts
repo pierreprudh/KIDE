@@ -8,6 +8,12 @@
 // agent/providers.ts) resolve a custom id's label without an await. React
 // components keep their own state and call refreshCustomProviders() to stay
 // in sync after a mutation.
+//
+// The cache is also a tiny pub/sub (same shape as favModels.ts): renaming an
+// endpoint in Settings changes what providerName() returns for an id that is
+// already selected elsewhere, so every surface showing that name has to
+// re-render. `useCustomProviders()` (src/hooks/useCustomProviders.ts) is the
+// React side of this.
 
 import { invoke } from "@tauri-apps/api/core";
 import type { ProviderId } from "./agent/types";
@@ -33,6 +39,17 @@ export type CustomProvider = {
 };
 
 let cache: CustomProvider[] = [];
+
+const listeners = new Set<() => void>();
+
+/** Subscribe to cache changes (add / rename / remove / default-model pin).
+ *  Returns the unsubscribe function. */
+export function subscribeCustomProviders(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
 
 /** Mint a `custom:` id from a free-text label (lowercased, slugified). */
 export function customIdFromLabel(label: string): string {
@@ -60,9 +77,16 @@ export function customProviderSync(id: string): CustomProvider | undefined {
 }
 
 /** Load from the Rust store and update the cache. Call on app start and
- *  after any mutation. */
+ *  after any mutation.
+ *
+ *  The cached array keeps its identity when the store is unchanged, so
+ *  repeated refreshes (the picker re-reads on every open) don't churn
+ *  `useSyncExternalStore` subscribers. */
 export async function refreshCustomProviders(): Promise<CustomProvider[]> {
-  cache = await invoke<CustomProvider[]>("custom_provider_list");
+  const next = await invoke<CustomProvider[]>("custom_provider_list");
+  if (JSON.stringify(next) === JSON.stringify(cache)) return cache;
+  cache = next;
+  for (const fn of listeners) fn();
   return cache;
 }
 

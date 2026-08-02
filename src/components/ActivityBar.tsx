@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { useFlipIndicator } from "../hooks/useFlipIndicator";
 import { KbdFor } from "./Kbd";
 import { Z } from "../zLayers";
+import { RAIL_DESTINATIONS, railDestination } from "../railDestinations";
+import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
 
 type View = "home" | "explorer" | "git" | "memory" | "skills" | "ai" | "runs" | "orchestrator" | "settings" | "profile";
 
@@ -24,6 +26,9 @@ type Props = {
    *  projects; the Explorer below it is purely the file tree). */
   homeLabel?: string;
   submenus?: Partial<Record<View, RailSubmenu>>;
+  /** Switches the shell into Focus. Sits beside the identity card, the same
+   *  slot the Focus rail puts its way back out — one place, either direction. */
+  onEnterFocus?: () => void;
 };
 
 function HomeIcon() {
@@ -224,49 +229,25 @@ function OrchestratorIcon() {
   );
 }
 
-function SettingsIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 6h10" />
-      <path d="M18 6h2" />
-      <path d="M16 4v4" />
-      <path d="M4 12h3" />
-      <path d="M11 12h9" />
-      <path d="M9 10v4" />
-      <path d="M4 18h11" />
-      <path d="M19 18h1" />
-      <path d="M17 16v4" />
-    </svg>
-  );
-}
+/* Settings + Profile icons live in ../railDestinations — shared with the
+   Focus rail's foot so both sidebars draw the same destinations. */
 
-function ProfileIcon() {
-  // Person silhouette with a small status dot bottom-right — the
-  // "you, on this machine" entry in the bottom zone.
+function FocusLayoutIcon() {
+  // The mirror of Focus's FreeLayoutIcon (two offset panels): one centered
+  // reading column. Same slot in the same row, pointing the other way.
   return (
     <svg
-      width="18"
-      height="18"
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.4"
+      strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <circle cx="12" cy="9" r="3.6" />
-      <path d="M5 20a7 7 0 0 1 14 0" />
-      <circle cx="18.5" cy="17.5" r="1.6" fill="var(--success)" stroke="none" />
+      <rect x="7.75" y="3.5" width="8.5" height="17" rx="1.4" />
     </svg>
   );
 }
@@ -274,7 +255,15 @@ function ProfileIcon() {
 /** Expanded rail width — icons + labels, per the reference. */
 const RAIL_EXPANDED_W = 216;
 
-export function ActivityBar({ active, onToggle, onSearch, homeLabel, submenus }: Props) {
+export function ActivityBar({
+  active,
+  onToggle,
+  onSearch,
+  homeLabel,
+  submenus,
+  onEnterFocus,
+}: Props) {
+  const { username, hostname, avatarUrl } = useUserInfo();
   // Expanded ↔ collapsed (the reference's two states). Collapsed is the icon
   // rail; expanded shows icon + label rows, the search entry, and inline
   // submenus. Persisted per machine.
@@ -354,12 +343,15 @@ export function ActivityBar({ active, onToggle, onSearch, homeLabel, submenus }:
     { id: "orchestrator", label: "Orchestrator", Icon: OrchestratorIcon },
   ];
 
-  // Bottom zone — app-level destinations. Active state is the dock dot, so
-  // it can never be confused with the top zone's sliding fill.
-  const destinationItems: { id: View; label: string; Icon: () => React.JSX.Element }[] = [
-    { id: "settings", label: "Settings", Icon: SettingsIcon },
-    { id: "profile", label: "Profile", Icon: ProfileIcon },
-  ];
+  // Bottom zone — app-level destinations, defined once in railDestinations so
+  // the Focus rail's foot renders the same set. Active state is the dock dot,
+  // so it can never be confused with the top zone's sliding fill.
+  //
+  // Profile is pulled out of the loop: like the Focus rail, it renders as the
+  // identity card (avatar + name + host) rather than a plain labeled row,
+  // because it has something to show that a label can't.
+  const destinationItems = RAIL_DESTINATIONS.filter((d) => d.id !== "profile");
+  const profileDest = railDestination("profile");
 
   const activeTool = toolItems.reduce<View | null>(
     (acc, n) => (active[n.id] ? n.id : acc),
@@ -415,6 +407,10 @@ export function ActivityBar({ active, onToggle, onSearch, homeLabel, submenus }:
     <nav
       aria-label="Activity"
       className="klide-rail"
+      // The rail reaches the window's top edge and the traffic lights sit on
+      // it, so its blank areas move the window like a native sidebar. Items
+      // are their own event targets and still click through.
+      data-tauri-drag-region
       style={{
         width: expanded ? RAIL_EXPANDED_W : "var(--size-activity-bar)",
         flexShrink: 0,
@@ -458,12 +454,16 @@ export function ActivityBar({ active, onToggle, onSearch, homeLabel, submenus }:
         </svg>
       </button>
 
-      {/* Top zone */}
+      {/* Top zone — starts below the traffic lights, which float over the
+          rail now that the native title bar is hidden. It fills the rail, so
+          it (not the <nav>) is what the pointer hits in the blank space, and
+          it carries the drag region. */}
       <div
+        data-tauri-drag-region
         style={{
           flex: 1,
           minHeight: 0,
-          padding: "10px 0",
+          padding: "calc(10px + var(--titlebar-h)) 0 10px",
           display: "flex",
           flexDirection: "column",
           alignItems: "stretch",
@@ -776,6 +776,55 @@ export function ActivityBar({ active, onToggle, onSearch, homeLabel, submenus }:
             </button>
           );
         })}
+
+        {/* Identity row — the same foot the Focus rail ends on: the profile
+            card takes the space its name and host need, and the view switch
+            hangs off the ragged right edge. Collapsed, the card narrows to the
+            avatar and the switch drops onto its own line. */}
+        <div
+          className="klide-rail-identity-row"
+          data-collapsed={!expanded || undefined}
+          style={{ margin: "2px 8px 0" }}
+        >
+          <button
+            type="button"
+            className="klide-rail-profile"
+            aria-label={`Open ${profileDest.label.toLowerCase()}`}
+            aria-pressed={active.profile}
+            title={profileDest.label}
+            data-active={active.profile}
+            onClick={() => {
+              setMenu(null);
+              onToggle("profile");
+            }}
+          >
+            <span className="klide-rail-profile-avatar" aria-hidden>
+              {initialsOf(username || "?")}
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  onError={(event) => { event.currentTarget.style.display = "none"; }}
+                />
+              ) : null}
+            </span>
+            <span className="klide-rail-profile-identity" style={{ opacity: expanded ? 1 : 0 }}>
+              <span className="klide-rail-profile-name">{username || "Local profile"}</span>
+              <span className="klide-rail-profile-host">{hostname}</span>
+            </span>
+          </button>
+          {onEnterFocus && (
+            <button
+              type="button"
+              className="klide-rail-view-switch"
+              aria-label="Focus layout"
+              title="Focus layout"
+              onClick={onEnterFocus}
+            >
+              <FocusLayoutIcon />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Collapsed-mode flyout — a soft rounded card beside the rail

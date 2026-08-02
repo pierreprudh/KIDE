@@ -20,6 +20,20 @@ describe("Provider catalog", () => {
     });
   });
 
+  it("offers DeepSeek as a hosted API Provider, not a delegate", () => {
+    expect(PROVIDER_CATALOG.find((provider) => provider.id === "deepseek")).toMatchObject({
+      name: "DeepSeek",
+      group: "api",
+      runtime: "hosted",
+      available: true,
+      defaultModel: "deepseek-chat",
+    });
+    expect(isDelegateProvider("deepseek")).toBe(false);
+    expect(selectableProviders({ includeDelegates: false }).some((p) => p.id === "deepseek")).toBe(
+      true,
+    );
+  });
+
   it("derives picker rows and defaults from one unique row per builtin", () => {
     const ids = PROVIDER_CATALOG.map((provider) => provider.id);
     const groupedIds = PROVIDER_GROUPS.flatMap((group) => group.items.map((item) => item.id));

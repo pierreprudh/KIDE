@@ -148,6 +148,7 @@ pub(crate) async fn ai_provider_credits(
 ) -> Result<Option<ProviderCredits>, String> {
     match provider.as_str() {
         "openrouter" => fetch_openrouter_credits().await.map(Some),
+        "deepseek" => fetch_deepseek_credits().await,
         _ => Ok(None),
     }
 }
@@ -180,6 +181,56 @@ async fn fetch_openrouter_credits() -> Result<ProviderCredits, String> {
         used,
         remaining,
     })
+}
+
+/// `GET https://api.deepseek.com/user/balance` →
+/// `{ "is_available": bool, "balance_infos": [{ "currency": "USD",
+///    "total_balance": "12.34", "granted_balance": "…", "topped_up_balance": "…" }] }`
+///
+/// Two things differ from OpenRouter: the amounts are decimal *strings*, and a
+/// DeepSeek account can be denominated in CNY. There's no spend figure, so
+/// `used` stays `None` and the gauge shows the balance as "remaining". We only
+/// report the USD entry — rendering a CNY balance under a `$` label would be a
+/// wrong number, so a CNY-only account returns `Ok(None)` and the UI falls back
+/// to the manual top-up donut like Anthropic/OpenAI.
+async fn fetch_deepseek_credits() -> Result<Option<ProviderCredits>, String> {
+    let key = provider_key("deepseek")?.ok_or_else(|| "Missing API key".to_string())?;
+    let res = reqwest::Client::new()
+        .get("https://api.deepseek.com/user/balance")
+        .bearer_auth(key)
+        .send()
+        .await
+        .map_err(|e| format!("Unable to reach DeepSeek: {e}"))?;
+    let status = res.status();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(response_error("DeepSeek", status, &body));
+    }
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    Ok(deepseek_usd_balance(&value).map(|total| ProviderCredits {
+        total: Some(total),
+        used: None,
+        remaining: Some(total),
+    }))
+}
+
+/// Pull the USD `total_balance` out of a `/user/balance` payload. `None` when
+/// the account reports no USD entry (or the field isn't a parseable number).
+fn deepseek_usd_balance(value: &serde_json::Value) -> Option<f64> {
+    value
+        .get("balance_infos")?
+        .as_array()?
+        .iter()
+        .find(|info| {
+            info.get("currency")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.eq_ignore_ascii_case("USD"))
+        })
+        .and_then(|info| info.get("total_balance"))
+        .and_then(|b| {
+            b.as_f64()
+                .or_else(|| b.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+        })
 }
 
 /// `GET {OLLAMA_URL}/api/tags` with a 10-second in-process cache.
@@ -1166,9 +1217,38 @@ mod tests {
             128_000
         );
         assert_eq!(fallback_context_window("x", "grok-3"), 256_000);
+        // DeepSeek's hosted models are 128k — the unknown-model default, so no
+        // heuristic arm of its own is needed.
+        assert_eq!(fallback_context_window("deepseek", "deepseek-chat"), 128_000);
         assert_eq!(fallback_context_window("mlx", "anything"), 128_000);
         assert_eq!(fallback_context_window("x", "gemma-2-9b"), 128_000);
         assert_eq!(fallback_context_window("x", "totally-unknown"), 128_000);
+    }
+
+    #[test]
+    fn deepseek_balance_parses_string_amounts_and_skips_non_usd() {
+        // DeepSeek returns the amounts as decimal strings.
+        let usd = serde_json::json!({
+            "is_available": true,
+            "balance_infos": [
+                { "currency": "USD", "total_balance": "12.34",
+                  "granted_balance": "0.00", "topped_up_balance": "12.34" }
+            ]
+        });
+        assert_eq!(deepseek_usd_balance(&usd), Some(12.34));
+        // A CNY-only account has no dollar figure to show — better no gauge
+        // than a yuan amount rendered behind a `$`.
+        let cny = serde_json::json!({
+            "is_available": true,
+            "balance_infos": [{ "currency": "CNY", "total_balance": "88.00" }]
+        });
+        assert_eq!(deepseek_usd_balance(&cny), None);
+        // Malformed / empty payloads degrade to "no balance", never a panic.
+        assert_eq!(deepseek_usd_balance(&serde_json::json!({})), None);
+        assert_eq!(
+            deepseek_usd_balance(&serde_json::json!({ "balance_infos": [] })),
+            None
+        );
     }
 
     #[test]

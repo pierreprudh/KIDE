@@ -9,6 +9,7 @@ import {
 } from "./runs";
 import type { TaskSession, TaskSource } from "./tasks";
 import { DELEGATE_IDS, isDelegateId } from "./delegates";
+import { normalizeProjectPath, pathBelongsToProject } from "./projectPaths";
 
 export type RunLedgerOrigin = "task" | "klide-convo" | "transcript";
 
@@ -98,13 +99,6 @@ export function writeRunLedgerMetadata(store: RunLedgerMetadataStore): void {
  */
 export function projectName(cwd: string | null): string | null {
   return cwd ? cwd.split("/").filter(Boolean).pop() ?? null : null;
-}
-
-function normalizePath(path: string | null): string | null {
-  if (!path) return null;
-  const trimmed = path.trim();
-  if (!trimmed) return null;
-  return trimmed.replace(/\/+$/, "");
 }
 
 /**
@@ -231,7 +225,7 @@ export function convoToLedgerEntry(
     messageCount: c.messages?.length ?? 0,
     lastEvent: convoLastEvent(c.messages ?? []),
     updatedMs: c.updatedMs,
-    createdMs: c.updatedMs,
+    createdMs: c.createdMs ?? c.updatedMs,
   };
   return withCapabilities(run, "klide-convo", metadata);
 }
@@ -297,9 +291,14 @@ export function projectMatchesFilter(
   workspaceRoot?: string | null,
 ): boolean {
   if (filter === "all") return true;
-  const workspace = normalizePath(workspaceRoot ?? null);
-  const runCwd = normalizePath(run.cwd);
-  if (workspace && runCwd && filter === projectName(workspace) && runCwd === workspace) {
+  const workspace = normalizeProjectPath(workspaceRoot ?? null);
+  const runCwd = normalizeProjectPath(run.cwd);
+  if (
+    workspace &&
+    runCwd &&
+    filter === projectName(workspace) &&
+    pathBelongsToProject(runCwd, workspace)
+  ) {
     return true;
   }
   if (projectName(run.cwd) === filter) return true;

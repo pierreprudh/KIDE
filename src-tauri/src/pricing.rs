@@ -51,7 +51,10 @@ pub fn pricing_for_model(model: &str) -> Option<ModelPricing> {
         || m.starts_with("lfm")
         || m.starts_with("lfm2")
         || m.starts_with("minimax")
-        || m.starts_with("deepseek-coder")
+        // Tagged deepseek pulls (`deepseek-r1:8b`, `deepseek-coder:6.7b`) are
+        // Ollama-local and free. The hosted API's ids carry no `:` tag, so they
+        // fall through to the DeepSeek prices below.
+        || (m.starts_with("deepseek") && m.contains(':'))
         || m.starts_with("codestral")
         || m.contains("olmo")
         || m.contains("starcoder")
@@ -125,6 +128,17 @@ pub fn pricing_for_model(model: &str) -> Option<ModelPricing> {
             output_per_million: 2.0,
         });
     }
+    // DeepSeek (direct). One price for `deepseek-chat` and `deepseek-reasoner`
+    // — the platform charges both the same per-token rate and differs only in
+    // how much output the reasoner generates. Cache-hit input is cheaper
+    // (~$0.028/M); like every other row here we price the cache-miss rate,
+    // since the API's `prompt_tokens` doesn't split the two.
+    if m.starts_with("deepseek") {
+        return Some(ModelPricing {
+            input_per_million: 0.28,
+            output_per_million: 0.42,
+        });
+    }
     // xAI.
     if m.starts_with("grok-4") || m.starts_with("grok-4-") {
         return Some(ModelPricing {
@@ -169,10 +183,24 @@ mod tests {
             "lfm2.5:1.2b",
             "minimax:8b",
             "deepseek-coder:6.7b",
+            "deepseek-r1:8b",
         ] {
             assert_eq!(pricing_for_model(m), None, "{m} should be free (local)");
             assert_eq!(cost_for_run(m, 1_000_000, 1_000_000), None);
         }
+    }
+
+    #[test]
+    fn hosted_deepseek_is_priced_but_local_pulls_are_not() {
+        // The two are told apart by the `:tag` an Ollama pull carries — an
+        // untagged id is the hosted API.
+        let hosted = Some(ModelPricing {
+            input_per_million: 0.28,
+            output_per_million: 0.42,
+        });
+        assert_eq!(pricing_for_model("deepseek-chat"), hosted);
+        assert_eq!(pricing_for_model("deepseek-reasoner"), hosted);
+        assert_eq!(pricing_for_model("deepseek-r1:8b"), None);
     }
 
     #[test]
