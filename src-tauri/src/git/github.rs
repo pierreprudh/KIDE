@@ -81,6 +81,13 @@ pub(crate) struct PullRequestDetails {
     updated_at_ms: i64,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GitHubUser {
+    login: String,
+    avatar_url: String,
+}
+
 /// Resolve the `gh` binary once per session. A Finder-launched macOS `.app`
 /// inherits only a minimal PATH (no `/opt/homebrew/bin`), so a bare
 /// `Command::new("gh")` fails in the production bundle even when `gh` is
@@ -97,17 +104,18 @@ fn gh_bin() -> String {
 }
 
 fn gh_output(workspace_root: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(gh_bin())
-        .args(args)
-        .current_dir(workspace_root)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "GitHub CLI (gh) is not installed. Install it with: brew install gh".to_string()
-            } else {
-                format!("Failed to run gh: {e}")
-            }
-        })?;
+    let mut command = Command::new(gh_bin());
+    command.args(args);
+    if !workspace_root.is_empty() {
+        command.current_dir(workspace_root);
+    }
+    let output = command.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "GitHub CLI (gh) is not installed. Install it with: brew install gh".to_string()
+        } else {
+            format!("Failed to run gh: {e}")
+        }
+    })?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -119,6 +127,60 @@ fn gh_output(workspace_root: &str, args: &[&str]) -> Result<String, String> {
             Err(stderr)
         }
     }
+}
+
+fn parse_github_user(json: &str) -> Result<GitHubUser, String> {
+    let raw: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("Could not parse GitHub user: {e}"))?;
+    let login = raw
+        .get("login")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let avatar_url = raw
+        .get("avatar_url")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if login.is_empty() || avatar_url.is_empty() {
+        return Err("GitHub account has no login or profile picture".to_string());
+    }
+    Ok(GitHubUser { login, avatar_url })
+}
+
+fn parse_configured_github_login(hosts: &str) -> Option<String> {
+    let mut in_github = false;
+    for line in hosts.lines() {
+        let trimmed = line.trim();
+        if line == line.trim_start() && trimmed.ends_with(':') {
+            in_github = trimmed == "github.com:";
+            continue;
+        }
+        if !in_github {
+            continue;
+        }
+        let Some(login) = trimmed.strip_prefix("user:").map(str::trim) else {
+            continue;
+        };
+        if !login.is_empty()
+            && login
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        {
+            return Some(login.to_string());
+        }
+    }
+    None
+}
+
+fn configured_github_login() -> Option<String> {
+    let config_root = std::env::var_os("GH_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::home_dir_path().map(|home| home.join(".config").join("gh")))?;
+    let hosts = std::fs::read_to_string(config_root.join("hosts.yml")).ok()?;
+    parse_configured_github_login(&hosts)
 }
 
 /// ISO-8601 value → unix millis, 0 when absent/unparsable.
@@ -407,6 +469,23 @@ pub(crate) async fn create_pr(
     .await
 }
 
+/// The GitHub account authenticated in `gh`, used by the shared profile row.
+/// This is global identity, so unlike repository commands it needs no cwd.
+#[tauri::command]
+pub(crate) async fn github_current_user() -> Result<GitHubUser, String> {
+    blocking(move || {
+        if let Some(login) = configured_github_login() {
+            return Ok(GitHubUser {
+                avatar_url: format!("https://github.com/{login}.png?size=96"),
+                login,
+            });
+        }
+        let json = gh_output("", &["api", "user"])?;
+        parse_github_user(&json)
+    })
+    .await
+}
+
 /// One (commit, author-email) pair the frontend wants an avatar for.
 #[derive(serde::Deserialize)]
 pub(crate) struct AvatarQuery {
@@ -614,6 +693,41 @@ pub(crate) async fn git_pr_merged(workspace_root: String, number: u32) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_user_parses_login_and_profile_picture() {
+        let user = parse_github_user(
+            r#"{"login":"pierreprudh","avatar_url":"https://avatars.githubusercontent.com/u/42?v=4"}"#,
+        )
+        .expect("parses");
+        assert_eq!(user.login, "pierreprudh");
+        assert_eq!(
+            user.avatar_url,
+            "https://avatars.githubusercontent.com/u/42?v=4"
+        );
+    }
+
+    #[test]
+    fn github_user_requires_a_real_identity() {
+        assert!(parse_github_user(r#"{"login":"","avatar_url":""}"#).is_err());
+    }
+
+    #[test]
+    fn github_user_reads_the_active_login_without_network() {
+        let hosts = r#"github.com:
+    git_protocol: https
+    users:
+        another-user:
+        pierreprudh:
+    user: pierreprudh
+git.example.com:
+    user: someone-else
+"#;
+        assert_eq!(
+            parse_configured_github_login(hosts).as_deref(),
+            Some("pierreprudh")
+        );
+    }
 
     const PR_LIST_JSON: &str = r#"[
       {

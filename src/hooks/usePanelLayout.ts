@@ -40,6 +40,42 @@ function storedAiProvider(id: string | undefined): ProviderId | undefined {
   return id && isProviderId(id) ? id : undefined;
 }
 
+/**
+ * Reconcile the stored AI-panel list with the live one. Called on every
+ * resync — layout hydrate, window-resize re-clamp, project switch.
+ *
+ * Rect comes from storage (that's what a resync is for). Everything a *live*
+ * panel owns — provider, model, worktree pin — is carried forward from memory,
+ * because the stored entry is a snapshot of some earlier moment: a panel you
+ * just moved to a self-hosted endpoint would otherwise revert to whatever pair
+ * was last written (`openrouter` + `deepseek/deepseek-v4-flash`) on the next
+ * resize, and with the provider now a live AiPanel prop that reversion lands
+ * inside the running conversation. Storage seeds only a panel with no live
+ * value yet — the first hydrate after launch.
+ */
+export function mergeAiPanels(
+  stored: StoredAiPanel[] | undefined,
+  previous: AiPanelInstance[],
+  fallbackRect: PanelRect,
+): AiPanelInstance[] {
+  const source = stored && stored.length > 0 ? stored : [{ id: "ai-main", rect: fallbackRect }];
+  return source.map((entry, idx) => {
+    const prev = previous.find((p) => p.id === entry.id);
+    return {
+      id: entry.id ?? (idx === 0 ? "ai-main" : newAiPanelId()),
+      rect: entry.rect,
+      provider: prev?.provider ?? storedAiProvider(entry.provider),
+      model: prev?.model ?? entry.model,
+      // `cwd` (worktree pin) lives only in memory — StoredAiPanel never
+      // carries it — so a resync must carry it forward from the previous
+      // in-memory panel, or the panel would silently revert to the global
+      // workspace mid-session and an agent could start writing to the main
+      // checkout.
+      cwd: prev?.cwd,
+    };
+  });
+}
+
 // Local copy of the numeric-setting reader — used only by the one-time
 // legacy-layout migration below. (App keeps its own for editor settings;
 // see candidate #5 for unifying localStorage access.)
@@ -165,22 +201,7 @@ export function usePanelLayout(opts: {
     stored: StoredAiPanel[] | undefined,
     previous: AiPanelInstance[]
   ): AiPanelInstance[] {
-    const source = stored && stored.length > 0 ? stored : [{ id: "ai-main", rect: fallbackAiRect() }];
-    return source.map((entry, idx) => {
-      const prev = previous.find((p) => p.id === entry.id);
-      return {
-        id: entry.id ?? (idx === 0 ? "ai-main" : newAiPanelId()),
-        rect: entry.rect,
-        provider: storedAiProvider(entry.provider) ?? prev?.provider,
-        model: entry.model ?? prev?.model,
-        // `cwd` (worktree pin) lives only in memory — StoredAiPanel never
-        // carries it — so a resync (window-resize re-clamp, hydrate) must
-        // carry it forward from the previous in-memory panel, or the panel
-        // would silently revert to the global workspace mid-session and an
-        // agent could start writing to the main checkout.
-        cwd: prev?.cwd,
-      };
-    });
+    return mergeAiPanels(stored, previous, fallbackAiRect());
   }
 
   function syncAiPanelsFromRects(stored: StoredAiPanel[] | undefined) {

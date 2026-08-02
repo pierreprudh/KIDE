@@ -231,7 +231,16 @@ type Props = {
   harnessSettings?: AiHarnessSettings;
   onDuplicate?: (snapshot: { provider: ProviderId; model: string }) => void;
   onForkConversationInWorktree?: (conversation: Conversation, baseRoot: string | null) => void;
+  /** The host's Provider for this panel. Live, like `model` — surfaces outside
+   *  the panel (the Focus hero) edit the pair, and the two must move together
+   *  or a run goes out with a model the Provider doesn't serve. Absent means
+   *  "the panel's own session owns it". */
+  provider?: ProviderId;
   onProviderChange?: (provider: ProviderId) => void;
+  /** Open Settings on one section. The provider menu's keyless rows use it to
+   *  send you to "api" (API keys) instead of offering a provider that can't
+   *  run. */
+  onOpenSettingsSection?: (section: string) => void;
   onClose?: () => void;
   resumeConversation?: Conversation | null;
   onResumeConsumed?: () => void;
@@ -474,7 +483,9 @@ export function AiPanel({
   harnessSettings,
   onDuplicate,
   onForkConversationInWorktree,
+  provider: hostProvider,
   onProviderChange,
+  onOpenSettingsSection,
   onClose,
   resumeConversation,
   onResumeConsumed,
@@ -569,6 +580,35 @@ export function AiPanel({
       transitionConversation({ type: "configured", model: hostModel });
     }
   }, [hostModel, onModelChange]);
+  // The Provider follows the same rule as the model above, and for a sharper
+  // reason: the Focus hero edits this panel's provider+model pair from outside
+  // while the panel is mounted behind it. The model was the only live prop, so
+  // a hero pick landed the new Provider's model on the OLD Provider — that is
+  // how `qwen3.6:latest` went out to OpenRouter and came back a 400. Applying
+  // both in one transition keeps the pair honest; mount is exempt, since a
+  // restored Conversation owns its pair and pushes it UP instead.
+  const providerSyncStartedRef = useRef(false);
+  useEffect(() => {
+    if (!providerSyncStartedRef.current) {
+      providerSyncStartedRef.current = true;
+      return;
+    }
+    if (!hostProvider || hostProvider === conversationSessionRef.current.provider) return;
+    // hostModel is this render's value, so a host that moved both (the hero)
+    // is already offering the matching model; a host that moved only the
+    // Provider falls back to that Provider's own remembered model.
+    const pairedModel =
+      hostModel && hostModel !== conversationSessionRef.current.model
+        ? hostModel
+        : switchModelForProvider(hostProvider);
+    transitionConversation({ type: "configured", provider: hostProvider, model: pairedModel });
+    if (pairedModel !== hostModel) onModelChange(pairedModel);
+    if (panelId) {
+      localStorage.setItem(`klide.provider.${panelId}`, hostProvider);
+      savePanelSession(panelId, { convoId: conversationSessionRef.current.conversationId, provider: hostProvider, workspaceRoot });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostProvider]);
   useEffect(() => {
     const restoredProvider = conversationSessionRef.current.provider;
     if (restoredProvider === requestedProviderRef.current) return;
@@ -2982,40 +3022,53 @@ This user request requires workspace inspection. Before answering, you MUST call
         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--fg-dim)" }}><path d="M6 9l6 6 6-6" /></svg>
       </button>
       {providerOpen && providerMenuPos && createPortal(
-        <div ref={providerMenuRef} role="menu" className="popover-enter" style={{ position: "fixed", top: providerMenuPos.top, bottom: providerMenuPos.bottom, left: providerMenuPos.left, minWidth: 200, maxHeight: providerMenuPos.maxHeight, overflowY: "auto", overscrollBehavior: "contain", background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-md)", boxShadow: "0 6px 24px rgba(38, 38, 32, 0.14)", padding: 4, zIndex: Z.popover }}>
+        <div ref={providerMenuRef} role="menu" className="popover-enter menu-scroll menu-glass" style={{ position: "fixed", top: providerMenuPos.top, bottom: providerMenuPos.bottom, left: providerMenuPos.left, minWidth: 200, maxHeight: providerMenuPos.maxHeight, overflowY: "auto", overscrollBehavior: "contain", padding: 5, zIndex: Z.popover }}>
           {providerGroupsForSurface.map((group) => {
             const expanded = expandedGroups.has(group.label);
             const hasActive = group.items.some((it) => it.id === provider);
+            // A whole stack with no keys anywhere reads as quiet as its rows.
+            const stackKeyless = group.items.every((it) => keylessProviders.has(it.id));
             return (
             <div key={group.label} style={{ marginBottom: 2 }}>
               <button type="button" onClick={() => toggleGroup(group.label)} aria-expanded={expanded}
-                style={{ position: "sticky", top: 0, zIndex: 1, width: "100%", display: "flex", alignItems: "center", gap: 6, background: "color-mix(in srgb, var(--bg-elevated) 72%, transparent)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", border: "none", cursor: "pointer", fontSize: 9.5, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: !expanded && hasActive ? "var(--fg-strong)" : "var(--fg-dim)", padding: "6px 8px 5px", textAlign: "left", transition: "color 120ms ease" }}
+                /* The card itself is frosted now, so this sticky eyebrow only
+                   has to mask the rows scrolling under it — a nested
+                   backdrop-filter would be a second blur over the first and
+                   renders muddy in the webview. A near-opaque elevated fill
+                   does the masking instead. */
+                style={{ position: "sticky", top: 0, zIndex: 1, width: "100%", display: "flex", alignItems: "center", gap: 6, background: "color-mix(in srgb, var(--bg-elevated) 92%, transparent)", border: "none", cursor: "pointer", fontSize: 9.5, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: !expanded && hasActive ? "var(--fg-strong)" : "var(--fg-dim)", padding: "6px 8px 5px", textAlign: "left", opacity: stackKeyless ? 0.5 : 1, transition: "color 120ms ease, opacity var(--motion-fast) var(--ease-out)" }}
                 onMouseEnter={(e) => { if (!(!expanded && hasActive)) e.currentTarget.style.color = "var(--fg-subtle)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = !expanded && hasActive ? "var(--fg-strong)" : "var(--fg-dim)"; }}>
                 <span style={{ display: "grid", placeItems: "center", flexShrink: 0, transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 140ms cubic-bezier(0.4, 0, 0.2, 1)" }}>
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
                 </span>
                 <span style={{ flex: 1 }}>{group.label}</span>
-                <span style={{ fontWeight: 500, opacity: 0.5, fontVariantNumeric: "tabular-nums" }}>{group.items.length}</span>
               </button>
               {expanded && group.items.map((item) => {
                 const active = item.id === provider;
+                // No key Rust can resolve → the row can't run. Quiet it and
+                // (when the host wired Settings) send the click to API keys
+                // instead of selecting a provider that would fail on send.
+                const keyless = item.available && keylessProviders.has(item.id);
+                const routesToSettings = keyless && !!onOpenSettingsSection;
                 return (
-                  <button key={item.id} role="menuitem" disabled={!item.available} onClick={() => item.available && selectProvider(item.id)}
-                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: "var(--radius-sm)", background: active ? "var(--bg-hover)" : "transparent", color: item.available ? "var(--fg-strong)" : "var(--fg-dim)", cursor: item.available ? "pointer" : "default", fontSize: 12, textAlign: "left", transition: "background 120ms ease" }}
-                    onMouseEnter={(e) => { if (item.available && !active) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                  <button key={item.id} role="menuitem" disabled={!item.available}
+                    title={keyless ? `${item.name} has no API key — open Settings` : undefined}
+                    onClick={() => {
+                      if (!item.available) return;
+                      if (routesToSettings) { closeProviderMenu(); onOpenSettingsSection?.("api"); return; }
+                      selectProvider(item.id);
+                    }}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: "var(--radius-sm)", background: active ? "var(--menu-row-active)" : "transparent", color: item.available ? "var(--fg-strong)" : "var(--fg-dim)", cursor: item.available ? "pointer" : "default", fontSize: 12, textAlign: "left", transition: "background 120ms ease" }}
+                    onMouseEnter={(e) => { if (item.available && !active) e.currentTarget.style.background = "var(--menu-row-hover)"; }}
                     onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}>
-                    <span style={{ display: "grid", placeItems: "center", flexShrink: 0, color: item.available ? "var(--fg-subtle)" : "var(--fg-dim)" }}><ProviderLogo id={item.id} size={15} /></span>
-                    {(() => {
-                      const keyless = item.available && keylessProviders.has(item.id);
-                      return (
-                        <span
-                          title={keyless ? "No API key set — add one in Settings" : undefined}
-                          style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: keyless ? "line-through" : undefined, textDecorationThickness: keyless ? "1px" : undefined, color: keyless ? "var(--fg-dim)" : undefined }}
-                        >{item.name}</span>
-                      );
-                    })()}
-                    {active && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--fg-subtle)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>}
+                    <span style={{ display: "grid", placeItems: "center", flexShrink: 0, color: item.available ? "var(--fg-subtle)" : "var(--fg-dim)", opacity: keyless ? 0.4 : 1 }}><ProviderLogo id={item.id} size={15} /></span>
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: keyless ? 0.45 : 1 }}>{item.name}</span>
+                    {routesToSettings && (
+                      /* Leads out to Settings rather than choosing anything. */
+                      <svg className="menu-leadout" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}><path d="M7 17 17 7" /><path d="M8 7h9v9" /></svg>
+                    )}
+                    {active && !routesToSettings && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--fg-subtle)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5" /></svg>}
                   </button>
                 );
               })}

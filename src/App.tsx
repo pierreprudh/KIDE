@@ -36,7 +36,7 @@ import {
 import { eventsToConversation } from "./components/ai/eventsToMsgs";
 import { loadPanelSession } from "./components/ai/utils";
 import type { AgentEvent, ProviderId } from "./agent/types";
-import { DEFAULT_MODELS } from "./agent/providers";
+import { defaultModelForProvider } from "./agent/providers";
 import type { Conversation, Msg } from "./components/ai/types";
 import { summarizeAndHandoff } from "./components/ai/summarize";
 import { fetchRunMessages, type Run, type RunMessage as MissionRunMessage } from "./runs";
@@ -814,7 +814,16 @@ function App() {
         }}
         model={model}
         onModelChange={(m) => updateAiPanelModel(panelId, m)}
+        // The Focus hero edits this same panel's provider+model pair while the
+        // panel is mounted behind it. The model has always been a live prop;
+        // the provider has to be one too, or a hero pick pushes one provider's
+        // model into a session still on another.
+        provider={panel?.provider}
         onProviderChange={(provider) => setAiPanelProvider(panelId, provider)}
+        onOpenSettingsSection={(section) => {
+          setSettingsInitial(section);
+          setView("settings");
+        }}
         availableModels={panelModels[panelId] ?? [model]}
         onAvailableModelsChange={(models) => updatePanelModels(panelId, models)}
         apiKeyVersion={apiKeyVersion}
@@ -995,50 +1004,25 @@ function App() {
     setWorkspaceRoot(root);
   };
 
-  // ── Native macOS menu: Projects ─────────────────────────────────────
-  // Project switching and the Welcome screen live in the system menu bar
-  // now — the rail's home icon returns to the workbench. The menu is
-  // rebuilt whenever the recents list or the active project changes, and is
-  // APPENDED to Tauri's default menu so the stock App/Edit/Window menus
-  // (copy, paste, hide, …) survive.
+  // ── Native macOS menu: recents ──────────────────────────────────────
+  // Rust owns the whole menu; this only hands it the current recents so the
+  // File ▸ Open Recent and Projects lists stay in step, and the active project
+  // keeps its checkmark. Clicks come back as `menu:open-project`.
+  //
+  // This used to build the submenu here and attach it with
+  // `Menu.default().append(...).setAsAppMenu()` — but `Menu.default()` is
+  // Tauri's *stock* menu, whose File submenu is nothing but Close Window. Every
+  // rebuild therefore replaced Rust's menu wholesale, which is why File, Edit
+  // and View had lost everything except Close Window.
   useEffect(() => {
-    let cancelled = false;
-    async function build() {
-      try {
-        const { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } =
-          await import("@tauri-apps/api/menu");
-        const projectItems = await Promise.all(
-          recentFolders.map((p) =>
-            CheckMenuItem.new({
-              text: p.split("/").filter(Boolean).pop() ?? p,
-              checked: p === workspaceRoot,
-              action: () => changeRoot(p),
-            })
-          )
-        );
-        const items = [
-          ...projectItems,
-          ...(projectItems.length > 0
-            ? [await PredefinedMenuItem.new({ item: "Separator" })]
-            : []),
-          await MenuItem.new({ text: "Open Folder…", action: () => void openFolderDialog() }),
-          await MenuItem.new({ text: "Welcome Screen", action: () => closeFolder() }),
-        ];
-        const submenu = await Submenu.new({ text: "Projects", items });
-        const menu = await Menu.default();
-        await menu.append(submenu);
-        if (!cancelled) await menu.setAsAppMenu();
-      } catch (e) {
-        notify(`Projects menu unavailable: ${e instanceof Error ? e.message : String(e)}`, {
-          tone: "warn",
-        });
-      }
-    }
-    void build();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    invoke("menu_sync_projects", {
+      projects: recentFolders,
+      active: workspaceRoot,
+    }).catch((e) => {
+      notify(`Projects menu unavailable: ${e instanceof Error ? e.message : String(e)}`, {
+        tone: "warn",
+      });
+    });
   }, [recentFolders, workspaceRoot]);
 
   // New project: pick a parent location, create + `git init` the folder in
@@ -1917,8 +1901,19 @@ function App() {
     listeners.add(listen("menu:open-folder", () => {
       openFolderDialog();
     }));
+    listeners.add(listen("menu:save", () => {
+      saveActive();
+    }));
+    listeners.add(listen("menu:welcome-screen", () => {
+      closeFolder();
+    }));
+    // Fired by both File ▸ Open Recent and the Projects menu; Rust strips the
+    // id prefix and sends the path.
+    listeners.add(listen<string>("menu:open-project", (event) => {
+      if (event.payload) changeRoot(event.payload);
+    }));
     return listeners.dispose;
-  }, [activeIdx, tabs]);
+  }, [activeIdx, tabs, saveActive]);
 
   const language = active ? detectLanguage(active.path) : null;
 
@@ -1969,11 +1964,14 @@ function App() {
   if (view !== "settings" && !workspaceRoot) {
     return (
       <div
+        // No rail here, so the welcome page keeps the traffic-light band clear
+        // itself — and that band is the window's drag handle.
+        data-tauri-drag-region
         style={{
           height: "100vh",
           display: "flex",
           flexDirection: "column",
-          borderTop: "1px solid var(--border-strong)",
+          paddingTop: "var(--titlebar-h)",
           background: "var(--bg)",
         }}
       >
@@ -1990,17 +1988,65 @@ function App() {
     );
   }
 
+  // The bar belongs to the content column, not to the window: it starts at the
+  // rail's inner edge so the rail reads as one full-height surface, from the
+  // traffic lights down to the identity card. Focus is chrome-free: no status
+  // bar. Overlay views opened from Focus bring the bar back.
+  const statusBar = (focusMode && view === "workbench") ? null : (
+    <StatusBar
+      path={active?.path ?? null}
+      language={language}
+      workspaceRoot={workspaceRoot}
+      fileNotice={active?.externalChanged ? "File changed on disk" : null}
+      gitStatus={gitStatus}
+      terminalVisible={terminalVisible}
+      onToggleTerminal={() => setTerminalVisible((v) => !v)}
+      gridLayouts={gridLayouts}
+      activeGridId={activeGridId}
+      anchoredLayout={panelLayout.anchored !== false}
+      focusMode={focusMode}
+      onSetFocusMode={setFocusMode}
+      onApplyGrid={applyGrid}
+      onExitGrid={exitGrid}
+      onSetAnchored={setAnchoredLayout}
+      onOpenGrid={openGridSettings}
+      theme={statusTheme}
+      autoTheme={autoTheme}
+      onToggleTheme={() => setTheme((t) => getNextThemeId(t))}
+      onResetLayout={resetPanelLayout}
+      showLayoutControls={view === "workbench"}
+      foldedEditor={
+        view === "workbench" &&
+        !focusMode &&
+        !activeGrid &&
+        panelLayout.anchored === false &&
+        editorDockFolded &&
+        tabs.length > 0
+          ? {
+              files: tabs.length,
+              agentFile: tabs.find((t) => isAgentFile(t.path))?.path.split("/").pop() ?? null,
+              onOpen: () => setEditorDockFolded(false),
+            }
+          : null
+      }
+    />
+  );
+
   return (
     <div
       style={{
         height: "100vh",
         display: "flex",
         flexDirection: "column",
-        borderTop: "1px solid var(--border-strong)",
       }}
     >
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      <div
+        className="klide-app-row"
+        data-titlebar-owner={focusMode && view === "workbench" ? "focus" : "row"}
+        style={{ flex: 1, display: "flex", minHeight: 0 }}
+      >
         {view === "settings" ? (
+          <div className="klide-shell-col">
           <Suspense fallback={null}>
             <SettingsPanel
               key={settingsInitial ?? "default"}
@@ -2034,6 +2080,8 @@ function App() {
               onBack={() => setView("workbench")}
             />
           </Suspense>
+          {statusBar}
+          </div>
         ) : (
           <>
             {/* Focus is chat-first: the icon rail steps back while the focus
@@ -2045,6 +2093,11 @@ function App() {
               active={activityState}
               onToggle={togglePanel}
               onSearch={() => setPaletteOpen(true)}
+              onEnterFocus={() => {
+                setFocusMode(true);
+                exitGrid();
+                setView("workbench");
+              }}
               homeLabel={workspaceRoot?.split("/").filter(Boolean).pop()}
               submenus={{
                 // Home is the project-level entry — switching lives there.
@@ -2082,6 +2135,9 @@ function App() {
               }}
             />
             )}
+            {/* Everything right of the rail — the views and the status bar —
+                is one column, so the bar stops at the rail's inner edge. */}
+            <div className="klide-shell-col">
             {view === "git-review" ? (
               <Suspense fallback={null}>
                 <GitReview
@@ -2146,6 +2202,12 @@ function App() {
                 <FocusMode
                   workspaceRoot={workspaceRoot}
                   branch={gitStatus?.branch ?? null}
+                  gitChangeCount={gitStatus?.files.length ?? 0}
+                  gitRefreshToken={gitStatus
+                    ? `${gitStatus.branch}|${gitStatus.files
+                        .map((file) => `${file.path}:${file.status}:${file.staged ? 1 : 0}`)
+                        .join("|")}`
+                    : ""}
                   projects={recentFolders}
                   chatActive={focusChatActive}
                   onSwitchProject={(root) => {
@@ -2186,6 +2248,10 @@ function App() {
                       return;
                     }
                     togglePanel(panel);
+                  }}
+                  onOpenSettingsSection={(section) => {
+                    setSettingsInitial(section);
+                    setView("settings");
                   }}
                   onExitFocus={() => {
                     setFocusMode(false);
@@ -2234,8 +2300,10 @@ function App() {
                     setAiPanelProvider(panelId, p);
                     // The panel keeps its model across provider switches, but a
                     // hero pick means "start on this provider" — reset to its
-                    // default so the pair is never mismatched.
-                    updateAiPanelModel(panelId, DEFAULT_MODELS[p] ?? "");
+                    // default so the pair is never mismatched. Resolved through
+                    // providers so a self-hosted endpoint lands on the model
+                    // pinned in Settings, not on an empty string.
+                    updateAiPanelModel(panelId, defaultModelForProvider(p));
                   }}
                   model={aiPanels[0]?.model ?? aiModel}
                   onModelChange={(m) => updateAiPanelModel(aiPanels[0]?.id ?? "ai-main", m)}
@@ -2266,6 +2334,10 @@ function App() {
                     else next[m] = w;
                     setHarnessSettings({ ...harnessSettings, contextWindows: next });
                   }}
+                  requireDiffReview={reviewForPanel(aiPanels[0]?.id ?? "ai-main")}
+                  onRequireDiffReviewChange={(required) =>
+                    setPanelReview(aiPanels[0]?.id ?? "ai-main", required)
+                  }
                 />
               </Suspense>
             ) : panelLayout.anchored ? (
@@ -2741,51 +2813,11 @@ function App() {
                 )}
               </div>
             )}
+            {statusBar}
+            </div>
           </>
         )}
       </div>
-      {/* Focus is chrome-free: no status bar. Its rail carries navigation and
-          a single icon back to the Free layout. Overlay views opened from
-          Focus (Mission Control, Git, Settings) bring the bar back. */}
-      {!(focusMode && view === "workbench") && (
-      <StatusBar
-        path={active?.path ?? null}
-        language={language}
-        workspaceRoot={workspaceRoot}
-        fileNotice={active?.externalChanged ? "File changed on disk" : null}
-        gitStatus={gitStatus}
-        terminalVisible={terminalVisible}
-        onToggleTerminal={() => setTerminalVisible((v) => !v)}
-        gridLayouts={gridLayouts}
-        activeGridId={activeGridId}
-        anchoredLayout={panelLayout.anchored !== false}
-        focusMode={focusMode}
-        onSetFocusMode={setFocusMode}
-        onApplyGrid={applyGrid}
-        onExitGrid={exitGrid}
-        onSetAnchored={setAnchoredLayout}
-        onOpenGrid={openGridSettings}
-        theme={statusTheme}
-        autoTheme={autoTheme}
-        onToggleTheme={() => setTheme((t) => getNextThemeId(t))}
-        onResetLayout={resetPanelLayout}
-        showLayoutControls={view === "workbench"}
-        foldedEditor={
-          view === "workbench" &&
-          !focusMode &&
-          !activeGrid &&
-          panelLayout.anchored === false &&
-          editorDockFolded &&
-          tabs.length > 0
-            ? {
-                files: tabs.length,
-                agentFile: tabs.find((t) => isAgentFile(t.path))?.path.split("/").pop() ?? null,
-                onOpen: () => setEditorDockFolded(false),
-              }
-            : null
-        }
-      />
-      )}
       {skillsVisible && sidebarSlot2 !== "skills" && (
         <Suspense fallback={null}>
           <SkillsModal

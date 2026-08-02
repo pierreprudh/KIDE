@@ -140,6 +140,14 @@ export function isManagedLocalProvider(id: ProviderId): boolean {
   return providerDefinition(id)?.runtime === "managed-local";
 }
 
+/** Hosted endpoints (and self-hosted ones) authenticate with a key; local
+ *  servers and delegate CLIs don't. Pickers use this to decide which rows are
+ *  worth probing with `ai_provider_key_status` before offering them. */
+export function providerNeedsApiKey(id: ProviderId): boolean {
+  const runtime = providerDefinition(id)?.runtime;
+  return runtime === "hosted" || runtime === "custom";
+}
+
 export function selectableProviders(options: { includeDelegates?: boolean } = {}): ProviderDefinition[] {
   return PROVIDER_CATALOG.filter(
     (provider) =>

@@ -53,6 +53,10 @@ export function TabBar({ tabs, activeIdx, onSelect, onClose, workspaceRoot, vari
   return (
     <div
       className="chrome-enter"
+      // The strip is the top-most chrome beside the rail, so its empty run is
+      // the window's drag handle — like a Mac toolbar. Tabs are their own
+      // event targets and keep their clicks.
+      data-tauri-drag-region
       style={{
         position: "relative",
         height: "var(--size-tab-strip)",

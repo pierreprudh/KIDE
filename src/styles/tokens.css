@@ -95,6 +95,34 @@
     0 10px 34px rgba(28, 28, 28, 0.055),
     0 32px 90px rgba(28, 28, 28, 0.040);
 
+  /* The composer family. The chatbox sits a step off the canvas — the same
+     frost as a panel, warmed by a few percent of the theme's accent — and
+     every tool that opens out of it (provider, model, effort, context, attach)
+     is cut from the same surface, so the cluster reads as one instrument
+     instead of four popovers that happen to be near each other.
+
+     Derived from --panel-glass / --panel-border / --accent rather than written
+     per theme: these are declared on the same element the [data-theme] blocks
+     write to, so each theme's own accent and surface feed the mix and all five
+     stay in step for free. 5% is a temperature shift, not a sage moment — the
+     accent still belongs to whatever is actually active. */
+  --composer-glass:   color-mix(in srgb, var(--panel-glass) 95%, var(--accent));
+  --composer-border:  color-mix(in srgb, var(--panel-border) 88%, var(--accent));
+  /* The family surface with the pointer on it. Mixing toward --fg lifts it in
+     the dark themes and deepens it in the light ones, which is the right
+     direction for "raised" in each, from one declaration. */
+  --composer-glass-hover: color-mix(in srgb, var(--composer-glass) 94%, var(--fg));
+  /* The frost the family shares. Kept as a token so the blur can't drift
+     between the chatbox, its menus, the cards, and the git island. */
+  --composer-blur: blur(26px) saturate(1.3);
+
+  /* Row hover / selected for anything sitting on frosted glass. These have to
+     be mixes with `transparent`: --bg-hover and --accent-soft are opaque hex in
+     four of the five themes, and an opaque fill punches a hole through the
+     frost at exactly the row the pointer is on. Light landing on glass. */
+  --menu-row-hover:   color-mix(in srgb, var(--fg) 7%, transparent);
+  --menu-row-active:  color-mix(in srgb, var(--accent) 15%, transparent);
+
   /* Subtle 1px lift for small raised controls (active pills, the nav capsule).
      Tokenised so the value lives in one place and can be tuned per theme. */
   --shadow-raised: 0 1px 2px rgba(28, 28, 28, 0.08);
@@ -122,6 +150,11 @@
   --size-tab-strip:    34px;
   --size-status-bar:   22px;
   --size-terminal:     220px;
+  /* The native title bar is hidden and the window content runs to the top
+     edge (tauri.conf.json: titleBarStyle "Overlay"), so the traffic lights
+     float over the app. This is the band every surface that reaches the top
+     edge keeps clear for them. */
+  --titlebar-h:        28px;
 
   /* Shape + motion */
   --radius-xs: 2px;
@@ -1624,6 +1657,50 @@ textarea.klide-diff-comment-input:focus-visible {
   animation: chrome-enter var(--motion-slow) var(--ease-soft);
 }
 
+/* The native title bar is hidden and the app paints to the window's top edge,
+   so the window needs somewhere to be dragged from. Rather than lay an
+   invisible strip over the top (which would swallow clicks on whatever sits
+   under it), the empty chrome itself is the drag handle — the way a Mac app
+   lets you move the window by its toolbar or the blank part of its sidebar.
+   `data-tauri-drag-region` only fires for the element the pointer actually
+   hits, so rows, tabs and buttons inside these surfaces keep their clicks.
+   (Deliberately no blanket `user-select: none` on the attribute — it would
+   inherit into the conversation and make chat text unselectable.) */
+
+/* The app's main row: icon rail on the left, one full-height surface beside
+   it (workbench, Mission Control, Git, Orchestrator, Settings). The rails run
+   to the window's top edge — their surface is what the traffic lights sit on —
+   so everything *else* in the row keeps that band clear instead. */
+.klide-app-row > *:not(.klide-rail) {
+  padding-top: var(--titlebar-h);
+}
+
+/* Focus mode: its own rail is the left-most surface and owns the inset
+   (.klide-focus-rail), so the row must not add a second one. */
+.klide-app-row[data-titlebar-owner="focus"] > * {
+  padding-top: 0;
+}
+
+/* Everything beside the rail is one column — the view on top, the status bar
+   under it. The bar therefore starts at the rail's inner edge instead of
+   running under it, and the rail stays one uninterrupted full-height surface
+   from the traffic lights down to the identity card. */
+.klide-shell-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The views were written as row children, where the cross axis bounded them to
+   the window. Stacked vertically they'd size to their content instead, and
+   their inner scrollers would grow past the viewport — min-height: 0 hands the
+   bound back. The bar keeps its height through flex-shrink: 0. */
+.klide-shell-col > * {
+  min-height: 0;
+}
+
 .terminal-enter {
   animation: terminal-enter var(--motion-slow) var(--ease-soft);
 }
@@ -2160,6 +2237,62 @@ textarea.klide-diff-comment-input:focus-visible {
   background-clip: padding-box;
 }
 
+/* Frosted glass for portalled menus — the same recipe as .floating-panel, so a
+   picker reads as the same material as the panels it floats over: translucent
+   surface, hairline edge, a 1px lit top edge, and depth from the panel shadow
+   rather than a drop shadow of its own. The blur runs a little deeper than a
+   panel's (26px vs 22px) because a menu sits directly on top of dense text and
+   needs to separate from it; the saturation lift keeps the colour behind the
+   glass from going grey. */
+.menu-glass {
+  background: var(--composer-glass);
+  border: 1px solid var(--composer-border);
+  border-radius: var(--radius-md);
+  /* A glass sheet is lit from above: a hairline of light on the top edge, a
+     hairline of shade on the bottom, then the panel shadow for depth. Both
+     edges are inset shadows rather than a ::after overlay so they hold still
+     when the card itself is the scroll container. */
+  box-shadow:
+    inset 0 1px 0 var(--panel-highlight),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.03),
+    var(--panel-shadow);
+  backdrop-filter: blur(26px) saturate(1.4);
+  -webkit-backdrop-filter: blur(26px) saturate(1.4);
+  /* Own compositing layer: without it WebKit re-rasterises the blur against
+     scrolling content underneath and the card visibly shimmers. */
+  transform: translateZ(0);
+}
+
+/* Popover menu bodies scroll without a gutter. The global 10px classic
+   scrollbar reserves layout space in the webview, which shaves the right edge
+   off every row in a picker — so menus hide the bar and let each stack's rows
+   run the full card width. Wheel / trackpad scrolling is untouched. */
+.menu-scroll { scrollbar-width: none; }
+.menu-scroll::-webkit-scrollbar { width: 0; height: 0; }
+
+/* The ↗ that leads a menu row out to Settings instead of selecting a value:
+   quiet at rest, then brightens and drifts a hair along its own diagonal while
+   the row is hovered — the row's affordance, not a permanent badge. */
+.menu-leadout {
+  opacity: 0.5;
+  color: var(--fg-dim);
+  transition:
+    opacity var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    transform var(--motion-med) var(--ease-out);
+}
+button:hover .menu-leadout,
+button:focus-visible .menu-leadout {
+  opacity: 1;
+  color: var(--fg-subtle);
+  transform: translate(1.5px, -1.5px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-leadout { transition: opacity var(--motion-fast) linear; }
+  button:hover .menu-leadout,
+  button:focus-visible .menu-leadout { transform: none; }
+}
+
 /* Subtle scrollbars matching the quiet aesthetic */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -2615,7 +2748,9 @@ textarea.klide-diff-comment-input:focus-visible {
    clean. */
 .klide-rail-toggle {
   position: absolute;
-  top: 16px;
+  /* The rail runs under the traffic lights, and this pebble sits on its right
+     edge — right where the lights end. Start below them. */
+  top: calc(var(--titlebar-h) + 16px);
   right: -11px;
   width: 22px;
   height: 22px;
@@ -3402,7 +3537,6 @@ textarea.klide-diff-comment-input:focus-visible {
   height: 30px;
   padding: 0 10px;
   border: none;
-  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--fg-dim);
   font-size: 12.5px;
@@ -3555,50 +3689,49 @@ textarea.klide-diff-comment-input:focus-visible {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--bg-elevated) 26%, transparent), transparent 48%),
-    radial-gradient(circle at 58% 43%, color-mix(in srgb, var(--bg-elevated) 76%, transparent) 0, transparent 44%),
-    var(--bg);
+  background: var(--bg);
 }
 
-.klide-focus-shell::before,
-.klide-focus-shell::after {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.68;
-  transform-origin: center;
-  animation: klide-focus-ambient-in 900ms var(--ease-soft) both;
-}
-
-.klide-focus-shell::before {
-  top: -24%;
-  right: -8%;
-  width: min(720px, 56vw);
-  aspect-ratio: 1;
-  background: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--accent-soft) 38%, transparent) 0,
-    color-mix(in srgb, var(--accent) 5%, transparent) 34%,
-    transparent 70%
-  );
-}
-
-.klide-focus-shell::after {
-  bottom: -34%;
-  left: 18%;
-  width: min(620px, 48vw);
-  aspect-ratio: 1;
-  background: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--bg-elevated) 82%, transparent) 0,
-    transparent 68%
-  );
-  animation-delay: 80ms;
-}
-
+/* The rail is a flat lifted panel — one hairline on its inner edge, no blur,
+   no drop shadow (Design.md: borders, not shadows, for containment).
+   Everything inside sits on one indentation grid: a row's icon box is
+   `--rail-icon` wide at `--rail-row-pad` from the row edge, so its centre
+   line is `--rail-spine`. A nested group hangs its hairline spine on that
+   line and steps its content by `--rail-step` (icon + gap) — a child's icon
+   lands exactly where its parent's label began. */
 .klide-focus-rail {
+  --rail-pad: 8px;
+  --rail-row-pad: 10px;
+  --rail-row-h: 30px;
+  --rail-icon: 16px;
+  --rail-gap: 9px;
+  --rail-spine: calc(var(--rail-row-pad) + var(--rail-icon) / 2);
+  --rail-step: calc(var(--rail-icon) + var(--rail-gap));
+  /* One gap between every pair of sibling rows, at every level. The tree
+     bridges it, so the trunk stays unbroken while the rows breathe. */
+  --rail-row-gap: 2px;
+  /* Where a row's branch meets it: its own vertical centre. */
+  --rail-junction: calc(var(--rail-row-h) / 2);
+  /* Vertical space between a row's edge and its icon box — how much room a
+     vertical line has to clear that icon from above or below. */
+  --rail-icon-inset: calc((var(--rail-row-h) - var(--rail-icon)) / 2);
+  /* The turn is a true quarter-circle, so its curvature is constant — the
+     smoothest a corner can be. Radius and departure point are two views of the
+     same number: leave the trunk one radius above the junction, arrive one
+     radius to the right of it. The elbow path in FocusMode.tsx mirrors both. */
+  --rail-branch-radius: 8px;
+  --rail-branch-depart: calc(var(--rail-junction) - var(--rail-branch-radius));
+  /* Clearance between where the curve stops and the row's icon box. The branch
+     arrives at --rail-junction, which is also the icon's vertical centre, so a
+     run reaching the box edge draws straight through any glyph that fills its
+     box (provider marks render at the full 16px; the conversation model marks
+     are 15px and so had an inset to hide behind). Measured from the box edge,
+     not from the artwork, so it holds whatever a logo looks like. */
+  --rail-branch-gap: 4px;
+  /* One colour for the whole tree — the vertical and the curve both read it,
+     so they can never drift apart. */
+  --rail-tree-line: color-mix(in srgb, var(--fg-subtle) 26%, transparent);
+  --rail-tree-line-active: color-mix(in srgb, var(--accent) 62%, transparent);
   position: relative;
   z-index: 2;
   width: 252px;
@@ -3606,63 +3739,71 @@ textarea.klide-diff-comment-input:focus-visible {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 10px 8px 8px;
-  border-right: 1px solid var(--panel-border);
-  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
-  box-shadow:
-    inset -1px 0 0 color-mix(in srgb, var(--panel-highlight) 68%, transparent),
-    16px 0 42px rgba(28, 28, 28, 0.025);
-  backdrop-filter: blur(30px) saturate(1.16);
-  -webkit-backdrop-filter: blur(30px) saturate(1.16);
+  /* The rail runs to the window's top edge, so its own surface is what sits
+     behind the traffic lights — the title bar reads as part of the rail. The
+     first row starts below them. */
+  padding: calc(10px + var(--titlebar-h)) var(--rail-pad) 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-elevated);
   animation: klide-focus-rail-in 480ms var(--ease-soft) both;
 }
 
+/* Brand row — also the search row. Opening search swaps the wordmark for a
+   field in place, so nothing below it moves. */
 .klide-focus-brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  min-height: 40px;
-  padding: 2px 7px 8px;
-  margin-bottom: 3px;
+  gap: var(--rail-gap);
+  min-height: 34px;
+  /* -1px so the 18px brand slot's centre lands on --rail-spine with the
+     16px row icons below it. */
+  padding: 0 3px 0 calc(var(--rail-row-pad) - 1px);
+  margin-bottom: 8px;
 }
 
-.klide-focus-brand-mark {
-  width: 25px;
-  height: 25px;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--panel-border));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent-soft) 62%, var(--panel-glass));
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: -0.04em;
-  box-shadow:
-    inset 0 1px 0 var(--panel-highlight),
-    0 5px 14px color-mix(in srgb, var(--accent) 8%, transparent);
-  backdrop-filter: blur(12px) saturate(1.15);
-  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+/* Placeholder for the logo that isn't drawn yet — a hairline circle on the
+   rail spine, holding the row's height so nothing shifts when the real mark
+   lands. Swap the border for the artwork. */
+.klide-focus-brand-slot {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  /* Keeps the search button pinned to the row's right edge. */
+  margin-right: auto;
+  border: 1px solid var(--border);
+  border-radius: 50%;
 }
 
-.klide-focus-brand-name {
+/* Search field — the wordmark's slot, same height as the mark beside it. */
+.klide-focus-brand-search {
   min-width: 0;
   flex: 1;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
   color: var(--fg-strong);
-  font-size: 14.5px;
-  font-weight: 600;
-  letter-spacing: -0.012em;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.klide-focus-brand-search::placeholder {
+  color: var(--fg-dim);
+}
+
+.klide-focus-brand-search:focus {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 
 .klide-focus-brand-action {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  color: var(--fg-subtle);
-  border-radius: 9px;
+  color: var(--fg-dim);
+  border-radius: var(--radius-md);
 }
 
 .klide-focus-brand-action:hover,
@@ -3671,170 +3812,383 @@ textarea.klide-diff-comment-input:focus-visible {
   background: var(--bg-hover);
 }
 
+/* Every rail row shares the app-wide soft-fill recipe (the rail flyout's):
+   30px tall, 8px radius, a quiet neutral fill on hover, the full fill when
+   active. No border, no lift, no weight change — Design.md carries emphasis
+   with colour and size. */
 .klide-focus-nav-row {
   width: 100%;
-  height: 34px;
+  height: var(--rail-row-h);
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 9px;
+  gap: var(--rail-gap);
+  padding: 0 var(--rail-row-pad);
+  border-radius: var(--radius-lg);
   color: var(--fg-subtle);
-  font-size: 13px;
+  font-size: 12.5px;
   text-align: left;
   cursor: pointer;
 }
 
 .klide-focus-nav-row:hover {
   color: var(--fg-strong);
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
 }
 
 .klide-focus-nav-row[data-active="true"] {
   color: var(--fg-strong);
-  background: color-mix(in srgb, var(--bg-hover) 72%, var(--bg-elevated));
-  border-color: color-mix(in srgb, var(--border) 74%, transparent);
-  font-weight: 600;
-  box-shadow: var(--shadow-raised);
+  background: var(--bg-hover);
 }
 
+/* Every stack of rows in the rail uses the same gap, so the vertical rhythm is
+   one number rather than a different guess per list. */
+.klide-focus-nav-group,
+.klide-focus-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rail-row-gap);
+}
+
+/* A project owns its whole block — name plus history — which is what bounds the
+   sticky header: the name pins while this block is on screen and leaves with
+   it, so the next project takes over rather than stacking up. */
+.klide-focus-project {
+  position: relative;
+}
+
+/* Zero-size marker at the block's top, watched to tell whether the header has
+   pinned. Absolute so it contributes nothing to layout. */
+.klide-focus-project-sentinel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+/* The "More" toggle — words only, no mark. It is a way to see more projects
+   rather than one of them, so it gets no folder icon; the indent puts its label
+   in the same column as the project names, which is what ties it to the list.
+   It stays in --fg-dim so it reads as an aside beneath them.
+   The rail no longer writes "Projects" above that list either: the folder marks
+   and the divider already say what it is. */
+.klide-focus-more-projects {
+  width: 100%;
+  height: var(--rail-row-h);
+  display: flex;
+  align-items: center;
+  /* Lines the label up with the project names above (row pad + icon + gap). */
+  padding: 0 var(--rail-row-pad) 0 calc(var(--rail-row-pad) + var(--rail-step));
+  border-radius: var(--radius-lg);
+  color: var(--fg-dim);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.klide-focus-more-projects:hover,
+.klide-focus-more-projects:focus-visible {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+}
+
+.klide-focus-project-head {
+  position: sticky;
+  top: 0;
+  /* Above the tree, so its lines pass under the pinned name instead of through
+     it. The row's own fill sits on top of this background. */
+  z-index: 1;
+  background: var(--bg-elevated);
+}
+
+/* A hairline appears under the name only once it is actually pinned. Without it
+   the history slides under an invisible edge and looks clipped; with it always
+   on, every project row carries a divider it has not earned. `data-pinned` is
+   set by an IntersectionObserver in FocusMode.tsx — CSS alone cannot tell a
+   sticky element it has stuck. */
+.klide-focus-project-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--border) 18%,
+    var(--border) 82%,
+    transparent 100%
+  );
+  opacity: 0;
+  transition: opacity var(--motion-med) var(--ease-out);
+  pointer-events: none;
+}
+
+.klide-focus-project-head[data-pinned="true"]::after {
+  opacity: 1;
+}
+
+.klide-focus-nav-icon {
+  width: var(--rail-icon);
+  height: var(--rail-icon);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.klide-focus-nav-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The disclosure chevron only asserts itself on the row you are pointing at —
+   at rest the folder mark and the label carry the row. */
+.klide-focus-nav-chevron {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+  opacity: 0;
+  transform: rotate(0deg);
+  transition:
+    opacity var(--motion-fast) var(--ease-out),
+    transform var(--motion-med) var(--ease-soft);
+}
+
+.klide-focus-nav-row:hover .klide-focus-nav-chevron,
+.klide-focus-nav-row:focus-visible .klide-focus-nav-chevron,
+.klide-focus-nav-row[data-active="true"] .klide-focus-nav-chevron,
+.klide-focus-nav-chevron[data-expanded="true"] {
+  opacity: 1;
+}
+
+.klide-focus-nav-chevron[data-expanded="true"] {
+  transform: rotate(90deg);
+}
+
+/* Section eyebrow — the rail flyout's title recipe, so the two rails label
+   their groups the same way. */
 .klide-focus-section-label {
-  margin: 20px 0 6px;
-  padding: 0 10px;
-  color: var(--fg-subtle);
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0.065em;
+  margin: 16px 0 4px;
+  padding: 0 var(--rail-row-pad);
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
   line-height: 1.2;
   text-transform: uppercase;
-  opacity: 0.78;
+}
+
+.klide-focus-section-label:first-child {
+  margin-top: 2px;
+}
+
+.klide-focus-rail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Scroll under the section eyebrow without clipping a row's fill. */
+  padding-bottom: 4px;
+}
+
+/* The app-wide bar is 10px with a fairly dark thumb that appears on any hover
+   inside the scroller — in a 252px rail that is a wide, loud stripe sitting
+   right against the content. This one is 6px, invisible at rest, and only
+   surfaces while the rail is in use. No `scrollbar-width`: it makes WebKit fall
+   back to its overlay bar and ignore these rules (same note as .todo-scroll). */
+.klide-focus-rail-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.klide-focus-rail-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.klide-focus-rail-body::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+/* Two selectors, both more specific than the global `*:hover` rule so they win:
+   approaching the rail brings the thumb up, and pointing at it firms it. */
+.klide-focus-rail:hover .klide-focus-rail-body::-webkit-scrollbar-thumb,
+.klide-focus-rail-body:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-dim) 24%, transparent);
+  background-clip: padding-box;
+}
+
+.klide-focus-rail-body::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-dim) 44%, transparent);
+  background-clip: padding-box;
+}
+
+/* Empty states read as quiet sentences, not as rows. An expanded-but-empty
+   project gets the indent but no trunk — a tree line with nothing hanging off
+   it looks unfinished, so the indent alone carries the nesting. */
+.klide-focus-rail-empty {
+  margin: 2px 0 6px;
+  padding: 0 var(--rail-row-pad);
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.klide-focus-rail-empty[data-nested="true"] {
+  padding-left: calc(var(--rail-row-pad) + var(--rail-step));
 }
 
 .klide-focus-convo-row {
   position: relative;
-  isolation: isolate;
-  --focus-convo-row-glass: color-mix(in srgb, var(--bg-hover) 78%, transparent);
   width: 100%;
-  height: 31px;
+  height: var(--rail-row-h);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-right: 9px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  gap: var(--rail-gap);
+  padding: 0 var(--rail-row-pad);
+  border-radius: var(--radius-lg);
   color: var(--fg-subtle);
   font-size: 12.5px;
   text-align: left;
 }
 
-.klide-focus-provider-groups {
-  --focus-provider-tree-line: color-mix(in srgb, var(--fg-subtle) 25%, transparent);
+/* Hanging off a spine: content sits one step in from it, matching the
+   provider rows above. (A flat search result keeps the plain padding.) */
+.klide-focus-convo-row[data-nested="true"] {
+  padding-left: calc(var(--rail-row-pad) + var(--rail-step) - var(--rail-spine));
+}
+
+/* ── The rail's tree ──────────────────────────────────────────────────────
+   The vertical and the curve used to be two different things — a CSS
+   `border-left` on the container and an SVG stroke on each row, in different
+   colours, with the curve re-drawing its own stub over the border. You could
+   see the join. Now it is one line:
+
+   · the vertical is a `::before` on each *item*, not on the container, so it
+     can stop at the last item's junction instead of overshooting past it;
+   · the curve starts exactly on that line, tangent to it, and draws no
+     vertical of its own;
+   · both read the same `--rail-tree-line`, so one override moves the whole
+     branch and there is no seam to mismatch.
+
+   Because the vertical belongs to each item, `:last-child` gets a short stub
+   ending where its curve peels off, and every other item spans its full height
+   plus the row gap — which, for an expanded provider, correctly carries the
+   line down past its conversations to the next provider. */
+
+/* A group's box starts *on* the spine, so children position their line at
+   left: 0 and their content one step in. The top pad is the same gap that
+   separates sibling rows, so a parent and its first child are spaced like any
+   other pair. */
+.klide-focus-provider-groups,
+.klide-focus-provider-conversations {
   position: relative;
-  padding: 2px 0 3px;
+  padding-top: var(--rail-row-gap);
+}
+
+.klide-focus-provider-groups {
+  margin-left: var(--rail-spine);
+  padding-bottom: var(--rail-row-gap);
 }
 
 .klide-focus-provider-history {
   position: relative;
 }
 
-.klide-focus-provider-history + .klide-focus-provider-history {
-  margin-top: 1px;
+/* Shared vertical: the item's own segment of the tree. */
+.klide-focus-provider-history::before,
+.klide-focus-provider-conversations > .klide-focus-convo-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  background: var(--rail-tree-line);
+  pointer-events: none;
+  transition: background var(--motion-med) var(--ease-out);
+}
+
+/* A group's trunk climbs back up into its parent row, so the child tree reads as
+   descending from the parent's icon rather than starting a row late.
+
+   It must NOT climb all the way to the parent's junction, though: this line
+   sits on the parent icon's centre column, and the junction is that icon's
+   vertical centre — so a full climb runs straight down through the lower half
+   of the folder or provider mark. It stops `--rail-branch-gap` clear of the
+   icon's bottom edge instead. Same clearance rule as the curve, one axis over.
+
+   The line is still read as attached because it is on the icon's centre line;
+   the small void below the glyph is what tells you it belongs to it. */
+.klide-focus-provider-groups::before,
+.klide-focus-provider-conversations::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: calc(-1 * (var(--rail-icon-inset) - var(--rail-branch-gap)));
+  /* Up to the icon's clearance, plus the group's own top pad, so neither the
+     icon nor the row gap breaks the line. */
+  height: calc(
+    var(--rail-icon-inset) - var(--rail-branch-gap) + var(--rail-row-gap)
+  );
+  width: 1px;
+  background: var(--rail-tree-line);
+  pointer-events: none;
+}
+
+/* Pass the line through to the next sibling, across the gap between them… */
+.klide-focus-provider-history:not(:last-child)::before,
+.klide-focus-provider-conversations > .klide-focus-convo-row:not(:last-child)::before {
+  bottom: calc(-1 * var(--rail-row-gap));
+}
+
+/* …with that gap present between every pair of rows, at every level. */
+.klide-focus-provider-history + .klide-focus-provider-history,
+.klide-focus-provider-conversations > .klide-focus-convo-row + .klide-focus-convo-row {
+  margin-top: var(--rail-row-gap);
+}
+
+/* …but for the last item, stop exactly where its curve peels off, so the tree
+   ends in an L and nothing dangles past the final turn. This is also why the
+   curve starts at the same y: the line is semi-transparent, so any overlap
+   would paint a visibly darker stretch. */
+.klide-focus-provider-history:last-child::before,
+.klide-focus-provider-conversations > .klide-focus-convo-row:last-child::before {
+  height: var(--rail-branch-depart);
 }
 
 .klide-focus-provider-history-row {
   position: relative;
-  isolation: isolate;
-  --focus-provider-row-glass: color-mix(in srgb, var(--bg-hover) 72%, transparent);
   width: 100%;
-  height: 31px;
+  height: var(--rail-row-h);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 9px 0 38px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  gap: var(--rail-gap);
+  /* Content sits one step in from the spine this row hangs from. */
+  padding: 0 var(--rail-row-pad) 0 calc(var(--rail-row-pad) + var(--rail-step) - var(--rail-spine));
+  border-radius: var(--radius-lg);
   color: var(--fg-subtle);
-  font-size: 11.5px;
+  font-size: 12px;
   text-align: left;
-}
-
-.klide-focus-provider-history-row::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  background: var(--focus-provider-row-glass);
-  opacity: 0;
-  transition: opacity var(--motion-med) var(--ease-out);
-}
-
-.klide-focus-tree-branch {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  left: 17px;
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-  opacity: 0.46;
-  transform: scaleX(0.82);
-  transform-origin: left center;
-  transition:
-    opacity 260ms var(--ease-soft),
-    transform 320ms var(--ease-soft);
-}
-
-.klide-focus-tree-branch svg {
-  display: block;
-}
-
-.klide-focus-provider-history-row > .klide-focus-tree-branch {
-  color: var(--focus-provider-tree-line);
-}
-
-.klide-focus-convo-row > .klide-focus-tree-branch {
-  color: var(--focus-tree-line);
 }
 
 .klide-focus-provider-history-row:hover,
 .klide-focus-provider-history-row:focus-visible {
   color: var(--fg-strong);
-}
-
-.klide-focus-provider-history-row:hover::after,
-.klide-focus-provider-history-row:focus-visible::after {
-  opacity: 1;
-}
-
-.klide-focus-provider-history-row:hover > .klide-focus-tree-branch,
-.klide-focus-provider-history-row:focus-visible > .klide-focus-tree-branch,
-.klide-focus-provider-history-row[aria-expanded="true"] > .klide-focus-tree-branch,
-.klide-focus-provider-history[data-contains-selected="true"] > .klide-focus-provider-history-row > .klide-focus-tree-branch {
-  opacity: 0.92;
-  transform: scaleX(1);
+  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
 }
 
 .klide-focus-provider-history-logo {
-  width: 17px;
-  height: 17px;
+  width: var(--rail-icon);
+  height: var(--rail-icon);
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  opacity: 0.9;
-  transition:
-    opacity 220ms var(--ease-soft),
-    transform 280ms var(--ease-soft);
-}
-
-.klide-focus-provider-history-row:hover .klide-focus-provider-history-logo,
-.klide-focus-provider-history-row:focus-visible .klide-focus-provider-history-logo {
-  opacity: 1;
-  transform: scale(1.025);
 }
 
 .klide-focus-provider-history-name {
@@ -3842,28 +4196,38 @@ textarea.klide-diff-comment-input:focus-visible {
   overflow: hidden;
   flex: 1;
   color: inherit;
-  font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.klide-focus-provider-history-readonly {
-  flex-shrink: 0;
-  color: var(--fg-subtle);
-  font-size: 9px;
-  letter-spacing: 0.025em;
-  opacity: 0.58;
+/* Read-only delegate history is said with colour, not a badge — the row sits
+   one step dimmer and the reason lives in its tooltip. */
+.klide-focus-provider-history[data-readonly="true"] .klide-focus-provider-history-row {
+  color: var(--fg-dim);
 }
 
-.klide-focus-provider-history-count {
-  min-width: 14px;
-  flex-shrink: 0;
+.klide-focus-provider-history[data-readonly="true"] .klide-focus-provider-history-row:hover,
+.klide-focus-provider-history[data-readonly="true"] .klide-focus-provider-history-row:focus-visible {
   color: var(--fg-subtle);
+}
+
+/* The conversation count is reference, not status: it arrives with the row's
+   hover instead of resting there as a badge. */
+.klide-focus-provider-history-count {
+  flex-shrink: 0;
+  color: var(--fg-dim);
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  opacity: 0.62;
+  opacity: 0;
+  transition: opacity var(--motion-med) var(--ease-out);
+}
+
+.klide-focus-provider-history-row:hover .klide-focus-provider-history-count,
+.klide-focus-provider-history-row:focus-visible .klide-focus-provider-history-count,
+.klide-focus-provider-history-row[aria-expanded="true"] .klide-focus-provider-history-count {
+  opacity: 1;
 }
 
 .klide-focus-provider-history-chevron {
@@ -3872,213 +4236,364 @@ textarea.klide-diff-comment-input:focus-visible {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  opacity: 0.46;
+  color: var(--fg-dim);
   transform: rotate(0deg);
   transform-origin: center;
-  transition: transform 300ms var(--ease-soft);
+  transition: transform var(--motion-med) var(--ease-soft);
 }
 
 .klide-focus-provider-history-row[aria-expanded="true"] .klide-focus-provider-history-chevron {
   transform: rotate(90deg);
 }
 
-.klide-focus-provider-history[data-readonly="true"] .klide-focus-provider-history-row {
-  color: color-mix(in srgb, var(--fg-subtle) 84%, transparent);
-}
-
-.klide-focus-provider-history[data-contains-selected="true"] > .klide-focus-provider-history-row > .klide-focus-tree-branch {
-  color: color-mix(in srgb, var(--accent) 56%, var(--focus-provider-tree-line));
-}
-
+/* A collapsed provider that holds the open conversation says so quietly — the
+   label goes strong and the row keeps the resting fill. */
 .klide-focus-provider-history[data-contains-selected="true"] > .klide-focus-provider-history-row {
-  --focus-provider-row-glass: color-mix(in srgb, var(--accent-soft) 24%, transparent);
   color: var(--fg-strong);
 }
 
-.klide-focus-provider-history[data-contains-selected="true"] > .klide-focus-provider-history-row::after {
-  opacity: 1;
+.klide-focus-provider-history[data-contains-selected="true"]
+  > .klide-focus-provider-history-row[aria-expanded="false"] {
+  background: var(--bg-hover);
 }
 
+/* ── Revealing a project's tree ───────────────────────────────────────────
+   Opening a project draws its tree rather than popping it in: each trunk
+   segment grows downward from its top, each curve unrolls into the row it
+   points at, and the row settles in behind its own branch. Delays come from
+   `--rail-reveal-delay`, set per row in FocusMode.tsx, so it cascades top to
+   bottom — providers first, then conversations.
+
+   Timing is one envelope, tuned for the long decelerating glide of platform
+   motion rather than a short ease: `--ease-soft` decelerates hard and settles
+   without overshoot. Deliberately NOT `--ease-spring` — that token overshoots
+   to 1.04, which on a trunk means the line shoots past its own length and
+   snaps back, and Design.md puts bounce in the don't column anyway. Smooth
+   here means long and decelerating, not springy.
+
+   The three parts of a row's reveal share one gesture: the trunk leads, the
+   curve follows it out, the row lands last. Their durations overlap heavily and
+   the per-row steps are short, so the cascade reads as one wave moving down the
+   tree instead of a queue of separate animations.
+
+   `backwards` rather than `both`: it holds a row hidden through its delay, then
+   releases the element once played. `both` would leave the final keyframe
+   pinned, and its `transform` would override the global button-press scale. */
+
+.klide-focus-rail {
+  --rail-reveal-trunk: 340ms;
+  --rail-reveal-branch: 400ms;
+  --rail-reveal-row: 420ms;
+  /* Offsets inside a single row's gesture. */
+  --rail-reveal-branch-in: 40ms;
+  --rail-reveal-row-in: 80ms;
+}
+
+/* The row scales up a hair as it fades — content materialising rather than
+   just appearing. `transform-origin: left center` is what makes that safe: the
+   row's box starts on the spine and its junction is at its vertical centre, so
+   the origin sits exactly on the point where its curve meets the trunk. That
+   one point is fixed through the whole scale, so the join cannot drift — which
+   is why the row can move at all. A slide could not do this. */
+.klide-focus-provider-groups > .klide-focus-provider-history > .klide-focus-provider-history-row,
+.klide-focus-provider-conversations > .klide-focus-convo-row {
+  transform-origin: left center;
+  animation: klide-focus-row-reveal var(--rail-reveal-row) var(--ease-soft)
+    calc(var(--rail-reveal-delay, 0ms) + var(--rail-reveal-row-in)) backwards;
+}
+
+/* Every vertical in the tree, drawn top-down on its own beat. */
+.klide-focus-provider-groups::before,
+.klide-focus-provider-conversations::before,
+.klide-focus-provider-history::before,
+.klide-focus-provider-conversations > .klide-focus-convo-row::before {
+  transform-origin: top center;
+  animation: klide-focus-trunk-draw var(--rail-reveal-trunk) var(--ease-soft)
+    var(--rail-reveal-delay, 0ms) backwards;
+}
+
+/* …and the curve unrolls just behind the trunk, so the line reads as arriving
+   at the row rather than appearing beside it. `pathLength` on the path
+   normalises the dash to 100 units, so this holds at any radius. */
+.klide-focus-tree-elbow path {
+  stroke-dasharray: 100;
+  animation: klide-focus-branch-draw var(--rail-reveal-branch) var(--ease-soft)
+    calc(var(--rail-reveal-delay, 0ms) + var(--rail-reveal-branch-in)) backwards;
+}
+
+@keyframes klide-focus-row-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes klide-focus-trunk-draw {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes klide-focus-branch-draw {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Conversations hang from their own spine, on the provider logo's centre line
+   — one --rail-step in from the provider row's box, which is where that row's
+   icon is centred. Both levels are therefore real branches off an aligned
+   line, not two indents that happen to look nested. */
 .klide-focus-provider-conversations {
-  margin-left: 13px;
+  position: relative;
+  margin-left: var(--rail-step);
   transform-origin: top left;
   animation: klide-focus-tree-reveal 300ms var(--ease-soft) both;
 }
 
-.klide-focus-provider-conversations > .klide-focus-convo-row > .klide-focus-tree-branch {
-  animation: klide-focus-tree-branch-open 360ms var(--ease-soft) var(--tree-branch-delay, 36ms) backwards;
-}
-
-.klide-focus-provider-conversations > .klide-focus-convo-row:nth-child(2) > .klide-focus-tree-branch {
-  --tree-branch-delay: 64ms;
-}
-
-.klide-focus-provider-conversations > .klide-focus-convo-row:nth-child(3) > .klide-focus-tree-branch {
-  --tree-branch-delay: 92ms;
-}
-
-.klide-focus-provider-conversations > .klide-focus-convo-row:nth-child(4) > .klide-focus-tree-branch {
-  --tree-branch-delay: 120ms;
-}
-
-.klide-focus-provider-conversations > .klide-focus-convo-row:nth-child(5) > .klide-focus-tree-branch {
-  --tree-branch-delay: 148ms;
-}
-
-.klide-focus-provider-conversations > .klide-focus-convo-row:nth-child(6) > .klide-focus-tree-branch {
-  --tree-branch-delay: 176ms;
-}
-
-.klide-focus-provider-conversations > .klide-focus-convo-row:nth-child(7) > .klide-focus-tree-branch {
-  --tree-branch-delay: 204ms;
-}
-
-.klide-focus-provider-conversations > .klide-focus-convo-row:nth-child(n + 8) > .klide-focus-tree-branch {
-  --tree-branch-delay: 232ms;
-}
-
-.klide-focus-convo-tree {
-  --focus-tree-line: color-mix(in srgb, var(--fg-subtle) 25%, transparent);
-  position: relative;
-}
-
-.klide-focus-convo-row::after {
-  content: "";
+/* The curve that turns off the spine into a row. It draws no vertical of its
+   own — it starts on the spine's pixel with a vertical tangent, so the two
+   read as one stroke. Sized from the grid: it spans spine → the row's icon,
+   and turns at the row's junction height. */
+.klide-focus-tree-elbow {
   position: absolute;
-  z-index: -1;
-  inset: 0;
+  top: 0;
+  /* The row's own box starts on the spine, so the curve starts at the row's
+     leading edge and runs to where its icon begins — the same distance the
+     row's content is padded in. */
+  left: 0;
+  /* Spine → icon box, less the clearance. The viewBox is 1:1 with this, so the
+     path's numbers in FocusMode.tsx are these pixels: 10 + 25 - 18 - 4 = 13. */
+  width: calc(
+    var(--rail-row-pad) + var(--rail-step) - var(--rail-spine) - var(--rail-branch-gap)
+  );
+  /* One px past the junction: an <svg> clips to its box, and the run's stroke
+     is centred *on* the junction, so it needs the extra half pixel of room. */
+  height: calc(var(--rail-junction) + 1px);
   pointer-events: none;
-  border-radius: inherit;
-  background: var(--focus-convo-row-glass);
-  opacity: 0;
-  transition: opacity var(--motion-med) var(--ease-out);
+  color: var(--rail-tree-line);
+  transition: color var(--motion-med) var(--ease-out);
 }
 
-.klide-focus-convo-tree .klide-focus-convo-row:hover > .klide-focus-tree-branch,
-.klide-focus-convo-tree .klide-focus-convo-row:focus-visible > .klide-focus-tree-branch,
-.klide-focus-convo-tree .klide-focus-convo-row[data-selected="true"] > .klide-focus-tree-branch {
-  opacity: 0.92;
-  transform: scaleX(1);
+.klide-focus-tree-elbow svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The tree does not react to hover — a structure that flickers as the pointer
+   crosses it is noise. Rows answer hover with their own fill; the line only
+   changes for the one state worth marking, and then only on the *branch* into
+   the row. The trunk running past it stays neutral: the accent is saying
+   "this row", not "everything on this line". */
+.klide-focus-convo-row[data-selected="true"] .klide-focus-tree-elbow {
+  color: var(--rail-tree-line-active);
 }
 
 .klide-focus-convo-model {
-  width: 17px;
-  height: 17px;
+  width: var(--rail-icon);
+  height: var(--rail-icon);
   display: grid;
   place-items: center;
   flex-shrink: 0;
   color: var(--fg-subtle);
-  opacity: 0.82;
-  transition:
-    opacity 220ms var(--ease-soft),
-    transform 280ms var(--ease-soft);
-}
-
-.klide-focus-convo-row:hover .klide-focus-convo-model,
-.klide-focus-convo-row:focus-visible .klide-focus-convo-model {
-  opacity: 1;
-  transform: scale(1.025);
 }
 
 .klide-focus-convo-row:hover {
   color: var(--fg-strong);
+  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
 }
 
-.klide-focus-convo-row:hover::after,
-.klide-focus-convo-row:focus-visible::after {
-  opacity: 1;
-}
-
+/* "You are here" is the one place the rail spends accent — and it has to out-
+   weigh the active project's neutral fill above it, since the open
+   conversation is the more specific answer to "where am I". */
 .klide-focus-convo-row[data-selected="true"] {
-  --focus-convo-row-glass: color-mix(in srgb, var(--accent-soft) 42%, var(--bg-hover));
   color: var(--fg-strong);
+  background: color-mix(in srgb, var(--accent-soft) 100%, var(--bg-hover) 40%);
 }
 
-.klide-focus-convo-row[data-selected="true"]::after {
-  opacity: 1;
-}
-
-.klide-focus-convo-tree .klide-focus-convo-row[data-selected="true"] > .klide-focus-tree-branch {
-  color: color-mix(in srgb, var(--accent) 56%, var(--focus-tree-line));
-}
 
 .klide-focus-convo-time {
   flex-shrink: 0;
-  color: var(--fg-subtle);
+  color: var(--fg-dim);
   font-family: var(--font-mono);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  opacity: 0.66;
 }
 
 /* Rail section break — the same gradient hairline the free-mode rail uses
    between its zones, so no extra written label is needed. */
 .klide-focus-rail-divider {
   height: 1px;
-  margin: 10px 10px 6px;
+  margin: 10px var(--rail-row-pad) 6px;
   background: linear-gradient(
     to right,
     transparent 0%,
-    var(--panel-border) 18%,
-    var(--panel-border) 82%,
+    var(--border) 18%,
+    var(--border) 82%,
     transparent 100%
   );
   pointer-events: none;
 }
 
-/* Foot utility strip — the shared destinations as unlabelled marks (their
-   names live in the tooltip, as on the collapsed free-mode rail). Quiet at
-   rest, lifted when the foot is approached, full strength on the one hovered. */
-.klide-focus-foot-strip {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 7px 5px 0;
-  margin-top: 4px;
-  border-top: 1px solid var(--panel-border);
-}
-
-.klide-focus-foot-action {
+/* The view switch beside the identity card. Quiet at rest by colour. */
+.klide-rail-view-switch {
   width: 28px;
   height: 28px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  color: var(--fg-subtle);
-  opacity: 0.55;
-  border-radius: 8px;
+  color: var(--fg-dim);
+  border-radius: var(--radius-lg);
   transition:
     color var(--motion-fast) var(--ease-out),
-    opacity var(--motion-fast) var(--ease-out),
     background var(--motion-fast) var(--ease-out);
 }
 
-.klide-focus-foot-strip:hover .klide-focus-foot-action {
-  opacity: 0.8;
-}
-
-.klide-focus-foot-action:hover,
-.klide-focus-foot-action:focus-visible {
+.klide-rail-view-switch:hover,
+.klide-rail-view-switch:focus-visible {
   color: var(--fg-strong);
   background: var(--bg-hover);
-  opacity: 1;
 }
 
-.klide-focus-profile {
+/* App-level destinations — the same set the free-mode rail's bottom zone
+   renders. One zone, so Settings and the identity card read as a pair rather
+   than as a row that happens to sit above an avatar. */
+.klide-rail-dest-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 7px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+/* Identity + the view switch on one line — the switch keeps the right edge,
+   the card takes whatever's left. Both rails end on this row; the free-mode
+   rail adds [data-collapsed] when it narrows to the icon strip, and the pair
+   stacks so the avatar and the switch each keep the rail's centre line. */
+.klide-rail-identity-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  width: 100%;
-  min-height: 44px;
-  padding: 4px 7px 2px;
-  border-radius: 10px;
+  gap: 2px;
+}
+
+.klide-rail-identity-row[data-collapsed] {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.klide-rail-identity-row[data-collapsed] .klide-rail-view-switch {
+  margin: 0 auto;
+}
+
+.klide-rail-profile {
+  display: flex;
+  align-items: center;
+  gap: var(--rail-gap);
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: 4px 7px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  white-space: nowrap;
   text-align: left;
   transition: background var(--motion-fast) var(--ease-out);
 }
 
-.klide-focus-profile:hover,
-.klide-focus-profile:focus-visible {
+/* The activity bar borrows this card but not the Focus rail's grid, so
+   `--rail-gap` resolves to nothing there and the name ran straight into the
+   avatar. Its rows are: 8px margin, 11px padding, an 18px icon, a 10px gap —
+   icon centre at 28, label at 47. A 24px avatar centred on 28 spans 16..40, so
+   the padding is 8 and the gap 7 for the name to land on the labels above. */
+.klide-rail .klide-rail-profile {
+  gap: 7px;
+  padding: 4px 8px;
+}
+
+.klide-rail .klide-rail-profile-avatar {
+  margin-left: 0;
+}
+
+/* Collapsed: the identity text clips away and the avatar takes the row
+   icons' centre line (margin 8 + 8 + half of 24 = 28, the 56px rail's axis). */
+.klide-rail-identity-row[data-collapsed] .klide-rail-profile {
+  flex: none;
+  padding-left: 8px;
+}
+
+.klide-rail-identity-row[data-collapsed] .klide-rail-profile-avatar {
+  margin-left: 0;
+}
+
+.klide-rail-profile:hover,
+.klide-rail-profile:focus-visible {
   background: var(--bg-hover);
+}
+
+/* The avatar is one of the few circles the system allows — an identity mark,
+   flat sage tint, no ring. It shares the row icons' centre line. */
+.klide-rail-profile-avatar {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  margin-left: 3px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+
+.klide-rail-profile-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.klide-rail-profile-identity {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* The free-mode rail fades this out as it collapses, matching the way its
+     row labels dissolve rather than jump. */
+  transition: opacity 180ms var(--ease-out);
+}
+
+.klide-rail-profile-name {
+  overflow: hidden;
+  color: var(--fg-strong);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-rail-profile-host {
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .klide-focus-main {
@@ -4089,6 +4604,441 @@ textarea.klide-diff-comment-input:focus-visible {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* The canvas reaches the window's top edge like the rail does, so it keeps
+     the same band clear — the conversation starts on the rail's first-row
+     line instead of hugging the window edge. Absolutely-positioned children
+     (the Git island and its preview) are anchored to the padding box, so they
+     carry their own `--titlebar-h` offset. */
+  padding-top: var(--titlebar-h);
+}
+
+/* Focus Git island — a tiny read-only projection of the real Git graph with
+   separate controls for the quarter-size preview and full Git Review. */
+.klide-focus-git-island {
+  position: absolute;
+  /* The canvas runs to the window's top edge, so anything anchored to it
+     clears the title-bar band the same way the rail does. */
+  top: calc(var(--titlebar-h) + 16px);
+  right: 18px;
+  z-index: 4;
+  width: min(272px, calc(100% - 36px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--composer-border);
+  border-radius: 15px;
+  background: var(--composer-glass);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  opacity: 1;
+  visibility: visible;
+  backdrop-filter: var(--composer-blur);
+  -webkit-backdrop-filter: var(--composer-blur);
+  transform-origin: right top;
+  /* Resting size for the branch ping below. */
+  scale: 1;
+  animation: klide-focus-git-island-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    border-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    /* The swell, in and out. One symmetric duration on a soft curve — the ping
+       holds long enough to reach full size, so both halves are the same
+       gesture and it reads as breathing rather than a bounce. No delay, unlike
+       the transform below, which waits for the preview to shrink first. */
+    scale 380ms var(--ease-soft),
+    transform 420ms cubic-bezier(0.16, 1, 0.3, 1) 180ms,
+    opacity 190ms var(--ease-out) 260ms,
+    visibility 0s;
+}
+
+@keyframes klide-focus-git-island-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.klide-focus-git-island:hover {
+  border-color: var(--border-strong);
+}
+
+/* Pinged by the branch in the composer strip: the island swells a little and
+   settles. It grows from `transform-origin: right top`, so it expands inward
+   from the corner it's anchored to instead of pushing at the viewport edge.
+
+   This uses the standalone `scale` property, not `transform`, on purpose. The
+   entrance animation owns `transform` here with fill-mode `both`, and a filled
+   animation outranks normal declarations — a `transform` would be silently
+   ignored. `scale` is a separate animatable property that composes with it, so
+   the swell rides on top of the entrance and the preview morph without either
+   having to change. */
+.klide-focus-git-island[data-ping="true"] {
+  scale: 1.028;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The swell is pure decoration — nothing is communicated by the size change
+     that isn't already on screen — so it drops out entirely rather than being
+     shortened. */
+  .klide-focus-git-island[data-ping="true"] {
+    scale: 1;
+  }
+}
+
+.klide-focus-git-island[data-preview-open="true"] {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.97);
+  transition:
+    transform 180ms var(--ease-out),
+    opacity 120ms var(--ease-out),
+    visibility 0s linear 180ms;
+}
+
+.klide-focus-git-island-header {
+  min-height: 35px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 72px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.klide-focus-git-island-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-strong);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.klide-focus-git-profile-picture {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 7px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.klide-focus-git-profile-picture img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.klide-focus-git-preview-header > .klide-focus-git-profile-picture {
+  width: 24px;
+  height: 24px;
+  font-size: 9px;
+}
+
+.klide-focus-git-island-meta {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-git-window-actions {
+  position: absolute;
+  top: calc(var(--titlebar-h) + 21px);
+  right: 26px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  transform: translateY(0);
+  transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.klide-focus-git-window-actions[data-expanded="true"] {
+  transform: translateY(7px);
+}
+
+.klide-focus-git-window-actions > button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  transition:
+    color 160ms var(--ease-out),
+    background 160ms var(--ease-out),
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.klide-focus-git-window-actions > button:hover,
+.klide-focus-git-window-actions > button:focus-visible {
+  color: var(--fg-strong);
+  background: var(--menu-row-hover);
+}
+
+.klide-focus-git-window-actions > button:active {
+  transform: scale(0.92);
+}
+
+.klide-focus-git-size-icon path {
+  transform-box: view-box;
+  transition: transform 460ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.klide-focus-git-size-icon path:nth-child(1) { transform-origin: 6px 6px; }
+.klide-focus-git-size-icon path:nth-child(2) { transform-origin: 18px 6px; }
+.klide-focus-git-size-icon path:nth-child(3) { transform-origin: 18px 18px; }
+.klide-focus-git-size-icon path:nth-child(4) { transform-origin: 6px 18px; }
+
+.klide-focus-git-size-icon[data-expanded="true"] path {
+  transform: rotate(180deg);
+}
+
+.klide-focus-git-island-arrow {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+  transition:
+    color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.klide-focus-git-window-actions > button:hover .klide-focus-git-island-arrow,
+.klide-focus-git-window-actions > button:focus-visible .klide-focus-git-island-arrow {
+  color: var(--fg-strong);
+  transform: translateX(2px);
+}
+
+.klide-focus-git-island-body {
+  display: flex;
+  flex-direction: column;
+  padding: 5px 7px 6px;
+}
+
+.klide-focus-git-island-row {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+}
+
+.klide-focus-git-island-row svg {
+  flex-shrink: 0;
+}
+
+.klide-focus-git-island-subject {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-git-island-row:first-child .klide-focus-git-island-subject {
+  color: var(--fg-strong);
+}
+
+.klide-focus-git-island-hash {
+  width: 46px;
+  flex-shrink: 0;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-align: right;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.klide-focus-git-island-empty {
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+}
+
+/* Intermediate Git preview — a clean window occupying roughly the top-right
+   quarter of the canvas. It expands from the island's exact anchor instead of
+   sliding in as another permanent dock. */
+.klide-focus-git-preview {
+  position: absolute;
+  top: calc(var(--titlebar-h) + 16px);
+  right: 18px;
+  z-index: 5;
+  width: min(46%, 560px);
+  height: min(48%, 500px);
+  max-width: calc(100% - 36px);
+  max-height: calc(100% - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--composer-border);
+  border-radius: 18px;
+  background: var(--composer-glass);
+  color: var(--fg);
+  backdrop-filter: var(--composer-blur);
+  -webkit-backdrop-filter: var(--composer-blur);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-5px) scale(0.54, 0.4);
+  transform-origin: right top;
+  will-change: transform, opacity;
+  transition:
+    transform 520ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 160ms cubic-bezier(0.22, 1, 0.36, 1) 300ms,
+    visibility 0s linear 520ms;
+}
+
+.klide-focus-git-preview[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition:
+    transform 520ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s;
+}
+
+.klide-focus-git-preview-header {
+  min-height: 50px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 72px 0 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  background: color-mix(in srgb, var(--panel-highlight) 22%, transparent);
+}
+
+.klide-focus-git-preview-heading {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+}
+
+.klide-focus-git-preview-heading > span {
+  color: var(--fg-strong);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.klide-focus-git-preview-heading small {
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-git-preview-list {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+  opacity: 0;
+  transform: translateY(7px);
+  transition:
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 160ms var(--ease-out);
+}
+
+.klide-focus-git-preview[data-open="true"] .klide-focus-git-preview-list {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 90ms;
+}
+
+.klide-focus-git-preview-row {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-right: 6px;
+  border-radius: var(--radius-sm);
+}
+
+.klide-focus-git-preview-row:hover {
+  background: var(--menu-row-hover);
+}
+
+.klide-focus-git-preview-row > svg {
+  flex-shrink: 0;
+}
+
+.klide-focus-git-preview-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.klide-focus-git-preview-copy > span {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-git-preview-copy small {
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klide-focus-git-preview-row > code {
+  width: 52px;
+  flex-shrink: 0;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-align: right;
+}
+
+.klide-focus-git-preview-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--fg-dim);
+  font-size: 11px;
 }
 
 .klide-focus-current-surface {
@@ -4439,47 +5389,28 @@ textarea.klide-diff-comment-input:focus-visible {
   gap: 5px;
   padding: 13px 14px;
   overflow: hidden;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--composer-border);
   border-radius: 13px;
-  background: color-mix(in srgb, var(--panel-glass) 78%, transparent);
+  background: var(--composer-glass);
   color: var(--fg-strong);
   text-align: left;
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 88%, transparent),
-    0 10px 30px rgba(28, 28, 28, 0.035);
-  backdrop-filter: blur(20px) saturate(1.14);
-  -webkit-backdrop-filter: blur(20px) saturate(1.14);
+  backdrop-filter: var(--composer-blur);
+  -webkit-backdrop-filter: var(--composer-blur);
   animation: klide-focus-card-in 520ms var(--ease-soft) calc(150ms + var(--focus-card-delay, 0ms)) both;
-  transition: transform 320ms var(--ease-spring), border-color 220ms var(--ease-out), box-shadow 320ms var(--ease-soft);
-}
-
-.klide-focus-home-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--panel-highlight) 86%, transparent), transparent 42%),
-    radial-gradient(circle at 86% 8%, color-mix(in srgb, var(--accent-soft) 40%, transparent), transparent 45%);
-  opacity: 0.34;
-  transition: opacity 280ms var(--ease-out);
+  transition:
+    transform 220ms var(--ease-out),
+    border-color 180ms var(--ease-out),
+    background 180ms var(--ease-out);
 }
 
 .klide-focus-home-card:hover {
-  transform: translateY(-4px) scale(1.012);
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
-  box-shadow:
-    inset 0 1px 0 var(--panel-highlight),
-    0 18px 40px rgba(28, 28, 28, 0.075);
-}
-
-.klide-focus-home-card:hover::before,
-.klide-focus-home-card:focus-visible::before {
-  opacity: 0.76;
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--composer-border) 60%, var(--accent));
+  background: var(--composer-glass-hover);
 }
 
 .klide-focus-home-card:active {
-  transform: translateY(-1px) scale(0.985);
+  transform: translateY(0);
   transition-duration: 100ms;
 }
 
@@ -4493,9 +5424,8 @@ textarea.klide-diff-comment-input:focus-visible {
   margin-bottom: 4px;
   border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--panel-border));
-  background: color-mix(in srgb, var(--accent-soft) 72%, var(--panel-glass));
+  background: var(--menu-row-active);
   color: var(--accent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 76%, transparent);
 }
 
 .klide-focus-home-card-title {
@@ -4556,19 +5486,22 @@ textarea.klide-diff-comment-input:focus-visible {
   align-items: center;
   gap: 15px;
   padding: 0 13px 1px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--composer-border);
   border-bottom: none;
   border-radius: 13px 13px 0 0;
-  background: color-mix(in srgb, var(--panel-glass) 76%, transparent);
+  /* Slightly thinner than the chatbox it rises out of, so the two read as one
+     piece with the riser catching a little more of what's behind it. */
+  background: color-mix(in srgb, var(--composer-glass) 88%, transparent);
   color: var(--fg-subtle);
   font-size: 11.5px;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 78%, transparent);
-  backdrop-filter: blur(24px) saturate(1.15);
-  -webkit-backdrop-filter: blur(24px) saturate(1.15);
+  backdrop-filter: var(--composer-blur);
+  -webkit-backdrop-filter: var(--composer-blur);
   transform: translateY(1px);
 }
 
-.klide-focus-context-strip span {
+.klide-focus-context-strip span,
+.klide-focus-context-strip button {
   min-width: 0;
   display: inline-flex;
   align-items: center;
@@ -4578,12 +5511,29 @@ textarea.klide-diff-comment-input:focus-visible {
   white-space: nowrap;
 }
 
+/* The branch entry is the one live thing in the strip — it points at the git
+   island. Styled to sit exactly like its static siblings until hovered, so the
+   strip stays a ribbon of facts rather than a row of controls. */
+.klide-focus-context-strip button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+
+.klide-focus-context-strip button:hover {
+  color: var(--fg-strong);
+}
+
 .klide-focus-composer {
   position: relative;
   overflow: hidden;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--composer-border);
   border-radius: 15px;
-  background: color-mix(in srgb, var(--panel-glass) 88%, transparent);
+  background: var(--composer-glass);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 92%, transparent),
     0 1px 2px rgba(28, 28, 28, 0.025),
@@ -4663,6 +5613,210 @@ textarea.klide-diff-comment-input:focus-visible {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  gap: 1px;
+}
+
+.klide-focus-add {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  transition: color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.klide-focus-add:hover,
+.klide-focus-add[data-open="true"] {
+  color: var(--fg-strong);
+}
+
+.klide-focus-add-menu {
+  position: fixed;
+  z-index: var(--z-popover, 1000);
+  width: 238px;
+  max-height: 332px;
+  overflow: hidden;
+  padding: 5px;
+  transform-origin: left bottom;
+  animation: klide-focus-add-menu-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: opacity, transform;
+}
+
+@keyframes klide-focus-add-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.965);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.klide-focus-add-menu-row {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.klide-focus-add-menu-row:hover {
+  background: var(--menu-row-hover);
+}
+
+.klide-focus-add-menu-row:disabled {
+  color: var(--fg-dim);
+  cursor: default;
+  opacity: 0.58;
+}
+
+.klide-focus-add-menu-row:disabled:hover {
+  background: transparent;
+}
+
+.klide-focus-add-menu-row > span:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.klide-focus-add-menu-row small {
+  display: block;
+  margin-top: 1px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.klide-focus-add-menu-meta {
+  flex: 0 0 auto !important;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.klide-focus-add-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border);
+}
+
+.klide-focus-add-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 1px 5px;
+  border-bottom: 1px solid var(--border);
+  animation: klide-focus-add-content-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes klide-focus-add-content-in {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.klide-focus-add-menu-header button {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+
+.klide-focus-add-menu-header button:hover {
+  color: var(--fg-strong);
+  background: var(--menu-row-hover);
+}
+
+.klide-focus-add-menu-header input {
+  min-width: 0;
+  height: 28px;
+  flex: 1;
+  padding: 0 7px;
+  border: none;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: 12px;
+}
+
+.klide-focus-add-menu-header input:focus {
+  outline: none;
+}
+
+.klide-focus-add-file-list {
+  max-height: 270px;
+  overflow-y: auto;
+  padding-top: 4px;
+  animation: klide-focus-add-content-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.klide-focus-add-file-list > button {
+  width: 100%;
+  height: 30px;
+  overflow: hidden;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.klide-focus-add-file-list > button:hover {
+  color: var(--fg-strong);
+  background: var(--menu-row-hover);
+}
+
+.klide-focus-add-empty {
+  padding: 18px 10px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-focus-add,
+  .klide-focus-add-menu,
+  .klide-focus-add-menu-header,
+  .klide-focus-add-file-list {
+    animation: none;
+    transition: none;
+  }
 }
 
 .klide-focus-model-controls {
@@ -4703,17 +5857,6 @@ textarea.klide-diff-comment-input:focus-visible {
 .klide-focus-send[data-ready="true"]:hover {
   background: var(--accent-hover);
   transform: translateY(-1px) scale(1.025);
-}
-
-@keyframes klide-focus-ambient-in {
-  from {
-    opacity: 0;
-    transform: scale(0.92);
-  }
-  to {
-    opacity: 0.68;
-    transform: scale(1);
-  }
 }
 
 @keyframes klide-focus-rail-in {
@@ -4787,20 +5930,9 @@ textarea.klide-diff-comment-input:focus-visible {
   }
 }
 
-@keyframes klide-focus-tree-branch-open {
-  from {
-    opacity: 0;
-    transform: scaleX(0.12);
-  }
-  to {
-    opacity: 0.46;
-    transform: scaleX(0.82);
-  }
-}
-
 /* The rail's search field reveals as chrome; rows lean on background/color
    transitions — no per-row keyframes. */
-.klide-focus-search {
+.klide-focus-brand-search {
   animation: chrome-enter 320ms var(--ease-soft) both;
 }
 
@@ -4846,26 +5978,38 @@ textarea.klide-diff-comment-input:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .klide-focus-rail,
-  .klide-focus-shell::before,
-  .klide-focus-shell::after,
+  .klide-focus-git-island,
   .klide-focus-rise,
   .klide-focus-chat-in,
-  .klide-focus-search,
+  .klide-focus-brand-search,
   .klide-focus-provider-conversations,
-  .klide-focus-tree-branch,
   .klide-focus-home-card,
-  .klide-focus-composer-dock {
+  .klide-focus-composer-dock,
+  /* The whole expand cascade collapses to an instant reveal — rows, trunk
+     segments and curves all arrive fully drawn. */
+  .klide-focus-provider-groups > .klide-focus-provider-history > .klide-focus-provider-history-row,
+  .klide-focus-provider-conversations > .klide-focus-convo-row,
+  .klide-focus-provider-groups::before,
+  .klide-focus-provider-conversations::before,
+  .klide-focus-provider-history::before,
+  .klide-focus-provider-conversations > .klide-focus-convo-row::before,
+  .klide-focus-tree-elbow path {
     animation: none;
   }
   .klide-focus-home-card,
-  .klide-focus-home-card::before,
+  .klide-focus-git-island,
+  .klide-focus-git-preview,
+  .klide-focus-git-preview-list,
+  .klide-focus-git-window-actions,
+  .klide-focus-git-window-actions > button,
+  .klide-focus-git-size-icon path,
+  .klide-focus-git-island-arrow,
   .klide-focus-home-card-arrow,
-  .klide-focus-convo-row::after,
-  .klide-focus-convo-model,
-  .klide-focus-provider-history-row::after,
-  .klide-focus-provider-history-logo,
+  .klide-focus-provider-groups,
+  .klide-focus-provider-history-count,
   .klide-focus-provider-history-chevron,
-  .klide-focus-tree-branch,
+  .klide-focus-tree-elbow,
+  .klide-focus-nav-chevron,
   .klide-focus-history-back,
   .klide-focus-history-continue,
   .klide-focus-composer,

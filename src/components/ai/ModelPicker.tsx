@@ -402,7 +402,7 @@ export function ModelPicker({
           ref={menuRef}
           role="listbox"
           aria-label="Available models"
-          className="popover-enter"
+          className="popover-enter menu-glass"
           style={{
             // Portalled to <body> with viewport coordinates so the menu
             // escapes the AI panel's `overflow: hidden` and the
@@ -417,12 +417,6 @@ export function ModelPicker({
             maxHeight: 360,
             display: "flex",
             flexDirection: "column",
-            background: "var(--panel-glass)",
-            border: "1px solid var(--panel-border)",
-            borderRadius: "var(--radius-md)",
-            boxShadow: "var(--panel-shadow)",
-            backdropFilter: "blur(22px) saturate(1.18)",
-            WebkitBackdropFilter: "blur(22px) saturate(1.18)",
             overflow: "hidden",
             // Sit above the floating-panel tier. Focused panels ride at
             // Z.panel + focus order (usePanelLayout zMap), so a body-portalled
@@ -529,10 +523,10 @@ export function ModelPicker({
               }}
             />
           </div>
-          {/* Model list — two-line rows for clarity. The active row
-              uses the soft accent tint, hover uses bg-hover, and the
-              keyboard cursor parks on the focused row regardless of
-              hover. */}
+          {/* Model list — two-line rows for clarity. Row states come from the
+              glass card's --menu-row-* properties (translucent, so they don't
+              punch through the frost); the keyboard cursor parks on the focused
+              row regardless of hover. */}
           {/* minHeight: 0 lets this flex child shrink to the menu's
               maxHeight — without it, min-height:auto keeps the list at
               content height and the menu's overflow:hidden clips it,
@@ -595,9 +589,9 @@ export function ModelPicker({
                       border: "none",
                       borderRadius: "var(--radius-sm)",
                       background: active
-                        ? "color-mix(in srgb, var(--accent-soft) 80%, transparent)"
+                        ? "var(--menu-row-active)"
                         : focused
-                          ? "var(--bg-hover)"
+                          ? "var(--menu-row-hover)"
                           : "transparent",
                       color: "var(--fg-strong)",
                       textAlign: "left",

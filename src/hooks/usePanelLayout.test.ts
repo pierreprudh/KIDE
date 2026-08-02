@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { canPersistLayout } from "./usePanelLayout";
+import { canPersistLayout, mergeAiPanels } from "./usePanelLayout";
 import type { Layout as PanelLayout } from "../panelLayout";
+import type { ProviderId } from "../agent/types";
 
 const HYDRATED: PanelLayout = {
   anchored: true,
@@ -37,5 +38,56 @@ describe("canPersistLayout", () => {
 
   it("refuses when there is no workspace", () => {
     expect(canPersistLayout(null, null, HYDRATED)).toBe(false);
+  });
+});
+
+const RECT = { x: 0, y: 0, w: 360, h: 600 };
+
+describe("mergeAiPanels", () => {
+  it("seeds a panel that has no live pair from storage", () => {
+    const merged = mergeAiPanels(
+      [{ id: "ai-main", rect: RECT, provider: "openrouter", model: "deepseek/deepseek-v4-flash" }],
+      [{ id: "ai-main", rect: RECT }],
+      RECT,
+    );
+    expect(merged[0].provider).toBe("openrouter");
+    expect(merged[0].model).toBe("deepseek/deepseek-v4-flash");
+  });
+
+  it("keeps the live provider+model when a resync replays an older snapshot", () => {
+    // The panel moved to a self-hosted endpoint after the layout was written.
+    // A resize re-clamp must not drag it back to the stored pair — that lands
+    // an OpenRouter model on a conversation running against the endpoint.
+    const merged = mergeAiPanels(
+      [{ id: "ai-main", rect: RECT, provider: "openrouter", model: "deepseek/deepseek-v4-flash" }],
+      [{
+        id: "ai-main",
+        rect: RECT,
+        provider: "custom:ontraak-prod" as ProviderId,
+        model: "qwen3.6:latest",
+      }],
+      RECT,
+    );
+    expect(merged[0].provider).toBe("custom:ontraak-prod");
+    expect(merged[0].model).toBe("qwen3.6:latest");
+  });
+
+  it("carries the worktree pin forward", () => {
+    const merged = mergeAiPanels(
+      [{ id: "ai-main", rect: RECT }],
+      [{ id: "ai-main", rect: RECT, cwd: "/repo-worktrees/feat" }],
+      RECT,
+    );
+    expect(merged[0].cwd).toBe("/repo-worktrees/feat");
+  });
+
+  it("takes the rect from storage, since that is what a resync is for", () => {
+    const moved = { x: 40, y: 20, w: 500, h: 700 };
+    const merged = mergeAiPanels(
+      [{ id: "ai-main", rect: moved }],
+      [{ id: "ai-main", rect: RECT }],
+      RECT,
+    );
+    expect(merged[0].rect).toEqual(moved);
   });
 });

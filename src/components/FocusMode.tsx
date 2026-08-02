@@ -13,20 +13,38 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
-import { listProviderModels } from "../ipc/aiProviders";
+import {
+  listProviderModels,
+  modelSupportsTools as queryModelSupportsTools,
+  readProviderKeyStatus,
+} from "../ipc/aiProviders";
 import { Z } from "../zLayers";
+import { railDestination } from "../railDestinations";
+import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
+import { usePortalMenu } from "../hooks/usePortalMenu";
 import { useCustomProviders } from "../hooks/useCustomProviders";
 import {
   CONVERSATIONS_CHANGED_EVENT,
+  conversationDuration,
+  conversationStartedAt,
+  formatSpan,
   loadConversations,
   relativeTime,
   isSubsequence,
   type ConversationChangedDetail,
 } from "./ai/utils";
 import type { Conversation } from "./ai/types";
-import type { ProviderId } from "../agent/types";
-import { PROVIDER_GROUPS, DEFAULT_MODELS, isDelegateProvider, providerName } from "../agent/providers";
+import type { AgentMode, ProviderId } from "../agent/types";
+import {
+  PROVIDER_GROUPS,
+  defaultModelForProvider,
+  isDelegateProvider,
+  normalizeAgentMode,
+  providerGroupsWithCustom,
+  providerName,
+  providerNeedsApiKey,
+} from "../agent/providers";
+import { isCustomProvider, type CustomProvider } from "../customProviders";
 import { ModelPicker } from "./ai/ModelPicker";
 import { ProviderLogo } from "./ai/icons";
 import { renderMessageBody } from "./ai/ChatMessage";
@@ -37,10 +55,14 @@ import {
   linkedProjectForPath,
   normalizeProjectPath,
 } from "../projectPaths";
+import { listWorkspaceFiles } from "./ai/workspaceFiles";
+import { FocusGitIsland } from "./FocusGitIsland";
 
 type Props = {
   workspaceRoot: string | null;
   branch: string | null;
+  gitChangeCount: number;
+  gitRefreshToken: string;
   /** Recent project roots (the same list the activity-bar popover shows). */
   projects: string[];
   chatActive: boolean;
@@ -54,6 +76,10 @@ type Props = {
    *  bar calls, so Focus opens the identical Git view / Memory / Skills /
    *  Settings / Profile surfaces instead of parallel ones. */
   onOpenPanel: (panel: "git" | "memory" | "skills" | "settings" | "profile" | "orchestrator") => void;
+  /** Open Settings straight on one section. The composer's provider picker
+   *  sends keyless providers to "api" (API keys) instead of dead-ending on a
+   *  row you can't run. */
+  onOpenSettingsSection: (section: string) => void;
   /** Leave Focus for the Free (floating-panel) layout. Focus has no status
    *  bar, so this rail icon is the only way out. */
   onExitFocus: () => void;
@@ -78,17 +104,12 @@ type Props = {
   onEffortChange: (effort: string | undefined) => void;
   contextWindow: number | undefined;
   onContextWindowChange: (window: number | undefined) => void;
+  requireDiffReview: boolean;
+  onRequireDiffReviewChange: (required: boolean) => void;
 };
 
 function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
-}
-
-function initialsOf(name: string): string {
-  const parts = name.replace(/[^a-zA-Z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 /* ------------------------------------------------------------------ icons */
@@ -105,11 +126,15 @@ const iconProps = {
   "aria-hidden": true,
 } as const;
 
-function NewChatIcon() {
+/* The rail's primary action, so it gets the simplest mark in the set: a bare
+   plus. The four glyphs under it describe a place (a board, a chain, a
+   notebook, sparks) — this one only has to say "begin", and a pencil said
+   "edit something that already exists". */
+function NewTaskIcon() {
   return (
-    <svg {...iconProps}>
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+    <svg {...iconProps} strokeWidth={1.6}>
+      <path d="M12 5.25v13.5" />
+      <path d="M5.25 12h13.5" />
     </svg>
   );
 }
@@ -119,6 +144,17 @@ function SearchIcon() {
     <svg {...iconProps}>
       <circle cx="11" cy="11" r="7" />
       <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+/** Closes the search field in the brand row — same slot, so the glyph swaps
+ *  rather than a second button appearing. */
+function CloseIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="m6 6 12 12" />
+      <path d="m18 6-12 12" />
     </svg>
   );
 }
@@ -162,18 +198,6 @@ function OrchestratorIcon() {
   );
 }
 
-function GitIcon() {
-  return (
-    <svg {...iconProps} strokeWidth={1.5}>
-      <circle cx="6" cy="5" r="2.4" />
-      <circle cx="6" cy="19" r="2.4" />
-      <circle cx="18" cy="12" r="2.4" />
-      <path d="M6 7.4v9.2" />
-      <path d="M8.1 6.2A8.2 8.2 0 0 1 15.7 10" />
-    </svg>
-  );
-}
-
 function MemoryIcon() {
   return (
     <svg {...iconProps} strokeWidth={1.5}>
@@ -194,21 +218,10 @@ function SkillsIcon() {
   );
 }
 
-function SettingsIcon() {
-  return (
-    <svg {...iconProps} strokeWidth={1.5}>
-      <path d="M4 6h10" />
-      <path d="M18 6h2" />
-      <path d="M16 4v4" />
-      <path d="M4 12h3" />
-      <path d="M11 12h9" />
-      <path d="M9 10v4" />
-      <path d="M4 18h11" />
-      <path d="M19 18h1" />
-      <path d="M17 16v4" />
-    </svg>
-  );
-}
+/* Settings + Profile come from ../railDestinations, shared with the free-mode
+   rail's bottom zone — one definition of what the app's destinations are. */
+const settingsDest = railDestination("settings");
+const profileDest = railDestination("profile");
 
 function FolderIcon() {
   return (
@@ -239,32 +252,42 @@ function BranchIcon() {
   );
 }
 
-function LocalIcon() {
+/** The curve turning off a spine into its row.
+ *
+ *  It draws only the turn — the vertical is the spine's own `::before` in
+ *  tokens.css. The path starts at x=0.5 (the spine's pixel) with a vertical
+ *  tangent and ends with a horizontal one, so the two strokes read as a single
+ *  continuous line rather than a border meeting an SVG.
+ *
+ *  It also starts *below* the spine's top, at the same y the spine's own
+ *  segment stops for a last child (`--rail-branch-depart`) — so the two never
+ *  paint the same pixel twice. That matters: the line is semi-transparent, and
+ *  a doubled stroke would darken exactly the stretch meant to look seamless.
+ *
+ *  The viewBox is 1:1 with the box CSS gives it, so these numbers are pixels: a
+ *  quarter-circle of radius 8 from (.5, 7) down to (8.5, 15) — the row's
+ *  junction — then a short run that stops `--rail-branch-gap` short of the
+ *  row's icon. Note the arc is exactly a quarter: dx and dy both equal the
+ *  radius, which is what makes it tangent-vertical where it leaves the trunk
+ *  and tangent-horizontal where it reaches the row. An arc rather than a
+ *  hand-tuned bezier because its curvature is constant; in a 1px hairline the
+ *  eye reads any variation as a kink. So trunk, turn and run are one stroke.
+ *
+ *  The 13 is the box width CSS computes (spine → icon, less the clearance); the
+ *  radius and start match `--rail-branch-radius` / `--rail-branch-depart`, which
+ *  is exactly where the trunk's own segment stops. All four move together — if
+ *  you retune one, retune the others. */
+function TreeElbow() {
   return (
-    <svg {...iconProps} width={13} height={13}>
-      <rect x="3" y="4" width="18" height="13" rx="2" />
-      <path d="M8 21h8" />
-      <path d="M12 17v4" />
-    </svg>
-  );
-}
-
-function TreeBranch() {
-  return (
-    <span className="klide-focus-tree-branch" aria-hidden="true">
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 16 16"
-        fill="none"
-        shapeRendering="geometricPrecision"
-      >
+    <span className="klide-focus-tree-elbow" aria-hidden="true">
+      <svg viewBox="0 0 13 16" fill="none" shapeRendering="geometricPrecision">
         <path
-          d="M.5.5v5c0 5 4 9 9 9h6"
+          d="M.5 7 A8 8 0 0 0 8.5 15 H13"
           stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
           vectorEffect="non-scaling-stroke"
+          /* Normalises the path to 100 units so the reveal's dash animation in
+             tokens.css is independent of the radius. */
+          pathLength={100}
         />
       </svg>
     </span>
@@ -272,6 +295,10 @@ function TreeBranch() {
 }
 
 /* ---------------------------------------------------------------- sidebar */
+/* The rail runs on one indentation grid defined in tokens.css: a row's icon
+   box sits at `--rail-row-pad`, so its centre line is `--rail-spine`, and a
+   nested group hangs a hairline spine there and steps its content by
+   `--rail-step`. Nesting is structural CSS — no hard-coded pixel indents. */
 
 // One shared rail row for navigation and workspace disclosure. Hover/focus
 // styling lives in CSS so pointer movement does not trigger React renders.
@@ -298,34 +325,75 @@ function NavRow({
       className="klide-focus-nav-row"
       data-active={active || undefined}
     >
-      <span style={{ width: 16, height: 16, display: "grid", placeItems: "center", flexShrink: 0 }}>
-        {icon}
-      </span>
-      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {label}
-      </span>
+      <span className="klide-focus-nav-icon">{icon}</span>
+      <span className="klide-focus-nav-label">{label}</span>
       {expanded !== undefined && (
-        <svg
-          width="9"
-          height="9"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-          style={{
-            flexShrink: 0,
-            opacity: 0.55,
-            transform: expanded ? "rotate(90deg)" : "none",
-            transition: "transform var(--motion-med) var(--ease-out)",
-          }}
-        >
-          <path d="m9 6 6 6-6 6" />
-        </svg>
+        <span className="klide-focus-nav-chevron" data-expanded={expanded || undefined} aria-hidden>
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        </span>
       )}
     </button>
+  );
+}
+
+/** The sticky project name. Wraps the row rather than being it, so its opaque
+ *  background paints *beneath* the row's own hover/active fill — a pseudo-element
+ *  on the row itself could not, since negative z-index children paint above
+ *  their parent's background, not below it.
+ *
+ *  CSS cannot tell a sticky element that it has stuck, so the pinned hairline
+ *  needs an observer — and it has to watch a zero-size sentinel at the block's
+ *  top rather than the header itself. Observing the header directly (ratio < 1
+ *  against a 1px-shrunk root) reports "stuck" for any header that is merely
+ *  clipped at the *bottom* of the scroller too, so every project below the fold
+ *  wears the pinned hairline while sitting still.
+ *
+ *  The sentinel has one job: it scrolls away. Un-intersecting *and* above the
+ *  scroller's top edge means the header has taken its place; un-intersecting
+ *  below means the block simply has not been reached. */
+function ProjectHead({
+  scrollRoot,
+  children,
+}: {
+  scrollRoot: React.RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}) {
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const [pinned, setPinned] = useState(false);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const root = scrollRoot.current;
+    if (!sentinel || !root) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const rootTop = root.getBoundingClientRect().top;
+        setPinned(!entry.isIntersecting && entry.boundingClientRect.top <= rootTop);
+      },
+      { root, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [scrollRoot]);
+
+  return (
+    <>
+      <div ref={sentinelRef} className="klide-focus-project-sentinel" aria-hidden />
+      <div className="klide-focus-project-head" data-pinned={pinned || undefined}>
+        {children}
+      </div>
+    </>
   );
 }
 
@@ -342,11 +410,14 @@ function ConvoRow({
   onOpen,
   indent = false,
   selected = false,
+  revealDelay,
 }: {
   convo: Conversation;
   onOpen: () => void;
   indent?: boolean;
   selected?: boolean;
+  /** Set only for rows in a tree — a flat search result appears at once. */
+  revealDelay?: string;
 }) {
   const identity = modelIdentity(convo.model);
   const ModelLogo = identity?.Logo;
@@ -357,11 +428,14 @@ function ConvoRow({
       onClick={onOpen}
       title={convo.title}
       className="klide-focus-convo-row"
+      data-nested={indent || undefined}
       data-selected={selected || undefined}
       aria-current={selected ? "page" : undefined}
-      style={{ paddingLeft: indent ? 38 : 10 }}
+      style={
+        revealDelay ? ({ "--rail-reveal-delay": revealDelay } as CSSProperties) : undefined
+      }
     >
-      {indent ? <TreeBranch /> : null}
+      {indent ? <TreeElbow /> : null}
       {ModelLogo ? (
         <span
           className="klide-focus-convo-model"
@@ -378,7 +452,6 @@ function ConvoRow({
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
-          lineHeight: "27px",
         }}
       >
         {convo.title || "Untitled"}
@@ -420,16 +493,57 @@ function providerHistoryKey(project: string, historyProvider: ProviderId): strin
   return `${project}\u0000${historyProvider}`;
 }
 
+/* ── Expand choreography ───────────────────────────────────────────────────
+   Opening a project reveals its tree in two beats: the providers cascade top to
+   bottom, then the conversations beneath them follow. Each row carries its own
+   `--rail-reveal-delay`, computed from its index here and consumed by the
+   keyframes in tokens.css — DOM order drives the cascade, so there is no stack
+   of nth-child rules to keep in sync with the data.
+
+   The steps are much shorter than each row's own animation (see the envelope in
+   tokens.css), so a row starts while the row above it is still settling. That
+   overlap is the whole point: it reads as one wave travelling down the tree.
+   Widen these and the cascade degrades into a queue of separate animations —
+   the choppiness is in the gaps, not in the durations.
+
+   The cap matters: a project with forty conversations must not turn a half-
+   second reveal into a four-second one. Past the cap rows share the last delay
+   and land together. */
+const PROVIDER_REVEAL_STEP_MS = 30;
+const CONVO_REVEAL_STEP_MS = 20;
+/** Beat between the provider wave and the conversation wave. Small on purpose:
+ *  the two should overlap enough to feel continuous while still reading in
+ *  order. */
+const REVEAL_PHASE_GAP_MS = 40;
+const REVEAL_STAGGER_CAP = 12;
+
+/** How many projects the rail lists. The rest are reached through "More", which
+ *  runs the same Open Folder… the macOS File menu does — the rail stays a short
+ *  list of what you are working on rather than a full recents browser. */
+const PROJECT_ROW_LIMIT = 3;
+
+function revealDelay(index: number, stepMs: number, baseMs = 0): string {
+  return `${baseMs + Math.min(index, REVEAL_STAGGER_CAP) * stepMs}ms`;
+}
+
 function ProviderHistoryGroup({
   group,
   expanded,
   selectedConversationId,
+  revealIndex,
+  conversationRevealBase,
   onToggle,
   onOpen,
 }: {
   group: ProviderHistory;
   expanded: boolean;
   selectedConversationId?: string;
+  /** Position in the provider cascade — 0 is the first to appear. */
+  revealIndex: number;
+  /** Delay this group's conversations wait out before their own cascade. Zero
+   *  when only this provider was toggled: nothing else is animating, so the
+   *  click must be answered immediately rather than after a dead pause. */
+  conversationRevealBase: number;
   onToggle: () => void;
   onOpen: (conversation: Conversation) => void;
 }) {
@@ -443,24 +557,28 @@ function ProviderHistoryGroup({
       className="klide-focus-provider-history"
       data-readonly={readOnly || undefined}
       data-contains-selected={containsSelectedConversation || undefined}
+      /* The wrapper carries the delay so its row, its trunk segment and its
+         curve all read the same value. */
+      style={{
+        "--rail-reveal-delay": revealDelay(revealIndex, PROVIDER_REVEAL_STEP_MS),
+      } as CSSProperties}
     >
       <button
         type="button"
         className="klide-focus-provider-history-row"
         onClick={onToggle}
         aria-expanded={expanded}
-        title={`${providerName(group.provider)} · ${countLabel}${readOnly ? " · Read only" : ""}`}
+        /* Read-only is carried by the row's dimmer colour; the reason belongs
+           in the tooltip, not in a badge beside the name. */
+        title={`${providerName(group.provider)} · ${countLabel}${readOnly ? " · read only in Focus" : ""}`}
       >
-        <TreeBranch />
+        <TreeElbow />
         <span className="klide-focus-provider-history-logo" aria-hidden="true">
           <ProviderLogo id={group.provider} size={16} />
         </span>
         <span className="klide-focus-provider-history-name">
           {providerName(group.provider)}
         </span>
-        {readOnly ? (
-          <span className="klide-focus-provider-history-readonly">Read only</span>
-        ) : null}
         <span
           className="klide-focus-provider-history-count"
           aria-label={countLabel}
@@ -484,12 +602,19 @@ function ProviderHistoryGroup({
       </button>
 
       {expanded ? (
-        <div className="klide-focus-convo-tree klide-focus-provider-conversations">
-          {group.conversations.map((conversation) => (
+        /* The container's own delay drives the segment climbing back up to the
+           provider's junction, so the trunk reaches down before the first
+           conversation fades in. Rows then override it with their own. */
+        <div
+          className="klide-focus-provider-conversations"
+          style={{ "--rail-reveal-delay": `${conversationRevealBase}ms` } as CSSProperties}
+        >
+          {group.conversations.map((conversation, index) => (
             <ConvoRow
               key={conversation.id}
               convo={conversation}
               indent
+              revealDelay={revealDelay(index, CONVO_REVEAL_STEP_MS, conversationRevealBase)}
               selected={selectedConversationId === conversation.id}
               onOpen={() => onOpen(conversation)}
             />
@@ -547,7 +672,16 @@ function HistoryReader({
             {conversation.model ? <span>{conversation.model}</span> : null}
             {project ? <span title={projectRoot ?? undefined}>{project}</span> : null}
             {folder ? <span title={conversation.cwd ?? undefined}>{folder}</span> : null}
-            <span>{new Date(conversation.updatedAt).toLocaleString()}</span>
+            {/* When it started, and how long it ran — `updatedAt` alone dated
+                the last token and said nothing about the session's length. */}
+            <span title={`Last activity ${new Date(conversation.updatedAt).toLocaleString()}`}>
+              {new Date(conversationStartedAt(conversation)).toLocaleString()}
+            </span>
+            {conversationDuration(conversation) >= 1000 ? (
+              <span title="Time from the first message to the last">
+                {formatSpan(conversationDuration(conversation))}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -627,6 +761,8 @@ function HistoryReader({
 export function FocusMode({
   workspaceRoot,
   branch,
+  gitChangeCount,
+  gitRefreshToken,
   projects,
   chatActive,
   onSwitchProject,
@@ -635,6 +771,7 @@ export function FocusMode({
   onSubmit,
   onOpenMissionControl,
   onOpenPanel,
+  onOpenSettingsSection,
   onExitFocus,
   renderChat,
   raceTabs,
@@ -650,6 +787,8 @@ export function FocusMode({
   onEffortChange,
   contextWindow,
   onContextWindowChange,
+  requireDiffReview,
+  onRequireDiffReviewChange,
 }: Props) {
   // Conversation groups + the hero footer name self-hosted endpoints through
   // providerName(); subscribing keeps those labels live across a rename.
@@ -667,14 +806,34 @@ export function FocusMode({
     if (activeProjectRoot && !seen.has(activeProjectRoot)) roots.push(activeProjectRoot);
     return roots;
   }, [activeProjectRoot, projects]);
+  // The rail lists only the few projects you are actually moving between — a
+  // long recents list buries the history it is meant to introduce. "More"
+  // unfolds the rest; opening a project that is not among them is the macOS
+  // menu bar's job (File ▸ Open Folder…), not a second picker in here.
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  const visibleProjects = useMemo(() => {
+    if (showAllProjects || focusProjects.length <= PROJECT_ROW_LIMIT) return focusProjects;
+    const shown = focusProjects.slice(0, PROJECT_ROW_LIMIT);
+    // The open project has to be on the list whatever its recency, or the rail
+    // stops describing where you actually are. It takes the lead slot and the
+    // least-recent of the others drops into the hidden tail.
+    if (activeProjectRoot && !shown.includes(activeProjectRoot)) {
+      return [activeProjectRoot, ...shown.slice(0, PROJECT_ROW_LIMIT - 1)];
+    }
+    return shown;
+  }, [activeProjectRoot, focusProjects, showAllProjects]);
+  const hiddenProjectCount = focusProjects.length - visibleProjects.length;
+
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [historyConversation, setHistoryConversation] = useState<Conversation | null>(null);
   // "Ask both" strip composer — local draft, cleared on send.
   const [raceAsk, setRaceAsk] = useState("");
-  const [username, setUsername] = useState<string>("");
-  const [hostname, setHostname] = useState<string>("");
+  const { username, hostname, avatarUrl } = useUserInfo();
   const searchRef = useRef<HTMLInputElement>(null);
+  // The rail's scroller — the sticky project names observe it to know when they
+  // have pinned.
+  const railBodyRef = useRef<HTMLDivElement>(null);
   // Several projects can hold their history open at once. The active project
   // opens itself; the rest remember their state for the session.
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
@@ -682,8 +841,19 @@ export function FocusMode({
   );
   // Absence means "follow the active provider". Explicit booleans preserve
   // the user's disclosure choice independently for every project/provider.
+  // Bumped when the composer strip's branch is clicked, so the git island can
+  // pulse. A counter rather than a boolean: every click has to land, including
+  // two in a row, and the island only cares that the value moved.
+  const [gitPing, setGitPing] = useState(0);
   const [expandedProviderGroups, setExpandedProviderGroups] = useState<Map<string, boolean>>(
     () => new Map()
+  );
+  // Projects whose whole tree is being revealed, so their conversations wait out
+  // the provider cascade. A project drops out once a provider inside it is
+  // toggled on its own — from then on that click is the only thing animating and
+  // must be answered at once.
+  const [cascadingProjects, setCascadingProjects] = useState<Set<string>>(
+    () => new Set(activeProjectRoot ? [activeProjectRoot] : [])
   );
 
   useEffect(() => {
@@ -701,6 +871,13 @@ export function FocusMode({
       next.add(activeProjectRoot);
       return next;
     });
+    // Switching to a project opens its tree, so that reveal is a full cascade.
+    setCascadingProjects((prev) => {
+      if (prev.has(activeProjectRoot)) return prev;
+      const next = new Set(prev);
+      next.add(activeProjectRoot);
+      return next;
+    });
   }, [activeProjectRoot]);
 
   function toggleProject(p: string) {
@@ -708,6 +885,11 @@ export function FocusMode({
       const next = new Set(prev);
       if (next.has(p)) next.delete(p);
       else next.add(p);
+      return next;
+    });
+    setCascadingProjects((prev) => {
+      const next = new Set(prev);
+      next.add(p);
       return next;
     });
   }
@@ -720,16 +902,14 @@ export function FocusMode({
       next.set(key, !isExpanded);
       return next;
     });
+    // This click is now the only thing animating in that project.
+    setCascadingProjects((prev) => {
+      if (!prev.has(project)) return prev;
+      const next = new Set(prev);
+      next.delete(project);
+      return next;
+    });
   }
-
-  useEffect(() => {
-    invoke<{ username: string; hostname: string }>("app_user_info")
-      .then((u) => {
-        setUsername(u.username);
-        setHostname(u.hostname);
-      })
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (searchOpen) searchRef.current?.focus();
@@ -840,10 +1020,38 @@ export function FocusMode({
   return (
     <div className="klide-focus-shell">
       {/* ── Left rail ─────────────────────────────────────────────── */}
-      <aside className="klide-focus-rail" aria-label="Focus navigation">
+      {/* The rail runs to the window's top edge and carries the traffic lights,
+          so it doubles as the window's drag handle — its blank areas move the
+          window the way a Mac sidebar does. Rows and buttons are their own
+          event targets, so they still click through. */}
+      <aside className="klide-focus-rail" aria-label="Focus navigation" data-tauri-drag-region>
+        {/* Brand row doubles as the search row: the field takes the brand
+            slot rather than pushing a new row in, so opening search never
+            moves the list it filters. */}
         <div className="klide-focus-brand">
-          <span className="klide-focus-brand-mark" aria-hidden="true">K</span>
-          <span className="klide-focus-brand-name">Klide</span>
+          {searchOpen ? (
+            <input
+              ref={searchRef}
+              className="klide-focus-brand-search"
+              type="search"
+              name="conversation-search"
+              aria-label="Search conversations"
+              autoComplete="off"
+              spellCheck={false}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setSearchOpen(false);
+                  setQuery("");
+                }
+              }}
+              placeholder="Search conversations…"
+            />
+          ) : (
+            /* Reserved slot — the logo drops in here. */
+            <span className="klide-focus-brand-slot" aria-hidden="true" />
+          )}
           <button
             type="button"
             className="klide-focus-brand-action"
@@ -854,13 +1062,13 @@ export function FocusMode({
               setQuery("");
             }}
           >
-            <SearchIcon />
+            {searchOpen ? <CloseIcon /> : <SearchIcon />}
           </button>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+        <div className="klide-focus-nav-group">
           <NavRow
-            icon={<NewChatIcon />}
+            icon={<NewTaskIcon />}
             label="New task"
             onClick={() => {
               setHistoryConversation(null);
@@ -883,96 +1091,90 @@ export function FocusMode({
               onOpenPanel("orchestrator");
             }}
           />
-        </div>
-
-        {searchOpen && (
-          <input
-            ref={searchRef}
-            className="klide-focus-search"
-            type="search"
-            name="conversation-search"
-            aria-label="Search conversations"
-            autoComplete="off"
-            spellCheck={false}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setSearchOpen(false);
-                setQuery("");
-              }
-            }}
-            placeholder="Search conversations…"
-            style={{
-              margin: "8px 2px 0",
-              padding: "5px 9px",
-              fontSize: 12,
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-              background: "var(--bg-elevated)",
-              color: "var(--fg-strong)",
+          <NavRow
+            icon={<MemoryIcon />}
+            label="Memory"
+            onClick={() => {
+              setHistoryConversation(null);
+              onOpenPanel("memory");
             }}
           />
-        )}
+          <NavRow
+            icon={<SkillsIcon />}
+            label="Skills"
+            onClick={() => {
+              setHistoryConversation(null);
+              onOpenPanel("skills");
+            }}
+          />
+        </div>
 
         {/* Section break — a gradient hairline, not another written label
-            (the same recipe the free-mode rail uses between its zones). It
-            separates the actions above from the workspace list below, so the
-            search field stays attached to what it filters. */}
+            (the same recipe the free-mode rail uses between its zones),
+            separating the actions above from the workspace list below. */}
         <div aria-hidden="true" className="klide-focus-rail-divider" />
 
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        <div className="klide-focus-rail-body" ref={railBodyRef}>
           {searching ? (
             <>
               <SectionLabel>Results</SectionLabel>
               {filtered.length === 0 ? (
-                <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-subtle)" }}>
-                  No conversations match.
-                </div>
+                <p className="klide-focus-rail-empty">No conversations match.</p>
               ) : (
-                filtered.map((c) => (
-                  <ConvoRow
-                    key={c.id}
-                    convo={c}
-                    selected={historyConversation?.id === c.id}
-                    onOpen={() => openHistoryConversation(c)}
-                  />
-                ))
+                <div className="klide-focus-project-list">
+                  {filtered.map((c) => (
+                    <ConvoRow
+                      key={c.id}
+                      convo={c}
+                      selected={historyConversation?.id === c.id}
+                      onOpen={() => openHistoryConversation(c)}
+                    />
+                  ))}
+                </div>
               )}
             </>
           ) : (
             <>
-              <SectionLabel>Projects</SectionLabel>
               {focusProjects.length === 0 && (
-                <div style={{ padding: "4px 10px", fontSize: 12, color: "var(--fg-subtle)" }}>
-                  Open a folder to start.
-                </div>
+                <p className="klide-focus-rail-empty">Open a folder to start.</p>
               )}
-              {focusProjects.map((p) => {
+              <div className="klide-focus-project-list">
+              {visibleProjects.map((p) => {
                 const isActive = p === activeProjectRoot;
                 const isExpanded = expandedProjects.has(p);
                 const history = convosByProject.get(p) ?? [];
                 const providerHistories = providerHistoriesByProject.get(p) ?? [];
                 return (
-                  <div key={p}>
-                    <NavRow
-                      icon={<FolderIcon />}
-                      label={basename(p)}
-                      active={isActive}
-                      expanded={isExpanded}
-                      onClick={() => {
-                        // Switching makes a project current; clicking the
-                        // current one just folds its history open/closed.
-                        if (isActive) toggleProject(p);
-                        else {
-                          setHistoryConversation(null);
-                          onSwitchProject(p);
-                        }
-                      }}
-                    />
+                  <div key={p} className="klide-focus-project">
+                    {/* The project's name pins to the top of the rail while you
+                        read down its history, and hands over when the next
+                        project reaches it — so you always know whose
+                        conversations you are looking at. */}
+                    <ProjectHead scrollRoot={railBodyRef}>
+                      <NavRow
+                        icon={<FolderIcon />}
+                        label={basename(p)}
+                        active={isActive}
+                        expanded={isExpanded}
+                        onClick={() => {
+                          // Switching makes a project current; clicking the
+                          // current one just folds its history open/closed.
+                          if (isActive) toggleProject(p);
+                          else {
+                            setHistoryConversation(null);
+                            onSwitchProject(p);
+                          }
+                        }}
+                      />
+                    </ProjectHead>
                     {isExpanded && history.length > 0 ? (
-                      <div className="klide-focus-provider-groups">
-                        {providerHistories.map((providerHistory) => {
+                      <div
+                        className="klide-focus-provider-groups"
+                        data-contains-selected={
+                          history.some((c) => c.id === historyConversation?.id) || undefined
+                        }
+                      >
+                        {providerHistories.map((providerHistory, providerIndex) => {
                           const key = providerHistoryKey(p, providerHistory.provider);
                           const providerExpanded = providerHistoryExpanded(
                             expandedProviderGroups.get(key),
@@ -986,6 +1188,13 @@ export function FocusMode({
                               group={providerHistory}
                               expanded={providerExpanded}
                               selectedConversationId={historyConversation?.id}
+                              revealIndex={providerIndex}
+                              conversationRevealBase={
+                                cascadingProjects.has(p)
+                                  ? providerHistories.length * PROVIDER_REVEAL_STEP_MS +
+                                    REVEAL_PHASE_GAP_MS
+                                  : 0
+                              }
                               onToggle={() => toggleProviderHistory(p, providerHistory.provider)}
                               onOpen={openHistoryConversation}
                             />
@@ -994,103 +1203,102 @@ export function FocusMode({
                       </div>
                     ) : null}
                     {isExpanded && history.length === 0 ? (
-                      <div style={{ padding: "2px 10px 4px 35px", fontSize: 11.5, color: "var(--fg-subtle)", opacity: 0.72 }}>
+                      <p className="klide-focus-rail-empty" data-nested="true">
                         No conversations yet.
-                      </div>
+                      </p>
                     ) : null}
                   </div>
                 );
               })}
+              {/* Unfolds the rest of the recents. Opening a project that is not
+                  in that list belongs to the macOS menu bar — File ▸ Open
+                  Folder… (⌘O) — so the rail never grows a second picker. */}
+              {hiddenProjectCount > 0 || showAllProjects ? (
+                <button
+                  type="button"
+                  className="klide-focus-more-projects"
+                  aria-expanded={showAllProjects}
+                  onClick={() => setShowAllProjects((shown) => !shown)}
+                >
+                  {showAllProjects ? "Less" : "More"}
+                </button>
+              ) : null}
+              </div>
             </>
           )}
         </div>
 
-        {/* Foot — the rail's utility zone, mirroring the free-mode rail's
-            bottom half: shared destinations as one quiet icon strip (labels
-            live in their tooltips, as they do on the collapsed rail), the
-            layout switch pushed to the far edge, then identity. */}
-        <div className="klide-focus-foot-strip">
-          {(
-            [
-              ["git", "Git", GitIcon],
-              ["memory", "Memory", MemoryIcon],
-              ["skills", "Skills", SkillsIcon],
-              ["settings", "Settings", SettingsIcon],
-            ] as const
-          ).map(([panel, label, Icon]) => (
-            <button
-              key={panel}
-              type="button"
-              className="klide-focus-foot-action"
-              aria-label={label}
-              title={label}
-              onClick={() => {
-                setHistoryConversation(null);
-                onOpenPanel(panel);
-              }}
-            >
-              <Icon />
-            </button>
-          ))}
-          {/* Focus has no status bar; this is the way back to the panel
-              workspace. Set apart at the trailing edge — it changes the shell,
-              the others only open a surface. */}
-          <button
-            type="button"
-            className="klide-focus-foot-action"
-            style={{ marginLeft: "auto" }}
-            aria-label="Leave Focus — Free layout"
-            title="Leave Focus — Free layout"
-            onClick={onExitFocus}
-          >
-            <FreeLayoutIcon />
-          </button>
-        </div>
-
-        {/* Profile foot — local identity, flat avatar (allowed circle).
-            Clicking it opens the same Profile modal the free-mode rail does. */}
-        <button
-          type="button"
-          className="klide-focus-profile"
-          aria-label="Open profile"
-          title="Profile"
-          onClick={() => onOpenPanel("profile")}
-        >
-          <span
-            aria-hidden
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: "50%",
-              flexShrink: 0,
-              display: "grid",
-              placeItems: "center",
-              background: "var(--accent-soft)",
-              color: "var(--fg-strong)",
-              fontSize: 10.5,
+        {/* Destinations — the same set the free-mode rail's bottom zone
+            renders, read from one definition (../railDestinations) so adding
+            one never means editing two rails. Focus draws them as labeled
+            rows like every other row here; Profile is the exception, drawn as
+            the identity card because it has a name and a host to show. */}
+        <div className="klide-rail-dest-group">
+          <NavRow
+            icon={<settingsDest.Icon size={15} strokeWidth={1.7} />}
+            label={settingsDest.label}
+            onClick={() => {
+              setHistoryConversation(null);
+              onOpenPanel("settings");
             }}
-          >
-            {initialsOf(username || "?")}
-          </span>
-          <span style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
-            <span
-              style={{
-                fontSize: 12.5,
-                color: "var(--fg-strong)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
+          />
+          {/* Identity row — the profile card takes the space its name and host
+              need, and the view switch hangs off the ragged right edge. Focus
+              has no status bar, so this is the way back to the panel
+              workspace; it sits apart from the destinations above because it
+              changes the shell rather than opening a surface. */}
+          <div className="klide-rail-identity-row">
+            <button
+              type="button"
+              className="klide-rail-profile"
+              aria-label={`Open ${profileDest.label.toLowerCase()}`}
+              title={profileDest.label}
+              onClick={() => onOpenPanel("profile")}
             >
-              {username || "Local profile"}
-            </span>
-            <span style={{ fontSize: 10.5, color: "var(--fg-subtle)", opacity: 0.72 }}>{hostname}</span>
-          </span>
-        </button>
+              <span className="klide-rail-profile-avatar" aria-hidden>
+                {initialsOf(username || "?")}
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt=""
+                    onError={(event) => { event.currentTarget.style.display = "none"; }}
+                  />
+                ) : null}
+              </span>
+              <span className="klide-rail-profile-identity">
+                <span className="klide-rail-profile-name">{username || "Local profile"}</span>
+                <span className="klide-rail-profile-host">{hostname}</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="klide-rail-view-switch"
+              aria-label="Leave Focus — Free layout"
+              title="Leave Focus — Free layout"
+              onClick={onExitFocus}
+            >
+              <FreeLayoutIcon />
+            </button>
+          </div>
+        </div>
       </aside>
 
       {/* ── Canvas ────────────────────────────────────────────────── */}
-      <main className="klide-focus-main">
+      {/* Its top inset is the title-bar band, so that strip drags the window
+          too — the canvas below it keeps its own clicks. */}
+      <main className="klide-focus-main" data-tauri-drag-region>
+        {workspaceRoot && !chatActive && !historyConversation ? (
+          <FocusGitIsland
+            workspaceRoot={workspaceRoot}
+            branch={branch}
+            changeCount={gitChangeCount}
+            avatarUrl={avatarUrl}
+            profileInitials={initialsOf(username || "?")}
+            refreshToken={gitRefreshToken}
+            pingToken={gitPing}
+            onOpen={() => onOpenPanel("git")}
+          />
+        ) : null}
         {historyConversation ? (
           <HistoryReader
             conversation={historyConversation}
@@ -1240,8 +1448,10 @@ export function FocusMode({
           </div>
         ) : (
           <FocusHome
+            workspaceRoot={workspaceRoot}
             projectName={projectName}
             branch={branch}
+            onPingGit={() => setGitPing((n) => n + 1)}
             recent={projectConvos.slice(0, 3)}
             onOpenConversation={onOpenConversation}
             onSubmit={onSubmit}
@@ -1253,6 +1463,9 @@ export function FocusMode({
             onEffortChange={onEffortChange}
             contextWindow={contextWindow}
             onContextWindowChange={onContextWindowChange}
+            requireDiffReview={requireDiffReview}
+            onRequireDiffReviewChange={onRequireDiffReviewChange}
+            onOpenSettingsSection={onOpenSettingsSection}
           />
         )}
         </div>
@@ -1272,6 +1485,13 @@ type MenuOption = {
   icon?: ReactNode;
   /** Quiet second line under the label. */
   caption?: string;
+  /** Quiet the row (or a whole stack's eyebrow): it exists but isn't usable
+   *  yet — a provider with no API key resolved, for instance. */
+  dimmed?: boolean;
+  /** Turns the row into a way out instead of a choice: it grows a trailing ↗
+   *  and clicking anywhere on it runs this rather than selecting the value.
+   *  Focus uses it to send keyless providers to Settings → API keys. */
+  resolve?: { title: string; run: () => void };
 };
 
 /** Reasoning-effort glyph — the AI panel's reflection-bars language: five
@@ -1292,6 +1512,28 @@ function EffortBars({ level, size = 16 }: { level: number; size?: number }) {
           opacity={level > 0 && i < level ? 0.9 : 0.28}
         />
       ))}
+    </svg>
+  );
+}
+
+/** The "this leads out of here" mark — a small arrow to the top-right, the
+ *  same stroke language as the rail glyphs. Sits at the end of a menu row that
+ *  opens Settings instead of selecting a value. */
+function ArrowUpRightIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M7 17 17 7" />
+      <path d="M8 7h9v9" />
     </svg>
   );
 }
@@ -1340,8 +1582,12 @@ function InlineMenu({
   mono?: boolean;
   /** Optional glyph before the value (the provider trigger's logo). */
   leading?: ReactNode;
-  /** The picker header: framed icon + title + quiet caption. */
-  header: { icon: ReactNode; title: string; caption: string };
+  /** The picker header: framed icon + title + quiet caption. Omit it when the
+   *  trigger already names what the menu is — the provider picker opens right
+   *  under a logo and a provider name, so a "Provider / where this runs" block
+   *  is a sentence you've already read. Skipping it also lets the glass show
+   *  through the whole card instead of being capped by a tinted bar. */
+  header?: { icon: ReactNode; title: string; caption: string };
   width?: number;
   /** "ring" renders the AI panel's context-meter circle as the trigger —
    *  28px round button, border track ring, accent arc — instead of text.
@@ -1510,7 +1756,7 @@ function InlineMenu({
           ref={menuRef}
           role="listbox"
           aria-label={label}
-          className="popover-enter"
+          className="popover-enter menu-glass"
           style={{
             position: "fixed",
             bottom: menuPos.bottom,
@@ -1519,18 +1765,14 @@ function InlineMenu({
             maxHeight: 340,
             display: "flex",
             flexDirection: "column",
-            background: "var(--panel-glass)",
-            border: "1px solid var(--panel-border)",
-            borderRadius: "var(--radius-md)",
-            boxShadow: "var(--panel-shadow)",
-            backdropFilter: "blur(22px) saturate(1.18)",
-            WebkitBackdropFilter: "blur(22px) saturate(1.18)",
             overflow: "hidden",
             zIndex: Z.popover,
           }}
         >
           {/* Header — same frame as the ModelPicker's: a bordered icon tile,
-              the menu's name, and a quiet caption. */}
+              the menu's name, and a quiet caption. Menus whose trigger already
+              names them go without, and open straight onto their options. */}
+          {header && (
           <div
             style={{
               flexShrink: 0,
@@ -1573,7 +1815,8 @@ function InlineMenu({
               </div>
             </div>
           </div>
-          <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 4 }}>
+          )}
+          <div className="menu-scroll" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 5 }}>
             {options.map((o, idx) => {
               if (o.heading) {
                 return (
@@ -1586,6 +1829,7 @@ function InlineMenu({
                       letterSpacing: "0.07em",
                       textTransform: "uppercase",
                       color: "var(--fg-dim)",
+                      opacity: o.dimmed ? 0.5 : 1,
                     }}
                   >
                     {o.label}
@@ -1600,8 +1844,13 @@ function InlineMenu({
                   type="button"
                   role="option"
                   aria-selected={active}
+                  title={o.resolve?.title}
                   onClick={() => {
                     setOpen(false);
+                    if (o.resolve) {
+                      o.resolve.run();
+                      return;
+                    }
                     onSelect(o.value);
                   }}
                   onMouseEnter={() => setFocusIdx(idx)}
@@ -1613,9 +1862,9 @@ function InlineMenu({
                     border: "none",
                     borderRadius: "var(--radius-sm)",
                     background: active
-                      ? "color-mix(in srgb, var(--accent-soft) 80%, transparent)"
+                      ? "var(--menu-row-active)"
                       : focused
-                        ? "var(--bg-hover)"
+                        ? "var(--menu-row-hover)"
                         : "transparent",
                     color: "var(--fg-strong)",
                     textAlign: "left",
@@ -1633,6 +1882,8 @@ function InlineMenu({
                           display: "grid",
                           placeItems: "center",
                           color: "var(--fg-subtle)",
+                          opacity: o.dimmed ? 0.4 : 1,
+                          transition: "opacity var(--motion-fast) var(--ease-out)",
                         }}
                       >
                         {o.icon}
@@ -1648,10 +1899,20 @@ function InlineMenu({
                         fontSize: 12,
                         fontWeight: active ? 550 : 500,
                         fontFamily: mono ? "var(--font-mono)" : "inherit",
+                        opacity: o.dimmed ? 0.45 : 1,
+                        transition: "opacity var(--motion-fast) var(--ease-out)",
                       }}
                     >
                       {o.label}
                     </span>
+                    {o.resolve && (
+                      <span
+                        className="menu-leadout"
+                        style={{ flexShrink: 0, display: "grid", placeItems: "center" }}
+                      >
+                        <ArrowUpRightIcon />
+                      </span>
+                    )}
                   </div>
                   {o.caption && (
                     <div
@@ -1682,20 +1943,58 @@ function InlineMenu({
 // Providers the hero can start a conversation on — the same groups the AI
 // panel's picker shows, minus the not-yet-available rows. Each row carries
 // its provider mark, ModelPicker-style.
-const PROVIDER_OPTIONS: MenuOption[] = PROVIDER_GROUPS.flatMap((group) => {
-  // Focus currently supports native API/local runs only. Delegate CLIs mount a
-  // separate PTY surface and stay out of this picker until that path is stable.
-  const items = group.items.filter((item) => item.available && !isDelegateProvider(item.id));
-  if (items.length === 0) return [];
-  return [
-    { label: group.label, value: `__heading_${group.label}`, heading: true },
-    ...items.map((item) => ({
-      label: item.name,
-      value: item.id,
-      icon: <ProviderLogo id={item.id} size={17} />,
-    })),
-  ];
-});
+//
+// `custom` adds the "Self-hosted" stack, so an endpoint configured in Settings
+// can start a Focus conversation without going through a standard AI panel
+// first. Those rows are never quieted: a self-hosted endpoint may need no auth
+// at all, and the ones that do resolve a `${VAR}` reference outside the
+// keychain — "no key" there is not the same signal it is for a hosted API.
+//
+// A provider in `keyless` has no key Rust can resolve, so it can't run: the row
+// is quieted and routes to Settings → API keys instead of being selectable, and
+// a stack whose every row is keyless is quieted along with them.
+export function buildProviderOptions(
+  custom: CustomProvider[],
+  keyless: ReadonlySet<string>,
+  onOpenKeySettings: () => void,
+): MenuOption[] {
+  return providerGroupsWithCustom(custom).flatMap((group) => {
+    // Focus currently supports native API/local runs only. Delegate CLIs mount
+    // a separate PTY surface and stay out of this picker until that path is
+    // stable.
+    const items = group.items.filter((item) => item.available && !isDelegateProvider(item.id));
+    if (items.length === 0) return [];
+    const rows: MenuOption[] = items.map((item) => {
+      const missingKey = keyless.has(item.id) && !isCustomProvider(item.id);
+      return {
+        label: item.name,
+        value: item.id,
+        icon: <ProviderLogo id={item.id} size={17} />,
+        dimmed: missingKey,
+        // No caption: the quieted row plus its ↗ already say "not set up, and
+        // here's the way out". A sentence under every hosted provider would
+        // turn a glance into a read.
+        resolve: missingKey
+          ? { title: `${item.name} has no API key — open Settings`, run: onOpenKeySettings }
+          : undefined,
+      };
+    });
+    return [
+      {
+        label: group.label,
+        value: `__heading_${group.label}`,
+        heading: true,
+        dimmed: rows.every((row) => row.dimmed),
+      },
+      ...rows,
+    ];
+  });
+}
+
+/** Hosted providers offered in the picker — the rows worth probing for a key. */
+const KEYED_PROVIDERS = PROVIDER_GROUPS.flatMap((group) => group.items).filter(
+  (item) => item.available && providerNeedsApiKey(item.id),
+);
 
 const EFFORT_LEVELS: { label: string; value: string | undefined; level: number; caption: string }[] = [
   { label: "Auto", value: undefined, level: 0, caption: "Provider default" },
@@ -1807,9 +2106,229 @@ function StarterIcon({ kind }: { kind: StarterKind }) {
   );
 }
 
+const FOCUS_MODE_CHOICES: {
+  key: string;
+  mode: AgentMode;
+  review: boolean | null;
+  label: string;
+  description: string;
+}[] = [
+  { key: "chat", mode: "chat", review: null, label: "Chat", description: "No tools" },
+  { key: "plan", mode: "plan", review: null, label: "Plan", description: "Read-only tools" },
+  { key: "goal-review", mode: "goal", review: true, label: "Goal · review", description: "Approve each edit" },
+  { key: "goal-auto", mode: "goal", review: false, label: "Goal · auto-accept", description: "Apply edits directly" },
+];
+
+/** Focus home's counterpart to the live AI panel's + menu. It persists the
+ *  selected mode before the first message hands off to AiPanel, so the first
+ *  run and every later turn share one mode/review setting. */
+function FocusAddMenu({
+  workspaceRoot,
+  mode,
+  supportsTools,
+  requireDiffReview,
+  onModeChange,
+  onRequireDiffReviewChange,
+  onAddFile,
+}: {
+  workspaceRoot: string | null;
+  mode: AgentMode;
+  supportsTools: boolean;
+  requireDiffReview: boolean;
+  onModeChange: (mode: AgentMode) => void;
+  onRequireDiffReviewChange: (required: boolean) => void;
+  onAddFile: (path: string) => void;
+}) {
+  const [view, setView] = useState<"actions" | "files">("actions");
+  const [files, setFiles] = useState<string[] | null>(null);
+  const [fileQuery, setFileQuery] = useState("");
+  const fileSearchRef = useRef<HTMLInputElement>(null);
+  const {
+    open,
+    pos,
+    triggerRef,
+    menuRef,
+    openMenu,
+    close,
+  } = usePortalMenu({
+    closeOnOutsideClick: true,
+    computePos: (rect) => {
+      const width = 238;
+      return {
+        bottom: Math.round(window.innerHeight - rect.top + 8),
+        left: Math.round(Math.min(Math.max(8, rect.left), window.innerWidth - width - 8)),
+      };
+    },
+  });
+
+  useEffect(() => {
+    setFiles(null);
+    setFileQuery("");
+    setView("actions");
+    close();
+  }, [workspaceRoot, close]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") close();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, close]);
+
+  async function showFiles() {
+    if (!workspaceRoot) return;
+    setView("files");
+    setFileQuery("");
+    requestAnimationFrame(() => fileSearchRef.current?.focus());
+    if (files !== null) return;
+    try {
+      setFiles(await listWorkspaceFiles(workspaceRoot));
+    } catch {
+      setFiles([]);
+    }
+  }
+
+  function toggle() {
+    if (open) {
+      close();
+      return;
+    }
+    setView("actions");
+    openMenu();
+  }
+
+  const effectiveMode = !supportsTools && mode === "goal" ? "chat" : mode;
+  const activeKey = effectiveMode === "goal"
+    ? requireDiffReview ? "goal-review" : "goal-auto"
+    : effectiveMode;
+  const matchingFiles = (files ?? [])
+    .filter((path) => !fileQuery || isSubsequence(fileQuery, path))
+    .slice(0, 12);
+
+  return (
+    <div style={{ display: "flex", flexShrink: 0 }}>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={toggle}
+        title="Add files and more"
+        aria-label="Add files and choose a mode"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="klide-focus-add"
+        data-open={open || undefined}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+      </button>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label={view === "files" ? "Add a file" : "Add files and choose a mode"}
+          className="popover-enter menu-glass klide-focus-add-menu"
+          style={{ left: pos.left, bottom: pos.bottom, zIndex: Z.popover }}
+        >
+          {view === "files" ? (
+            <>
+              <div className="klide-focus-add-menu-header">
+                <button type="button" onClick={() => setView("actions")} aria-label="Back to actions">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="m15 18-6-6 6-6" />
+                  </svg>
+                </button>
+                <input
+                  ref={fileSearchRef}
+                  value={fileQuery}
+                  onChange={(e) => setFileQuery(e.target.value)}
+                  placeholder="Find a workspace file…"
+                  aria-label="Find a workspace file"
+                />
+              </div>
+              <div className="klide-focus-add-file-list">
+                {files === null ? (
+                  <div className="klide-focus-add-empty">Loading files…</div>
+                ) : matchingFiles.length === 0 ? (
+                  <div className="klide-focus-add-empty">No matching files</div>
+                ) : matchingFiles.map((path) => (
+                  <button
+                    key={path}
+                    type="button"
+                    role="menuitem"
+                    title={path}
+                    onClick={() => {
+                      close();
+                      onAddFile(path);
+                    }}
+                  >
+                    {path}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                className="klide-focus-add-menu-row"
+                disabled={!workspaceRoot}
+                onClick={() => void showFiles()}
+              >
+                <span>Add file</span>
+                <span className="klide-focus-add-menu-meta">@</span>
+              </button>
+              <div className="klide-focus-add-menu-divider" />
+              {FOCUS_MODE_CHOICES.map((choice) => {
+                const disabled = choice.mode === "goal" && !supportsTools;
+                const active = choice.key === activeKey;
+                return (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={active}
+                    disabled={disabled}
+                    title={disabled ? "This model cannot use edit tools" : choice.description}
+                    className="klide-focus-add-menu-row"
+                    onClick={() => {
+                      if (disabled) return;
+                      onModeChange(choice.mode);
+                      if (choice.mode === "goal" && choice.review !== null) {
+                        onRequireDiffReviewChange(choice.review);
+                      }
+                      close();
+                    }}
+                  >
+                    <span>
+                      {choice.label}
+                      <small>{choice.description}</small>
+                    </span>
+                    {active ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </>
+          )}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
 function FocusHome({
+  workspaceRoot,
   projectName,
   branch,
+  onPingGit,
   recent,
   onOpenConversation,
   onSubmit,
@@ -1821,9 +2340,16 @@ function FocusHome({
   onEffortChange,
   contextWindow,
   onContextWindowChange,
+  requireDiffReview,
+  onRequireDiffReviewChange,
+  onOpenSettingsSection,
 }: {
+  workspaceRoot: string | null;
   projectName: string | null;
   branch: string | null;
+  /** Draw the eye to the git island — the branch in the context strip is the
+   *  one thing in there that has somewhere to point. */
+  onPingGit: () => void;
   recent: Conversation[];
   onOpenConversation: (convo: Conversation) => void;
   onSubmit: (text: string) => void;
@@ -1835,18 +2361,63 @@ function FocusHome({
   onEffortChange: (effort: string | undefined) => void;
   contextWindow: number | undefined;
   onContextWindowChange: (window: number | undefined) => void;
+  requireDiffReview: boolean;
+  onRequireDiffReviewChange: (required: boolean) => void;
+  onOpenSettingsSection: (section: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
+  const [agentMode, setAgentMode] = useState<AgentMode>(
+    () => normalizeAgentMode(localStorage.getItem("klide.agentMode"))
+  );
+  const [supportsTools, setSupportsTools] = useState(true);
   const taRef = useRef<HTMLTextAreaElement>(null);
   // The model list for the chosen provider — the same discovery command the
   // AI panel and Settings use. Falls back to the provider's default so the
   // menu is never empty while a server is down.
   const [models, setModels] = useState<string[]>([]);
+  // Hosted providers with no key Rust can resolve. Probed once per mount —
+  // opening Settings unmounts Focus, so coming back re-probes and a provider
+  // you just configured stops reading as keyless. A failed probe leaves the
+  // row alone rather than quieting a provider that might work.
+  const [keylessProviders, setKeylessProviders] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
 
   useEffect(() => {
     let cancelled = false;
-    const fallback = [model, DEFAULT_MODELS[provider]].filter(Boolean) as string[];
+    void Promise.all(
+      KEYED_PROVIDERS.map(async (item) => {
+        try {
+          const status = await readProviderKeyStatus(item.id);
+          return status.hasKey ? null : item.id;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((probed) => {
+      if (!cancelled) setKeylessProviders(new Set(probed.filter((id): id is ProviderId => !!id)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Self-hosted endpoints, from the shared store — it refreshes on mount and
+  // republishes on add/rename/remove, so the stack here matches Settings
+  // without leaving Focus.
+  const customProviders = useCustomProviders();
+  const providerMenuOptions = useMemo(
+    () => buildProviderOptions(customProviders, keylessProviders, () => onOpenSettingsSection("api")),
+    [customProviders, keylessProviders, onOpenSettingsSection],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    // defaultModelForProvider resolves a self-hosted id through the custom
+    // store, so an endpoint's pinned default is offered even if /models is
+    // unreachable.
+    const fallback = [model, defaultModelForProvider(provider)].filter(Boolean) as string[];
     setModels(Array.from(new Set(fallback)));
     listProviderModels(provider)
       .then((list) => {
@@ -1862,6 +2433,20 @@ function FocusHome({
   }, [provider]);
 
   useEffect(() => {
+    let cancelled = false;
+    queryModelSupportsTools(provider, model)
+      .then((supported) => {
+        if (!cancelled) setSupportsTools(supported);
+      })
+      .catch(() => {
+        if (!cancelled) setSupportsTools(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, model]);
+
+  useEffect(() => {
     taRef.current?.focus();
   }, []);
 
@@ -1870,6 +2455,26 @@ function FocusHome({
     if (!text) return;
     setDraft("");
     onSubmit(text);
+  }
+
+  function selectAgentMode(next: AgentMode) {
+    setAgentMode(next);
+    localStorage.setItem("klide.agentMode", next);
+  }
+
+  function addFile(path: string) {
+    const textarea = taRef.current;
+    const caret = textarea?.selectionStart ?? draft.length;
+    const before = draft.slice(0, caret);
+    const after = draft.slice(caret);
+    const prefix = before.length === 0 || before.endsWith(" ") ? "" : " ";
+    const inserted = `${before}${prefix}@${path} `;
+    const next = inserted + after;
+    setDraft(next);
+    requestAnimationFrame(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(inserted.length, inserted.length);
+    });
   }
 
   const canSend = draft.trim().length > 0;
@@ -1931,15 +2536,15 @@ function FocusHome({
               {projectName}
             </span>
           )}
-          <span>
-            <LocalIcon />
-            Local
-          </span>
           {branch && (
-            <span>
+            <button
+              type="button"
+              onClick={onPingGit}
+              title={`On ${branch} — show me the git panel`}
+            >
               <BranchIcon />
               {branch}
-            </span>
+            </button>
           )}
         </div>
 
@@ -1965,16 +2570,20 @@ function FocusHome({
 
           <div className="klide-focus-composer-footer">
             <div className="klide-focus-provider-control">
+              <FocusAddMenu
+                workspaceRoot={workspaceRoot}
+                mode={agentMode}
+                supportsTools={supportsTools}
+                requireDiffReview={requireDiffReview}
+                onModeChange={selectAgentMode}
+                onRequireDiffReviewChange={onRequireDiffReviewChange}
+                onAddFile={addFile}
+              />
               <InlineMenu
                 label="Provider"
                 display={providerName(provider)}
                 leading={<ProviderLogo id={provider} size={13} />}
-                header={{
-                  icon: <ProviderLogo id={provider} size={15} />,
-                  title: "Provider",
-                  caption: "Where this conversation runs",
-                }}
-                options={PROVIDER_OPTIONS}
+                options={providerMenuOptions}
                 selected={provider}
                 onSelect={(v) => {
                   if (typeof v === "string" && !v.startsWith("__heading_")) {
@@ -2014,7 +2623,13 @@ function FocusHome({
                 header={{
                   icon: <ContextGaugeIcon />,
                   title: "Context window",
-                  caption: "Override the auto-detected window",
+                  // Klide can't set the window on a self-hosted OpenAI-wire
+                  // endpoint — the server owns it (num_ctx in a Modelfile, and
+                  // so on). Say so here rather than let the override read as
+                  // if it reached the server. Same signal the AI panel gives.
+                  caption: isCustomProvider(provider)
+                    ? "Set server-side for a self-hosted endpoint"
+                    : "Override the auto-detected window",
                 }}
                 width={200}
                 options={CONTEXT_OPTIONS}
