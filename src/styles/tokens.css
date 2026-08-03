@@ -5125,6 +5125,9 @@ button:focus-visible .menu-leadout {
   overflow: hidden;
   position: relative;
   background: transparent;
+  /* Same rounded top as the panel it holds, so the clip can never square off a
+     corner the surface means to round. */
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   opacity: 0;
   /* Hidden rather than merely flat when closed, so the shell's textarea leaves
      the tab order. The flip is delayed by the slide's duration, so closing is
@@ -5153,12 +5156,16 @@ button:focus-visible .menu-leadout {
 }
 
 /* Holds the panel at its settled height while the dock's own box animates, so
-   the terminal is uncovered from the top down instead of being compressed. */
+   the terminal is uncovered from the top down instead of being compressed.
+   The inset is what lets the panel read as a rounded card: full-bleed, its
+   corners sit in the last few pixels of the window edge against a background
+   they barely differ from, and there is nothing to see. */
 .klide-focus-terminal-dock-inner {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding: 0 10px 10px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6305,6 +6312,10 @@ button:focus-visible .menu-leadout {
      either: off-brand, and the webview bug that hides focused floating
      panels behind it. */
   background: transparent;
+  /* Matches TerminalPanel's own rounded top corners. Needed here even though
+     this layer paints nothing: a box-shadow follows the BORDER box, so a square
+     one would cast a faint square outline around a rounded surface. */
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   box-shadow: 0 -18px 44px color-mix(in srgb, var(--fg-strong) 5%, transparent);
   /* z-index comes inline from zLayers.ts (Z.dock) */
   /* Materialize, don't truck in: a short rise while the whole drawer

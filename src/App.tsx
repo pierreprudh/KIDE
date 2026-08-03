@@ -2342,13 +2342,6 @@ function App() {
                             const canvas = e.currentTarget.parentElement?.parentElement;
                             beginTerminalDockResize(e, canvas?.clientHeight);
                           }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.background =
-                              "linear-gradient(to bottom, var(--accent-soft), transparent)";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.background = "transparent";
-                          }}
                           style={{
                             position: "absolute",
                             top: 0,
@@ -2371,6 +2364,7 @@ function App() {
                             key="focus-terminal"
                             fill
                             visible
+                            inset
                             theme={theme}
                             height={terminalRect.h}
                             workspaceRoot={workspaceRoot}
@@ -2875,13 +2869,6 @@ function App() {
                     aria-orientation="horizontal"
                     aria-label="Resize terminal"
                     onMouseDown={beginTerminalDockResize}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background =
-                        "linear-gradient(to bottom, var(--accent-soft), transparent)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                    }}
                     style={{
                       position: "absolute",
                       top: 0,

@@ -26,11 +26,20 @@ type Props = {
   height: number;
   workspaceRoot: string | null;
   fill?: boolean;
+  /** The host insets this panel, so it reads as a floating card: all four
+   *  corners round and the hairline closes all the way round. Full-bleed hosts
+   *  leave it off — their bottom edge is the window's. */
+  inset?: boolean;
   /** Move this terminal to Focus, where it docks under the canvas. Omitted
    *  where that would be circular — Focus's own dock — and on the
    *  grid/floating hosts, which are a different layout choice entirely. */
   onOpenInFocus?: () => void;
 };
+
+/** The panes' horizontal padding, and therefore the column every header zone
+ *  aligns its text to. One constant because the alignment IS the relationship:
+ *  change it in one place and the tabs drift off their terminals. */
+const TERMINAL_INSET = 10;
 
 const ICON = {
   width: 13,
@@ -163,7 +172,7 @@ function TerminalTabButton({
     letterSpacing: "-0.01em",
     fontWeight: active ? 550 : 400,
     color: active ? "var(--terminal-fg)" : "var(--terminal-muted)",
-    padding: "3px 2px 3px 6px",
+    padding: "3px 2px 3px 0",
     transition: "color var(--motion-med) var(--ease-out)",
   } as const;
   return (
@@ -202,7 +211,7 @@ function TerminalTabButton({
         style={{
           width: 16,
           height: 16,
-          marginRight: 4,
+          marginRight: 8,
           border: "none",
           background: "transparent",
           padding: 0,
@@ -363,7 +372,7 @@ function TerminalPane({
         // Tight: the shell's own left margin is already whitespace, so a wide
         // gutter on top of it just wastes rows and columns. No top-fade mask
         // either — it cost a compositing layer per pane for a 12px flourish.
-        padding: "4px 10px 6px",
+        padding: `4px ${TERMINAL_INSET}px 6px`,
         // Ghostty's unfocused-split dim, dialled way down: enough to tell you
         // where the keyboard is, not enough to read as disabled.
         opacity: dimmed ? 0.94 : 1,
@@ -380,6 +389,7 @@ export function TerminalPanel({
   height,
   workspaceRoot,
   fill,
+  inset,
   onOpenInFocus,
 }: Props) {
   const [focused, setFocused] = useState(false);
@@ -446,9 +456,23 @@ export function TerminalPanel({
         // just a mismatched strip above the output. No backdrop blur ever
         // either: off-brand, and the webview bug that hides floating panels.
         background: "var(--terminal-bg)",
-        // The top hairline carries focus: it warms to the accent while you're
-        // typing here and settles back when focus leaves. One 1px signal, no
-        // ring, no badge.
+        // Rounded all the way round when the host insets it; otherwise only the
+        // two corners not sitting on the window's own edge. Note the corners are
+        // drawn where no xterm canvas reaches (the header, and the panes'
+        // padding) — a composited canvas can ignore an ancestor's radius clip
+        // in this webview, so the shape is kept clear of it rather than relying
+        // on `overflow: hidden` to cut it.
+        borderRadius: inset
+          ? "var(--radius-lg)"
+          : "var(--radius-lg) var(--radius-lg) 0 0",
+        // A hairline on the three exposed sides. The sides are what make the
+        // rounded corners legible: the terminal surface sits ~4/255 per channel
+        // off the canvas behind it, so the corner shape alone has nothing to
+        // read against — the line is the edge, the radius just bends it.
+        //
+        // The top of that line also carries focus: it warms to the accent while
+        // you're typing here and settles back when focus leaves. One 1px
+        // signal, no ring, no badge.
         borderTop: visible
           ? `1px solid ${
               focused
@@ -456,6 +480,10 @@ export function TerminalPanel({
                 : "var(--terminal-border)"
             }`
           : "1px solid transparent",
+        borderLeft: visible ? "1px solid var(--terminal-border)" : "1px solid transparent",
+        borderRight: visible ? "1px solid var(--terminal-border)" : "1px solid transparent",
+        borderBottom:
+          inset && visible ? "1px solid var(--terminal-border)" : "1px solid transparent",
         transition:
           "height 240ms var(--ease-soft), opacity 180ms var(--ease-out), border-color 180ms var(--ease-out), background 180ms var(--ease-out)",
         display: "flex",
@@ -466,16 +494,19 @@ export function TerminalPanel({
           and no inset highlight to lift a strip that no longer needs lifting.
           What's left is words, four quiet glyphs, and one fading hairline.
 
-          Split, the header splits with it: each zone is `flex: 1` either side
-          of a 1px rule, exactly like the panes below, so a tab sits over the
-          terminal it names instead of queueing up beside its neighbour. */}
+          Split, the header splits with it. The geometry is shared with the
+          panes rather than approximated: no padding on this row, zones that are
+          `flex: 1`, and a bare 1px divider — the same three rules the pane row
+          below uses, so the two dividers land on the exact same pixel. Each
+          zone then carries TERMINAL_INSET, which is the panes' own horizontal
+          padding, so a tab's text starts on the same column as the glyphs
+          underneath it. */}
       <div
         style={{
           position: "relative",
           display: "flex",
           alignItems: "stretch",
           height: 26,
-          padding: "0 4px 0 6px",
           flexShrink: 0,
         }}
       >
@@ -489,6 +520,7 @@ export function TerminalPanel({
             minWidth: 0,
             overflowX: "auto",
             scrollbarWidth: "none",
+            paddingLeft: TERMINAL_INSET,
             // Only the last zone reserves room for the pinned actions.
             paddingRight: split ? 0 : actionsWidth,
           }}
@@ -516,8 +548,8 @@ export function TerminalPanel({
               style={{
                 width: 1,
                 flexShrink: 0,
-                margin: "0 6px",
-                background: "var(--terminal-border)",
+                background:
+                  "linear-gradient(to bottom, transparent 0%, var(--terminal-border) 45%, var(--terminal-border) 100%)",
               }}
             />
             <div
@@ -526,6 +558,7 @@ export function TerminalPanel({
                 alignItems: "center",
                 flex: 1,
                 minWidth: 0,
+                paddingLeft: TERMINAL_INSET,
                 // Keeps a long process name from running under the actions.
                 paddingRight: actionsWidth,
               }}
@@ -582,8 +615,8 @@ export function TerminalPanel({
             aria-hidden
             style={{
               position: "absolute",
-              left: 6,
-              right: 4,
+              left: TERMINAL_INSET,
+              right: TERMINAL_INSET,
               bottom: 0,
               height: 1,
               background:
@@ -613,7 +646,11 @@ export function TerminalPanel({
                 style={{
                   width: 1,
                   flexShrink: 0,
-                  background: "var(--terminal-border)",
+                  // Fades out at both ends rather than running corner to
+                  // corner — the same softening the header hairline uses, and
+                  // it keeps the rule off the rounded bottom corners.
+                  background:
+                    "linear-gradient(to bottom, var(--terminal-border) 0%, var(--terminal-border) 78%, transparent 100%)",
                 }}
               />
               <TerminalPane
