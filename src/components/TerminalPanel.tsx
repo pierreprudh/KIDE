@@ -148,36 +148,52 @@ function TerminalTabButton({
 }: {
   label: string;
   active: boolean;
-  onSelect: () => void;
+  /** Absent for the split pane's own tab: it already sits over the pane it
+   *  names, so there is nothing for a click to select. It renders as a plain
+   *  label then, rather than advertising an action it doesn't have. */
+  onSelect?: () => void;
   onClose: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const labelStyle = {
+    border: "none",
+    background: "transparent",
+    font: "inherit",
+    fontSize: 11.5,
+    letterSpacing: "-0.01em",
+    fontWeight: active ? 550 : 400,
+    color: active ? "var(--terminal-fg)" : "var(--terminal-muted)",
+    padding: "3px 2px 3px 6px",
+    transition: "color var(--motion-med) var(--ease-out)",
+  } as const;
   return (
     <span
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ display: "inline-flex", alignItems: "center", gap: 1, flexShrink: 0 }}
+      style={{ display: "inline-flex", alignItems: "center", gap: 1, flexShrink: 0, minWidth: 0 }}
     >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={active}
-        onClick={onSelect}
-        style={{
-          border: "none",
-          background: "transparent",
-          font: "inherit",
-          fontSize: 11.5,
-          letterSpacing: "-0.01em",
-          fontWeight: active ? 550 : 400,
-          color: active ? "var(--terminal-fg)" : "var(--terminal-muted)",
-          padding: "3px 2px 3px 6px",
-          cursor: "pointer",
-          transition: "color var(--motion-med) var(--ease-out)",
-        }}
-      >
-        {label}
-      </button>
+      {onSelect ? (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={active}
+          onClick={onSelect}
+          style={{ ...labelStyle, cursor: "pointer" }}
+        >
+          {label}
+        </button>
+      ) : (
+        <span
+          style={{
+            ...labelStyle,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
+        </span>
+      )}
       <button
         type="button"
         onClick={onClose}
@@ -403,6 +419,12 @@ export function TerminalPanel({
   const activeId = terminals.activeId;
   const splitId = terminals.splitId;
   const split = splitId !== null;
+  const splitTab = splitId ? terminals.tabs.find((tab) => tab.id === splitId) ?? null : null;
+  // The split's tab moves out of the strip and over its own pane, so the strip
+  // is left with the tabs the primary pane can actually show.
+  const primaryTabs = terminals.tabs.filter((tab) => tab.id !== splitId);
+  // 24px buttons with 2px gaps: split + collapse, plus expand where it exists.
+  const actionsWidth = (onOpenInFocus ? 3 : 2) * 24 + (onOpenInFocus ? 2 : 1) * 2 + 6;
 
   return (
     <div
@@ -442,13 +464,16 @@ export function TerminalPanel({
     >
       {/* Header — the tabs ARE the title now, so there's no "Terminal" label
           and no inset highlight to lift a strip that no longer needs lifting.
-          What's left is words, four quiet glyphs, and one fading hairline. */}
+          What's left is words, four quiet glyphs, and one fading hairline.
+
+          Split, the header splits with it: each zone is `flex: 1` either side
+          of a 1px rule, exactly like the panes below, so a tab sits over the
+          terminal it names instead of queueing up beside its neighbour. */}
       <div
         style={{
           position: "relative",
           display: "flex",
-          alignItems: "center",
-          gap: 4,
+          alignItems: "stretch",
           height: 26,
           padding: "0 4px 0 6px",
           flexShrink: 0,
@@ -460,16 +485,19 @@ export function TerminalPanel({
           style={{
             display: "flex",
             alignItems: "center",
+            flex: 1,
             minWidth: 0,
             overflowX: "auto",
             scrollbarWidth: "none",
+            // Only the last zone reserves room for the pinned actions.
+            paddingRight: split ? 0 : actionsWidth,
           }}
         >
-          {terminals.tabs.map((tab) => (
+          {primaryTabs.map((tab) => (
             <TerminalTabButton
               key={tab.id}
               label={tab.title}
-              active={tab.id === activeId || tab.id === splitId}
+              active={tab.id === activeId}
               onSelect={() => selectTerminal(tab.id)}
               onClose={() => closeTerminal(tab.id)}
             />
@@ -478,7 +506,52 @@ export function TerminalPanel({
             <PlusIcon />
           </HeaderButton>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: "auto" }}>
+        {splitTab && (
+          <>
+            {/* Continues the panes' divider up through the header — one line,
+                not two, so the split reads as two columns rather than a strip
+                sitting on top of them. */}
+            <div
+              aria-hidden
+              style={{
+                width: 1,
+                flexShrink: 0,
+                margin: "0 6px",
+                background: "var(--terminal-border)",
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                flex: 1,
+                minWidth: 0,
+                // Keeps a long process name from running under the actions.
+                paddingRight: actionsWidth,
+              }}
+            >
+              <TerminalTabButton
+                label={splitTab.title}
+                active
+                onClose={() => closeTerminal(splitTab.id)}
+              />
+            </div>
+          </>
+        )}
+        {/* Panel-level actions, pinned to the edge rather than laid out as a
+            third column — as a flex sibling they'd steal width from the right
+            zone and drag the header's divider out of line with the panes'. */}
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            right: 4,
+            display: "flex",
+            alignItems: "center",
+            gap: 2,
+          }}
+        >
           <HeaderButton
             onClick={() => toggleSplitTerminal()}
             label={split ? "Close the split" : "Split the terminal"}
