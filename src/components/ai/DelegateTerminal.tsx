@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { ProviderId } from "../../agent/types";
-import { cssVar } from "./utils";
+import { terminalLook } from "../../terminalTheme";
 import { notify } from "../../toast";
 import { attachDelegatePty, resizeDelegatePty, writeDelegatePty } from "../../ipc/delegatePty";
 
@@ -84,12 +84,8 @@ export function DelegateTerminalSurface({
     if (!ref.current) return;
     const term = new Terminal({
       fontSize: 11,
-      fontFamily: "Monaspace Neon, Monaspace Argon, Monaspace, SF Mono, JetBrains Mono, ui-monospace, monospace",
-      theme: {
-        background: cssVar("--terminal-bg"),
-        foreground: cssVar("--terminal-fg"),
-        cursor: cssVar("--terminal-cursor"),
-      },
+      lineHeight: 1.35,
+      ...terminalLook(),
       cursorBlink: !readOnly,
       scrollback: 5000,
       convertEol: true,

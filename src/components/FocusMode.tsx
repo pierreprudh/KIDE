@@ -19,6 +19,20 @@ import {
   readProviderKeyStatus,
 } from "../ipc/aiProviders";
 import { Z } from "../zLayers";
+import {
+  CloseIcon,
+  FolderIcon,
+  FreeLayoutIcon,
+  GitIcon,
+  MemoryIcon,
+  MissionIcon,
+  NewTaskIcon,
+  OrchestratorIcon,
+  SearchIcon,
+  SendIcon,
+  SkillsIcon,
+  TerminalIcon,
+} from "../icons";
 import { railDestination } from "../railDestinations";
 import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
 import { usePortalMenu } from "../hooks/usePortalMenu";
@@ -84,6 +98,16 @@ type Props = {
    *  bar, so this rail icon is the only way out. */
   onExitFocus: () => void;
   renderChat: () => ReactNode;
+  /** Terminal — the native shell docked under the canvas. It stands beneath the
+   *  home/chat surface rather than replacing it, so the conversation keeps its
+   *  mount (run subscriptions are mount-tied) and keeps streaming while you
+   *  work in the shell. One shell app-wide: the same PTY the workbench drawer
+   *  shows, at the same remembered height, so opening it here doesn't start a
+   *  second one. The parent renders the whole dock; this is the slot. */
+  terminalOpen: boolean;
+  onOpenTerminal: () => void;
+  onCloseTerminal: () => void;
+  renderTerminal: () => ReactNode;
   /** Race watch — one tab per racing agent over the chat canvas. Empty or
    *  absent means the normal single-conversation chat. The parent keeps every
    *  tab's panel mounted; this component only draws the strip. */
@@ -126,131 +150,16 @@ const iconProps = {
   "aria-hidden": true,
 } as const;
 
-/* The rail's primary action, so it gets the simplest mark in the set: a bare
-   plus. The four glyphs under it describe a place (a board, a chain, a
-   notebook, sparks) — this one only has to say "begin", and a pencil said
-   "edit something that already exists". */
-function NewTaskIcon() {
-  return (
-    <svg {...iconProps} strokeWidth={1.6}>
-      <path d="M12 5.25v13.5" />
-      <path d="M5.25 12h13.5" />
-    </svg>
-  );
-}
+/* Glyphs come from ../icons — one vocabulary for both rails, so a change to
+   the Memory mark lands here and in the free-mode rail at the same time. This
+   file only decides density: rail rows at 15px, inline controls at 13–14. */
 
-function SearchIcon() {
-  return (
-    <svg {...iconProps}>
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
-    </svg>
-  );
-}
-
-/** Closes the search field in the brand row — same slot, so the glyph swaps
- *  rather than a second button appearing. */
-function CloseIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="m6 6 12 12" />
-      <path d="m18 6-12 12" />
-    </svg>
-  );
-}
-
-/** The layout picker's Free-layout mark, minus its connector line — two offset
- *  panels read clearly at 14px where the extra stroke was just noise. */
-function FreeLayoutIcon() {
-  return (
-    <svg {...iconProps} width={14} height={14} strokeWidth={1.5}>
-      <rect x="3.5" y="3.5" width="8.5" height="8.5" rx="1.4" />
-      <rect x="12" y="12" width="8.5" height="8.5" rx="1.4" />
-    </svg>
-  );
-}
-
-function BoardIcon() {
-  return (
-    <svg {...iconProps}>
-      <circle cx="12" cy="12" r="7.5" opacity="0.5" />
-      <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
-      <circle cx="19.5" cy="12" r="1.5" fill="currentColor" stroke="none" />
-      <circle cx="7" cy="5" r="1.5" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-/* The destinations Focus shares with the free-mode rail keep that rail's
-   glyphs, so the same thing never has two marks in one app. */
-
-function OrchestratorIcon() {
-  return (
-    <svg {...iconProps} strokeWidth={1.5}>
-      <path d="M4 6.5h4.5" />
-      <path d="M15.5 6.5H20" />
-      <circle cx="12" cy="6.5" r="2.4" />
-      <path d="M4 17.5h4.5" />
-      <path d="M15.5 17.5H20" />
-      <circle cx="12" cy="17.5" r="2.4" />
-      <path d="M12 8.9v6.2" />
-    </svg>
-  );
-}
-
-function MemoryIcon() {
-  return (
-    <svg {...iconProps} strokeWidth={1.5}>
-      <path d="M5 3.5h11.5a1 1 0 0 1 1 1V20l-3-1.5L11.5 20l-3-1.5L5 20V3.5z" />
-      <path d="M8 8h6" />
-      <path d="M8 12h6" />
-      <path d="M8 16h4" />
-    </svg>
-  );
-}
-
-function SkillsIcon() {
-  return (
-    <svg {...iconProps} strokeWidth={1.5}>
-      <path d="M15 4l1.1 3L19 8l-2.9 1L15 12l-1.1-3L11 8l2.9-1L15 4z" />
-      <path d="M6.5 12l.8 2.2L9.5 15l-2.2.8L6.5 18l-.8-2.2L3.5 15l2.2-.8L6.5 12z" />
-    </svg>
-  );
-}
+const RAIL_GLYPH = 15;
 
 /* Settings + Profile come from ../railDestinations, shared with the free-mode
    rail's bottom zone — one definition of what the app's destinations are. */
 const settingsDest = railDestination("settings");
 const profileDest = railDestination("profile");
-
-function FolderIcon() {
-  return (
-    <svg {...iconProps} width={14} height={14}>
-      <path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />
-    </svg>
-  );
-}
-
-function SendIcon() {
-  return (
-    <svg {...iconProps} width={14} height={14} strokeWidth={2}>
-      <path d="M12 19V5" />
-      <path d="m5 12 7-7 7 7" />
-    </svg>
-  );
-}
-
-function BranchIcon() {
-  return (
-    <svg {...iconProps} width={13} height={13}>
-      <circle cx="6" cy="5" r="2" />
-      <circle cx="18" cy="6" r="2" />
-      <circle cx="6" cy="19" r="2" />
-      <path d="M6 7v10" />
-      <path d="M8 7c5 0 3 8 8 8h2" />
-    </svg>
-  );
-}
 
 /** The curve turning off a spine into its row.
  *
@@ -774,6 +683,10 @@ export function FocusMode({
   onOpenSettingsSection,
   onExitFocus,
   renderChat,
+  terminalOpen,
+  onOpenTerminal,
+  onCloseTerminal,
+  renderTerminal,
   raceTabs,
   activeRaceTab,
   onSelectRaceTab,
@@ -1062,13 +975,13 @@ export function FocusMode({
               setQuery("");
             }}
           >
-            {searchOpen ? <CloseIcon /> : <SearchIcon />}
+            {searchOpen ? <CloseIcon size={RAIL_GLYPH} /> : <SearchIcon size={RAIL_GLYPH} />}
           </button>
         </div>
 
         <div className="klide-focus-nav-group">
           <NavRow
-            icon={<NewTaskIcon />}
+            icon={<NewTaskIcon size={RAIL_GLYPH} />}
             label="New task"
             onClick={() => {
               setHistoryConversation(null);
@@ -1076,7 +989,7 @@ export function FocusMode({
             }}
           />
           <NavRow
-            icon={<BoardIcon />}
+            icon={<MissionIcon size={RAIL_GLYPH} />}
             label="Mission Control"
             onClick={() => {
               setHistoryConversation(null);
@@ -1084,7 +997,7 @@ export function FocusMode({
             }}
           />
           <NavRow
-            icon={<OrchestratorIcon />}
+            icon={<OrchestratorIcon size={RAIL_GLYPH} />}
             label="Orchestrator"
             onClick={() => {
               setHistoryConversation(null);
@@ -1092,7 +1005,7 @@ export function FocusMode({
             }}
           />
           <NavRow
-            icon={<MemoryIcon />}
+            icon={<MemoryIcon size={RAIL_GLYPH} />}
             label="Memory"
             onClick={() => {
               setHistoryConversation(null);
@@ -1100,7 +1013,7 @@ export function FocusMode({
             }}
           />
           <NavRow
-            icon={<SkillsIcon />}
+            icon={<SkillsIcon size={RAIL_GLYPH} />}
             label="Skills"
             onClick={() => {
               setHistoryConversation(null);
@@ -1152,7 +1065,7 @@ export function FocusMode({
                         conversations you are looking at. */}
                     <ProjectHead scrollRoot={railBodyRef}>
                       <NavRow
-                        icon={<FolderIcon />}
+                        icon={<FolderIcon size={14} />}
                         label={basename(p)}
                         active={isActive}
                         expanded={isExpanded}
@@ -1235,7 +1148,7 @@ export function FocusMode({
             the identity card because it has a name and a host to show. */}
         <div className="klide-rail-dest-group">
           <NavRow
-            icon={<settingsDest.Icon size={15} strokeWidth={1.7} />}
+            icon={<settingsDest.Icon size={15} />}
             label={settingsDest.label}
             onClick={() => {
               setHistoryConversation(null);
@@ -1270,6 +1183,21 @@ export function FocusMode({
                 <span className="klide-rail-profile-host">{hostname}</span>
               </span>
             </button>
+            {/* Terminal — icon only, on the rail's bottom-right edge beside the
+                view switch. It earns no label: it toggles a dock rather than
+                opening a destination, and the two shell-level controls read as
+                a pair down here instead of another written row above. */}
+            <button
+              type="button"
+              className="klide-rail-view-switch"
+              data-active={terminalOpen || undefined}
+              aria-label={terminalOpen ? "Hide the terminal" : "Show the terminal"}
+              aria-pressed={terminalOpen}
+              title={terminalOpen ? "Hide the terminal" : "Terminal"}
+              onClick={() => (terminalOpen ? onCloseTerminal() : onOpenTerminal())}
+            >
+              <TerminalIcon size={14} />
+            </button>
             <button
               type="button"
               className="klide-rail-view-switch"
@@ -1277,7 +1205,7 @@ export function FocusMode({
               title="Leave Focus — Free layout"
               onClick={onExitFocus}
             >
-              <FreeLayoutIcon />
+              <FreeLayoutIcon size={14} />
             </button>
           </div>
         </div>
@@ -1469,6 +1397,13 @@ export function FocusMode({
           />
         )}
         </div>
+        {/* Terminal — a bottom dock under the canvas, not a replacement for it:
+            the conversation (or the home hero) stays put above and keeps its
+            mount, so a running turn is never interrupted by reaching for a
+            shell. The parent owns the whole dock — height, drag handle, slide —
+            because the drawer's height is remembered app-wide; this is only
+            the slot it lands in. */}
+        {renderTerminal()}
       </main>
     </div>
   );
@@ -2536,7 +2471,7 @@ function FocusHome({
               onClick={onPingGit}
               title={`On ${branch} — show me the git panel`}
             >
-              <BranchIcon />
+              <GitIcon size={13} />
               {branch}
             </button>
           </div>
@@ -2638,7 +2573,7 @@ function FocusHome({
                 className="klide-focus-send"
                 data-ready={canSend || undefined}
               >
-                <SendIcon />
+                <SendIcon size={14} />
               </button>
             </div>
           </div>
@@ -2677,10 +2612,11 @@ function HomeCard({
         ModelLogo ? (
           <span
             className="klide-focus-home-card-icon"
+            data-bare="true"
             title={identity.name}
             aria-hidden="true"
           >
-            <ModelLogo size={17} />
+            <ModelLogo size={24} />
           </span>
         ) : null
       ) : (

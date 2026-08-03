@@ -2293,6 +2293,24 @@ button:focus-visible .menu-leadout {
   button:focus-visible .menu-leadout { transform: none; }
 }
 
+/* Terminal viewport: a narrower hover-reveal bar than the global 10px one, so
+   the right edge of program output isn't crowded by reserved gutter. Same
+   quiet recipe as .todo-scroll — no `scrollbar-width`, or WebKit falls back to
+   the auto-hiding overlay bar and drops these rules. */
+.klide-term .xterm-viewport::-webkit-scrollbar { width: 7px; }
+.klide-term .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+.klide-term .xterm-viewport::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: var(--radius-md);
+  background-clip: padding-box;
+  transition: background var(--motion-med) var(--ease-out);
+}
+.klide-term:hover .xterm-viewport::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--terminal-muted) 40%, transparent);
+  background-clip: padding-box;
+}
+
 /* Subtle scrollbars matching the quiet aesthetic */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -4466,6 +4484,14 @@ button:focus-visible .menu-leadout {
   background: var(--bg-hover);
 }
 
+/* On — for the switches in this row that toggle something (the terminal dock)
+   rather than navigate. The soft fill the rest of the app uses for an active
+   control, so "open" reads without a dot or a second colour. */
+.klide-rail-view-switch[data-active] {
+  color: var(--fg-strong);
+  background: var(--bg-hover);
+}
+
 /* App-level destinations — the same set the free-mode rail's bottom zone
    renders. One zone, so Settings and the identity card read as a pair rather
    than as a row that happens to sit above an avatar. */
@@ -5075,6 +5101,75 @@ button:focus-visible .menu-leadout {
   display: none;
 }
 
+/* Focus terminal — a bottom dock that takes real layout space: opening it moves
+   the whole screen up rather than covering it, so the composer and the
+   conversation are never behind the shell. The canvas above is `flex: 1`, so it
+   gives up exactly this dock's height.
+
+   Motion is the EDITOR dock's timing (380ms ease-soft) applied to the property
+   that actually moves the screen — height — with none of the free-layout
+   drawer's blur-materialize or sage breath. Focus is the calm screen.
+
+   The panel INSIDE keeps its full height throughout (see the inner wrapper), so
+   this box reveals it rather than squeezing it: xterm measures once per height
+   change instead of once per animation frame, and the PTY isn't resized 60
+   times on the way in. */
+.klide-focus-terminal-dock {
+  flex-shrink: 0;
+  height: 0;
+  /* No max-height: the drag already clamps to 72% of the workbench, and a
+     second clamp here would quietly crop the panel's bottom rows — the prompt —
+     rather than shrink it, because the inner wrapper holds a fixed height. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  background: transparent;
+  opacity: 0;
+  /* Hidden rather than merely flat when closed, so the shell's textarea leaves
+     the tab order. The flip is delayed by the slide's duration, so closing is
+     still visible on its way out — the editor dock's trick. `visibility` keeps
+     layout, so the panel inside can still measure itself while hidden. */
+  visibility: hidden;
+  transition:
+    height 380ms var(--ease-soft),
+    opacity 200ms var(--ease-out),
+    visibility 0s linear 380ms;
+}
+
+.klide-focus-terminal-dock[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    height 380ms var(--ease-soft),
+    opacity 160ms var(--ease-out),
+    visibility 0s;
+}
+
+/* Dragging the divider must track the pointer exactly — a height transition
+   would make the edge lag behind the cursor. */
+.klide-focus-terminal-dock[data-resizing="true"] {
+  transition: none;
+}
+
+/* Holds the panel at its settled height while the dock's own box animates, so
+   the terminal is uncovered from the top down instead of being compressed. */
+.klide-focus-terminal-dock-inner {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-focus-terminal-dock {
+    transition: opacity 120ms linear, visibility 0s linear 120ms;
+  }
+  .klide-focus-terminal-dock[data-open="true"] {
+    transition: opacity 120ms linear, visibility 0s;
+  }
+}
+
 .klide-focus-ai-surface {
   position: relative;
   width: 100%;
@@ -5448,6 +5543,15 @@ button:focus-visible .menu-leadout {
   border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--panel-border));
   background: var(--menu-row-active);
   color: var(--accent);
+}
+
+/* A provider mark carries its own shape and color — the tile just boxes it in. */
+.klide-focus-home-card-icon[data-bare] {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 0;
+  background: none;
 }
 
 .klide-focus-home-card-title {
@@ -6195,10 +6299,11 @@ button:focus-visible .menu-leadout {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* The surface itself is translucent (TerminalPanel paints a see-through
-     wash and xterm runs with a transparent canvas) so the canvas ghosts
-     through — real translucency, NO backdrop-filter (off-brand + the
-     webview bug that hides focused floating panels behind it). */
+  /* TerminalPanel paints its own opaque surface (xterm 6 dropped
+     `allowTransparency`, so the old ghosting recipe rendered a black canvas —
+     see terminalTheme.ts). Nothing to paint here. Never a backdrop-filter
+     either: off-brand, and the webview bug that hides focused floating
+     panels behind it. */
   background: transparent;
   box-shadow: 0 -18px 44px color-mix(in srgb, var(--fg-strong) 5%, transparent);
   /* z-index comes inline from zLayers.ts (Z.dock) */

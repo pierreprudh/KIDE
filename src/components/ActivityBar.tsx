@@ -1,5 +1,19 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
+import type { GlyphProps } from "../icons";
+import {
+  AiIcon,
+  ChevronIcon,
+  FocusLayoutIcon,
+  FolderIcon,
+  GitIcon,
+  HomeIcon,
+  MemoryIcon,
+  MissionIcon,
+  OrchestratorIcon,
+  SearchIcon,
+  SkillsIcon,
+} from "../icons";
 import { useFlipIndicator } from "../hooks/useFlipIndicator";
 import { KbdFor } from "./Kbd";
 import { Z } from "../zLayers";
@@ -31,226 +45,16 @@ type Props = {
   onEnterFocus?: () => void;
 };
 
-function HomeIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 10.5 12 4l8 6.5" />
-      <path d="M5.5 9.5V19a1 1 0 0 0 1 1H17.5a1 1 0 0 0 1-1V9.5" />
-    </svg>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg
-      width="17"
-      height="17"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="11" cy="11" r="6.5" />
-      <path d="m16.2 16.2 4.3 4.3" />
-    </svg>
-  );
-}
+/* Glyphs come from ../icons — the one place the app decides what a thing
+   looks like. This rail only decides how big to draw it. */
 
 function ChevronSmall({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{
-        transform: open ? "rotate(180deg)" : "none",
-        transition: "transform var(--motion-med) var(--ease-soft)",
-      }}
-    >
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 7.5C3 6.4 3.9 5.5 5 5.5h3.5l2 2H19c1.1 0 2 .9 2 2v7c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2v-9z" />
-    </svg>
-  );
-}
-
-function SparkIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M12 3.5l1.6 4.4L18 9.5l-4.4 1.6L12 15.5l-1.6-4.4L6 9.5l4.4-1.6L12 3.5z" />
-      <path d="M18 16l.7 1.8L20.5 18.5l-1.8.7L18 21l-.7-1.8L15.5 18.5l1.8-.7L18 16z" />
-    </svg>
-  );
-}
-
-function GitIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="6" cy="5" r="2.4" />
-      <circle cx="6" cy="19" r="2.4" />
-      <circle cx="18" cy="12" r="2.4" />
-      <path d="M6 7.4v9.2" />
-      <path d="M8.1 6.2A8.2 8.2 0 0 1 15.7 10" />
-    </svg>
-  );
-}
-
-function SkillsIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M15 4l1.1 3L19 8l-2.9 1L15 12l-1.1-3L11 8l2.9-1L15 4z" />
-      <path d="M6.5 12l.8 2.2L9.5 15l-2.2.8L6.5 18l-.8-2.2L3.5 15l2.2-.8L6.5 12z" />
-    </svg>
-  );
-}
-
-function MemoryIcon() {
-  // Small notebook with a bookmark ribbon — the "Memory" activity bar
-  // item, which opens the centered MemoryModal (session handoff notes
-  // in .klide/memory/).
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M5 3.5h11.5a1 1 0 0 1 1 1V20l-3-1.5L11.5 20l-3-1.5L5 20V3.5z" />
-      <path d="M8 8h6" />
-      <path d="M8 12h6" />
-      <path d="M8 16h4" />
-    </svg>
-  );
-}
-
-function MissionIcon() {
-  // Central agent + satellites on an orbit — "many runs, one control panel".
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="12" cy="12" r="7.5" opacity="0.5" />
-      <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
-      <circle cx="19.5" cy="12" r="1.5" fill="currentColor" stroke="none" />
-      <circle cx="7" cy="5" r="1.5" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function OrchestratorIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.25"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 6.5h4.5" />
-      <path d="M15.5 6.5H20" />
-      <circle cx="12" cy="6.5" r="2.4" />
-      <path d="M4 17.5h4.5" />
-      <path d="M15.5 17.5H20" />
-      <circle cx="12" cy="17.5" r="2.4" />
-      <path d="M12 8.9v6.2" />
-    </svg>
-  );
+  return <ChevronIcon size={12} open={open} />;
 }
 
 /* Settings + Profile icons live in ../railDestinations — shared with the
    Focus rail's foot so both sidebars draw the same destinations. */
 
-function FocusLayoutIcon() {
-  // The mirror of Focus's FreeLayoutIcon (two offset panels): one centered
-  // reading column. Same slot in the same row, pointing the other way.
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="7.75" y="3.5" width="8.5" height="17" rx="1.4" />
-    </svg>
-  );
-}
 
 /** Expanded rail width — icons + labels, per the reference. */
 const RAIL_EXPANDED_W = 216;
@@ -333,12 +137,12 @@ export function ActivityBar({
 
   // Top zone — in-workbench / full-window tools. The FLIP fill rides
   // between them when one is active.
-  const toolItems: { id: View; label: string; Icon: () => React.JSX.Element }[] = [
+  const toolItems: { id: View; label: string; Icon: (p: GlyphProps) => React.JSX.Element }[] = [
     { id: "explorer", label: "Explorer", Icon: FolderIcon },
     { id: "git", label: "Git", Icon: GitIcon },
     { id: "memory", label: "Memory", Icon: MemoryIcon },
     { id: "skills", label: "Skills", Icon: SkillsIcon },
-    { id: "ai", label: "AI", Icon: SparkIcon },
+    { id: "ai", label: "AI", Icon: AiIcon },
     { id: "runs", label: "Mission Control", Icon: MissionIcon },
     { id: "orchestrator", label: "Orchestrator", Icon: OrchestratorIcon },
   ];
@@ -572,7 +376,7 @@ export function ActivityBar({
               border: "1px solid var(--border)",
             }}
           >
-            <span style={{ flexShrink: 0, display: "inline-flex" }}><SearchIcon /></span>
+            <span style={{ flexShrink: 0, display: "inline-flex" }}><SearchIcon size={17} /></span>
             <span
               style={{
                 ...rowLabel,
@@ -821,7 +625,7 @@ export function ActivityBar({
               title="Focus layout"
               onClick={onEnterFocus}
             >
-              <FocusLayoutIcon />
+              <FocusLayoutIcon size={14} />
             </button>
           )}
         </div>

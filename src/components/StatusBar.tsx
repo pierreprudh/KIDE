@@ -1,3 +1,4 @@
+import { GitIcon } from "../icons";
 import { getThemeMeta, type ThemeId } from "../theme";
 import { keysFor } from "../shortcuts";
 import { LayoutBento } from "./LayoutBento";
@@ -54,26 +55,6 @@ function TerminalIcon() {
   );
 }
 
-function BranchIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="6" cy="5" r="2.3" />
-      <circle cx="6" cy="19" r="2.3" />
-      <circle cx="18" cy="12" r="2.3" />
-      <path d="M6 7.3v9.4" />
-      <path d="M8.1 6.2A8.3 8.3 0 0 1 15.8 10" />
-    </svg>
-  );
-}
 
 function relativePath(path: string | null, workspaceRoot: string | null): string | null {
   if (!path) return null;
@@ -165,7 +146,7 @@ export function StatusBar({
             fontSize: 10.5,
           }}
         >
-          <BranchIcon />
+          <GitIcon size={13} />
           <span
             style={{
               maxWidth: 140,
