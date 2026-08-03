@@ -331,3 +331,34 @@ export function gitPrOpen(workspaceRoot: string, number: number): Promise<string
 export function gitPrMerged(workspaceRoot: string, number: number): Promise<boolean> {
   return invoke<boolean>("git_pr_merged", { workspaceRoot, number });
 }
+
+// ── GitHub account (gh) ──────────────────────────────────────────────────────
+
+/** Mirrors `GitHubUser` in `git/github.rs`. */
+export type GitHubUser = {
+  login: string;
+  avatarUrl: string;
+};
+
+/** Mirrors `GitHubAccounts`. `pinned` is Klide's own choice; when it's null,
+ *  Klide follows `active` — whichever account `gh auth switch` last selected. */
+export type GitHubAccounts = {
+  logins: string[];
+  active: string | null;
+  pinned: string | null;
+};
+
+/** The identity Klide acts as: the pin, else gh's active account. */
+export function githubCurrentUser(): Promise<GitHubUser> {
+  return invoke<GitHubUser>("github_current_user");
+}
+
+export function githubAccounts(): Promise<GitHubAccounts> {
+  return invoke<GitHubAccounts>("github_accounts");
+}
+
+/** Pin Klide to one signed-in account, or pass null to follow gh again.
+ *  Resolves to the identity now in force. */
+export function githubSetAccount(login: string | null): Promise<GitHubUser> {
+  return invoke<GitHubUser>("github_set_account", { login });
+}

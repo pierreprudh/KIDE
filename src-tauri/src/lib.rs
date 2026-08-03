@@ -26,10 +26,10 @@ use memory::{memory_list, memory_read, memory_write};
 use pty::{
     delegate_daemon_set_enabled, delegate_daemon_status, delegate_pty_live_sessions,
     delegate_pty_recent_sessions, delegate_pty_resize, delegate_pty_snapshot, delegate_pty_spawn,
-    delegate_pty_stop, delegate_pty_write, pty_spawn, pty_write, DelegatePtyState, PtyState,
+    delegate_pty_stop, delegate_pty_write, pty_close, pty_resize, pty_spawn, pty_write,
+    DelegatePtyState, PtyState,
 };
 use std::path::PathBuf;
-use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::Emitter;
 
@@ -1061,10 +1061,7 @@ fn menu_sync_projects(
 
 pub fn run() {
     tauri::Builder::default()
-        .manage(PtyState {
-            writer: Mutex::new(None),
-            cwd: Mutex::new(None),
-        })
+        .manage(PtyState::default())
         .manage(DelegatePtyState::default())
         .manage(pty::DaemonBridge::default())
         .manage(delegate::status::DelegateStatusState::default())
@@ -1181,7 +1178,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             pty_spawn,
+            pty_resize,
             pty_write,
+            pty_close,
             delegate_pty_spawn,
             delegate_pty_write,
             delegate_pty_resize,
@@ -1278,6 +1277,8 @@ pub fn run() {
             git::git_graph,
             git::git_commit_details,
             git::github::github_current_user,
+            git::github::github_accounts,
+            git::github::github_set_account,
             git::github::github_commit_avatars,
             git::git_checkout_branch,
             git::git_fetch,

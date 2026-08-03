@@ -930,7 +930,19 @@ pub(crate) async fn git_push(workspace_root: String) -> Result<String, String> {
         // `git push` follows the upstream if configured; if not, this errors and
         // the UI surfaces a clear message. The user can set upstream via
         // `git push -u origin <branch>` if needed.
-        run_git(&workspace_root, &["push"])?;
+        //
+        // Unlike the read-only git commands this one needs credentials, so it
+        // carries the pinned GitHub account's token (gh's credential helper
+        // prefers GH_TOKEN) instead of whichever account `gh` has active.
+        let mut cmd = Command::new("git");
+        cmd.args(["-C", &workspace_root, "push"]);
+        github::apply_account_env(&mut cmd);
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run git: {e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
         Ok("Pushed".to_string())
     })
     .await

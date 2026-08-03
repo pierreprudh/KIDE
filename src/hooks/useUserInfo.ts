@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { githubCurrentUser } from "../ipc/git";
 
 type LocalUserInfo = { username: string; hostname: string };
 type GitHubUserInfo = { githubLogin: string; avatarUrl: string };
@@ -37,7 +38,7 @@ function fetchLocalUserInfo(): Promise<LocalUserInfo> {
 function fetchGitHubUserInfo(): Promise<GitHubUserInfo> {
   if (cachedGitHub) return Promise.resolve(cachedGitHub);
   if (!githubInflight) {
-    githubInflight = invoke<{ login: string; avatarUrl: string }>("github_current_user")
+    githubInflight = githubCurrentUser()
       .then((user) => {
         const next = { githubLogin: user.login, avatarUrl: user.avatarUrl };
         cachedGitHub = next;
@@ -49,6 +50,18 @@ function fetchGitHubUserInfo(): Promise<GitHubUserInfo> {
       });
   }
   return githubInflight;
+}
+
+// The GitHub identity is cached for the app's lifetime because it never changes
+// on its own — except when you re-pin the account in Settings. That's a
+// deliberate act, so it publishes here and every mounted rail/profile repaints
+// instead of waiting for a restart.
+const githubListeners = new Set<(info: GitHubUserInfo) => void>();
+
+export function setGitHubUserInfo(user: { login: string; avatarUrl: string }): void {
+  const next = { githubLogin: user.login, avatarUrl: user.avatarUrl };
+  cachedGitHub = next;
+  githubListeners.forEach((listen) => listen(next));
 }
 
 export function useUserInfo(): UserInfo {
@@ -67,8 +80,12 @@ export function useUserInfo(): UserInfo {
     fetchGitHubUserInfo().then((github) => {
       if (!cancelled) setInfo((current) => ({ ...current, ...github }));
     });
+    const onGitHubChange = (github: GitHubUserInfo) =>
+      setInfo((current) => ({ ...current, ...github }));
+    githubListeners.add(onGitHubChange);
     return () => {
       cancelled = true;
+      githubListeners.delete(onGitHubChange);
     };
   }, []);
 

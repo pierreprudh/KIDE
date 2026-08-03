@@ -56,7 +56,7 @@ import { API_KEY_PROVIDERS, ApiKeyRow, ApiKeySummary, ProviderBalanceBlock } fro
 import { notify } from "../toast";
 import { CustomCliAgentsBlock, CustomEndpointsBlock } from "./settings/customProviders";
 import { LocalServerRow } from "./settings/localServers";
-import { AccountControl } from "./settings/accounts";
+import { AccountControl, GitHubAccountRow } from "./settings/accounts";
 import { StatsSection } from "./settings/stats";
 import {
   ArrowLeftIcon,
@@ -231,6 +231,7 @@ const settingsIndex: SettingIndexEntry[] = [
   { label: "Local servers (Ollama / MLX)", section: "local-ai", keywords: "local ollama mlx server start stop concurrency model" },
   { label: "API keys", section: "api", keywords: "api key keychain anthropic openai mistral xai deepseek openrouter token secret" },
   { label: "CLI subscriptions", section: "subscription", keywords: "subscription claude code codex opencode omp oh my pi ollama signin login account auth cli" },
+  { label: "GitHub account", section: "subscription", keywords: "github account gh avatar profile picture identity work personal switch pin push pr" },
   { label: "Editor font size", section: "editor", keywords: "editor font size text monaco" },
   { label: "Line numbers", section: "editor", keywords: "editor line numbers gutter" },
   { label: "Word wrap", section: "editor", keywords: "editor word wrap soft" },
@@ -1737,6 +1738,9 @@ export function SettingsPanel({
               <>
               <SettingBlock title="Connections & Accounts">
                 <Panel>
+                  {/* GitHub first: it's the identity the whole app wears —
+                      avatar, PR author, push credentials. */}
+                  <GitHubAccountRow />
                   {subscriptionProviderEntries.map((provider) => {
                     const status = subscriptionStatuses[provider.id];
                     return (
