@@ -26,6 +26,7 @@ import { ArrowUp } from "@phosphor-icons/react/dist/csr/ArrowUp";
 import { BookmarkSimple } from "@phosphor-icons/react/dist/csr/BookmarkSimple";
 import { CaretDown } from "@phosphor-icons/react/dist/csr/CaretDown";
 import { Cards } from "@phosphor-icons/react/dist/csr/Cards";
+import { ChatTeardrop } from "@phosphor-icons/react/dist/csr/ChatTeardrop";
 import { CirclesThree } from "@phosphor-icons/react/dist/csr/CirclesThree";
 import { FlowArrow } from "@phosphor-icons/react/dist/csr/FlowArrow";
 import { Folder } from "@phosphor-icons/react/dist/csr/Folder";
@@ -36,7 +37,6 @@ import { MagnifyingGlass } from "@phosphor-icons/react/dist/csr/MagnifyingGlass"
 import { Plus } from "@phosphor-icons/react/dist/csr/Plus";
 import { PuzzlePiece } from "@phosphor-icons/react/dist/csr/PuzzlePiece";
 import { Rectangle } from "@phosphor-icons/react/dist/csr/Rectangle";
-import { Sparkle } from "@phosphor-icons/react/dist/csr/Sparkle";
 import { Terminal } from "@phosphor-icons/react/dist/csr/Terminal";
 import { User } from "@phosphor-icons/react/dist/csr/User";
 import { X } from "@phosphor-icons/react/dist/csr/X";
@@ -76,8 +76,12 @@ export function FolderIcon(p: GlyphProps) {
   return <Icon as={Folder} {...p} />;
 }
 
+/** The AI panel — a conversation with Kit, so it gets a speech mark rather
+ *  than a sparkle. Two reasons beyond taste: a sparkle is the universal "AI"
+ *  cliché, and Phosphor's is an outlined four-point star, which is AgentMark
+ *  (filled, accent) drawn a second way for a different meaning. */
 export function AiIcon(p: GlyphProps) {
-  return <Icon as={Sparkle} {...p} />;
+  return <Icon as={ChatTeardrop} {...p} />;
 }
 
 /** Git — the panel in free mode, a branch label in Focus. Same mark either
