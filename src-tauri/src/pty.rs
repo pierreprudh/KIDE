@@ -142,34 +142,37 @@ fn start_daemon_subscriber(app: tauri::AppHandle) {
 
 /// One round-trip to `ptyd`, or `None` when there is no daemon to ask.
 ///
-/// Every command below had its own copy of this preamble — check the toggle,
-/// find the app data dir, send, match the response — which is how the account
-/// switch guard ended up being the one operation that never asked the daemon at
-/// all. One helper means the "is there a daemon?" question is answered in a
-/// single place, and it is the single place a `cfg(not(unix))` stub would go.
+/// Every command below had its own copy of this preamble — find the app data
+/// dir, send, match the response — which is how the account switch guard ended
+/// up being the one operation that never asked the daemon at all. One helper
+/// means the "is there a daemon?" question is answered in a single place, and it
+/// is the single place a `cfg(not(unix))` stub would go.
+///
+/// **This never consults the persistent-sessions toggle, and that is the rule.**
+/// Turning persistence off routes *new spawns* in-process; it does not evict
+/// what the daemon is already hosting, because those sessions are the user's
+/// work. So every other operation — the listings, the liveness checks, and the
+/// lifecycle ops — has to keep asking, or a running session becomes invisible.
+///
+/// There used to be two helpers here, a toggle-gated `ask_daemon` and an
+/// `ask_daemon_regardless`, with each call site picking one by name. The rule
+/// then drifted, because it was enforced by nothing but that choice:
+/// `ReuseOrCd`, `Write` and `Snapshot` were all on the gated path. With the
+/// toggle off and a session still hosted by the daemon, it showed on the Live
+/// strip and could be stopped and resized, but **typing into it was silently
+/// dropped** (the local write returned `false`, the daemon was never asked, and
+/// the command still returned `Ok`), and its snapshot fell through to the disk
+/// log with `seq: 0`, so reattach repainted history with no dedup high-water
+/// mark. `ReuseOrCd` was worse than cosmetic: skipping the daemon there spawns
+/// a *second* CLI for a session id the daemon already runs.
+///
+/// The toggle has exactly one consumer, `delegate_pty_spawn` — the one place
+/// the rule says it belongs. `ask_daemon_gate_is_not_toggled` pins that.
 ///
 /// `None` is deliberately indistinguishable from "the daemon doesn't have it":
 /// every caller's fallback is the in-process host, which is also what should
 /// happen when the daemon is off, unreachable, or mid-restart.
 fn ask_daemon(app: &tauri::AppHandle, request: &DaemonRequest) -> Option<DaemonResponse> {
-    if !daemon_enabled(app) {
-        return None;
-    }
-    ask_daemon_regardless(app, request)
-}
-
-/// `ask_daemon`, but ignoring the toggle.
-///
-/// Turning persistence off routes *new* spawns in-process; it does not evict
-/// what the daemon is already hosting, because those sessions are the user's
-/// work. So the read-only listings and the liveness checks have to keep asking
-/// even when the toggle is off, or a running session becomes invisible — which
-/// is exactly how a live session would get offered as "reopen", or have its
-/// credentials swapped underneath it.
-fn ask_daemon_regardless(
-    app: &tauri::AppHandle,
-    request: &DaemonRequest,
-) -> Option<DaemonResponse> {
     let dir = app_data_dir(app)?;
     pty_client::request(&dir, request).ok()
 }
@@ -177,7 +180,7 @@ fn ask_daemon_regardless(
 /// Live sessions the daemon is hosting (empty when unreachable) — for merged
 /// live/recent listings and the account-switch guard.
 fn daemon_live_rows(app: &tauri::AppHandle) -> Vec<LiveSessionRow> {
-    match ask_daemon_regardless(app, &DaemonRequest::LiveRows) {
+    match ask_daemon(app, &DaemonRequest::LiveRows) {
         Some(DaemonResponse::LiveRows { rows }) => rows,
         _ => Vec::new(),
     }
@@ -244,7 +247,7 @@ pub struct DaemonStatus {
 #[tauri::command]
 pub fn delegate_daemon_status(app: tauri::AppHandle) -> DaemonStatus {
     let enabled = daemon_enabled(&app);
-    match ask_daemon_regardless(&app, &DaemonRequest::Ping) {
+    match ask_daemon(&app, &DaemonRequest::Ping) {
         Some(DaemonResponse::Pong { version, .. }) => DaemonStatus {
             enabled,
             reachable: true,
@@ -997,7 +1000,7 @@ pub fn delegate_pty_resize(
     state.host.resize(&session_id, rows, cols)?;
     // Regardless of the toggle: the daemon may still be hosting a session the
     // user is looking at, and it would otherwise keep the old geometry forever.
-    ask_daemon_regardless(
+    ask_daemon(
         &app,
         &DaemonRequest::Resize {
             session_id,
@@ -1017,7 +1020,7 @@ pub fn delegate_pty_stop(
     state.host.stop(&session_id);
     // Regardless of the toggle, or turning persistence off would leave the
     // sessions the daemon already hosts with no way to be stopped from the UI.
-    ask_daemon_regardless(&app, &DaemonRequest::Stop { session_id });
+    ask_daemon(&app, &DaemonRequest::Stop { session_id });
     Ok(())
 }
 
@@ -1242,5 +1245,48 @@ mod tests {
         // reattach would bind an AI panel to a conversation that doesn't exist.
         assert_eq!(convo_id_for("run-7", "claude-code"), "run-7");
         assert_eq!(convo_id_for("run-7:codex", "claude-code"), "run-7:codex");
+    }
+
+    #[test]
+    fn ask_daemon_gate_is_not_toggled() {
+        // The persistent-sessions toggle routes NEW SPAWNS to the daemon. It
+        // never hides sessions the daemon already hosts. That rule used to be
+        // encoded only in which of two identically-shaped helpers a call site
+        // happened to name — and it drifted: `Write`, `Snapshot` and
+        // `ReuseOrCd` all sat on the gated path, so with the toggle off a live
+        // daemon session silently swallowed keystrokes, snapshotted from disk
+        // with `seq: 0`, and could be duplicated by a second spawn.
+        //
+        // There is now one helper, and the toggle has one consumer. Read this
+        // file's own source to keep that true — the commands themselves need an
+        // `AppHandle` and cannot be driven from here.
+        // Production half only — this test names the very strings it counts.
+        let whole = include_str!("pty.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("test module marker in pty.rs")];
+
+        let gate_sites = src.matches("daemon_enabled(&app)").count()
+            + src.matches("daemon_enabled(app)").count();
+        assert_eq!(
+            gate_sites, 3,
+            "expected exactly 3 reads of the toggle: the subscriber's \
+             re-subscribe pause, `delegate_daemon_status` reporting it, and \
+             `delegate_pty_spawn` gating the spawn route. Found {gate_sites} — \
+             if a read or lifecycle op started consulting the toggle, a live \
+             daemon session just became invisible to it."
+        );
+
+        // And the shared round-trip helper must never be one of them.
+        let start = src
+            .find("fn ask_daemon(")
+            .expect("ask_daemon is the one round-trip helper");
+        let body = &src[start..];
+        let end = body.find("\n}").expect("end of ask_daemon");
+        assert!(
+            !body[..end].contains("daemon_enabled"),
+            "ask_daemon must not consult the toggle — every listing, liveness \
+             check and lifecycle op goes through it"
+        );
     }
 }
