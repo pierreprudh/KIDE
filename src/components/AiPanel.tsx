@@ -90,6 +90,7 @@ import {
 } from "./ai/conversationSession";
 import { buildRunHandoff, type HandoffSummary } from "../agentHandoff";
 import {
+  CONVERSATIONS_CHANGED_EVENT,
   genId,
   deriveTitle,
   estimateTokens,
@@ -522,6 +523,10 @@ export function AiPanel({
         provider: requestedProviderRef.current,
         model: hostModel,
         workspaceRoot,
+        // The Focus hero is a new-task surface. Its first message must start
+        // from the Provider/model displayed in that composer, never from this
+        // panel's previous durable binding (which may belong to OpenRouter).
+        startFresh: !!initialMessage?.trim(),
       }),
   );
   // Async Run callbacks need the latest identity even before React commits the
@@ -1517,6 +1522,15 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations<Conversation>());
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Every panel renders the same durable Conversation index. Same-window
+  // localStorage writes do not emit the browser's `storage` event, so consume
+  // the focused event published by persistConversation and refresh metadata
+  // written by sibling panels instead of keeping a stale per-panel copy.
+  useEffect(() => {
+    const reload = () => setConversations(loadConversations<Conversation>());
+    window.addEventListener(CONVERSATIONS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, reload);
+  }, []);
   const queueRef = useRef<QueuedTurn[]>([]);
   const processingQueueRef = useRef(false);
   const queueGenerationRef = useRef(0);
@@ -2018,7 +2032,13 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   function deleteConversation(id: string, e: ReactMouseEvent) {
     e.stopPropagation();
-    setConversations((prev) => { const next = prev.filter((c) => c.id !== id); saveConversations(next); return next; });
+    // Deletion is another whole-index write, so base it on the durable store
+    // rather than this panel's possibly stale rendered copy.
+    setConversations(
+      saveConversations(
+        loadConversations<Conversation>().filter((conversation) => conversation.id !== id),
+      ),
+    );
     deleteKlideConvo(id);
     if (id === currentId) {
       const nid = genId();
@@ -2077,9 +2097,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   useEffect(() => {
     const snapshot = snapshotConversationSession(conversationSession);
     if (!snapshot) return;
-    setConversations((prev) => {
-      return persistConversation(snapshot, prev);
-    });
+    setConversations(persistConversation(snapshot));
   }, [conversationSession]);
 
   // Flush whatever the latest commit was on unmount so a view switch

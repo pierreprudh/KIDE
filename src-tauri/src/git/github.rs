@@ -106,6 +106,7 @@ fn gh_bin() -> String {
 fn gh_output(workspace_root: &str, args: &[&str]) -> Result<String, String> {
     let mut command = Command::new(gh_bin());
     command.args(args);
+    apply_account_env(&mut command);
     if !workspace_root.is_empty() {
         command.current_dir(workspace_root);
     }
@@ -175,12 +176,238 @@ fn parse_configured_github_login(hosts: &str) -> Option<String> {
     None
 }
 
-fn configured_github_login() -> Option<String> {
-    let config_root = std::env::var_os("GH_CONFIG_DIR")
+/// Every login `gh` is signed in to on github.com, read from the `users:` block
+/// of hosts.yml. Order is hosts.yml's own (alphabetical, as gh writes it), and
+/// entries that aren't plausible logins are dropped so a malformed file can
+/// never reach a command line.
+fn parse_github_logins(hosts: &str) -> Vec<String> {
+    let mut logins: Vec<String> = Vec::new();
+    let mut in_github = false;
+    // The indentation of the `users:` key, once we're inside it. Anything more
+    // deeply indented is one of its children (a login, or a login's own keys).
+    let mut users_indent: Option<usize> = None;
+    for line in hosts.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
+            in_github = trimmed == "github.com:";
+            users_indent = None;
+            continue;
+        }
+        if !in_github {
+            continue;
+        }
+        match users_indent {
+            Some(base) if indent > base => {
+                // A login is a bare `name:` key; a login's own settings
+                // (`oauth_token: …`) carry a value and are skipped.
+                if let Some(login) = trimmed.strip_suffix(':') {
+                    if is_plausible_login(login) {
+                        logins.push(login.to_string());
+                    }
+                }
+                continue;
+            }
+            // Dedented back out of `users:` — the block is over.
+            Some(_) => users_indent = None,
+            None => {}
+        }
+        if trimmed == "users:" {
+            users_indent = Some(indent);
+        }
+    }
+    logins
+}
+
+fn is_plausible_login(login: &str) -> bool {
+    !login.is_empty()
+        && login.len() <= 39
+        && login
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+fn gh_config_root() -> Option<std::path::PathBuf> {
+    std::env::var_os("GH_CONFIG_DIR")
         .map(std::path::PathBuf::from)
-        .or_else(|| crate::home_dir_path().map(|home| home.join(".config").join("gh")))?;
-    let hosts = std::fs::read_to_string(config_root.join("hosts.yml")).ok()?;
-    parse_configured_github_login(&hosts)
+        .or_else(|| crate::home_dir_path().map(|home| home.join(".config").join("gh")))
+}
+
+fn gh_hosts_yml() -> Option<String> {
+    std::fs::read_to_string(gh_config_root()?.join("hosts.yml")).ok()
+}
+
+fn configured_github_login() -> Option<String> {
+    parse_configured_github_login(&gh_hosts_yml()?)
+}
+
+/* ------------------------------------------------- the pinned account ---- */
+
+// `gh` has one globally active account (`gh auth switch` flips it), so with a
+// work and a personal login side by side, Klide's identity, avatars, and PR
+// commands followed whichever account you last switched to for something else
+// — the work face showing up in a personal project. A pin fixes Klide to one
+// account without touching gh's global state: we read that account's own token
+// and pass it per-command as GH_TOKEN, which gh (and `gh auth git-credential`,
+// so pushes too) prefers over the active login. No pin = previous behaviour,
+// gh's active account.
+
+fn pinned_account_path() -> Option<std::path::PathBuf> {
+    crate::home_dir_path().map(|home| home.join(".klide").join("github_account.json"))
+}
+
+fn parse_pinned_account(json: &str) -> Option<String> {
+    let raw: serde_json::Value = serde_json::from_str(json).ok()?;
+    let login = raw.get("login")?.as_str()?.trim();
+    is_plausible_login(login).then(|| login.to_string())
+}
+
+/// The pinned login, or None when Klide should follow gh's active account.
+/// Read from disk on each call — it's a few bytes next to a subprocess spawn,
+/// and it means a change in Settings takes effect without an app restart.
+fn pinned_account() -> Option<String> {
+    let json = std::fs::read_to_string(pinned_account_path()?).ok()?;
+    parse_pinned_account(&json)
+}
+
+type TokenCache = std::sync::Mutex<std::collections::HashMap<String, Option<String>>>;
+
+fn token_cache() -> &'static TokenCache {
+    static CACHE: std::sync::OnceLock<TokenCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// The pinned account's own token, via `gh auth token --user`. Cached per login
+/// — gh's stored tokens are long-lived, and this would otherwise double the
+/// subprocesses of every gh call. Misses are cached too, so a signed-out
+/// account doesn't retry forever; `github_set_account` drops the entry.
+fn account_token(login: &str) -> Option<String> {
+    if let Ok(cache) = token_cache().lock() {
+        if let Some(hit) = cache.get(login) {
+            return hit.clone();
+        }
+    }
+    // No apply_account_env here — this is the call that resolves it.
+    let token = Command::new(gh_bin())
+        .args(["auth", "token", "--user", login])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|token| !token.is_empty());
+    if let Ok(mut cache) = token_cache().lock() {
+        cache.insert(login.to_string(), token.clone());
+    }
+    token
+}
+
+/// Point a `gh` (or `git`) command at the pinned account, if there is one.
+/// Shared so PR creation and pushes act as the same account the avatar shows.
+pub(crate) fn apply_account_env(command: &mut Command) {
+    let Some(login) = pinned_account() else { return };
+    let Some(token) = account_token(&login) else { return };
+    command.env("GH_TOKEN", token);
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GitHubAccounts {
+    /// Every login gh is signed in to, for the Settings picker.
+    logins: Vec<String>,
+    /// gh's globally active account — what Klide uses when nothing is pinned.
+    active: Option<String>,
+    /// Klide's pin, when set.
+    pinned: Option<String>,
+}
+
+/// The accounts Klide can act as, plus which one it's currently using.
+#[tauri::command]
+pub(crate) async fn github_accounts() -> Result<GitHubAccounts, String> {
+    blocking(move || {
+        let hosts = gh_hosts_yml().unwrap_or_default();
+        let active = parse_configured_github_login(&hosts);
+        let mut logins = parse_github_logins(&hosts);
+        // An active account gh recorded without a `users:` entry (older config)
+        // still belongs in the list.
+        if let Some(active) = &active {
+            if !logins.iter().any(|login| login == active) {
+                logins.push(active.clone());
+            }
+        }
+        Ok(GitHubAccounts {
+            logins,
+            active,
+            pinned: pinned_account(),
+        })
+    })
+    .await
+}
+
+/// Pin Klide to one GitHub account, or clear the pin with `None`. Returns the
+/// identity now in force so the caller can repaint the avatar immediately.
+#[tauri::command]
+pub(crate) async fn github_set_account(login: Option<String>) -> Result<GitHubUser, String> {
+    blocking(move || {
+        let path = pinned_account_path().ok_or("No home directory to store the account in")?;
+        let parent = path
+            .parent()
+            .ok_or("Could not resolve the Klide config directory")?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("Could not create {parent:?}: {e}"))?;
+
+        match login.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+            Some(login) => {
+                if !is_plausible_login(login) {
+                    return Err(format!("'{login}' is not a valid GitHub login"));
+                }
+                let hosts = gh_hosts_yml().unwrap_or_default();
+                if !parse_github_logins(&hosts).iter().any(|l| l == login) {
+                    return Err(format!(
+                        "gh is not signed in as '{login}' — run `gh auth login` for that account first"
+                    ));
+                }
+                // Drop any cached miss first: the account may have been signed
+                // in since we last looked.
+                if let Ok(mut cache) = token_cache().lock() {
+                    cache.remove(login);
+                }
+                if account_token(login).is_none() {
+                    return Err(format!("Could not read gh's token for '{login}'"));
+                }
+                let body = serde_json::json!({ "login": login }).to_string();
+                std::fs::write(&path, body)
+                    .map_err(|e| format!("Could not save the account: {e}"))?;
+            }
+            None => {
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .map_err(|e| format!("Could not clear the account: {e}"))?;
+                }
+            }
+        }
+        resolve_current_user()
+    })
+    .await
+}
+
+/// The identity Klide acts as: the pin, else gh's active account, else — for a
+/// config we couldn't read — whatever `gh api user` reports.
+///
+/// The pin only counts when its token still resolves. A pinned account you've
+/// since signed out of would otherwise show its face here while every gh call
+/// quietly fell back to the active login — the exact mismatch the pin exists to
+/// prevent. Better to admit which account is really in force.
+fn resolve_current_user() -> Result<GitHubUser, String> {
+    let pinned = pinned_account().filter(|login| account_token(login).is_some());
+    if let Some(login) = pinned.or_else(configured_github_login) {
+        return Ok(GitHubUser {
+            avatar_url: format!("https://github.com/{login}.png?size=96"),
+            login,
+        });
+    }
+    parse_github_user(&gh_output("", &["api", "user"])?)
 }
 
 /// ISO-8601 value → unix millis, 0 when absent/unparsable.
@@ -418,15 +645,20 @@ pub(crate) async fn create_pr(
         // new commits for GitHub to compare against the base branch.
         run_git(&workspace_root, &["commit", "-m", title.trim()])?;
 
-        let push = Command::new("git")
-            .args([
-                "-C",
-                &workspace_root,
-                "push",
-                "-u",
-                "origin",
-                branch.as_str(),
-            ])
+        // The pinned account signs the push too (gh's credential helper prefers
+        // GH_TOKEN), so the branch lands under the same identity that opens the
+        // PR — otherwise a personal repo gets a 403 from the work login.
+        let mut push_cmd = Command::new("git");
+        push_cmd.args([
+            "-C",
+            &workspace_root,
+            "push",
+            "-u",
+            "origin",
+            branch.as_str(),
+        ]);
+        apply_account_env(&mut push_cmd);
+        let push = push_cmd
             .output()
             .map_err(|e| format!("Failed to push: {e}"))?;
         if !push.status.success() {
@@ -448,9 +680,10 @@ pub(crate) async fn create_pr(
             gh_args.push(&body_str);
         }
 
-        let pr = Command::new(gh_bin())
-            .args(gh_args)
-            .current_dir(&workspace_root)
+        let mut pr_cmd = Command::new(gh_bin());
+        pr_cmd.args(gh_args).current_dir(&workspace_root);
+        apply_account_env(&mut pr_cmd);
+        let pr = pr_cmd
             .output()
             .map_err(|e| format!("Failed to create PR: {e}"))?;
 
@@ -473,17 +706,7 @@ pub(crate) async fn create_pr(
 /// This is global identity, so unlike repository commands it needs no cwd.
 #[tauri::command]
 pub(crate) async fn github_current_user() -> Result<GitHubUser, String> {
-    blocking(move || {
-        if let Some(login) = configured_github_login() {
-            return Ok(GitHubUser {
-                avatar_url: format!("https://github.com/{login}.png?size=96"),
-                login,
-            });
-        }
-        let json = gh_output("", &["api", "user"])?;
-        parse_github_user(&json)
-    })
-    .await
+    blocking(resolve_current_user).await
 }
 
 /// One (commit, author-email) pair the frontend wants an avatar for.
@@ -727,6 +950,50 @@ git.example.com:
             parse_configured_github_login(hosts).as_deref(),
             Some("pierreprudh")
         );
+    }
+
+    #[test]
+    fn github_accounts_list_every_signed_in_login() {
+        let hosts = r#"github.com:
+    git_protocol: https
+    users:
+        Pierre-OTK:
+            oauth_token: gho_secret
+        pierreprudh:
+    user: Pierre-OTK
+git.example.com:
+    users:
+        someone-else:
+    user: someone-else
+"#;
+        assert_eq!(
+            parse_github_logins(hosts),
+            vec!["Pierre-OTK".to_string(), "pierreprudh".to_string()]
+        );
+    }
+
+    #[test]
+    fn github_accounts_ignore_keys_outside_the_users_block() {
+        let hosts = r#"github.com:
+    users:
+        pierreprudh:
+    user: pierreprudh
+    git_protocol: https
+"#;
+        // `user:` and `git_protocol:` sit at the users-block's own indent, so
+        // the block has ended — neither is a login.
+        assert_eq!(parse_github_logins(hosts), vec!["pierreprudh".to_string()]);
+    }
+
+    #[test]
+    fn pinned_account_reads_a_valid_login_only() {
+        assert_eq!(
+            parse_pinned_account(r#"{"login":"pierreprudh"}"#).as_deref(),
+            Some("pierreprudh")
+        );
+        assert_eq!(parse_pinned_account(r#"{"login":""}"#), None);
+        assert_eq!(parse_pinned_account(r#"{"login":"bad login;rm"}"#), None);
+        assert_eq!(parse_pinned_account("not json"), None);
     }
 
     const PR_LIST_JSON: &str = r#"[

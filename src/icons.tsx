@@ -1,0 +1,187 @@
+// icons — Klide's icon vocabulary, defined once.
+//
+// Two rails draw the same destinations: the free-mode ActivityBar and Focus's
+// rail. Until now each kept a private copy of every glyph — two Memory icons,
+// two Orchestrators, two Mission Controls, drawn slightly differently and at
+// slightly different stroke widths. Changing one changed one rail, which is
+// exactly the bug that sent us looking for the dev server.
+//
+// So: one name, one drawing, one weight. A rail decides *density* (it passes a
+// size); it never decides what a thing looks like.
+//
+// The set underneath is Phosphor, which ships weight as a variant rather than
+// a tunable prop — a "light" glyph is a different set of filled outlines, not
+// a thinner stroke. ICON_WEIGHT below is the single lever; changing that line
+// re-weights the app.
+//
+// Glyphs come from `@phosphor-icons/react/dist/csr/<Name>` rather than the
+// package root: the root barrel re-exports ~9,000 components, which Vite has
+// to walk on every cold dev start. The per-icon path skips that and tree-shakes
+// the same way in a production build.
+
+import type { CSSProperties } from "react";
+import type { Icon as PhosphorGlyph } from "@phosphor-icons/react";
+
+import { ArrowUp } from "@phosphor-icons/react/dist/csr/ArrowUp";
+import { BookmarkSimple } from "@phosphor-icons/react/dist/csr/BookmarkSimple";
+import { CaretDown } from "@phosphor-icons/react/dist/csr/CaretDown";
+import { Cards } from "@phosphor-icons/react/dist/csr/Cards";
+import { ChatTeardrop } from "@phosphor-icons/react/dist/csr/ChatTeardrop";
+import { CirclesThree } from "@phosphor-icons/react/dist/csr/CirclesThree";
+import { FlowArrow } from "@phosphor-icons/react/dist/csr/FlowArrow";
+import { Folder } from "@phosphor-icons/react/dist/csr/Folder";
+import { Gear } from "@phosphor-icons/react/dist/csr/Gear";
+import { GitBranch } from "@phosphor-icons/react/dist/csr/GitBranch";
+import { House } from "@phosphor-icons/react/dist/csr/House";
+import { MagnifyingGlass } from "@phosphor-icons/react/dist/csr/MagnifyingGlass";
+import { Plus } from "@phosphor-icons/react/dist/csr/Plus";
+import { PuzzlePiece } from "@phosphor-icons/react/dist/csr/PuzzlePiece";
+import { Rectangle } from "@phosphor-icons/react/dist/csr/Rectangle";
+import { Terminal } from "@phosphor-icons/react/dist/csr/Terminal";
+import { User } from "@phosphor-icons/react/dist/csr/User";
+import { X } from "@phosphor-icons/react/dist/csr/X";
+
+/** The one weight Klide draws at. Changing this line re-weights the app. */
+export const ICON_WEIGHT = "light" as const;
+
+/** Free-mode rail density. Focus's rail runs tighter and passes its own. */
+export const RAIL_ICON_SIZE = 18;
+
+export type GlyphProps = {
+  size?: number;
+  className?: string;
+  style?: CSSProperties;
+};
+
+/** The primitive. Nothing outside this file names a weight. */
+export function Icon({
+  as: Glyph,
+  size = RAIL_ICON_SIZE,
+  ...rest
+}: GlyphProps & { as: PhosphorGlyph }) {
+  return <Glyph size={size} weight={ICON_WEIGHT} aria-hidden="true" {...rest} />;
+}
+
+/* ------------------------------------------------------- rail destinations */
+
+export function HomeIcon(p: GlyphProps) {
+  return <Icon as={House} {...p} />;
+}
+
+export function SearchIcon(p: GlyphProps) {
+  return <Icon as={MagnifyingGlass} {...p} />;
+}
+
+export function FolderIcon(p: GlyphProps) {
+  return <Icon as={Folder} {...p} />;
+}
+
+/** The AI panel — a conversation with Kit, so it gets a speech mark rather
+ *  than a sparkle. Two reasons beyond taste: a sparkle is the universal "AI"
+ *  cliché, and Phosphor's is an outlined four-point star, which is AgentMark
+ *  (filled, accent) drawn a second way for a different meaning. */
+export function AiIcon(p: GlyphProps) {
+  return <Icon as={ChatTeardrop} {...p} />;
+}
+
+/** Git — the panel in free mode, a branch label in Focus. Same mark either
+ *  way, which is the point of naming it once. */
+export function GitIcon(p: GlyphProps) {
+  return <Icon as={GitBranch} {...p} />;
+}
+
+export function SkillsIcon(p: GlyphProps) {
+  return <Icon as={PuzzlePiece} {...p} />;
+}
+
+/** Memory — a bookmark rather than a notebook, because the AI panel's
+ *  "Summarize" action (the one thing that *writes* a memory note) is already
+ *  a bookmark. One mark for the writing end and the reading end. */
+export function MemoryIcon(p: GlyphProps) {
+  return <Icon as={BookmarkSimple} {...p} />;
+}
+
+/** Mission Control — three bodies in one frame: "many runs, one board". */
+export function MissionIcon(p: GlyphProps) {
+  return <Icon as={CirclesThree} {...p} />;
+}
+
+export function OrchestratorIcon(p: GlyphProps) {
+  return <Icon as={FlowArrow} {...p} />;
+}
+
+export function SettingsIcon(p: GlyphProps) {
+  return <Icon as={Gear} {...p} />;
+}
+
+/** Profile — the glyph plus a live status dot. The dot is drawn here rather
+ *  than sourced from the set: it carries state (the local profile resolved),
+ *  so it belongs to the destination, not to a glyph. */
+export function ProfileIcon({ size = RAIL_ICON_SIZE, ...rest }: GlyphProps) {
+  const dot = Math.max(5, Math.round(size * 0.3));
+  return (
+    <span style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}>
+      <Icon as={User} size={size} {...rest} />
+      <span
+        style={{
+          position: "absolute",
+          right: -1,
+          bottom: -1,
+          width: dot,
+          height: dot,
+          borderRadius: "50%",
+          background: "var(--success)",
+          outline: "1.5px solid var(--bg-elevated)",
+        }}
+      />
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------ rail chrome */
+
+/** The rail's primary action, so it gets the simplest mark in the set: a bare
+ *  plus. The glyphs under it describe a place; this one only has to say
+ *  "begin", and a pencil said "edit something that already exists". */
+export function NewTaskIcon(p: GlyphProps) {
+  return <Icon as={Plus} {...p} />;
+}
+
+export function CloseIcon(p: GlyphProps) {
+  return <Icon as={X} {...p} />;
+}
+
+export function SendIcon(p: GlyphProps) {
+  return <Icon as={ArrowUp} {...p} />;
+}
+
+/** A prompt caret — the terminal reduced to the one mark that means "shell". */
+export function TerminalIcon(p: GlyphProps) {
+  return <Icon as={Terminal} {...p} />;
+}
+
+/** Focus's layout mark: one centered reading column. */
+export function FocusLayoutIcon(p: GlyphProps) {
+  return <Icon as={Rectangle} {...p} />;
+}
+
+/** Free layout's mark: two offset panels, the mirror of FocusLayoutIcon. */
+export function FreeLayoutIcon(p: GlyphProps) {
+  return <Icon as={Cards} {...p} />;
+}
+
+/** Disclosure. `open` rotates it rather than swapping in a second glyph, so
+ *  the motion reads as one control turning. */
+export function ChevronIcon({ open = false, style, ...rest }: GlyphProps & { open?: boolean }) {
+  return (
+    <Icon
+      as={CaretDown}
+      style={{
+        transform: open ? "rotate(180deg)" : "none",
+        transition: "transform var(--motion-med) var(--ease-soft)",
+        ...style,
+      }}
+      {...rest}
+    />
+  );
+}

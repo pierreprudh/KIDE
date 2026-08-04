@@ -284,9 +284,25 @@ pub fn delegate_daemon_set_enabled(app: tauri::AppHandle, enabled: bool) -> Resu
     Ok(())
 }
 
+/// One native shell.
+pub struct Shell {
+    writer: Box<dyn Write + Send>,
+    /// Kept so the shell can be told the real viewport size. Without it the
+    /// PTY stays at its spawn-time geometry forever and every wrap — pagers,
+    /// `git log`, any TUI — happens at the wrong column. Delegate sessions
+    /// already do this (`delegate_pty_resize`); the native shell didn't,
+    /// which only became visible once the terminal could fill a whole view.
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    cwd: Option<String>,
+}
+
+/// The native shells, keyed by the terminal tab that owns each one. The
+/// frontend mints the ids and is the authority on which exist; Rust keeps them
+/// running across panel remounts and layout changes (the workbench drawer and
+/// Focus's dock attach to the same sessions, never to copies).
+#[derive(Default)]
 pub struct PtyState {
-    pub writer: Mutex<Option<Box<dyn Write + Send>>>,
-    pub cwd: Mutex<Option<String>>,
+    pub shells: Mutex<HashMap<String, Shell>>,
 }
 
 #[derive(Default)]
@@ -403,11 +419,108 @@ impl PtyEventSink for TauriSink {
     }
 }
 
+/// One chunk of shell output, tagged with the session it came from. Every
+/// terminal pane listens to `pty:data` and keeps only its own id.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyChunk {
+    id: String,
+    chunk: String,
+}
+
+/// What a terminal tab should call itself: the foreground process, or the empty
+/// string when the shell itself is in the foreground (nothing is running).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyTitle {
+    id: String,
+    title: String,
+}
+
+/// The command name for a pid, via `ps`. `comm` rather than the full argv on
+/// purpose: argv for anything launched through a wrapper is a path salad
+/// (`npm run dev` really is `node .../npm-cli.js run dev`), and a tab is one
+/// word wide. Login shells report as `-zsh`, hence the leading dash trim.
+fn process_name(pid: i32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let name = raw
+        .rsplit('/')
+        .next()
+        .unwrap_or(&raw)
+        .trim_start_matches('-')
+        .to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Watch which process holds the terminal's foreground process group and report
+/// it as the tab's title. Polling is the only way to know this — a shell doesn't
+/// announce what it launched — but it's cheap here: the pgid is read straight
+/// from the tty, and `ps` only runs when that pgid actually changes. The thread
+/// retires as soon as its shell leaves the map.
+fn watch_shell_title(app: tauri::AppHandle, id: String, shell_pid: Option<u32>) {
+    std::thread::spawn(move || {
+        let mut last_pgid: Option<i32> = None;
+        let mut last_title: Option<String> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            let Some(state) = app.try_state::<PtyState>() else {
+                return;
+            };
+            let pgid = {
+                let shells = state.shells.lock().unwrap();
+                match shells.get(&id) {
+                    Some(shell) => shell.master.process_group_leader(),
+                    // Closed — nothing left to title.
+                    None => return,
+                }
+            };
+            if pgid == last_pgid {
+                continue;
+            }
+            last_pgid = pgid;
+            // The shell in its own foreground means the prompt is idle.
+            let title = match pgid {
+                Some(pid) if Some(pid as u32) != shell_pid => process_name(pid).unwrap_or_default(),
+                _ => String::new(),
+            };
+            if last_title.as_deref() == Some(title.as_str()) {
+                continue;
+            }
+            last_title = Some(title.clone());
+            let _ = app.emit(
+                "pty:title",
+                PtyTitle {
+                    id: id.clone(),
+                    title,
+                },
+            );
+        }
+    });
+}
+
+/// Start the shell for terminal `id`, or adopt the one already running under
+/// that id. Idempotent on purpose: a pane remounts (panel switch, layout
+/// change, Focus ↔ workbench) far more often than a shell should restart, so a
+/// second call only corrects the cwd.
 #[tauri::command]
 pub fn pty_spawn(
     app: tauri::AppHandle,
     state: State<PtyState>,
+    id: String,
     workspace_root: Option<String>,
+    rows: Option<u16>,
+    cols: Option<u16>,
 ) -> Result<(), String> {
     let cwd = workspace_root
         .filter(|path| !path.trim().is_empty())
@@ -421,21 +534,30 @@ pub fn pty_spawn(
         })
         .transpose()?;
 
-    if let Some(w) = state.writer.lock().unwrap().as_mut() {
-        let mut current = state.cwd.lock().unwrap();
-        if cwd.is_some() && *current != cwd {
-            let command = format!("cd {}\n", shell_quote(cwd.as_deref().unwrap()));
-            w.write_all(command.as_bytes()).map_err(|e| e.to_string())?;
-            *current = cwd;
+    {
+        let mut shells = state.shells.lock().unwrap();
+        if let Some(shell) = shells.get_mut(&id) {
+            if cwd.is_some() && shell.cwd != cwd {
+                let command = format!("cd {}\n", shell_quote(cwd.as_deref().unwrap()));
+                shell
+                    .writer
+                    .write_all(command.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                shell.cwd = cwd;
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     let pty_system = native_pty_system();
     let pair = pty_system
+        // Spawn at the caller's real viewport when it knows it — the shell reads
+        // the geometry once at startup, so guessing 30x100 and correcting after
+        // makes the first prompt (and anything printed before the first resize)
+        // wrap at the wrong column.
         .openpty(PtySize {
-            rows: 30,
-            cols: 100,
+            rows: rows.filter(|r| *r > 0).unwrap_or(30),
+            cols: cols.filter(|c| *c > 0).unwrap_or(100),
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -448,11 +570,22 @@ pub fn pty_spawn(
     }
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
+    // Captured before `child` moves into the reader thread — the watcher needs
+    // it to tell "the shell is idle" from "the shell launched something".
+    let shell_pid = child.process_id();
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    *state.writer.lock().unwrap() = Some(writer);
-    *state.cwd.lock().unwrap() = cwd;
+    state.shells.lock().unwrap().insert(
+        id.clone(),
+        Shell {
+            writer,
+            master: pair.master,
+            cwd,
+        },
+    );
+
+    watch_shell_title(app.clone(), id.clone(), shell_pid);
 
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -461,19 +594,64 @@ pub fn pty_spawn(
                 break;
             }
             let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-            let _ = app.emit("pty:data", chunk);
+            let _ = app.emit(
+                "pty:data",
+                PtyChunk {
+                    id: id.clone(),
+                    chunk,
+                },
+            );
         }
         let _ = child.wait();
+        // The shell is gone (`exit`, or the user killed it). Drop it so the id
+        // is free to spawn again, and tell the UI so the tab can close itself
+        // instead of sitting there dead.
+        if let Some(state) = app.try_state::<PtyState>() {
+            state.shells.lock().unwrap().remove(&id);
+        }
+        let _ = app.emit("pty:exit", id);
     });
 
     Ok(())
 }
 
+/// Tell one shell how big its window actually is. Per session now, so a split
+/// no longer has two panes fighting over a single geometry.
 #[tauri::command]
-pub fn pty_write(state: State<PtyState>, data: String) -> Result<(), String> {
-    if let Some(w) = state.writer.lock().unwrap().as_mut() {
-        w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+pub fn pty_resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<(), String> {
+    if rows == 0 || cols == 0 {
+        return Ok(());
     }
+    if let Some(shell) = state.shells.lock().unwrap().get(&id) {
+        shell
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_write(state: State<PtyState>, id: String, data: String) -> Result<(), String> {
+    if let Some(shell) = state.shells.lock().unwrap().get_mut(&id) {
+        shell
+            .writer
+            .write_all(data.as_bytes())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Close a terminal tab: drop the shell so its PTY hangs up and the child sees
+/// EOF. The reader thread then emits `pty:exit` on its way out.
+#[tauri::command]
+pub fn pty_close(state: State<PtyState>, id: String) -> Result<(), String> {
+    state.shells.lock().unwrap().remove(&id);
     Ok(())
 }
 

@@ -7,14 +7,17 @@
 // id, label, and icon — is defined once, here. Adding a destination should
 // never mean remembering to edit a second rail.
 
+import { ProfileIcon, SettingsIcon, type GlyphProps } from "./icons";
+
 /** The panel ids a destination can open. Matches the `View` union both rails
  *  speak; kept as a narrow literal set so a typo can't slip through. */
 export type RailDestinationId = "settings" | "profile";
 
 /** Each rail draws these at its own density — the free-mode rail's rows are
- *  18px/1.25, the Focus rail's are 15px/1.7 — so the icons take both rather
- *  than forcing one rail to look off next to its neighbours. */
-export type RailIconProps = { size?: number; strokeWidth?: number };
+ *  18px, the Focus rail's 15px — so the icons take a size. Weight is not a
+ *  parameter: ./icons owns it for the whole app, which is what stopped the
+ *  two rails drifting apart. */
+export type RailIconProps = GlyphProps;
 
 export type RailDestination = {
   id: RailDestinationId;
@@ -22,53 +25,10 @@ export type RailDestination = {
   Icon: (props: RailIconProps) => React.JSX.Element;
 };
 
-export function SettingsIcon({ size = 18, strokeWidth = 1.25 }: RailIconProps) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 6h10" />
-      <path d="M18 6h2" />
-      <path d="M16 4v4" />
-      <path d="M4 12h3" />
-      <path d="M11 12h9" />
-      <path d="M9 10v4" />
-      <path d="M4 18h11" />
-      <path d="M19 18h1" />
-      <path d="M17 16v4" />
-    </svg>
-  );
-}
-
-export function ProfileIcon({ size = 18, strokeWidth = 1.4 }: RailIconProps) {
-  // Person silhouette with a small status dot bottom-right — the
-  // "you, on this machine" entry in the bottom zone.
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="9" r="3.6" />
-      <path d="M5 20a7 7 0 0 1 14 0" />
-      <circle cx="18.5" cy="17.5" r="1.6" fill="var(--success)" stroke="none" />
-    </svg>
-  );
-}
+/* The glyphs themselves live in ./icons with the rest of the vocabulary.
+   Re-exported here so callers that think in destinations ("give me the
+   Settings mark") don't have to know which module drew it. */
+export { SettingsIcon, ProfileIcon };
 
 /** The destinations, in rail order. */
 export const RAIL_DESTINATIONS: readonly RailDestination[] = [

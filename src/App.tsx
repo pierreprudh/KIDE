@@ -148,6 +148,37 @@ function App() {
   // the hero composer's text on its way into the AI panel.
   const [focusChatActive, setFocusChatActive] = useState(false);
   const [focusInitialMessage, setFocusInitialMessage] = useState<string | null>(null);
+  // The shell docked under Focus's canvas. Not persisted: Focus should open on
+  // its home (or the conversation you left), never on a terminal you forgot.
+  const [focusTerminalOpen, setFocusTerminalOpen] = useState(false);
+  const [focusTerminalMounted, setFocusTerminalMounted] = useState(false);
+  const [focusTerminalResizing, setFocusTerminalResizing] = useState(false);
+  // `shown` is deliberately a frame behind `mounted`: a height transition needs
+  // a previous value to animate FROM, and an element that appears already at
+  // its full height just pops. So the dock mounts closed, then opens — which is
+  // also why xterm gets a real box (the inner wrapper) from its very first
+  // frame and only ever measures once.
+  const [focusTerminalShown, setFocusTerminalShown] = useState(false);
+  useEffect(() => {
+    if (!focusTerminalOpen) {
+      setFocusTerminalShown(false);
+      return;
+    }
+    if (!focusTerminalMounted) {
+      setFocusTerminalMounted(true);
+      return;
+    }
+    // Two frames: one for the browser to lay the closed dock out, one to start
+    // the transition from it.
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setFocusTerminalShown(true));
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [focusTerminalOpen, focusTerminalMounted]);
   const [memoryVisible, setMemoryVisible] = useState(false);
   const [worktreesVisible, setWorktreesVisible] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -679,13 +710,20 @@ function App() {
     window.addEventListener("mouseup", onUp);
   }
 
-  function beginTerminalDockResize(e: ReactMouseEvent<HTMLDivElement>) {
+  /**
+   * Drag the terminal drawer's top edge. `availableH` overrides what the 72%
+   * ceiling is measured against: Focus never mounts the workbench, so
+   * `workbenchSize` stays 0×0 there (see usePanelLayout) and the default bound
+   * would collapse to the 160px floor. Its dock passes its own canvas height.
+   */
+  function beginTerminalDockResize(e: ReactMouseEvent<HTMLDivElement>, availableH?: number) {
     e.preventDefault();
     const startY = e.clientY;
     const startH = terminalRect.h;
+    const bound = availableH && availableH > 0 ? availableH : workbenchSize.h;
     const maxH = Math.min(
       PANEL_CONSTRAINTS.terminal.maxH,
-      Math.max(160, Math.round(workbenchSize.h * 0.72))
+      Math.max(160, Math.round(bound * 0.72))
     );
     const previousCursor = document.body.style.cursor;
     const previousSelect = document.body.style.userSelect;
@@ -1941,6 +1979,7 @@ function App() {
     { id: "layout-anchored", label: "Layout: Anchored (IDE)", action: () => { setFocusMode(false); setAnchoredLayout(true); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
     { id: "layout-free", label: "Layout: Free (floating panels)", action: () => { setFocusMode(false); setAnchoredLayout(false); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
     { id: "layout-focus", label: "Layout: Focus (chat)", action: () => { setFocusMode(true); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
+    { id: "terminal-focus", label: "Terminal: Open in Focus", action: () => { setFocusTerminalOpen(true); setTerminalVisible(false); setFocusMode(true); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
     { id: "runs", label: "View: Mission Control", action: () => { setView("runs"); setPaletteOpen(false); } },
     { id: "orchestrator", label: "View: Orchestrator", action: () => { setView("orchestrator"); setPaletteOpen(false); } },
     { id: "back-to-workbench", label: "View: Back to Workbench", shortcut: "Esc", action: () => { setView("workbench"); setPaletteOpen(false); } },
@@ -2263,6 +2302,78 @@ function App() {
                     setAnchoredLayout(false);
                     exitGrid();
                   }}
+                  /* Terminal on the full canvas. There is one native shell, so
+                     this is the same PTY the workbench drawer shows — and
+                     because the drawer is unmounted while Focus is up, exactly
+                     one xterm is ever attached to it. */
+                  terminalOpen={focusTerminalOpen}
+                  onOpenTerminal={() => setFocusTerminalOpen(true)}
+                  onCloseTerminal={() => setFocusTerminalOpen(false)}
+                  renderTerminal={() =>
+                    // Mounts on first open, then stays — same as the workbench
+                    // drawer, so closing can animate out and the shell's
+                    // scrollback survives the trip.
+                    focusTerminalMounted ? (
+                      <div
+                        className="klide-focus-terminal-dock"
+                        data-open={focusTerminalShown ? "true" : "false"}
+                        data-resizing={focusTerminalResizing ? "true" : undefined}
+                        aria-hidden={!focusTerminalShown}
+                        // Height is the animated property here — that's what
+                        // makes the canvas above give way instead of being
+                        // covered. Closed is a real 0, so it occupies nothing.
+                        style={{ height: focusTerminalShown ? terminalRect.h : 0 }}
+                      >
+                        <div
+                          role="separator"
+                          aria-orientation="horizontal"
+                          aria-label="Resize terminal"
+                          // Suspend the height transition for the drag, then
+                          // restore it so closing still animates.
+                          onMouseDown={(e) => {
+                            setFocusTerminalResizing(true);
+                            const done = () => {
+                              setFocusTerminalResizing(false);
+                              window.removeEventListener("mouseup", done);
+                            };
+                            window.addEventListener("mouseup", done);
+                            // The Focus canvas, measured live — the drawer's
+                            // usual bound (workbenchSize) is 0 in Focus.
+                            const canvas = e.currentTarget.parentElement?.parentElement;
+                            beginTerminalDockResize(e, canvas?.clientHeight);
+                          }}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            height: 7,
+                            cursor: "row-resize",
+                            zIndex: 30,
+                            background: "transparent",
+                            transition: "background var(--motion-fast) var(--ease-out)",
+                          }}
+                        />
+                        {/* Settled height, held while the dock's box animates —
+                            so xterm re-measures once, not every frame. */}
+                        <div
+                          className="klide-focus-terminal-dock-inner"
+                          style={{ height: terminalRect.h }}
+                        >
+                          <TerminalPanel
+                            key="focus-terminal"
+                            fill
+                            visible
+                            inset
+                            theme={theme}
+                            height={terminalRect.h}
+                            workspaceRoot={workspaceRoot}
+                            onToggle={() => setFocusTerminalOpen(false)}
+                          />
+                        </div>
+                      </div>
+                    ) : null
+                  }
                   raceTabs={raceWatchTabs}
                   activeRaceTab={focusActiveTabId}
                   onSelectRaceTab={selectRaceTab}
@@ -2758,13 +2869,6 @@ function App() {
                     aria-orientation="horizontal"
                     aria-label="Resize terminal"
                     onMouseDown={beginTerminalDockResize}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background =
-                        "linear-gradient(to bottom, var(--accent-soft), transparent)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                    }}
                     style={{
                       position: "absolute",
                       top: 0,
@@ -2785,6 +2889,19 @@ function App() {
                       height={terminalRect.h}
                       workspaceRoot={workspaceRoot}
                       onToggle={() => setTerminalVisible(false)}
+                      /* Take the drawer to Focus, where it docks under the
+                         canvas at the same height. The shell keeps running —
+                         this only moves which xterm is attached to it, so a
+                         build in progress survives the trip. The workbench
+                         drawer closes behind you so coming back doesn't land
+                         on a half-open dock. */
+                      onOpenInFocus={() => {
+                        setFocusTerminalOpen(true);
+                        setTerminalVisible(false);
+                        setFocusMode(true);
+                        exitGrid();
+                        setView("workbench");
+                      }}
                     />
                   )}
                 </div>

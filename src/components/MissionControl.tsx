@@ -39,6 +39,7 @@ import {
 } from "../klideConvos";
 import { listMemory, subscribeMemoryChanged } from "../memory";
 import type { ThemeId } from "../theme";
+import { terminalLook } from "../terminalTheme";
 import {
   BOARD_SECTION_HINT,
   BOARD_SECTION_LABEL,
@@ -151,10 +152,6 @@ function patchForFile(diff: string, path: string): string {
 // complete it. A dispatched task's detail pane is a live terminal you can
 // watch, type into (take over), or stop. Klide's own AI-panel conversations
 // are listed on the same board. Diff review on completion comes next.
-
-function cssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
 
 // Minimal status text for places that need an explicit state. No colored
 // dots: section headers and row copy already carry the hierarchy.
@@ -2698,14 +2695,8 @@ function TaskTerminal({ sessionId, theme }: { sessionId: string; theme: ThemeId 
     if (!ref.current) return;
     const term = new Terminal({
       fontSize: 11.5,
-      lineHeight: 1.25,
-      fontFamily:
-        "Monaspace Neon, Monaspace Argon, JetBrains Mono, SF Mono, Menlo, ui-monospace, monospace",
-      theme: {
-        background: cssVar("--terminal-bg"),
-        foreground: cssVar("--terminal-fg"),
-        cursor: cssVar("--terminal-cursor"),
-      },
+      lineHeight: 1.35,
+      ...terminalLook(theme),
       cursorBlink: true,
       scrollback: 5000,
       convertEol: true,
