@@ -9,9 +9,11 @@
 
 use crate::delegate::{self, shell_quote};
 use crate::pty_client;
-use crate::pty_daemon::{
-    Event as DaemonEvent, Request as DaemonRequest, Response as DaemonResponse,
-};
+// From `pty_wire`, not `pty_daemon`: the daemon module is `#![cfg(unix)]`, and
+// an inner cfg *empties* a module rather than removing it — so on a non-unix
+// target these three names silently stopped resolving and took the whole
+// delegate layer's compilation with them.
+use crate::pty_wire::{Event as DaemonEvent, Request as DaemonRequest, Response as DaemonResponse};
 use crate::pty_host::{
     self, DelegateMissionLink, LiveSessionRow, PtyEventSink, PtyExitOutcome, SessionHost, SpawnSpec,
 };
