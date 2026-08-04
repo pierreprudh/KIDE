@@ -92,6 +92,7 @@ import {
 import { resolveRunInspection } from "../runInspection";
 import { compactConversationMessages, runMessagesToMarkdown } from "../transcripts";
 import { DELEGATE_IDS, isDelegateId, type DelegateId } from "../delegates";
+import { presentLiveDelegate, presentReasonTone, presentValidation, toneColor } from "../runPresentation";
 import { CheckpointPanel } from "./CheckpointPanel";
 import { listCheckpoints } from "../agent/client";
 import type { ArtifactRequest } from "./ArtifactInspector";
@@ -205,9 +206,7 @@ function boardReasonChipStyle(tone: RunBoardReasonTone): React.CSSProperties {
   };
 }
 
-function reasonToneColor(tone: RunBoardReasonTone): string {
-  return tone === "danger" ? "var(--danger)" : "var(--fg-subtle)";
-}
+const reasonToneColor = presentReasonTone;
 
 function RunReasonChip({ run }: { run: Run }) {
   const reason = runBoardReason(run);
@@ -946,22 +945,17 @@ function RunRow({
   );
 }
 
-// ── Mission Control v3 — Attention queue ────────────────────────────────────
-// Pinned strip at the top of the board. The board used to have a "Blocked"
-// section that mixed waiting runs with errored ones and never explained *why*
-// each run was blocked; the queue elevates that into a focused action surface
-// with per-row reason text and an inline action.
+// ── Dismissing a board row ──────────────────────────────────────────────────
+// A row the user has acknowledged stays out of the way until it changes: the
+// key carries `updatedMs`, so any new activity brings the row back on its own.
 //
-// Why this design:
-//   - The queue's items are a strict subset of the sectioned board. A run
-//     shown in the queue is *not* hidden from the section it would otherwise
-//     belong to — duplication is the point. The queue is for acting; the
-//     section is for browsing.
-//   - The reason pill is the new information. It uses four tones (danger /
-//     warn / accent / subtle) so the queue reads at a glance: "red = broken,
-//     amber = blocked on me, blue = ready to read, grey = idle".
-//   - Severity ordering (failed → needs-me → idle → review) puts the runs
-//     that are likely to lose money or context at the top.
+// (This block used to carry the design rationale for a pinned "Attention
+// queue" strip with per-row reason pills in four tones. That strip does not
+// exist — the board's own sections plus `runBoardReason` replaced it, and
+// `reasonToneColor` collapses those four tones to two. Its orphaned tables,
+// `ATTENTION_LABEL` / `ATTENTION_TONE` / `runNeedsAttention` / the old
+// `LIFECYCLE_ORDER`, are gone too; each had exactly one reference, its own
+// definition.)
 
 const DISMISSED_BOARD_KEY = "klide-dismissed-board-runs";
 
@@ -1227,12 +1221,7 @@ function RaceCompareTable({
     {
       label: "Validation",
       value: (e) => formatValidationStatus(e?.validation),
-      tone: (e) =>
-        e?.validation?.status === "failed"
-          ? "var(--danger)"
-          : e?.validation?.status === "passed"
-          ? "var(--success)"
-          : undefined,
+      tone: (e) => toneColor(presentValidation(e?.validation?.status)),
     },
     {
       label: "Files",
@@ -4265,24 +4254,12 @@ const RUN_REFRESH_MS = 7_500;
 const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RECENT_SESSION_MAX_ROWS = 4;
 
-// Live-strip status rendering: the one status vocabulary (see runs.ts
-// STATUS_LABEL) — Working / Waiting / Blocked (+ Idle for the timer
-// heuristic). No chips, no dots — the word and its color carry the state;
-// precise phrasing lives in the row tooltip.
-const LIVE_STATUS_TEXT: Record<LiveDelegateSession["status"], string> = {
-  running: "Working",
-  working: "Working",
-  idle: "Idle",
-  blocked: "Blocked",
-  waiting: "Waiting",
-};
-const LIVE_STATUS_COLOR: Record<LiveDelegateSession["status"], string> = {
-  running: "var(--accent)",
-  working: "var(--accent)",
-  idle: "var(--fg-subtle)",
-  blocked: "var(--warning)",
-  waiting: "var(--success)",
-};
+// Live-strip status rendering comes from the one vocabulary in
+// `runPresentation.ts`. Note a live Delegate's `waiting` is **Waiting** (its
+// turn finished, the output is on you), where a board row's `RunStatus.waiting`
+// is **Blocked** (a Harness run parked on a gate). Both are correct; see the
+// note in that module before touching either. No chips, no dots — the word and
+// its color carry the state; precise phrasing lives in the row tooltip.
 
 // "Live now" strip — the delegate sessions still running *in this Klide
 // process*, which we can reconnect to in-process and replay (Slice 1/2,
@@ -4329,8 +4306,9 @@ function LiveSessionsStrip({
     const title = s.task?.trim() || `${providerName(providerId)} session`;
     const canReattach = isDelegateProvider(providerId) && !!onReattach;
     const idle = s.status === "idle";
-    const statusLabel = LIVE_STATUS_TEXT[s.status] ?? "Working";
-    const statusColor = LIVE_STATUS_COLOR[s.status] ?? "var(--accent)";
+    const live = presentLiveDelegate(s.status);
+    const statusLabel = live.word;
+    const statusColor = toneColor(live.tone);
     // Blocked is the one state worth a resting wash — the agent is
     // parked on the user. Everything else stays flat until hover.
     const restBg =

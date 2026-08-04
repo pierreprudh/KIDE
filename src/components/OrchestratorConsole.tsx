@@ -13,6 +13,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { gitDiff, gitStatus } from "../ipc/git";
+import { presentMissionCardTone, toneColor } from "../runPresentation";
 import { listProviderModels } from "../ipc/aiProviders";
 import {
   routeTask,
@@ -302,7 +303,7 @@ function SegmentedModes({ mode, setMode }: { mode: ModeKey; setMode: (m: ModeKey
 // live work stays the focus.
 function StatusBadge({ status }: { status: CardStatus }) {
   if (status === "done") return <span style={{ display: "inline-flex", color: "var(--fg-subtle)" }}><IconCheck size={11} /></span>;
-  const color = status === "error" ? "var(--danger)" : status === "interrupted" || status === "review" ? "var(--warning)" : status === "running" ? "var(--accent)" : "var(--fg-dim)";
+  const color = status === "idle" ? "var(--fg-dim)" : toneColor(presentMissionCardTone(status));
   return (
     <span
       style={{

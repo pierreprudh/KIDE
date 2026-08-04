@@ -8,6 +8,12 @@ import type { AgentEvent } from "./agent/types";
 import { foldAgentEvents, foldedToRunMessages } from "./agent/foldEvents";
 
 import { isDelegateId, type DelegateId } from "./delegates";
+import {
+  presentBoardSection,
+  presentLifecycle,
+  presentRunStatus,
+  toneColor,
+} from "./runPresentation";
 
 export type RunSource = DelegateId | "klide";
 export type RunStatus = "running" | "waiting" | "queued" | "done" | "cancelled" | "error";
@@ -36,23 +42,6 @@ export type RunBoardReason = {
   label: string;
   detail: string;
   tone: RunBoardReasonTone;
-};
-
-/** Human label for an attention kind, surfaced on the queue pill. */
-export const ATTENTION_LABEL: Record<RunAttention["kind"], string> = {
-  failed: "Failed",
-  awaiting_input: "Blocked",
-  idle: "Idle",
-  awaiting_review: "Waiting",
-};
-
-/** Tone (CSS color token) for an attention kind. Failed/awaiting-input pull
- *  louder tones so the queue reads as a focused action surface. */
-export const ATTENTION_TONE: Record<RunAttention["kind"], "danger" | "warn" | "accent" | "subtle"> = {
-  failed: "danger",
-  awaiting_input: "warn",
-  idle: "subtle",
-  awaiting_review: "accent",
 };
 
 // What this row actually represents on the board. Tasks are Mission Control
@@ -206,16 +195,12 @@ export const STATUS_ORDER: RunStatus[] = [
 // output sitting on you (turn done, review ready); Blocked = the agent can't
 // proceed without you. Genuinely distinct states (Queued / Stopped / Failed /
 // Idle) keep their own single quiet word — they're not synonyms.
-export const STATUS_LABEL: Record<RunStatus, string> = {
-  running: "Working",
-  waiting: "Blocked",
-  queued: "Queued",
-  done: "Done",
-  cancelled: "Stopped",
-  error: "Failed",
-};
+export const STATUS_LABEL: Record<RunStatus, string> = Object.fromEntries(
+  STATUS_ORDER.map((s) => [s, presentRunStatus(s).word])
+) as Record<RunStatus, string>;
 
-export const LIFECYCLE_ORDER: RunLifecycleStatus[] = [
+/** Every lifecycle status, in the order a run passes through them. */
+export const LIFECYCLE_STATUSES: RunLifecycleStatus[] = [
   "queued",
   "running",
   "waiting",
@@ -225,15 +210,9 @@ export const LIFECYCLE_ORDER: RunLifecycleStatus[] = [
   "cancelled",
 ];
 
-export const LIFECYCLE_LABEL: Record<RunLifecycleStatus, string> = {
-  queued: "Queued",
-  running: "Working",
-  waiting: "Blocked",
-  needs_review: "Waiting",
-  done: "Done",
-  failed: "Failed",
-  cancelled: "Stopped",
-};
+export const LIFECYCLE_LABEL: Record<RunLifecycleStatus, string> = Object.fromEntries(
+  LIFECYCLE_STATUSES.map((s) => [s, presentLifecycle(s).word])
+) as Record<RunLifecycleStatus, string>;
 
 export const BOARD_SECTION_ORDER: RunBoardSection[] = [
   "running",
@@ -242,12 +221,9 @@ export const BOARD_SECTION_ORDER: RunBoardSection[] = [
   "done",
 ];
 
-export const BOARD_SECTION_LABEL: Record<RunBoardSection, string> = {
-  running: "Working",
-  blocked: "Blocked",
-  ready_for_review: "Waiting",
-  done: "Done",
-};
+export const BOARD_SECTION_LABEL: Record<RunBoardSection, string> = Object.fromEntries(
+  BOARD_SECTION_ORDER.map((s) => [s, presentBoardSection(s)])
+) as Record<RunBoardSection, string>;
 
 export const BOARD_SECTION_HINT: Record<RunBoardSection, string> = {
   running: "Active or queued work",
@@ -295,10 +271,6 @@ export function boardSectionForRun(run: Pick<Run, "status" | "kind" | "parentId"
   // of becoming top-level review work.
   if (run.kind === "task") return "ready_for_review";
   return "done";
-}
-
-export function runNeedsAttention(run: Pick<Run, "status" | "kind" | "parentId" | "source" | "updatedMs">): boolean {
-  return runAttentionReason(run) !== null;
 }
 
 /** Mirrors `DELEGATE_RECENCY_MS` in `src-tauri/src/delegate/runs.rs`: how long a
@@ -445,26 +417,16 @@ export function runRoutineInfo(run: Pick<Run, "title">): RunRoutineInfo | null {
   return null;
 }
 
-// Quiet, theme-aware tones. Amber matches the AI panel's context meter; danger
-// reuses the existing token; success is a restrained desaturated green.
-export const STATUS_COLOR: Record<RunStatus, string> = {
-  running: "var(--accent)",
-  waiting: "var(--warning)",
-  queued: "var(--fg-subtle)",
-  done: "var(--success)",
-  cancelled: "var(--fg-subtle)",
-  error: "var(--danger)",
-};
+// Derived from the one vocabulary in `runPresentation.ts` rather than restated,
+// so a state's word and its colour can no longer disagree. Kept as records
+// because call sites index them directly.
+export const STATUS_COLOR: Record<RunStatus, string> = Object.fromEntries(
+  STATUS_ORDER.map((s) => [s, toneColor(presentRunStatus(s).tone)])
+) as Record<RunStatus, string>;
 
-export const LIFECYCLE_COLOR: Record<RunLifecycleStatus, string> = {
-  queued: "var(--fg-subtle)",
-  running: "var(--accent)",
-  waiting: "var(--warning)",
-  needs_review: "var(--accent)",
-  done: "var(--success)",
-  failed: "var(--danger)",
-  cancelled: "var(--fg-subtle)",
-};
+export const LIFECYCLE_COLOR: Record<RunLifecycleStatus, string> = Object.fromEntries(
+  LIFECYCLE_STATUSES.map((s) => [s, toneColor(presentLifecycle(s).tone)])
+) as Record<RunLifecycleStatus, string>;
 
 export const SOURCE_LABEL: Record<RunSource, string> = {
   "claude-code": "Claude Code",
