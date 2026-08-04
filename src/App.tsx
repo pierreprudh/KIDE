@@ -34,7 +34,7 @@ import {
   gitWorktreeRemove,
   createPr,
 } from "./ipc/git";
-import { eventsToConversation } from "./components/ai/eventsToMsgs";
+import { eventsToConversation } from "./components/ai/replayConversation";
 import { loadPanelSession } from "./components/ai/utils";
 import type { AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider } from "./agent/providers";

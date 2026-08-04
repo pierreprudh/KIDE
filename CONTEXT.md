@@ -80,11 +80,33 @@ The append-only JSONL record of a run's agent events on disk. A run can be repla
 _Avoid_: log, history, chat history
 
 **Conversation**:
-The reader-facing shape of a Transcript — a `RunMessage[]` folded into renderable
-items (messages with their inline tool calls hoisted out; consecutive process
-notes collapsed). Parsed by the transcript module (`src/transcripts.ts`),
-independent of any view, so Mission Control, Memory, and export share one parser.
+The reader-facing shape of a Transcript. There is one owner of the wire format,
+`src/agent/foldEvents.ts`: `foldAgentEvents` folds an Agent event stream into
+`FoldedRow[]`, and two mappers project that into the two shapes surfaces
+actually render — `Msg[]` for the AI panel, `RunMessage[]` for Mission Control.
+Everything downstream is a projection of that fold, never a second parse of the
+events.
+
+Two further folds sit *on top* of it, and are views rather than parsers:
+`src/transcripts.ts` compacts `RunMessage[]` into `ConversationItem[]` for the
+board's detail pane, and `src/components/ai/replayConversation.ts` adds the
+system lines a resumed panel needs to explain itself.
+
+> This entry used to say `transcripts.ts` was the shared parser, "so Mission
+> Control, Memory, and export share one parser". They never did: it has one
+> importer, Mission Control. The sentence described an intention as if it were
+> a fact, and pointed the domain's headline noun at the wrong module.
+
 _Avoid_: chat log, message list, thread
+
+**Stored conversation**:
+The persisted record of one AI-panel Conversation — `Conversation` in
+`src/components/ai/types.ts`: an id, a title, its `Msg[]`, and the Provider,
+model, Workspace, Git metadata and lineage it was worked in. This is what the
+conversation index holds and what resume and fork pass around. It is a
+*different shape* from the Conversation fold above, and the two share a name in
+code; when it matters, say which.
+_Avoid_: chat, session, history entry
 
 **Conversation session**:
 The live AI-panel state that binds one Conversation to its Provider, model,

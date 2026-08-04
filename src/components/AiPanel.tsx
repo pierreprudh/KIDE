@@ -78,7 +78,7 @@ import { buildSystemPrompt } from "./ai/system-prompt";
 import { summarizeAndHandoff, generateMemoryNote, detectAndGenerateSkill, summarizeForCompaction } from "./ai/summarize";
 import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
-import { eventsToMsgs } from "./ai/eventsToMsgs";
+import { eventsToMsgs, isSilentRunError } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
 import {
   conversationSessionReducer,
@@ -2478,7 +2478,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           // `code: "aborted"`. It's not a harness failure — the partial
           // answer should stay on screen with no error banner, and the
           // connection-suggestion copy in the catch block would be wrong.
-          if (event.error.code !== "aborted") {
+          if (!isSilentRunError(event.error.code)) {
             harnessError = new Error(event.error.message);
           } else {
             abortedByUser = true;
