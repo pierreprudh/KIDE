@@ -60,6 +60,8 @@ import { isAgentFile } from "./components/fileMarks";
 import { SplitPane } from "./components/SplitPane";
 import { defaultLayout as defaultPanelLayout, PANEL_CONSTRAINTS, type PanelRect } from "./panelLayout";
 import { Z } from "./zLayers";
+import { detectLanguage } from "./editorLanguage";
+import { beginDragSession } from "./dragSession";
 import { CommandPalette } from "./components/CommandPalette";
 import { SearchPanel } from "./components/SearchPanel";
 import { useEditorTabs } from "./hooks/useEditorTabs";
@@ -106,26 +108,6 @@ const KeyboardShortcuts = lazy(() => import("./components/KeyboardShortcuts").th
 type Panel = "explorer" | "git" | "memory" | "skills" | "ai" | "runs" | "settings" | "profile";
 type ActivityPanel = Panel | "orchestrator" | "home";
 export type { HarnessSettings } from "./settingsStore";
-function detectLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return (
-    {
-      ts: "typescript",
-      tsx: "typescript",
-      js: "javascript",
-      jsx: "javascript",
-      rs: "rust",
-      py: "python",
-      json: "json",
-      md: "markdown",
-      html: "html",
-      css: "css",
-      toml: "ini",
-      yml: "yaml",
-      yaml: "yaml",
-    } as Record<string, string>
-  )[ext] ?? "plaintext";
-}
 
 function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
@@ -657,22 +639,14 @@ function App() {
     const startX = e.clientX;
     const startW = pane.getBoundingClientRect().width;
     const maxW = Math.max(420, workbenchSize.w - 24);
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
     function onMove(ev: MouseEvent) {
       // Left-edge drag: moving left grows the pane.
       setEditorDockWidth(Math.min(maxW, Math.max(420, startW - (ev.clientX - startX))));
     }
-    function onUp() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginDragSession({
+      cursor: "col-resize",
+      onMove,
+    });
   }
 
   // Explorer presentation in the free layout: a drawer docked to the
@@ -690,10 +664,6 @@ function App() {
     e.preventDefault();
     const startX = e.clientX;
     const startW = explorerRect.w;
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
     function onMove(ev: MouseEvent) {
       const w = Math.min(
         PANEL_CONSTRAINTS.explorer.maxW,
@@ -701,14 +671,10 @@ function App() {
       );
       updatePanelRect("explorer", { ...explorerRect, w });
     }
-    function onUp() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginDragSession({
+      cursor: "col-resize",
+      onMove,
+    });
   }
 
   /**
@@ -726,10 +692,6 @@ function App() {
       PANEL_CONSTRAINTS.terminal.maxH,
       Math.max(160, Math.round(bound * 0.72))
     );
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
     function onMove(ev: MouseEvent) {
       const h = Math.min(
         maxH,
@@ -737,14 +699,10 @@ function App() {
       );
       updatePanelRect("terminal", { ...terminalRect, h });
     }
-    function onUp() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginDragSession({
+      cursor: "row-resize",
+      onMove,
+    });
   }
 
   // The explorer surface itself (tree, optionally stacked with the skills

@@ -8,6 +8,7 @@
 // A bottom shelf shows stashes and history at a glance.
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { relativeTimeLong } from "../time";
 import { invoke } from "@tauri-apps/api/core";
 import type { ThemeId } from "../theme";
 import type { GitFile, GitStatus } from "../gitTypes";
@@ -76,21 +77,6 @@ const MAX_PANE = 720;
 const PANE_TRANSITION = "width var(--motion-med) var(--ease-soft)";
 const DIFF_RENDER_LIMIT = 1600;
 
-function relativeTime(ms: number, nowMs: number = Date.now()): string {
-  const diff = Math.max(0, nowMs - ms);
-  const s = Math.floor(diff / 1000);
-  if (s < 5) return "just now";
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(mo / 12)}y ago`;
-}
 
 function statusLabel(status: string): string {
   if (status === "??") return "U";
@@ -823,7 +809,7 @@ function PRCard({ pr, selected, detail, detailLoading, nowMs, onSelect, onOpen, 
             <span style={{ color: "var(--fg-dim)", fontSize: 11.5, fontFamily: "var(--font-mono)" }}>#{pr.number}</span>
             {pr.badge !== "open" && <PRBadge badge={pr.badge} />}
             <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 11, color: "var(--fg-dim)", whiteSpace: "nowrap" }}>{relativeTime(pr.updatedAtMs, nowMs)}</span>
+            <span style={{ fontSize: 11, color: "var(--fg-dim)", whiteSpace: "nowrap" }}>{relativeTimeLong(pr.updatedAtMs, nowMs)}</span>
           </div>
           <div style={{ color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.4, fontWeight: 500, marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
             {pr.title}
@@ -911,7 +897,7 @@ function TimelineCard({ author, action, at, nowMs, children }: {
       <div style={{ display: "flex", alignItems: "baseline", gap: 6, padding: "7px 11px", borderBottom: "1px solid var(--border)", background: "color-mix(in srgb, var(--bg-hover) 45%, transparent)" }}>
         <span style={{ fontSize: 12, fontWeight: 650, color: "var(--fg-strong)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{author}</span>
         <span style={{ fontSize: 11.5, color: "var(--fg-subtle)" }}>{action}</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--fg-dim)", whiteSpace: "nowrap" }}>{relativeTime(at, nowMs)}</span>
+        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--fg-dim)", whiteSpace: "nowrap" }}>{relativeTimeLong(at, nowMs)}</span>
       </div>
       {/* minWidth:0 lets code blocks scroll internally; wrapping catches long
           tokens/URLs so the card never widens past the pane and spills off-screen. */}
@@ -1992,7 +1978,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
         <span style={{ flex: 1 }} />
         {log?.lastFetchMs && (
           <span style={{ color: "var(--fg-dim)" }} title={new Date(log.lastFetchMs).toLocaleString()}>
-            fetched {relativeTime(log.lastFetchMs, nowMs)}
+            fetched {relativeTimeLong(log.lastFetchMs, nowMs)}
           </span>
         )}
         {logLoading && <span style={{ color: "var(--fg-dim)" }}>refreshing…</span>}

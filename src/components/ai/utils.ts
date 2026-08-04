@@ -87,42 +87,15 @@ export function messageTokenEstimate(m: Msg): number {
   return total;
 }
 
-export function relativeTime(ts: number): string {
-  const min = Math.floor((Date.now() - ts) / 60000);
-  if (min < 1) return "just now";
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
 
-export { formatSpan } from "../../time";
+export { formatSpan, relativeTime } from "../../time";
 
-export function isSubsequence(needle: string, hay: string): boolean {
-  let i = 0;
-  for (let j = 0; j < hay.length && i < needle.length; j++) {
-    if (hay[j] === needle[i]) i++;
-  }
-  return i === needle.length;
-}
 
-export function fuzzyFiles(files: string[], query: string): string[] {
-  const q = query.toLowerCase();
-  if (!q) return files.slice(0, 8);
-  const scored: { path: string; score: number }[] = [];
-  for (const path of files) {
-    const lower = path.toLowerCase();
-    const base = lower.split("/").pop() ?? lower;
-    let score = -1;
-    if (base.startsWith(q)) score = 0;
-    else if (base.includes(q)) score = 1;
-    else if (lower.includes(q)) score = 2;
-    else if (isSubsequence(q, lower)) score = 3;
-    if (score >= 0) scored.push({ path, score });
-  }
-  scored.sort((a, b) => a.score - b.score || a.path.length - b.path.length);
-  return scored.slice(0, 8).map((s) => s.path);
-}
+/** The AI panel's `@file` picker and the command palette rank the same way —
+ *  see `fileSearch.ts`. They used to have two implementations with the same four
+ *  tiers in opposite polarity, so one query gave two orders. */
+export { rankFiles as fuzzyFiles, isSubsequence } from "../../fileSearch";
+
 
 const CONVOS_KEY = "klide-conversations";
 export const CONVERSATIONS_CHANGED_EVENT = "klide:conversations-changed";

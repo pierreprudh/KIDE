@@ -907,6 +907,33 @@ fn smoke_test_mode() -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Every fixed menu item, paired with the event it emits.
+///
+/// `build_app_menu` declares these ids and `on_menu_event` dispatched them ~180
+/// lines apart, as two hand-maintained lists of the same strings. A typo in
+/// either produced a menu item that silently did nothing — no error, no warning,
+/// and the id it should have matched sat in the other list looking correct.
+/// `every_menu_id_has_a_handler` reads this file's own source and fails if a
+/// `with_id` literal is missing here.
+///
+/// Note `settings` emits `menu:open-settings`: the id and the event genuinely
+/// differ, which is the kind of detail a second hand-written list gets wrong.
+///
+/// The project-switching entries are deliberately absent — they are dynamic
+/// (`project:<path>` / `switch:<path>`) and dispatched by prefix.
+const MENU_ITEMS: &[(&str, &str)] = &[
+    ("command-palette", "menu:command-palette"),
+    ("find-in-files", "menu:find-in-files"),
+    ("toggle-terminal", "menu:toggle-terminal"),
+    ("toggle-search", "menu:toggle-search"),
+    ("settings", "menu:open-settings"),
+    ("close-tab", "menu:close-tab"),
+    ("close-window", "menu:close-window"),
+    ("open-folder", "menu:open-folder"),
+    ("save", "menu:save"),
+    ("welcome-screen", "menu:welcome-screen"),
+];
+
 /// Builds the whole application menu, Projects submenu included.
 ///
 /// One owner on purpose. The Projects list used to be appended from the
@@ -1126,48 +1153,18 @@ pub fn run() {
 
             app.on_menu_event(move |_app_handle, event| {
                 let id = event.id().as_ref();
-                match id {
-                    "command-palette" => {
-                        let _ = _app_handle.emit("menu:command-palette", ());
-                    }
-                    "find-in-files" => {
-                        let _ = _app_handle.emit("menu:find-in-files", ());
-                    }
-                    "toggle-terminal" => {
-                        let _ = _app_handle.emit("menu:toggle-terminal", ());
-                    }
-                    "toggle-search" => {
-                        let _ = _app_handle.emit("menu:toggle-search", ());
-                    }
-                    "settings" => {
-                        let _ = _app_handle.emit("menu:open-settings", ());
-                    }
-                    "close-tab" => {
-                        let _ = _app_handle.emit("menu:close-tab", ());
-                    }
-                    "close-window" => {
-                        let _ = _app_handle.emit("menu:close-window", ());
-                    }
-                    "open-folder" => {
-                        let _ = _app_handle.emit("menu:open-folder", ());
-                    }
-                    "save" => {
-                        let _ = _app_handle.emit("menu:save", ());
-                    }
-                    "welcome-screen" => {
-                        let _ = _app_handle.emit("menu:welcome-screen", ());
-                    }
-                    // Both the File ▸ Open Recent entries and the Projects menu
-                    // switch projects; they only differ by id prefix so the two
-                    // copies of a project do not collide.
-                    other => {
-                        if let Some(path) = other
-                            .strip_prefix("project:")
-                            .or_else(|| other.strip_prefix("switch:"))
-                        {
-                            let _ = _app_handle.emit("menu:open-project", path.to_string());
-                        }
-                    }
+                if let Some((_, event)) = MENU_ITEMS.iter().find(|(item, _)| *item == id) {
+                    let _ = _app_handle.emit(*event, ());
+                    return;
+                }
+                // Both the File ▸ Open Recent entries and the Projects menu
+                // switch projects; they only differ by id prefix so the two
+                // copies of a project do not collide.
+                if let Some(path) = id
+                    .strip_prefix("project:")
+                    .or_else(|| id.strip_prefix("switch:"))
+                {
+                    let _ = _app_handle.emit("menu:open-project", path.to_string());
                 }
             });
 
@@ -1344,5 +1341,58 @@ mod command_resolution_tests {
         assert!(resolve_command("does-not-exist; printf injected").is_err());
         let known_command = if cfg!(windows) { "cmd" } else { "sh" };
         assert!(resolve_command(known_command).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::MENU_ITEMS;
+
+    #[test]
+    fn every_menu_id_has_a_handler() {
+        // Two hand-maintained lists of the same strings, ~180 lines apart, is
+        // how a menu item ends up doing nothing at all: no error, no warning,
+        // and the id it should have matched sitting in the other list looking
+        // perfectly correct. `MENU_ITEMS` is now the only list, and this reads
+        // the builder's own source to keep it complete.
+        let src = include_str!("lib.rs");
+        let body = &src[..src.find("mod menu_tests").expect("this module")];
+
+        let needle = "with_id(\"";
+        let mut declared: Vec<&str> = Vec::new();
+        for (idx, _) in body.match_indices(needle) {
+            let rest = &body[idx + needle.len()..];
+            declared.push(&rest[..rest.find('"').expect("closing quote")]);
+        }
+        declared.sort_unstable();
+        declared.dedup();
+        assert!(
+            declared.len() >= 9,
+            "only found {} menu ids — the parse is wrong, not the code",
+            declared.len()
+        );
+
+        let missing: Vec<&&str> = declared
+            .iter()
+            .filter(|id| !MENU_ITEMS.iter().any(|(item, _)| item == *id))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "menu ids built but absent from MENU_ITEMS: {missing:?} — these items \
+would render and then do nothing when clicked"
+        );
+
+        // And nothing in the table is stale: every entry must be a real item.
+        let unbuilt: Vec<&str> = MENU_ITEMS
+            .iter()
+            .map(|(item, _)| *item)
+            .filter(|item| !declared.contains(item))
+            .collect();
+        assert!(unbuilt.is_empty(), "MENU_ITEMS lists absent items: {unbuilt:?}");
+
+        // Every event stays under the one namespace the frontend listens on.
+        for (_, event) in MENU_ITEMS {
+            assert!(event.starts_with("menu:"), "{event} is not a menu event");
+        }
     }
 }

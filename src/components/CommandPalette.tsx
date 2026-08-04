@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
 import { readWorkspaceTextFile } from "../workspaceFs";
 import { Z } from "../zLayers";
+import { fileMatchRank } from "../fileSearch";
 
 type CommandItem = {
   id: string;
@@ -22,26 +23,6 @@ type Props = {
   onOpenFile: (path: string, content: string) => void;
   initialQuery?: string;
 };
-
-function fuzzyScore(needle: string, hay: string): number {
-  const n = needle.toLowerCase();
-  const h = hay.toLowerCase();
-  const base = h.split("/").pop() ?? h;
-  if (base === n) return 100;
-  if (base.startsWith(n)) return 80;
-  if (h.startsWith(n)) return 70;
-  if (h.includes(n)) return 50;
-  if (isSubsequence(n, h)) return 20;
-  return -1;
-}
-
-function isSubsequence(needle: string, hay: string): boolean {
-  let i = 0;
-  for (let j = 0; j < hay.length && i < needle.length; j++) {
-    if (hay[j] === needle[i]) i++;
-  }
-  return i === needle.length;
-}
 
 const RECENT_FILES_KEY = "klide.recentFiles";
 
@@ -101,19 +82,16 @@ export function CommandPalette({ workspaceRoot, commands, onOpenFile, initialQue
 
   const filteredCommands = isCommandMode || (!filesLoaded && query.length > 0)
     ? commands
-        .map((cmd) => ({ ...cmd, score: fuzzyScore(searchQuery, cmd.label) }))
-        .filter((c) => c.score >= 0)
-        .sort((a, b) => b.score - a.score)
+        .map((cmd) => ({ ...cmd, rank: fileMatchRank(cmd.label, searchQuery) }))
+        .filter((c): c is typeof c & { rank: number } => c.rank !== null)
+        .sort((a, b) => a.rank - b.rank)
     : [];
 
   const filteredFiles = !isCommandMode && filesLoaded
     ? files
-        .map((f) => ({ ...f, score: fuzzyScore(query, f.path) }))
-        .filter((f) => f.score >= 0)
-        .sort((a, b) => {
-          if (b.score !== a.score) return b.score - a.score;
-          return a.path.length - b.path.length;
-        })
+        .map((f) => ({ ...f, rank: fileMatchRank(f.path, query) }))
+        .filter((f): f is typeof f & { rank: number } => f.rank !== null)
+        .sort((a, b) => a.rank - b.rank || a.path.length - b.path.length)
         .slice(0, 15)
     : [];
 

@@ -288,7 +288,10 @@ function NavRail({
   );
 }
 
-function relTime(ts?: number): string {
+/** Named for what it returns: an absolute date, not a relative time. It was
+ *  called `relTime`, which read as a fourth copy of `relativeTime` and is the
+ *  opposite of what it does. */
+function editedDate(ts?: number): string {
   if (!ts) return "never edited";
   return new Date(ts).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
@@ -762,7 +765,7 @@ function SkillDetail({
       <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", fontSize: 12, color: "var(--fg-subtle)" }}>
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-dim)" }}>{skill.builtin ? "built-in" : skill.fromFile ? "from file" : "custom"}</span>
         <Dot />
-        <span>Updated {relTime(skill.updatedAt)}</span>
+        <span>Updated {editedDate(skill.updatedAt)}</span>
         <Dot />
         <span>{skill.tools.length} of {tools.length} tools allowed</span>
         {skill.fromFile && (<>

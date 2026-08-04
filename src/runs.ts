@@ -741,14 +741,7 @@ export function seedRuns(): Run[] {
   ];
 }
 
-export function relativeTime(ts: number): string {
-  const min = Math.floor((Date.now() - ts) / 60000);
-  if (min < 1) return "just now";
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
+export { relativeTime } from "./time";
 
 /** Human-readable cost: "$0.12" for sub-dollar, "$1.23" once we cross a buck.
  *  Returns null for null/undefined/zero — the row should suppress the cost
