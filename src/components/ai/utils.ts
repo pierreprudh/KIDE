@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ProviderId } from "../../agent/types";
 import type { Conversation, Msg } from "./types";
-import { estimateProjectContextTokens } from "../../contextTray";
+import type { ProjectContextItem } from "../../contextTray";
 import { notify as notifyUser } from "../../toast";
 
 export function cssVar(name: string): string {
@@ -49,6 +49,18 @@ export function deriveTitle(msgs: Msg[]): string {
   const text = firstUser?.content.trim() ?? "";
   if (!text) return "New chat";
   return text.length > 42 ? `${text.slice(0, 42)}…` : text;
+}
+
+/** Tokens for a Lens slice. Lived in `contextTray.ts` with its own inline
+ *  `/ 3.7`, a second copy of the constant `estimateTokens` owns — on the
+ *  auto-compaction path, where a drift arms a paid call at the wrong moment. It
+ *  could not simply call across, because `contextTray` is imported *by* this
+ *  module; re-homing it here removes the duplicate and the cycle at once. */
+export function estimateProjectContextTokens(items: ProjectContextItem[]): number {
+  return items.reduce(
+    (sum, item) => sum + estimateTokens(`${item.path}\n${item.label}\n${item.detail}`),
+    0
+  );
 }
 
 export function estimateTokens(text: string): number {
