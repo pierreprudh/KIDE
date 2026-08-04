@@ -32,6 +32,7 @@ import {
   gitWorktreeAdd,
   gitWorktreeMerge,
   gitWorktreeRemove,
+  createPr,
 } from "./ipc/git";
 import { eventsToConversation } from "./components/ai/eventsToMsgs";
 import { loadPanelSession } from "./components/ai/utils";
@@ -65,7 +66,7 @@ import { useEditorTabs } from "./hooks/useEditorTabs";
 import { usePanelLayout, type AiPanelInstance } from "./hooks/usePanelLayout";
 import { useAiPanelFleet } from "./hooks/useAiPanelFleet";
 import { useArtifactInspector } from "./hooks/useArtifactInspector";
-import { listCheckpoints } from "./agent/client";
+import { listCheckpoints, readAgentRunEvents } from "./agent/client";
 import {
   DEFAULT_AI_PANEL_ID,
   conversationSessionKey,
@@ -1136,7 +1137,7 @@ function App() {
 
   async function resumeKlideRun(runId: string) {
     try {
-      const events = await invoke<AgentEvent[]>("agent_read_run", { runId });
+      const events = await readAgentRunEvents(runId);
       const convo = eventsToConversation(events, runId, eventsToTitle(events));
       // Open one fresh panel and land the resumed run in it — never broadcast
       // to existing panels. Resume is triggered from the Mission Control view,
@@ -1984,7 +1985,7 @@ function App() {
     { id: "orchestrator", label: "View: Orchestrator", action: () => { setView("orchestrator"); setPaletteOpen(false); } },
     { id: "back-to-workbench", label: "View: Back to Workbench", shortcut: "Esc", action: () => { setView("workbench"); setPaletteOpen(false); } },
     { id: "git-review", label: "View: Git Review", shortcut: "⌘⇧G", action: () => { setView((v) => v === "git-review" ? "workbench" : "git-review"); setPaletteOpen(false); } },
-    { id: "create-pr", label: "Git: Create Pull Request…", action: () => { setPaletteOpen(false); void (async () => { try { const pr = await invoke<string>("create_pr", { workspaceRoot, title: "Klide changes", body: null }); setFileNotice(`PR: ${pr}`); } catch(e) { setFileNotice(`PR failed: ${e}`); } })(); } },
+    { id: "create-pr", label: "Git: Create Pull Request…", action: () => { setPaletteOpen(false); void (async () => { try { const pr = await createPr(workspaceRoot, "Klide changes", null); setFileNotice(`PR: ${pr}`); } catch(e) { setFileNotice(`PR failed: ${e}`); } })(); } },
     { id: "worktree", label: "Agent: New Run in Worktree", action: () => { setPaletteOpen(false); void newWorktreeRun(); } },
     { id: "worktrees-view", label: "View: Worktrees", action: () => { setPaletteOpen(false); setWorktreesVisible(true); } },
     { id: "rollback", label: "Git: View Checkpoints", action: () => { setView("runs"); setPaletteOpen(false); } },

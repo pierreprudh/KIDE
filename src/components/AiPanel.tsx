@@ -31,7 +31,7 @@ import {
   type ProjectContextMode,
   type ProjectContextSnapshot,
 } from "../contextTray";
-import { startAgentRun, stopAgentRun, resolveDiff, resolveUserQuestion, resolvePermission, revertRunCheckpoints, getAgentRunStatus, isActiveRunStatus, reattachAgentRun, type RunReattachment } from "../agent/client";
+import { readAgentRunEvents, startAgentRun, stopAgentRun, resolveDiff, resolveUserQuestion, resolvePermission, revertRunCheckpoints, getAgentRunStatus, isActiveRunStatus, reattachAgentRun, type RunReattachment } from "../agent/client";
 import { parseSubagentDirective, resolveSubagent, buildSubagentSystemPrompt, matchSubagents, extractInlineSubagentCalls, type Subagent } from "../agent/subagents";
 import { resolveAdvisor } from "../agent/advisor";
 import { serviceAdvisorConsult } from "../agent/advisorConsult";
@@ -1656,7 +1656,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         // harness writes RunResult/RunError to disk before it flips the run's
         // status, so the tail is the authoritative "is this turn done" signal.
         const adopt = async (guardBaseLen?: number): Promise<{ len: number; terminal: boolean }> => {
-          const events = await invoke<AgentEvent[]>("agent_read_run", { runId: reattachId });
+          const events = await readAgentRunEvents(reattachId);
           // Turns queued locally (waiting for this external run to settle)
           // aren't in the transcript yet — carry them across the replay or a
           // long-running race run would silently swallow an "ask both" send.

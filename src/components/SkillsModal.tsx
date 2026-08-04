@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useFlipIndicator } from "../hooks/useFlipIndicator";
 import { Z } from "../zLayers";
-import { invoke } from "@tauri-apps/api/core";
 import { notify } from "../toast";
 import {
   type Skill,
   genSkillId,
   SKILL_TOOLS,
   getAvailableTools,
+  installSkill,
+  uninstallSkill,
 } from "../skills";
 
 type Props = {
@@ -524,8 +525,7 @@ export function SkillsModal({ open, skills, onChange, onReloadFilesystemSkills, 
                   setInstallError(null);
                   setInstallOk(null);
                   try {
-                    type R = { ok: boolean; exitCode: number | null; stdout: string; stderr: string };
-                    const r = (await invoke("install_skill", { package: trimmed })) as R;
+                    const r = await installSkill(trimmed);
                     if (!r.ok) {
                       const msg = interpretInstallError(r.stderr || r.stdout || `Exit ${r.exitCode ?? "?"}`);
                       setInstallError(msg);
@@ -550,8 +550,7 @@ export function SkillsModal({ open, skills, onChange, onReloadFilesystemSkills, 
                   setInstallError(null);
                   setInstallOk(null);
                   try {
-                    type R = { ok: boolean; exitCode: number | null; stdout: string; stderr: string };
-                    const r = (await invoke("uninstall_skill", { name })) as R;
+                    const r = await uninstallSkill(name);
                     if (!r.ok) {
                       const msg = interpretInstallError(r.stderr || r.stdout || "Uninstall failed.");
                       setInstallError(msg);

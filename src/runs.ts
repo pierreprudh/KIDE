@@ -4,7 +4,7 @@
 // reads off disk. The board is read-only for now; steering/resume come later.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEvent } from "./agent/types";
+import { readAgentRunEvents } from "./agent/client";
 import { foldAgentEvents, foldedToRunMessages } from "./agent/foldEvents";
 
 import { isDelegateId, type DelegateId } from "./delegates";
@@ -626,7 +626,7 @@ export function invalidateAgentRunsCache() {
 // command is unavailable; callers handle the empty/error state.
 export async function fetchRunMessages(run: Run): Promise<RunMessage[]> {
   if (run.source === "klide") {
-    const events = await invoke<AgentEvent[]>("agent_read_run", { runId: run.id });
+    const events = await readAgentRunEvents(run.id);
     return foldedToRunMessages(foldAgentEvents(events));
   }
   if (run.source === "opencode") {

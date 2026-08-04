@@ -13,9 +13,8 @@
 // compositor is fragile (see the backdrop-filter and zIndex incidents).
 
 import { Component, memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { layoutGraph, splitRefs, type GraphCommit, type GraphRow } from "../gitGraph";
-import { gitGraph, type CommitDetails } from "../ipc/git";
+import { gitGraph, githubCommitAvatars, type CommitDetails } from "../ipc/git";
 import { parseDiffBlocks, DiffView, FileStatusIcon } from "./diffView";
 import { renderMarkdown } from "./markdown";
 import { ProviderLogo } from "./ai/icons";
@@ -71,7 +70,7 @@ export async function resolveGithubAvatars(workspaceRoot: string, commits: Graph
   }
   if (queries.length === 0) return;
   try {
-    const found = await invoke<Record<string, string>>("github_commit_avatars", { workspaceRoot, queries });
+    const found = await githubCommitAvatars(workspaceRoot, queries);
     let changed = false;
     for (const [email, url] of Object.entries(found)) {
       if (!githubAvatarByEmail.has(email)) {
