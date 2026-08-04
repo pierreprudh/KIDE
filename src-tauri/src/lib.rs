@@ -845,11 +845,7 @@ async fn list_agent_runs(
     for run in runs.iter_mut() {
         // Evidence: surface the linked git worktree a run executed in (when its
         // cwd is one), so the board can answer "where did this happen?".
-        if run.worktree.is_none() {
-            if let Some(cwd) = run.cwd.as_deref() {
-                run.worktree = crate::delegate::worktree_label(cwd);
-            }
-        }
+        crate::delegate::fill_worktree_evidence(&mut run.worktree, run.cwd.as_deref());
         if run.parent_id.is_none() {
             if let Some(mapping) = by_delegate
                 .get(&run.id)

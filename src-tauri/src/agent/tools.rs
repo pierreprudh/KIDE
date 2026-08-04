@@ -1,4 +1,5 @@
 use super::todo;
+use super::glob_match::wildcard_match;
 use super::types::{AgentMode, DiffProposal, ToolResult};
 use crate::workspace::Workspace;
 use std::collections::HashMap;
@@ -1750,31 +1751,6 @@ fn walk_files(root: &Path, start: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let p = pattern.as_bytes();
-    let t = text.as_bytes();
-    let (mut pi, mut ti, mut star, mut mark) = (0_usize, 0_usize, None, 0_usize);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == b'*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == b'*' {
-        pi += 1;
-    }
-    pi == p.len()
-}
 
 fn glob(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
     let pattern = match trimmed_arg(input, "pattern") {

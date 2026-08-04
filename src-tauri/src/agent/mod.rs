@@ -1,5 +1,6 @@
 mod approval_store;
 mod command_allowlist;
+mod glob_match;
 #[cfg(test)]
 mod eval;
 pub mod evidence;
@@ -882,6 +883,59 @@ enum ToolOutcome {
 /// Pause tool (`userAnswerQuestion`): ask the user a typed question and feed
 /// their verbatim answer back to the model. "(skipped)" is the sentinel the
 /// user can send to decline. Cancelling during the wait bubbles up as
+/// The ceremony every Pause tool performs.
+///
+/// All four of them — question, subagent, advisor, and the advisor escalation the
+/// loop monitor triggers — did the same six steps, and the closure that stashes
+/// the reply channel was byte-identical in each. What differs is only which args
+/// they read, which two events they emit, and what a skipped answer means.
+///
+/// Note the status: all four report `WaitingForPermission`, even though only one
+/// of them is a permission. That is the wire vocabulary being narrower than the
+/// states it has to describe (`AgentRunStatus` has no `WaitingForUser`), not a
+/// choice worth preserving — but widening it is a wire change with a frontend
+/// mirror, so it stays as-is here and is written down instead of re-derived four
+/// times.
+///
+/// `Ok(None)` means the run was cancelled while parked.
+async fn run_pause_tool<E, R, S>(
+    ctx: &ToolCtx<'_>,
+    call: &NormalizedToolCall,
+    emit: &mut E,
+    key_prefix: &str,
+    default_answer: &str,
+    requested: R,
+    resolved: S,
+) -> Result<Option<String>, String>
+where
+    E: FnMut(AgentEvent) -> Result<(), String>,
+    R: FnOnce(&str) -> AgentEvent,
+    S: FnOnce(&str, &str) -> AgentEvent,
+{
+    let request_id = format!("{key_prefix}_{}_{}", ctx.id, call.id);
+
+    let answer = match pause_for_user(
+        ctx.sup,
+        ctx.id,
+        AgentRunStatus::WaitingForPermission,
+        requested(&request_id),
+        default_answer,
+        ctx.cancel,
+        emit,
+        |handle, tx| {
+            *handle.pending_question.lock().unwrap() = Some(tx);
+        },
+    )
+    .await?
+    {
+        PauseOutcome::Cancelled => return Ok(None),
+        PauseOutcome::Resolved(answer) => answer,
+    };
+
+    emit(resolved(&request_id, &answer))?;
+    Ok(Some(answer))
+}
+
 /// `Cancelled`.
 async fn process_pause_tool<E>(
     ctx: &ToolCtx<'_>,
@@ -897,37 +951,29 @@ where
         .and_then(|v| v.as_str())
         .unwrap_or("(empty question)")
         .to_string();
-    let request_id = format!("q_{}_{}", ctx.id, call.id);
-
-    let answer = match pause_for_user(
-        ctx.sup,
-        ctx.id,
-        AgentRunStatus::WaitingForPermission,
-        AgentEvent::UserQuestionRequested {
+    let Some(answer) = run_pause_tool(
+        ctx,
+        call,
+        emit,
+        "q",
+        "(skipped)",
+        |request_id| AgentEvent::UserQuestionRequested {
             run_id: ctx.id.to_string(),
-            request_id: request_id.clone(),
+            request_id: request_id.to_string(),
             question: question.clone(),
             ts: now_ms(),
         },
-        "(skipped)",
-        ctx.cancel,
-        emit,
-        |handle, tx| {
-            *handle.pending_question.lock().unwrap() = Some(tx);
+        |request_id, answer| AgentEvent::UserQuestionResolved {
+            run_id: ctx.id.to_string(),
+            request_id: request_id.to_string(),
+            answer: answer.to_string(),
+            ts: now_ms(),
         },
     )
     .await?
-    {
-        PauseOutcome::Cancelled => return Ok(ToolOutcome::Cancelled),
-        PauseOutcome::Resolved(answer) => answer,
+    else {
+        return Ok(ToolOutcome::Cancelled);
     };
-
-    emit(AgentEvent::UserQuestionResolved {
-        run_id: ctx.id.to_string(),
-        request_id,
-        answer: answer.clone(),
-        ts: now_ms(),
-    })?;
 
     Ok(ToolOutcome::Produced(ToolResult {
         ok: true,
@@ -967,38 +1013,30 @@ where
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let request_id = format!("sub_{}_{}", ctx.id, call.id);
-
-    let report = match pause_for_user(
-        ctx.sup,
-        ctx.id,
-        AgentRunStatus::WaitingForPermission,
-        AgentEvent::SubagentRequested {
+    let Some(report) = run_pause_tool(
+        ctx,
+        call,
+        emit,
+        "sub",
+        "(subagent produced no output)",
+        |request_id| AgentEvent::SubagentRequested {
             run_id: ctx.id.to_string(),
-            request_id: request_id.clone(),
+            request_id: request_id.to_string(),
             subagent: subagent.clone(),
             task: task.clone(),
             ts: now_ms(),
         },
-        "(subagent produced no output)",
-        ctx.cancel,
-        emit,
-        |handle, tx| {
-            *handle.pending_question.lock().unwrap() = Some(tx);
+        |request_id, report| AgentEvent::SubagentResolved {
+            run_id: ctx.id.to_string(),
+            request_id: request_id.to_string(),
+            result: report.to_string(),
+            ts: now_ms(),
         },
     )
     .await?
-    {
-        PauseOutcome::Cancelled => return Ok(ToolOutcome::Cancelled),
-        PauseOutcome::Resolved(report) => report,
+    else {
+        return Ok(ToolOutcome::Cancelled);
     };
-
-    emit(AgentEvent::SubagentResolved {
-        run_id: ctx.id.to_string(),
-        request_id,
-        result: report.clone(),
-        ts: now_ms(),
-    })?;
 
     Ok(ToolOutcome::Produced(ToolResult {
         ok: true,
@@ -1042,38 +1080,30 @@ where
         Some(c) if !c.trim().is_empty() => format!("{question}\n\nContext:\n{}", c.trim()),
         _ => question,
     };
-    let request_id = format!("adv_{}_{}", ctx.id, call.id);
-
-    let advice = match pause_for_user(
-        ctx.sup,
-        ctx.id,
-        AgentRunStatus::WaitingForPermission,
-        AgentEvent::AdvisorRequested {
+    let Some(advice) = run_pause_tool(
+        ctx,
+        call,
+        emit,
+        "adv",
+        // A closed channel is a failure, not advice — mark it so below.
+        ADVISOR_ERROR_PREFIX,
+        |request_id| AgentEvent::AdvisorRequested {
             run_id: ctx.id.to_string(),
-            request_id: request_id.clone(),
+            request_id: request_id.to_string(),
             question: question.clone(),
             ts: now_ms(),
         },
-        // A closed channel is a failure, not advice — mark it so below.
-        ADVISOR_ERROR_PREFIX,
-        ctx.cancel,
-        emit,
-        |handle, tx| {
-            *handle.pending_question.lock().unwrap() = Some(tx);
+        |request_id, advice| AgentEvent::AdvisorResolved {
+            run_id: ctx.id.to_string(),
+            request_id: request_id.to_string(),
+            advice: advice.to_string(),
+            ts: now_ms(),
         },
     )
     .await?
-    {
-        PauseOutcome::Cancelled => return Ok(ToolOutcome::Cancelled),
-        PauseOutcome::Resolved(advice) => advice,
+    else {
+        return Ok(ToolOutcome::Cancelled);
     };
-
-    emit(AgentEvent::AdvisorResolved {
-        run_id: ctx.id.to_string(),
-        request_id,
-        advice: advice.clone(),
-        ts: now_ms(),
-    })?;
 
     // A failed consult (no key, provider down, empty reply) is prefixed with
     // ADVISOR_ERROR_PREFIX by the frontend. Surface it as a NOT-ok tool result
@@ -1642,10 +1672,13 @@ Do not propose it again — take a different approach or ask the user what they'
                 // Save checkpoint for rollback. Serialize through
                 // CheckpointEntry so the saved shape always matches what
                 // agent_list_checkpoints deserializes.
-                let checkpoint_dir = ctx.runs_dir.join(ctx.id).join("checkpoints");
+                // Through the same two helpers the readers use. The writer used
+                // to rebuild both paths by hand, 1130 lines from the functions
+                // that define them, so the checkpoint format had two spellers.
+                let checkpoint_dir = checkpoint_dir(ctx.runs_dir, ctx.id);
                 let _ = std::fs::create_dir_all(&checkpoint_dir);
-                let checkpoint_file = checkpoint_dir
-                    .join(format!("{}.json", sanitize_file_id(&proposal.tool_call_id)));
+                let checkpoint_file =
+                    checkpoint_file(ctx.runs_dir, ctx.id, &proposal.tool_call_id);
                 let entry = CheckpointEntry {
                     tool_call_id: proposal.tool_call_id.clone(),
                     path: proposal.path.clone(),
@@ -2684,14 +2717,11 @@ pub async fn agent_list_runs(
         {
             summary.status = "cancelled".to_string();
         }
-        // Evidence parity with the delegate board: surface the linked git
-        // worktree a Klide run executed in (when its cwd is one). Derived, not
-        // persisted, so historical runs pick it up too. See `worktree_label`.
-        if summary.worktree.is_none() {
-            if let Some(cwd) = summary.cwd.as_deref() {
-                summary.worktree = crate::delegate::worktree_label(cwd);
-            }
-        }
+        // Same filler the Delegate board uses, so the two cannot drift.
+        crate::delegate::fill_worktree_evidence(
+            &mut summary.worktree,
+            summary.cwd.as_deref(),
+        );
     }
     Ok(summaries)
 }

@@ -78,31 +78,7 @@ pub fn append_event(
     seq: u64,
     event: &AgentEvent,
 ) -> Result<(), String> {
-    let ts = match event {
-        AgentEvent::RunStarted { ts, .. }
-        | AgentEvent::ContextSnapshot { ts, .. }
-        | AgentEvent::UserMessage { ts, .. }
-        | AgentEvent::AssistantDelta { ts, .. }
-        | AgentEvent::AssistantMessage { ts, .. }
-        | AgentEvent::ToolCallStarted { ts, .. }
-        | AgentEvent::ToolProgress { ts, .. }
-        | AgentEvent::ToolCallFinished { ts, .. }
-        | AgentEvent::PermissionResolved { ts, .. }
-        | AgentEvent::DiffResolved { ts, .. }
-        | AgentEvent::PermissionRequested { ts, .. }
-        | AgentEvent::DiffProposed { ts, .. }
-        | AgentEvent::FileChanged { ts, .. }
-        | AgentEvent::RunResult { ts, .. }
-        | AgentEvent::RunError { ts, .. }
-        | AgentEvent::UserQuestionRequested { ts, .. }
-        | AgentEvent::UserQuestionResolved { ts, .. }
-        | AgentEvent::SubagentRequested { ts, .. }
-        | AgentEvent::SubagentResolved { ts, .. }
-        | AgentEvent::AdvisorRequested { ts, .. }
-        | AgentEvent::AdvisorResolved { ts, .. }
-        | AgentEvent::ContextCompacted { ts, .. }
-        | AgentEvent::SteeringInjected { ts, .. } => *ts,
-    };
+    let ts = event.ts();
     let line = TranscriptLine {
         schema_version: TRANSCRIPT_SCHEMA_VERSION,
         run_id: run_id.to_string(),
