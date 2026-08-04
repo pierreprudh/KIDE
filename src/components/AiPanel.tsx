@@ -27,12 +27,11 @@ import { InlineDiffReview } from "./InlineDiffReview";
 import { InlineCommandReview } from "./InlineCommandReview";
 import { deleteKlideConvo, publishKlideConvo, settleKlideConvo } from "../klideConvos";
 import {
-  estimateProjectContextTokens,
   lensItemsForPrompt,
   type ProjectContextMode,
   type ProjectContextSnapshot,
 } from "../contextTray";
-import { startAgentRun, stopAgentRun, resolveDiff, resolveUserQuestion, resolvePermission, revertRunCheckpoints, getAgentRunStatus, isActiveRunStatus, reattachAgentRun, type RunReattachment } from "../agent/client";
+import { readAgentRunEvents, startAgentRun, stopAgentRun, resolveDiff, resolveUserQuestion, resolvePermission, revertRunCheckpoints, getAgentRunStatus, isActiveRunStatus, reattachAgentRun, type RunReattachment } from "../agent/client";
 import { parseSubagentDirective, resolveSubagent, buildSubagentSystemPrompt, matchSubagents, extractInlineSubagentCalls, type Subagent } from "../agent/subagents";
 import { resolveAdvisor } from "../agent/advisor";
 import { serviceAdvisorConsult } from "../agent/advisorConsult";
@@ -79,7 +78,7 @@ import { buildSystemPrompt } from "./ai/system-prompt";
 import { summarizeAndHandoff, generateMemoryNote, detectAndGenerateSkill, summarizeForCompaction } from "./ai/summarize";
 import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
-import { eventsToMsgs } from "./ai/eventsToMsgs";
+import { eventsToMsgs, isSilentRunError } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
 import {
   conversationSessionReducer,
@@ -94,7 +93,6 @@ import {
   genId,
   deriveTitle,
   estimateTokens,
-  messageTokenEstimate,
   countMessageTokens,
   fuzzyFiles,
   loadConversations,
@@ -104,6 +102,16 @@ import {
 } from "./ai/utils";
 
 import type { Msg, QueuedTurn, Conversation } from "./ai/types";
+import { AUTONOMY_RUNGS, currentRungIndex, effectiveMode as effectiveModeFor } from "./ai/autonomyLadder";
+import {
+  canCompactConversation,
+  computeContextBudget,
+  contextTone as contextToneFor,
+  conversationCost,
+  lastCompactionIndex,
+  COMPACT_KEEP_RECENT,
+  COMPACT_PROMPT_RATIO,
+} from "./ai/contextBudget";
 import { Z } from "../zLayers";
 import { notify } from "../toast";
 import { delegateSessionId, stopDelegatePty, writeDelegatePty } from "../ipc/delegatePty";
@@ -178,13 +186,6 @@ type AiHarnessSettings = {
   advisorModel?: string;
 };
 
-type ContextBreakdownRow = {
-  id: string;
-  label: string;
-  tokens: number;
-  color: string;
-  muted?: boolean;
-};
 
 type ReflectionOption = {
   value: string | undefined;
@@ -1177,12 +1178,6 @@ export function AiPanel({
   }
   // The autonomy ladder shown in the + menu, lowest → highest. The last two
   // are both Goal mode; they differ only in requireDiffReview (review vs auto).
-  const MODE_RUNGS: { mode: AgentMode; review: boolean | null; label: string; desc: string }[] = [
-    { mode: "chat", review: null, label: "Chat", desc: "no tools" },
-    { mode: "plan", review: null, label: "Plan", desc: "read-only, proposes" },
-    { mode: "goal", review: true, label: "Goal · review", desc: "approve each edit" },
-    { mode: "goal", review: false, label: "Goal · auto-accept", desc: "applies on its own" },
-  ];
   function selectRung(mode: AgentMode, review: boolean | null) {
     selectMode(mode); // persists mode + closes the menu
     if (mode === "goal" && review !== null) onRequireDiffReviewChange?.(review);
@@ -1258,10 +1253,14 @@ export function AiPanel({
 
   const lensProjectContext = providerDelegatesWork ? [] : lensItemsForPrompt(projectContext, input, contextMode);
   const activeMode = nextSendMode ?? agentMode;
-  const effectiveMode = !modelSupportsTools && !providerDelegatesWork && activeMode === "goal" ? "chat" : activeMode;
+  const effectiveMode = effectiveModeFor({
+    mode: activeMode,
+    modelSupportsTools,
+    providerDelegatesWork,
+  });
   // + menu: Goal rungs disabled when the model has no tools; which rung is lit.
   const goalDisabled = !modelSupportsTools && !providerDelegatesWork;
-  const currentRungIdx = effectiveMode === "chat" ? 0 : effectiveMode === "plan" ? 1 : requireDiffReview ? 2 : 3;
+  const currentRungIdx = currentRungIndex(effectiveMode, requireDiffReview);
   // Effective window: a per-model override (Settings → Harness, Ollama only)
   // genuinely caps the runtime window, so the gauge must measure against it —
   // otherwise a dialed-down model reads near-empty when it's actually full.
@@ -1374,87 +1373,37 @@ This user request requires workspace inspection. Before answering, you MUST call
     return () => { cancelled = true; };
   }, [effectiveMode, harnessSettings?.toolOverrides, toolsAvailableForDraft]);
 
-  // Prefer the model's real prompt-token count when we have it: it already
-  // accounts for the system prompt, tool schemas, and full history, so we only
-  // add the unsent draft on top. Without it, estimate every message by length.
-  // Messages above the last compaction marker stay visible for reference but no
-  // longer reach the model (the transcript marker collapses them on replay), so
-  // the gauge counts only from that marker onward — otherwise it would over-count
-  // and the auto-compaction safety net would fire in a loop.
-  let lastCompactionIdx = -1;
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === "system" && (msgs[i] as Extract<Msg, { role: "system" }>).compaction) { lastCompactionIdx = i; break; }
-  }
-  const tokenCountedMsgs = lastCompactionIdx >= 0 ? msgs.slice(lastCompactionIdx) : msgs;
-  const messageTokens = tokenCountedMsgs.reduce((sum, m) => sum + messageTokenEstimate(m), 0);
-  const draftTokens = estimateTokens(input);
-  const skillsTokens = estimateTokens(enabledSkillsPrompt(skills));
-  const projectRulesTokens = estimateTokens(projectRules);
-  const contextLensTokens = estimateProjectContextTokens(lensProjectContext);
-  const systemPromptTokens = Math.max(
-    0,
-    estimateTokens(systemPromptForDraft) - skillsTokens - projectRulesTokens
-  );
-  const estimatedContextUsed =
-    messageTokens +
-    systemPromptTokens +
-    skillsTokens +
-    projectRulesTokens +
-    toolSchemaTokens +
-    contextLensTokens;
-  const contextUsed =
-    (measuredPromptTokens !== null && !streaming ? measuredPromptTokens : estimatedContextUsed) +
-    draftTokens;
-  const promptContextUsed =
-    (measuredUsageTokens !== null && !streaming ? measuredUsageTokens.prompt : estimatedContextUsed) +
-    draftTokens;
-  const replyContextUsed =
-    measuredUsageTokens !== null && !streaming ? measuredUsageTokens.completion : 0;
-  const contextRemaining = Math.max(0, effectiveContextLimit - contextUsed);
-  const contextRatio = Math.min(1, contextUsed / effectiveContextLimit);
-  const contextTone = contextRatio > 0.85 ? "var(--danger)" : contextRatio > 0.65 ? "var(--warning)" : "var(--accent)";
-  const rawContextRows: ContextBreakdownRow[] = [
-    { id: "messages", label: "Messages", tokens: messageTokens, color: "var(--chart-1)" },
-    { id: "tools", label: "System tools", tokens: toolSchemaTokens, color: "var(--chart-2)" },
-    { id: "system", label: "System prompt", tokens: systemPromptTokens, color: "var(--chart-3)" },
-    { id: "skills", label: "Skills", tokens: skillsTokens, color: "var(--chart-4)" },
-    { id: "rules", label: "Project rules", tokens: projectRulesTokens, color: "var(--chart-5)" },
-    { id: "lens", label: "Context lens", tokens: contextLensTokens, color: "var(--chart-6)" },
-    { id: "draft", label: "Draft input", tokens: draftTokens, color: "var(--chart-7)" },
-    { id: "reply", label: "Last reply", tokens: replyContextUsed, color: "var(--chart-2)" },
-  ];
-  const contextRows = rawContextRows.filter((row) => row.tokens > 0);
-  const measuredDelta =
-    measuredPromptTokens !== null && !streaming
-      ? Math.max(0, measuredPromptTokens + draftTokens - estimatedContextUsed - draftTokens)
-      : 0;
-  const contextBreakdownRows: ContextBreakdownRow[] = [
-    ...contextRows,
-    ...(measuredDelta > 0
-      ? [{ id: "measured-extra", label: "Provider overhead", tokens: measuredDelta, color: "var(--fg-dim)", muted: true }]
-      : []),
-    { id: "free", label: "Free space", tokens: contextRemaining, color: "var(--border-strong)", muted: true },
-  ];
-  // Running cost for this conversation = sum of every turn's per-message cost.
-  // Stays 0 (chip hidden) for local / subscription / unknown-price models.
-  const conversationCostUsd = msgs.reduce(
-    (sum, m) => sum + (m.role === "assistant" ? m.meta?.costUsd ?? 0 : 0),
-    0
-  );
+  // The window's arithmetic lives in `ai/contextBudget.ts` — values in, values
+  // out, and tested. It used to sit inline here, which meant the automatic
+  // compaction threshold (and the compaction-marker exclusion that stops it
+  // firing in a loop) could only be exercised by mounting the panel against a
+  // live stream.
+  const budget = computeContextBudget({
+    msgs,
+    draft: input,
+    systemPrompt: systemPromptForDraft,
+    skillsPrompt: enabledSkillsPrompt(skills),
+    projectRules,
+    lens: lensProjectContext,
+    toolSchemaTokens,
+    measuredPromptTokens,
+    measuredUsageTokens,
+    contextLimit: effectiveContextLimit,
+    streaming,
+  });
+  const contextUsed = budget.used;
+  const contextRatio = budget.ratio;
+  const contextTone = contextToneFor(contextRatio);
+  const contextBreakdownRows = budget.breakdown;
+  const conversationCostUsd = conversationCost(msgs);
 
-  // How many trailing messages to keep verbatim when compacting. Two exchanges
-  // is enough to keep the immediate thread intact; everything older folds into
-  // the summary.
-  const COMPACT_KEEP_RECENT = 4;
-  // Offer compaction once the window is ~80% full, on a real (non-delegate)
-  // conversation long enough to have something worth folding. Delegate CLIs
-  // manage their own context, so it doesn't apply to them.
-  const canCompact =
-    !providerDelegatesWork &&
-    !streaming &&
-    !compacting &&
-    msgs.length > COMPACT_KEEP_RECENT + 1;
-  const showCompactPrompt = canCompact && contextRatio >= 0.8;
+  const canCompact = canCompactConversation({
+    providerDelegatesWork,
+    streaming,
+    compacting,
+    messageCount: msgs.length,
+  });
+  const showCompactPrompt = canCompact && contextRatio >= COMPACT_PROMPT_RATIO;
 
   async function compactConversation(source: "manual" | "agent" = "manual") {
     if (!canCompact) return;
@@ -1508,17 +1457,16 @@ This user request requires workspace inspection. Before answering, you MUST call
   const autoCompactArmedRef = useRef(true);
   useEffect(() => {
     if (streaming || compacting || !canCompact) return;
-    // Measure the committed conversation, not the draft being typed.
-    const committedUsed = contextUsed - draftTokens;
-    const rawRatio = effectiveContextLimit > 0 ? committedUsed / effectiveContextLimit : 0;
-    if (rawRatio < 1) {
+    // `rawRatio` measures the committed conversation, not the draft being
+    // typed — a long unsent draft must not arm a paid summarisation call.
+    if (budget.rawRatio < 1) {
       autoCompactArmedRef.current = true;
       return;
     }
     if (!autoCompactArmedRef.current) return;
     autoCompactArmedRef.current = false;
     void compactConversation("agent");
-  }, [streaming, compacting, canCompact, contextUsed, draftTokens, effectiveContextLimit]);
+  }, [streaming, compacting, canCompact, budget.rawRatio]);
 
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations<Conversation>());
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1708,7 +1656,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         // harness writes RunResult/RunError to disk before it flips the run's
         // status, so the tail is the authoritative "is this turn done" signal.
         const adopt = async (guardBaseLen?: number): Promise<{ len: number; terminal: boolean }> => {
-          const events = await invoke<AgentEvent[]>("agent_read_run", { runId: reattachId });
+          const events = await readAgentRunEvents(reattachId);
           // Turns queued locally (waiting for this external run to settle)
           // aren't in the transcript yet — carry them across the replay or a
           // long-running race run would silently swallow an "ask both" send.
@@ -2530,7 +2478,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           // `code: "aborted"`. It's not a harness failure — the partial
           // answer should stay on screen with no error banner, and the
           // connection-suggestion copy in the catch block would be wrong.
-          if (event.error.code !== "aborted") {
+          if (!isSilentRunError(event.error.code)) {
             harnessError = new Error(event.error.message);
           } else {
             abortedByUser = true;
@@ -3349,7 +3297,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           const isStreamingActive = streaming && isLast && m.role === "assistant" && m.content !== "";
           // Messages above the last compaction marker are kept for reference but
           // no longer in the model's context — dim them so that's legible.
-          const dimmed = lastCompactionIdx > 0 && i < lastCompactionIdx;
+          const dimmed = lastCompactionIndex(msgs) > 0 && i < lastCompactionIndex(msgs);
 
           if (m.role === "user") {
             const queued = m.queueState === "queued";
@@ -3951,13 +3899,13 @@ This user request requires workspace inspection. Before answering, you MUST call
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-dim)" }}>@</span>
                       </button>
                       <div style={{ height: 1, background: "var(--border)", margin: "4px 8px" }} />
-                      {MODE_RUNGS.map((rung, i) => {
+                      {AUTONOMY_RUNGS.map((rung, i) => {
                         const disabled = rung.mode === "goal" && goalDisabled;
                         const active = i === currentRungIdx;
                         return (
-                          <button key={rung.label} type="button" role="menuitemradio" aria-checked={active} disabled={disabled}
+                          <button key={rung.key} type="button" role="menuitemradio" aria-checked={active} disabled={disabled}
                             onClick={() => { if (!disabled) selectRung(rung.mode, rung.review); }}
-                            title={disabled ? `${model} cannot use edit tools.` : rung.desc}
+                            title={disabled ? `${model} cannot use edit tools.` : rung.description}
                             style={{ width: "100%", display: "flex", alignItems: "center", height: 32, padding: "0 10px", border: "none", borderRadius: "var(--radius-sm)", background: "transparent", font: "inherit", fontSize: 13, cursor: disabled ? "default" : "pointer" }}
                             onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "var(--bg-hover)"; }}
                             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
@@ -4113,7 +4061,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                     <div style={{ display: "grid", gap: 4, color: "var(--fg-dim)", fontSize: 10.5, lineHeight: 1.35 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                         <span>Prompt + draft</span>
-                        <span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{promptContextUsed.toLocaleString()}</span>
+                        <span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{budget.promptUsed.toLocaleString()}</span>
                       </div>
                       <div>
                         {measuredPromptTokens !== null && !streaming ? "Headline measured from provider usage; category split is estimated." : "Estimated before the next turn."}

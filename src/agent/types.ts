@@ -215,6 +215,12 @@ export type AgentEvent =
       name: string;
       input: unknown;
       summary: string;
+      /** What the Tool *was* at dispatch time — `ToolCapability::wire()` in
+       *  Rust. A Tool's name doesn't say what it did: a workspace-defined
+       *  command tool carries its author's name, so the Validation contract
+       *  used to count zero commands for it. Absent on runs recorded before
+       *  the field existed. */
+      capability?: string;
       ts: number;
     }
   | { type: "tool_progress"; runId: string; toolCallId: string; message: string; ts: number }

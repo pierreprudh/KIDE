@@ -1,10 +1,17 @@
-// Transcript parsing — the pure layer behind Mission Control's conversation view.
+// The pure layer behind Mission Control's conversation view.
 //
-// These functions turn a run's RunMessage[] (the on-disk/folded transcript) into
-// the shapes a reader wants: a compacted conversation, inline tool calls split
-// out of message text, and a markdown export. They are deliberately free of React
-// and of any presentation-label lookup, so they can be tested with a fixture and
-// reused from Memory, Search, or Export — not only from the board component.
+// These functions turn a run's `RunMessage[]` — already folded from the Agent
+// event stream by `agent/foldEvents.ts`, which is the one owner of that wire
+// format — into what the board's detail pane wants: a compacted conversation,
+// inline tool calls split out of message text, and a markdown export. Free of
+// React and of any presentation-label lookup, so they test against a fixture.
+//
+// Scope, honestly: this is Mission Control's view fold, and its only importer is
+// Mission Control. The header used to claim it was "reused from Memory, Search,
+// or Export", and CONTEXT.md elevated it to the definition of Conversation on
+// the strength of that — a sharing that never happened. If another surface does
+// need a compacted conversation, this is the right home for it; until then the
+// name should not overstate its reach.
 
 import type { Run, RunMessage, RunToolCall } from "./runs";
 
@@ -15,6 +22,15 @@ export type ConversationItem =
   | { type: "message"; message: RunMessage; text: string; tools: RunToolCall[] }
   | { type: "process"; notes: string[] };
 
+// Does this assistant turn read as a running commentary rather than an answer?
+//
+// Be aware of what this is: 28 hardcoded English sentence-openers, collected by
+// reading real transcripts during one session. It works well on the runs it was
+// tuned against and not at all on another language, and there is no principled
+// line between "process note" and "short answer". Collapsing these keeps the
+// board's detail pane readable, so it earns its place — but treat it as a
+// heuristic to be tuned from evidence, never as a parser, and don't extend the
+// alternation without a transcript that motivates it.
 // Heuristic: is this assistant turn running commentary rather than a substantive
 // reply? Process notes get collapsed so the conversation reads as a dialogue.
 export function isProcessNote(text: string): boolean {

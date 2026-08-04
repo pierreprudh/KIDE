@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { detectLanguage } from "../editorLanguage";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import type { CheckpointEntry } from "../agent/types";
 import type { ThemeId } from "../theme";
@@ -73,26 +74,6 @@ type TabState = {
   saving: boolean;
 };
 
-function detectLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase();
-  return (
-    {
-      ts: "typescript",
-      tsx: "typescript",
-      js: "javascript",
-      jsx: "javascript",
-      rs: "rust",
-      py: "python",
-      json: "json",
-      md: "markdown",
-      html: "html",
-      css: "css",
-      toml: "ini",
-      yml: "yaml",
-      yaml: "yaml",
-    } as Record<string, string>
-  )[ext ?? ""] ?? "plaintext";
-}
 
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;

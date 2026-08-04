@@ -67,6 +67,22 @@ pub struct AgentRun {
 /// when it's a file read it to recover the worktree name (falling back to the
 /// `cwd` basename if the pointer is unparseable). One `stat` + at most one tiny
 /// read per run — negligible against the session-log reads already happening.
+/// Fill in a row's worktree evidence when it doesn't already carry one.
+///
+/// Both boards need this and both had their own copy — `list_agent_runs` for
+/// Delegate rows and `agent_list_runs` for Harness rows — with a comment on the
+/// second reading "evidence parity with the delegate board", i.e. keep these two
+/// in step by hand. Derived rather than persisted, so historical runs pick it up
+/// too.
+pub(crate) fn fill_worktree_evidence(worktree: &mut Option<String>, cwd: Option<&str>) {
+    if worktree.is_some() {
+        return;
+    }
+    if let Some(cwd) = cwd {
+        *worktree = worktree_label(cwd);
+    }
+}
+
 pub(crate) fn worktree_label(cwd: &str) -> Option<String> {
     let dot_git = std::path::Path::new(cwd).join(".git");
     let meta = std::fs::metadata(&dot_git).ok()?;

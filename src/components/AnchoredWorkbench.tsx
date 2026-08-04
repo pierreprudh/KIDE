@@ -1,4 +1,6 @@
 import { lazy, Suspense, useRef, type ReactNode, type RefObject, type ComponentProps } from "react";
+import { beginDragSession } from "../dragSession";
+import { clamp } from "./settings/controls";
 import type { Skill } from "../skills";
 import type { Layout as PanelLayout } from "../panelLayout";
 import type { AiPanelInstance } from "../hooks/usePanelLayout";
@@ -402,25 +404,19 @@ function SideSplitter({
     e.preventDefault();
     const startX = e.clientX;
     const start = current;
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
     if (line) line.style.background = "var(--accent-soft)";
     function onMove(ev: MouseEvent) {
       const dx = ev.clientX - startX;
       const next = side === "left" ? start + dx : start - dx;
       onChange(next);
     }
-    function onUp() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      if (line) line.style.background = "var(--border)";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginDragSession({
+      cursor: "col-resize",
+      onMove,
+      onDone: () => {
+        if (line) line.style.background = "var(--border)";
+      },
+    });
   }
 
   const lineRef = useRef<HTMLDivElement>(null);
@@ -476,22 +472,14 @@ function TerminalSplitter({
         e.preventDefault();
         const startY = e.clientY;
         const start = current;
-        const previousCursor = document.body.style.cursor;
-        const previousSelect = document.body.style.userSelect;
-        document.body.style.cursor = "row-resize";
-        document.body.style.userSelect = "none";
         function onMove(ev: MouseEvent) {
           const dy = ev.clientY - startY;
           onChange(start - dy);
         }
-        function onUp() {
-          document.body.style.cursor = previousCursor;
-          document.body.style.userSelect = previousSelect;
-          window.removeEventListener("mousemove", onMove);
-          window.removeEventListener("mouseup", onUp);
-        }
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
+        beginDragSession({
+          cursor: "row-resize",
+          onMove,
+        });
       }}
       style={{
         background: "var(--border)",
@@ -505,6 +493,3 @@ function TerminalSplitter({
   );
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}

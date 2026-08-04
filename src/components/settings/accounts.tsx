@@ -263,7 +263,7 @@ export function GitHubAccountRow() {
 }
 
 /** Busy sentinel for the clear-the-pin item, which has no login of its own. */
-const FOLLOW_GH = " follow-gh";
+const FOLLOW_GH = "__follow-gh";
 
 /** The line under the GitHub row's title — says which account is in force and
  *  why, so the row explains itself without a help click. */

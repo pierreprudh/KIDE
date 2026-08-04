@@ -25,7 +25,7 @@ pub use claude_code::ClaudeCode;
 pub use codex::Codex;
 pub use omp::Omp;
 pub use opencode::OpenCode;
-pub(crate) use runs::{retain_candidates_in_workspace, worktree_label};
+pub(crate) use runs::{fill_worktree_evidence, retain_candidates_in_workspace, worktree_label};
 pub use runs::{AgentRun, RunCandidate, RunMessage};
 
 /// The frontend's "no model picked" sentinel (`DEFAULT_MODELS` in

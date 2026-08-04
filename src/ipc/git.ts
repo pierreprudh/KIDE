@@ -362,3 +362,24 @@ export function githubAccounts(): Promise<GitHubAccounts> {
 export function githubSetAccount(login: string | null): Promise<GitHubUser> {
   return invoke<GitHubUser>("github_set_account", { login });
 }
+
+/** Open a pull request for the workspace's current branch. Resolves to the PR
+ *  URL. Named `create_pr` rather than `git_*`, which is how it slipped past
+ *  `every_git_command_has_a_frontend_wrapper` and stayed a raw invoke in two
+ *  components. */
+export function createPr(
+  workspaceRoot: string | null,
+  title: string,
+  body: string | null
+): Promise<string> {
+  return invoke<string>("create_pr", { workspaceRoot, title, body });
+}
+
+/** GitHub avatar URLs for commit authors, keyed by the email queried. Missing
+ *  entries mean "no GitHub user matched" — callers fall back to initials. */
+export function githubCommitAvatars(
+  workspaceRoot: string,
+  queries: { hash: string; email: string }[]
+): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("github_commit_avatars", { workspaceRoot, queries });
+}

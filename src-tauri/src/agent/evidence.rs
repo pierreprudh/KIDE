@@ -54,7 +54,7 @@ pub fn render_evidence_markdown(summary: &AgentRunSummary, events: &[AgentEvent]
     let mut pending_permission: Option<String> = None;
 
     for event in events {
-        let ts = event_ts(event);
+        let ts = AgentEvent::ts(event);
         if first_ts.is_none() && ts > 0 {
             first_ts = Some(ts);
         }
@@ -303,33 +303,6 @@ pub fn render_evidence_markdown(summary: &AgentRunSummary, events: &[AgentEvent]
     md
 }
 
-fn event_ts(event: &AgentEvent) -> i64 {
-    match event {
-        AgentEvent::RunStarted { ts, .. }
-        | AgentEvent::ContextSnapshot { ts, .. }
-        | AgentEvent::UserMessage { ts, .. }
-        | AgentEvent::AssistantDelta { ts, .. }
-        | AgentEvent::AssistantMessage { ts, .. }
-        | AgentEvent::ToolCallStarted { ts, .. }
-        | AgentEvent::ToolProgress { ts, .. }
-        | AgentEvent::ToolCallFinished { ts, .. }
-        | AgentEvent::PermissionRequested { ts, .. }
-        | AgentEvent::PermissionResolved { ts, .. }
-        | AgentEvent::DiffProposed { ts, .. }
-        | AgentEvent::DiffResolved { ts, .. }
-        | AgentEvent::FileChanged { ts, .. }
-        | AgentEvent::RunResult { ts, .. }
-        | AgentEvent::RunError { ts, .. }
-        | AgentEvent::ContextCompacted { ts, .. }
-        | AgentEvent::UserQuestionRequested { ts, .. }
-        | AgentEvent::UserQuestionResolved { ts, .. }
-        | AgentEvent::SubagentRequested { ts, .. }
-        | AgentEvent::SubagentResolved { ts, .. }
-        | AgentEvent::AdvisorRequested { ts, .. }
-        | AgentEvent::AdvisorResolved { ts, .. }
-        | AgentEvent::SteeringInjected { ts, .. } => *ts,
-    }
-}
 
 /// Best human label for a permission request: the command line when present,
 /// else whatever name-ish field the gate's caller put in the payload.
@@ -433,6 +406,7 @@ mod tests {
                 name: "run_command".into(),
                 input: serde_json::json!({ "command": "cargo test" }),
                 summary: "run_command".into(),
+                capability: Some("run_command".into()),
                 ts: 2_000,
             },
             AgentEvent::ToolCallFinished {

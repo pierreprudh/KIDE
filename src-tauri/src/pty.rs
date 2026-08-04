@@ -9,9 +9,11 @@
 
 use crate::delegate::{self, shell_quote};
 use crate::pty_client;
-use crate::pty_daemon::{
-    Event as DaemonEvent, Request as DaemonRequest, Response as DaemonResponse,
-};
+// From `pty_wire`, not `pty_daemon`: the daemon module is `#![cfg(unix)]`, and
+// an inner cfg *empties* a module rather than removing it — so on a non-unix
+// target these three names silently stopped resolving and took the whole
+// delegate layer's compilation with them.
+use crate::pty_wire::{Event as DaemonEvent, Request as DaemonRequest, Response as DaemonResponse};
 use crate::pty_host::{
     self, DelegateMissionLink, LiveSessionRow, PtyEventSink, PtyExitOutcome, SessionHost, SpawnSpec,
 };
@@ -142,34 +144,37 @@ fn start_daemon_subscriber(app: tauri::AppHandle) {
 
 /// One round-trip to `ptyd`, or `None` when there is no daemon to ask.
 ///
-/// Every command below had its own copy of this preamble — check the toggle,
-/// find the app data dir, send, match the response — which is how the account
-/// switch guard ended up being the one operation that never asked the daemon at
-/// all. One helper means the "is there a daemon?" question is answered in a
-/// single place, and it is the single place a `cfg(not(unix))` stub would go.
+/// Every command below had its own copy of this preamble — find the app data
+/// dir, send, match the response — which is how the account switch guard ended
+/// up being the one operation that never asked the daemon at all. One helper
+/// means the "is there a daemon?" question is answered in a single place, and it
+/// is the single place a `cfg(not(unix))` stub would go.
+///
+/// **This never consults the persistent-sessions toggle, and that is the rule.**
+/// Turning persistence off routes *new spawns* in-process; it does not evict
+/// what the daemon is already hosting, because those sessions are the user's
+/// work. So every other operation — the listings, the liveness checks, and the
+/// lifecycle ops — has to keep asking, or a running session becomes invisible.
+///
+/// There used to be two helpers here, a toggle-gated `ask_daemon` and an
+/// `ask_daemon_regardless`, with each call site picking one by name. The rule
+/// then drifted, because it was enforced by nothing but that choice:
+/// `ReuseOrCd`, `Write` and `Snapshot` were all on the gated path. With the
+/// toggle off and a session still hosted by the daemon, it showed on the Live
+/// strip and could be stopped and resized, but **typing into it was silently
+/// dropped** (the local write returned `false`, the daemon was never asked, and
+/// the command still returned `Ok`), and its snapshot fell through to the disk
+/// log with `seq: 0`, so reattach repainted history with no dedup high-water
+/// mark. `ReuseOrCd` was worse than cosmetic: skipping the daemon there spawns
+/// a *second* CLI for a session id the daemon already runs.
+///
+/// The toggle has exactly one consumer, `delegate_pty_spawn` — the one place
+/// the rule says it belongs. `ask_daemon_gate_is_not_toggled` pins that.
 ///
 /// `None` is deliberately indistinguishable from "the daemon doesn't have it":
 /// every caller's fallback is the in-process host, which is also what should
 /// happen when the daemon is off, unreachable, or mid-restart.
 fn ask_daemon(app: &tauri::AppHandle, request: &DaemonRequest) -> Option<DaemonResponse> {
-    if !daemon_enabled(app) {
-        return None;
-    }
-    ask_daemon_regardless(app, request)
-}
-
-/// `ask_daemon`, but ignoring the toggle.
-///
-/// Turning persistence off routes *new* spawns in-process; it does not evict
-/// what the daemon is already hosting, because those sessions are the user's
-/// work. So the read-only listings and the liveness checks have to keep asking
-/// even when the toggle is off, or a running session becomes invisible — which
-/// is exactly how a live session would get offered as "reopen", or have its
-/// credentials swapped underneath it.
-fn ask_daemon_regardless(
-    app: &tauri::AppHandle,
-    request: &DaemonRequest,
-) -> Option<DaemonResponse> {
     let dir = app_data_dir(app)?;
     pty_client::request(&dir, request).ok()
 }
@@ -177,10 +182,10 @@ fn ask_daemon_regardless(
 /// Live sessions the daemon is hosting (empty when unreachable) — for merged
 /// live/recent listings and the account-switch guard.
 fn daemon_live_rows(app: &tauri::AppHandle) -> Vec<LiveSessionRow> {
-    match ask_daemon_regardless(app, &DaemonRequest::LiveRows) {
-        Some(DaemonResponse::LiveRows { rows }) => rows,
-        _ => Vec::new(),
-    }
+    // Through the interface, so `LiveRows` has one speaker. The merge itself
+    // stays asymmetric (in-process wins a collision), which is why this returns
+    // the daemon's rows rather than walking both hosts.
+    DaemonHost { app }.live_rows()
 }
 
 // ── Two-host policies ────────────────────────────────────────────────────────
@@ -244,7 +249,7 @@ pub struct DaemonStatus {
 #[tauri::command]
 pub fn delegate_daemon_status(app: tauri::AppHandle) -> DaemonStatus {
     let enabled = daemon_enabled(&app);
-    match ask_daemon_regardless(&app, &DaemonRequest::Ping) {
+    match ask_daemon(&app, &DaemonRequest::Ping) {
         Some(DaemonResponse::Pong { version, .. }) => DaemonStatus {
             enabled,
             reachable: true,
@@ -305,9 +310,171 @@ pub struct PtyState {
     pub shells: Mutex<HashMap<String, Shell>>,
 }
 
-#[derive(Default)]
-pub struct DelegatePtyState {
-    pub host: SessionHost,
+// ── The two hosts, behind one interface ──────────────────────────────────────
+// A delegate session lives in exactly one host: this process, or `ptyd`. There
+// was no interface between them — `SessionHost` is a struct, the daemon's
+// `Request` enum was a second hand-written copy of its method list, and every
+// command picked a host by hand. That is how `Recent` ended up served but never
+// sent, and how the toggle rule drifted onto `Write` and `Snapshot`.
+//
+// Only the genuinely uniform operations are here. `Spawn` deliberately is not:
+// it is the one operation that consults the toggle, and its daemon route falls
+// back in-process on any error, so it reads better written out.
+
+/// What both session hosts can answer for a session id.
+///
+/// Every method must no-op (or report "not mine") for an id the host doesn't
+/// hold — that is what makes the ordered walks below safe.
+trait SessionHosting {
+    /// Reuse a live session, `cd`-ing it if the workspace moved. `Ok(false)`
+    /// means "not mine".
+    fn reuse_or_cd(&self, id: &str, cwd: Option<&str>) -> Result<bool, String>;
+    /// `Ok(false)` means "not mine" — never "dropped it".
+    fn write(&self, id: &str, data: &str) -> Result<bool, String>;
+    fn resize(&self, id: &str, rows: u16, cols: u16);
+    fn stop(&self, id: &str);
+    /// A snapshot **only** from the host that has the session live, because its
+    /// ring carries the authoritative `seq` for the dedup handshake. `None`
+    /// means "not mine"; the caller falls back to the shared disk log.
+    fn live_snapshot(&self, id: &str) -> Option<DelegatePtySnapshot>;
+    fn live_rows(&self) -> Vec<LiveSessionRow>;
+}
+
+struct LocalHost<'a> {
+    host: &'a SessionHost,
+}
+
+impl SessionHosting for LocalHost<'_> {
+    fn reuse_or_cd(&self, id: &str, cwd: Option<&str>) -> Result<bool, String> {
+        self.host.reuse_or_cd(id, cwd)
+    }
+    fn write(&self, id: &str, data: &str) -> Result<bool, String> {
+        self.host.write(id, data)
+    }
+    fn resize(&self, id: &str, rows: u16, cols: u16) {
+        let _ = self.host.resize(id, rows, cols);
+    }
+    fn stop(&self, id: &str) {
+        self.host.stop(id);
+    }
+    fn live_snapshot(&self, id: &str) -> Option<DelegatePtySnapshot> {
+        // `SessionHost::snapshot` also serves dead sessions from disk, so ask
+        // about liveness first rather than reading its result.
+        self.host
+            .live_ids()
+            .contains(id)
+            .then(|| self.host.snapshot(id, None))
+    }
+    fn live_rows(&self) -> Vec<LiveSessionRow> {
+        self.host.live_rows()
+    }
+}
+
+struct DaemonHost<'a> {
+    app: &'a tauri::AppHandle,
+}
+
+impl SessionHosting for DaemonHost<'_> {
+    fn reuse_or_cd(&self, id: &str, cwd: Option<&str>) -> Result<bool, String> {
+        match ask_daemon(
+            self.app,
+            &DaemonRequest::ReuseOrCd {
+                session_id: id.to_string(),
+                cwd: cwd.map(|c| c.to_string()),
+            },
+        ) {
+            Some(DaemonResponse::Reused { reused }) => Ok(reused),
+            _ => Ok(false),
+        }
+    }
+    fn write(&self, id: &str, data: &str) -> Result<bool, String> {
+        match ask_daemon(
+            self.app,
+            &DaemonRequest::Write {
+                session_id: id.to_string(),
+                data: data.to_string(),
+            },
+        ) {
+            Some(DaemonResponse::Wrote { wrote }) => Ok(wrote),
+            _ => Ok(false),
+        }
+    }
+    fn resize(&self, id: &str, rows: u16, cols: u16) {
+        ask_daemon(
+            self.app,
+            &DaemonRequest::Resize {
+                session_id: id.to_string(),
+                rows,
+                cols,
+            },
+        );
+    }
+    fn stop(&self, id: &str) {
+        ask_daemon(
+            self.app,
+            &DaemonRequest::Stop {
+                session_id: id.to_string(),
+            },
+        );
+    }
+    fn live_snapshot(&self, id: &str) -> Option<DelegatePtySnapshot> {
+        match ask_daemon(
+            self.app,
+            &DaemonRequest::Snapshot {
+                session_id: id.to_string(),
+            },
+        ) {
+            Some(DaemonResponse::Snapshot(snap)) if snap.live => Some(snap),
+            _ => None,
+        }
+    }
+    fn live_rows(&self) -> Vec<LiveSessionRow> {
+        match ask_daemon(self.app, &DaemonRequest::LiveRows) {
+            Some(DaemonResponse::LiveRows { rows }) => rows,
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Both hosts, in the order every operation must consult them: **in-process
+/// first**. It may hold sessions that pre-date the daemon toggle, and a session
+/// it holds is definitively not the daemon's.
+fn both_hosts<'a>(
+    app: &'a tauri::AppHandle,
+    local: &'a SessionHost,
+) -> [Box<dyn SessionHosting + 'a>; 2] {
+    [
+        Box::new(LocalHost { host: local }),
+        Box::new(DaemonHost { app }),
+    ]
+}
+
+/// Hand the operation to each host in order and stop at the first that claims
+/// the session. An error from a host is the caller's error — "not mine" is
+/// `Ok(false)`, never an `Err`.
+fn first_host_that_claims<'a>(
+    app: &'a tauri::AppHandle,
+    local: &'a SessionHost,
+    mut op: impl FnMut(&dyn SessionHosting) -> Result<bool, String>,
+) -> Result<bool, String> {
+    for host in both_hosts(app, local) {
+        if op(host.as_ref())? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// For operations where a host that doesn't hold the id simply does nothing, so
+/// there is no ownership question to answer: tell both.
+fn tell_every_host<'a>(
+    app: &'a tauri::AppHandle,
+    local: &'a SessionHost,
+    mut op: impl FnMut(&dyn SessionHosting),
+) {
+    for host in both_hosts(app, local) {
+        op(host.as_ref());
+    }
 }
 
 /// Is a delegate PTY for `provider` live in **either** host?
@@ -323,8 +490,7 @@ pub struct DelegatePtyState {
 /// own terminal is invisible to us.
 pub(crate) fn provider_has_live_session(app: &tauri::AppHandle, provider: &str) -> bool {
     let local = app
-        .state::<DelegatePtyState>()
-        .host
+        .state::<SessionHost>()
         .has_live_session(provider);
     provider_is_live(local, &daemon_live_rows(app), provider)
 }
@@ -345,8 +511,7 @@ pub(crate) fn delegate_attempt_recovery(
     session_id: &str,
 ) -> DelegateAttemptRecovery {
     let local_live = app
-        .state::<DelegatePtyState>()
-        .host
+        .state::<SessionHost>()
         .live_ids()
         .contains(session_id);
     let daemon_live = daemon_live_rows(app)
@@ -658,7 +823,7 @@ pub fn pty_close(state: State<PtyState>, id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn delegate_pty_spawn(
     app: tauri::AppHandle,
-    state: State<DelegatePtyState>,
+    host: State<SessionHost>,
     status_state: State<crate::delegate::status::DelegateStatusState>,
     session_id: String,
     provider: String,
@@ -692,16 +857,7 @@ pub fn delegate_pty_spawn(
     // when the workspace changed) instead of spawning a second CLI — wherever
     // it lives. In-process first (it may pre-date the daemon toggle), then
     // the daemon.
-    if state.host.reuse_or_cd(&session_id, cwd.as_deref())? {
-        return Ok(());
-    }
-    if let Some(DaemonResponse::Reused { reused: true }) = ask_daemon(
-        &app,
-        &DaemonRequest::ReuseOrCd {
-            session_id: session_id.clone(),
-            cwd: cwd.clone(),
-        },
-    ) {
+    if first_host_that_claims(&app, &host, |h| h.reuse_or_cd(&session_id, cwd.as_deref()))? {
         return Ok(());
     }
 
@@ -803,7 +959,7 @@ pub fn delegate_pty_spawn(
         }
     }
 
-    state.host.spawn(
+    host.spawn(
         SpawnSpec {
             session_id,
             provider,
@@ -827,25 +983,12 @@ pub fn delegate_pty_spawn(
 #[tauri::command]
 pub fn delegate_pty_write(
     app: tauri::AppHandle,
-    state: State<DelegatePtyState>,
+    host: State<SessionHost>,
     status_state: State<crate::delegate::status::DelegateStatusState>,
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    // The in-process host answers for an id it holds; only an id it doesn't
-    // hold can belong to the daemon.
-    let mut wrote = state.host.write(&session_id, &data)?;
-    if !wrote {
-        if let Some(DaemonResponse::Wrote { wrote: w }) = ask_daemon(
-            &app,
-            &DaemonRequest::Write {
-                session_id: session_id.clone(),
-                data: data.clone(),
-            },
-        ) {
-            wrote = w;
-        }
-    }
+    let wrote = first_host_that_claims(&app, &host, |h| h.write(&session_id, &data))?;
     // Typing into the TUI answers whatever the agent was waiting on, so
     // "Needs input" / "Turn done" no longer describe the session. Forget
     // the hook status; the next hook (or the activity timer) re-derives
@@ -864,39 +1007,31 @@ pub fn delegate_pty_write(
 #[tauri::command]
 pub fn delegate_pty_snapshot(
     app: tauri::AppHandle,
-    state: State<DelegatePtyState>,
+    host: State<SessionHost>,
     session_id: String,
 ) -> DelegatePtySnapshot {
-    // Whichever host has the session live serves its buffer; a session live
-    // in the daemon must answer from there (its ring has the authoritative
-    // seq for the dedup handshake). Dead sessions read the shared disk log,
-    // identical from either side.
-    if !state.host.live_ids().contains(&session_id) {
-        if let Some(DaemonResponse::Snapshot(snap)) = ask_daemon(
-            &app,
-            &DaemonRequest::Snapshot {
-                session_id: session_id.clone(),
-            },
-        ) {
+    // Whichever host has the session live serves its buffer — its ring has the
+    // authoritative seq for the dedup handshake.
+    for h in both_hosts(&app, &host) {
+        if let Some(snap) = h.live_snapshot(&session_id) {
             return snap;
         }
     }
-    state
-        .host
-        .snapshot(&session_id, scrollback_dir(&app).as_deref())
+    // Neither hosts it: the shared disk log, identical from either side.
+    host.snapshot(&session_id, scrollback_dir(&app).as_deref())
 }
 
 #[tauri::command]
 pub fn delegate_pty_recent_sessions(
     app: tauri::AppHandle,
-    state: State<DelegatePtyState>,
+    host: State<SessionHost>,
 ) -> Vec<RecentDelegateSession> {
     let Some(dir) = scrollback_dir(&app) else {
         return Vec::new();
     };
     // "Recent" = persisted but not live ANYWHERE — a session still running in
     // the daemon must not be offered as a reopen.
-    let live = all_live_ids(state.host.live_ids(), &daemon_live_rows(&app));
+    let live = all_live_ids(host.live_ids(), &daemon_live_rows(&app));
     pty_host::scan_recent_sessions(&dir, &live)
 }
 
@@ -930,14 +1065,14 @@ pub struct LiveDelegateSession {
 #[tauri::command]
 pub fn delegate_pty_live_sessions(
     app: tauri::AppHandle,
-    state: State<DelegatePtyState>,
+    host: State<SessionHost>,
     status_state: State<crate::delegate::status::DelegateStatusState>,
 ) -> Vec<LiveDelegateSession> {
     let hook_statuses = status_state.statuses.lock().unwrap();
     let now = pty_host::now_ms();
     // Merge both hosts; on an id collision (shouldn't happen — spawn checks
     // both before starting) the in-process row wins.
-    let rows = merge_live_rows(state.host.live_rows(), daemon_live_rows(&app));
+    let rows = merge_live_rows(host.live_rows(), daemon_live_rows(&app));
     let mut out: Vec<LiveDelegateSession> = rows
         .into_iter()
         .map(|row| {
@@ -988,36 +1123,27 @@ pub fn delegate_pty_live_sessions(
 #[tauri::command]
 pub fn delegate_pty_resize(
     app: tauri::AppHandle,
-    state: State<DelegatePtyState>,
+    host: State<SessionHost>,
     session_id: String,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    // Both hosts no-op for an id they don't hold, so just tell both.
-    state.host.resize(&session_id, rows, cols)?;
-    // Regardless of the toggle: the daemon may still be hosting a session the
-    // user is looking at, and it would otherwise keep the old geometry forever.
-    ask_daemon_regardless(
-        &app,
-        &DaemonRequest::Resize {
-            session_id,
-            rows,
-            cols,
-        },
-    );
+    // Both hosts no-op for an id they don't hold, so there is no ownership
+    // question — and the daemon may still be hosting the session the user is
+    // looking at, which would otherwise keep the old geometry forever.
+    tell_every_host(&app, &host, |h| h.resize(&session_id, rows, cols));
     Ok(())
 }
 
 #[tauri::command]
 pub fn delegate_pty_stop(
     app: tauri::AppHandle,
-    state: State<DelegatePtyState>,
+    host: State<SessionHost>,
     session_id: String,
 ) -> Result<(), String> {
-    state.host.stop(&session_id);
-    // Regardless of the toggle, or turning persistence off would leave the
-    // sessions the daemon already hosts with no way to be stopped from the UI.
-    ask_daemon_regardless(&app, &DaemonRequest::Stop { session_id });
+    // Both, or turning persistence off would leave the sessions the daemon
+    // already hosts with no way to be stopped from the UI.
+    tell_every_host(&app, &host, |h| h.stop(&session_id));
     Ok(())
 }
 
@@ -1242,5 +1368,241 @@ mod tests {
         // reattach would bind an AI panel to a conversation that doesn't exist.
         assert_eq!(convo_id_for("run-7", "claude-code"), "run-7");
         assert_eq!(convo_id_for("run-7:codex", "claude-code"), "run-7:codex");
+    }
+
+    // ── Routing over the two hosts ──────────────────────────────────────────
+    // `first_host_that_claims` / `tell_every_host` take `&dyn SessionHosting`,
+    // so the ordering and the stop-at-first rules can be driven with fakes.
+    // Neither real adapter is reachable from here — `LocalHost` needs a live
+    // PTY and `DaemonHost` an `AppHandle` — which is exactly why the rules are
+    // separated from them.
+
+    #[derive(Default)]
+    struct FakeHost {
+        name: &'static str,
+        holds: Option<&'static str>,
+        log: Arc<Mutex<Vec<String>>>,
+        fail: bool,
+    }
+
+    impl SessionHosting for FakeHost {
+        fn reuse_or_cd(&self, id: &str, _cwd: Option<&str>) -> Result<bool, String> {
+            self.record("reuse", id);
+            self.claim(id)
+        }
+        fn write(&self, id: &str, _data: &str) -> Result<bool, String> {
+            self.record("write", id);
+            self.claim(id)
+        }
+        fn resize(&self, id: &str, _rows: u16, _cols: u16) {
+            self.record("resize", id);
+        }
+        fn stop(&self, id: &str) {
+            self.record("stop", id);
+        }
+        fn live_snapshot(&self, id: &str) -> Option<DelegatePtySnapshot> {
+            self.record("snapshot", id);
+            None
+        }
+        fn live_rows(&self) -> Vec<LiveSessionRow> {
+            Vec::new()
+        }
+    }
+
+    impl FakeHost {
+        fn record(&self, op: &str, id: &str) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("{}:{op}:{id}", self.name));
+        }
+        fn claim(&self, id: &str) -> Result<bool, String> {
+            if self.fail {
+                return Err(format!("{} exploded", self.name));
+            }
+            Ok(self.holds == Some(id))
+        }
+    }
+
+    /// The same walk `first_host_that_claims` performs, over injected hosts.
+    fn walk_claiming(
+        hosts: &[&dyn SessionHosting],
+        mut op: impl FnMut(&dyn SessionHosting) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        for h in hosts {
+            if op(*h)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    #[test]
+    fn the_first_host_that_claims_a_session_ends_the_walk() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let local = FakeHost {
+            name: "local",
+            holds: Some("a:codex"),
+            log: log.clone(),
+            fail: false,
+        };
+        let daemon = FakeHost {
+            name: "daemon",
+            holds: Some("a:codex"),
+            log: log.clone(),
+            fail: false,
+        };
+
+        let wrote = walk_claiming(&[&local, &daemon], |h| h.write("a:codex", "hi")).unwrap();
+        assert!(wrote);
+        // In-process is asked first and the daemon is never troubled — a session
+        // the local host holds is definitively not the daemon's.
+        assert_eq!(*log.lock().unwrap(), ["local:write:a:codex"]);
+    }
+
+    #[test]
+    fn a_session_the_local_host_does_not_hold_falls_through_to_the_daemon() {
+        // The regression this shape prevents: keystrokes for a ptyd-hosted
+        // session used to be dropped, and the command still returned Ok.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let local = FakeHost {
+            name: "local",
+            holds: None,
+            log: log.clone(),
+            fail: false,
+        };
+        let daemon = FakeHost {
+            name: "daemon",
+            holds: Some("b:claude-code"),
+            log: log.clone(),
+            fail: false,
+        };
+
+        let wrote = walk_claiming(&[&local, &daemon], |h| h.write("b:claude-code", "hi")).unwrap();
+        assert!(wrote, "the daemon must get the keystrokes");
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["local:write:b:claude-code", "daemon:write:b:claude-code"]
+        );
+    }
+
+    #[test]
+    fn no_host_claiming_is_ok_false_not_an_error() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let local = FakeHost {
+            name: "local",
+            holds: None,
+            log: log.clone(),
+            fail: false,
+        };
+        let daemon = FakeHost {
+            name: "daemon",
+            holds: None,
+            log: log.clone(),
+            fail: false,
+        };
+        // "Nobody holds this id" is a normal answer — the snapshot path turns it
+        // into a read of the shared disk log.
+        assert!(!walk_claiming(&[&local, &daemon], |h| h.write("gone", "hi")).unwrap());
+        assert_eq!(log.lock().unwrap().len(), 2, "both were asked");
+    }
+
+    #[test]
+    fn a_host_error_stops_the_walk_and_propagates() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let local = FakeHost {
+            name: "local",
+            holds: None,
+            log: log.clone(),
+            fail: true,
+        };
+        let daemon = FakeHost {
+            name: "daemon",
+            holds: Some("a:codex"),
+            log: log.clone(),
+            fail: false,
+        };
+        let err = walk_claiming(&[&local, &daemon], |h| h.write("a:codex", "hi")).unwrap_err();
+        assert_eq!(err, "local exploded");
+        assert_eq!(log.lock().unwrap().len(), 1, "the daemon was not asked");
+    }
+
+    #[test]
+    fn resize_and_stop_go_to_both_hosts_regardless_of_ownership() {
+        // These no-op for an id a host doesn't hold, so there is no ownership
+        // question — and skipping the daemon would leave a session it hosts
+        // stuck at the old geometry, or unstoppable from the UI.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let local = FakeHost {
+            name: "local",
+            holds: None,
+            log: log.clone(),
+            fail: false,
+        };
+        let daemon = FakeHost {
+            name: "daemon",
+            holds: Some("a:codex"),
+            log: log.clone(),
+            fail: false,
+        };
+
+        for h in [&local as &dyn SessionHosting, &daemon] {
+            h.resize("a:codex", 40, 120);
+        }
+        for h in [&local as &dyn SessionHosting, &daemon] {
+            h.stop("a:codex");
+        }
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "local:resize:a:codex",
+                "daemon:resize:a:codex",
+                "local:stop:a:codex",
+                "daemon:stop:a:codex",
+            ]
+        );
+    }
+
+    #[test]
+    fn ask_daemon_gate_is_not_toggled() {
+        // The persistent-sessions toggle routes NEW SPAWNS to the daemon. It
+        // never hides sessions the daemon already hosts. That rule used to be
+        // encoded only in which of two identically-shaped helpers a call site
+        // happened to name — and it drifted: `Write`, `Snapshot` and
+        // `ReuseOrCd` all sat on the gated path, so with the toggle off a live
+        // daemon session silently swallowed keystrokes, snapshotted from disk
+        // with `seq: 0`, and could be duplicated by a second spawn.
+        //
+        // There is now one helper, and the toggle has one consumer. Read this
+        // file's own source to keep that true — the commands themselves need an
+        // `AppHandle` and cannot be driven from here.
+        // Production half only — this test names the very strings it counts.
+        let whole = include_str!("pty.rs");
+        let src = &whole[..whole
+            .find("#[cfg(test)]")
+            .expect("test module marker in pty.rs")];
+
+        let gate_sites = src.matches("daemon_enabled(&app)").count()
+            + src.matches("daemon_enabled(app)").count();
+        assert_eq!(
+            gate_sites, 3,
+            "expected exactly 3 reads of the toggle: the subscriber's \
+             re-subscribe pause, `delegate_daemon_status` reporting it, and \
+             `delegate_pty_spawn` gating the spawn route. Found {gate_sites} — \
+             if a read or lifecycle op started consulting the toggle, a live \
+             daemon session just became invisible to it."
+        );
+
+        // And the shared round-trip helper must never be one of them.
+        let start = src
+            .find("fn ask_daemon(")
+            .expect("ask_daemon is the one round-trip helper");
+        let body = &src[start..];
+        let end = body.find("\n}").expect("end of ask_daemon");
+        assert!(
+            !body[..end].contains("daemon_enabled"),
+            "ask_daemon must not consult the toggle — every listing, liveness \
+             check and lifecycle op goes through it"
+        );
     }
 }

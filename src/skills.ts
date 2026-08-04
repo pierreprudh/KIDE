@@ -333,3 +333,27 @@ export async function loadFilesystemSkills(workspaceRoot: string | null): Promis
     group: s.group,
   }));
 }
+
+/** Mirrors `SkillCommandResult` in `src-tauri/src/skills.rs`. The name matches
+ *  the Rust struct so one word greps across the seam.
+ *
+ *  It had no TypeScript name at all: `SkillsModal` wrote the shape out verbatim
+ *  twice, 26 lines apart, and cast with `as R` — the only two `invoke(...) as T`
+ *  casts in the codebase, everywhere else uses the generic. This is the exact
+ *  failure `every_git_command_has_a_frontend_wrapper` was written to stop, one
+ *  command family over. */
+export type SkillCommandResult = {
+  ok: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+};
+
+/** `npx skills add <owner/repo>`. `ok: false` carries the CLI's own output. */
+export function installSkill(pkg: string): Promise<SkillCommandResult> {
+  return invoke<SkillCommandResult>("install_skill", { package: pkg });
+}
+
+export function uninstallSkill(name: string): Promise<SkillCommandResult> {
+  return invoke<SkillCommandResult>("uninstall_skill", { name });
+}

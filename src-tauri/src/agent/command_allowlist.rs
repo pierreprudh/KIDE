@@ -5,6 +5,7 @@
 //! data, never in the repository. The record is bound to the current repository
 //! fingerprint by [`super::approval_store`], so a checkout change re-prompts.
 
+use super::glob_match::wildcard_match;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -189,35 +190,6 @@ fn has_wildcard(pattern: &str) -> bool {
     pattern.contains('*') || pattern.contains('?')
 }
 
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let p = pattern.as_bytes();
-    let t = text.as_bytes();
-    let (mut pi, mut ti) = (0, 0);
-    let mut star: Option<usize> = None;
-    let mut star_text = 0;
-
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == b'*' {
-            star = Some(pi);
-            pi += 1;
-            star_text = ti;
-        } else if let Some(star_i) = star {
-            pi = star_i + 1;
-            star_text += 1;
-            ti = star_text;
-        } else {
-            return false;
-        }
-    }
-
-    while pi < p.len() && p[pi] == b'*' {
-        pi += 1;
-    }
-    pi == p.len()
-}
 
 #[cfg(test)]
 mod tests {

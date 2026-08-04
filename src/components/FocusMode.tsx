@@ -49,6 +49,7 @@ import {
 } from "./ai/utils";
 import type { Conversation } from "./ai/types";
 import type { AgentMode, ProviderId } from "../agent/types";
+import { AUTONOMY_RUNGS, effectiveMode as effectiveModeFor } from "./ai/autonomyLadder";
 import {
   PROVIDER_GROUPS,
   defaultModelForProvider,
@@ -1526,8 +1527,17 @@ function InlineMenu({
   width?: number;
   /** "ring" renders the AI panel's context-meter circle as the trigger —
    *  28px round button, border track ring, accent arc — instead of text.
-   *  `ringRatio` (0..1) drives the arc; the panel floors it at 2 so the
-   *  glyph always reads as a meter. */
+   *  `ringRatio` (0..1) drives the arc; the panel floors it at 2 so the glyph
+   *  always reads as a meter.
+   *
+   *  **A ring means "this much of the window is used".** The context-window
+   *  menu used to render one from `contextWindow / 131072` — the size the user
+   *  had *chosen*, divided by the largest option. Picking 128K read as 100%
+   *  full, 32K as 25%, and the default "Auto" sat on the 2% floor forever,
+   *  while the visually identical ring in the AI panel showed real measured
+   *  usage. There is no usage to show on the start stage — no conversation
+   *  exists yet — so a setting gets a label, not a gauge. Only pass `ringRatio`
+   *  a measured fraction. */
   variant?: "text" | "ring";
   ringRatio?: number;
 }) {
@@ -2041,18 +2051,6 @@ function StarterIcon({ kind }: { kind: StarterKind }) {
   );
 }
 
-const FOCUS_MODE_CHOICES: {
-  key: string;
-  mode: AgentMode;
-  review: boolean | null;
-  label: string;
-  description: string;
-}[] = [
-  { key: "chat", mode: "chat", review: null, label: "Chat", description: "No tools" },
-  { key: "plan", mode: "plan", review: null, label: "Plan", description: "Read-only tools" },
-  { key: "goal-review", mode: "goal", review: true, label: "Goal · review", description: "Approve each edit" },
-  { key: "goal-auto", mode: "goal", review: false, label: "Goal · auto-accept", description: "Apply edits directly" },
-];
 
 /** Focus home's counterpart to the live AI panel's + menu. It persists the
  *  selected mode before the first message hands off to AiPanel, so the first
@@ -2134,7 +2132,14 @@ function FocusAddMenu({
     openMenu();
   }
 
-  const effectiveMode = !supportsTools && mode === "goal" ? "chat" : mode;
+  // Through the shared ladder. Focus's own copy of this rule omitted the
+  // delegate exemption; it didn't bite only because Focus filters delegates out
+  // of its picker, which is a coincidence rather than a reason.
+  const effectiveMode = effectiveModeFor({
+    mode,
+    modelSupportsTools: supportsTools,
+    providerDelegatesWork: false,
+  });
   const activeKey = effectiveMode === "goal"
     ? requireDiffReview ? "goal-review" : "goal-auto"
     : effectiveMode;
@@ -2217,7 +2222,7 @@ function FocusAddMenu({
                 <span className="klide-focus-add-menu-meta">@</span>
               </button>
               <div className="klide-focus-add-menu-divider" />
-              {FOCUS_MODE_CHOICES.map((choice) => {
+              {AUTONOMY_RUNGS.map((choice) => {
                 const disabled = choice.mode === "goal" && !supportsTools;
                 const active = choice.key === activeKey;
                 return (
@@ -2547,8 +2552,6 @@ function FocusHome({
               <InlineMenu
                 label="Context window"
                 display={contextLabel(contextWindow)}
-                variant="ring"
-                ringRatio={contextWindow ? contextWindow / 131072 : 0}
                 header={{
                   icon: <ContextGaugeIcon />,
                   title: "Context window",

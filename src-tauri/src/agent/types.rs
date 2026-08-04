@@ -387,6 +387,42 @@ pub mod error_code {
     pub const ALL: [&str; 4] = [ABORTED, MAX_TURNS, PROVIDER_UNAVAILABLE, STEERING_GAVE_UP];
 }
 
+impl AgentEvent {
+    /// When this event happened.
+    ///
+    /// Every variant carries a `ts`, and extracting it took a 23-arm exhaustive
+    /// match — written out twice, in `transcripts::append_event` and
+    /// `evidence::event_ts`, so a 24th variant meant editing two matches in two
+    /// files and the compiler only told you about whichever it reached first.
+    pub fn ts(&self) -> i64 {
+        match self {
+            AgentEvent::RunStarted { ts, .. }
+            | AgentEvent::ContextSnapshot { ts, .. }
+            | AgentEvent::UserMessage { ts, .. }
+            | AgentEvent::AssistantDelta { ts, .. }
+            | AgentEvent::AssistantMessage { ts, .. }
+            | AgentEvent::ToolCallStarted { ts, .. }
+            | AgentEvent::ToolProgress { ts, .. }
+            | AgentEvent::ToolCallFinished { ts, .. }
+            | AgentEvent::PermissionRequested { ts, .. }
+            | AgentEvent::PermissionResolved { ts, .. }
+            | AgentEvent::DiffProposed { ts, .. }
+            | AgentEvent::DiffResolved { ts, .. }
+            | AgentEvent::FileChanged { ts, .. }
+            | AgentEvent::RunResult { ts, .. }
+            | AgentEvent::RunError { ts, .. }
+            | AgentEvent::ContextCompacted { ts, .. }
+            | AgentEvent::UserQuestionRequested { ts, .. }
+            | AgentEvent::UserQuestionResolved { ts, .. }
+            | AgentEvent::SubagentRequested { ts, .. }
+            | AgentEvent::SubagentResolved { ts, .. }
+            | AgentEvent::AdvisorRequested { ts, .. }
+            | AgentEvent::AdvisorResolved { ts, .. }
+            | AgentEvent::SteeringInjected { ts, .. } => *ts,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentError {
@@ -470,6 +506,16 @@ pub enum AgentEvent {
         name: String,
         input: serde_json::Value,
         summary: String,
+        /// The Tool's capability at dispatch time, as
+        /// [`crate::agent::tools::ToolCapability::wire`].
+        ///
+        /// Recorded because a Tool's *name* does not tell a later reader what it
+        /// did: a workspace-defined command tool is called whatever its author
+        /// called it, so `summarize_validation` counted zero commands for it and
+        /// reported the run `unverified`. `None` on transcripts written before
+        /// this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability: Option<String>,
         ts: i64,
     },
     ToolProgress {

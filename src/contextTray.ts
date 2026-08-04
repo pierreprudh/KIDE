@@ -59,10 +59,3 @@ export function lensItemsForPrompt(
     .map(({ item }) => item)
     .slice(0, 6);
 }
-
-export function estimateProjectContextTokens(items: ProjectContextItem[]): number {
-  return items.reduce(
-    (sum, item) => sum + Math.ceil(`${item.path}\n${item.label}\n${item.detail}`.length / 3.7),
-    0
-  );
-}

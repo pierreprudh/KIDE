@@ -22,6 +22,9 @@ export type ProviderRuntime =
 export type ProviderDefinition = {
   id: ProviderId;
   name: string;
+  /** Name for a dense row, when `name` is deliberately fuller for the picker.
+   *  See `providerShortName`. */
+  shortName?: string;
   group: ProviderGroupId;
   runtime: ProviderRuntime;
   available: boolean;
@@ -50,19 +53,19 @@ export const CLI_DEFAULT_MODEL = "default";
 
 export const PROVIDER_CATALOG: readonly ProviderDefinition[] = [
   { id: "ollama", name: "Ollama", group: "local", runtime: "managed-local", available: true, defaultModel: "llama3.1:8b" },
-  { id: "mlx", name: "MLX (Apple Silicon)", group: "local", runtime: "managed-local", available: true, defaultModel: MLX_MODEL_PRESETS[0] },
+  { id: "mlx", name: "MLX (Apple Silicon)", shortName: "MLX", group: "local", runtime: "managed-local", available: true, defaultModel: MLX_MODEL_PRESETS[0] },
   { id: "lmstudio", name: "LM Studio", group: "local", runtime: "external-local", available: true, defaultModel: "local-model" },
   { id: "llamacpp", name: "llama.cpp", group: "local", runtime: "external-local", available: false, defaultModel: "local-model" },
   { id: "vllm", name: "vLLM", group: "local", runtime: "external-local", available: false, defaultModel: "local-model" },
   { id: "claude-code", name: "Claude Code", group: "subscription", runtime: "delegate", available: true, defaultModel: CLI_DEFAULT_MODEL },
   { id: "codex", name: "Codex", group: "subscription", runtime: "delegate", available: true, defaultModel: CLI_DEFAULT_MODEL },
   { id: "opencode", name: "OpenCode", group: "subscription", runtime: "delegate", available: true, defaultModel: CLI_DEFAULT_MODEL },
-  { id: "omp", name: "Omp", group: "subscription", runtime: "delegate", available: true, defaultModel: CLI_DEFAULT_MODEL },
+  { id: "omp", name: "Oh My Pi", group: "subscription", runtime: "delegate", available: true, defaultModel: CLI_DEFAULT_MODEL },
   { id: "anthropic", name: "Anthropic", group: "api", runtime: "hosted", available: true, defaultModel: "claude-sonnet-4-6" },
   { id: "openai", name: "OpenAI", group: "api", runtime: "hosted", available: true, defaultModel: "gpt-4.1" },
-  { id: "gemini", name: "Google Gemini", group: "api", runtime: "hosted", available: false, defaultModel: "gemini-2.5-pro" },
+  { id: "gemini", name: "Google Gemini", shortName: "Gemini", group: "api", runtime: "hosted", available: false, defaultModel: "gemini-2.5-pro" },
   { id: "mistral", name: "Mistral", group: "api", runtime: "hosted", available: true, defaultModel: "mistral-large-latest" },
-  { id: "xai", name: "xAI Grok", group: "api", runtime: "hosted", available: true, defaultModel: "grok-4" },
+  { id: "xai", name: "xAI Grok", shortName: "xAI", group: "api", runtime: "hosted", available: true, defaultModel: "grok-4" },
   { id: "deepseek", name: "DeepSeek", group: "api", runtime: "hosted", available: true, defaultModel: "deepseek-chat" },
   { id: "openrouter", name: "OpenRouter", group: "api", runtime: "hosted", available: true, defaultModel: "openai/gpt-4o" },
 ] as const;
@@ -158,6 +161,28 @@ export function selectableProviders(options: { includeDelegates?: boolean } = {}
 
 export function providerName(id: ProviderId): string {
   return providerDefinition(id)?.name ?? "Unknown Provider";
+}
+
+/**
+ * The name for a dense row — a board cell, a subtitle — where the picker's
+ * fuller name would crowd it out.
+ *
+ * Falls back to `name`, so only the handful that genuinely differ carry a
+ * `shortName`. This exists because Mission Control had grown its own
+ * `PROVIDER_LABEL` table that disagreed with the catalog on four ids
+ * (`gemini`, `xai`, `mlx`, `omp`) — the board wanting "Gemini" where the picker
+ * wants "Google Gemini" is a real requirement, but two hand-kept tables is the
+ * wrong way to serve it. `omp` was simply wrong there: the product is Oh My Pi.
+ */
+/** Is this string one of the catalog's built-in providers? Distinguishes a
+ *  known id from a `custom:` slug or a stale one recorded by an older build. */
+export function isKnownProvider(id: string): id is ProviderId {
+  return PROVIDER_CATALOG.some((p) => p.id === id);
+}
+
+export function providerShortName(id: ProviderId): string {
+  const def = providerDefinition(id);
+  return def?.shortName ?? def?.name ?? "Unknown Provider";
 }
 
 /** PROVIDER_GROUPS plus a dynamic "Self-hosted" group built from the

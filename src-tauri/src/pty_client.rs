@@ -4,16 +4,32 @@
 //! per call, and the subscribe upgrade. What to DO with responses and events
 //! stays in pty.rs, next to the in-process host it mirrors.
 
-#![cfg(unix)]
+//! Unix-only transport, but this module is NOT `#![cfg(unix)]` as a whole.
+//! An inner file-level cfg empties a module instead of removing it, so
+//! `pty.rs`'s unconditional `use crate::pty_client;` plus its calls used to
+//! fail to resolve on every non-unix target. The unix implementation is gated
+//! item by item, and a `cfg(not(unix))` stub answers the same three calls with
+//! "there is no daemon here" — which is exactly what `pty.rs` already handles,
+//! since a `None`/`Err` from this layer means "fall back to the in-process
+//! host".
 
-use crate::pty_daemon::{socket_path, token_path, Request, Response};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use crate::pty_wire::{Request, Response};
+use std::io::BufRead;
 use std::path::Path;
+
+#[cfg(unix)]
+use crate::pty_daemon::{socket_path, token_path};
+#[cfg(unix)]
+use std::io::{BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(unix)]
 /// Every connection opens with the auth line — the daemon serves nothing
 /// before it. The token file is written by the daemon on startup; a missing
 /// file reads the same as a missing daemon (caller respawns and retries).
@@ -27,6 +43,7 @@ fn write_auth(stream: &mut UnixStream, data_dir: &Path) -> Result<(), String> {
     writeln!(stream, "{line}").map_err(|e| format!("send auth: {e}"))
 }
 
+#[cfg(unix)]
 /// One request → one response over a fresh connection. Unix-socket connects
 /// are microseconds; a connection per call keeps every call independent and
 /// immune to a wedged predecessor.
@@ -46,6 +63,7 @@ pub fn request(data_dir: &Path, request: &Request) -> Result<Response, String> {
     serde_json::from_str(&reply).map_err(|e| format!("bad response: {e}"))
 }
 
+#[cfg(unix)]
 /// Make sure a daemon of OUR version is serving, starting or replacing one as
 /// needed. A version mismatch (app was upgraded while a daemon from the old
 /// binary kept running) gets a polite `shutdown` and a fresh spawn — its
@@ -78,6 +96,7 @@ pub fn ensure_daemon(data_dir: &Path) -> Result<(), String> {
     Err("ptyd did not come up".to_string())
 }
 
+#[cfg(unix)]
 /// Launch `klide ptyd` detached: own process group so a Ctrl-C aimed at a
 /// terminal-launched dev app doesn't take the daemon (and its sessions) down
 /// with it, and no inherited stdio so it cannot hold the app's pipes open.
@@ -97,10 +116,11 @@ fn spawn_daemon(data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Open the event stream: a connection upgraded with `subscribe`, handed back
 /// as a line reader once the daemon acks. The caller owns the read loop; EOF
 /// or an error there means "reconnect if you still care".
-pub fn subscribe(data_dir: &Path) -> Result<BufReader<UnixStream>, String> {
+pub fn subscribe(data_dir: &Path) -> Result<Box<dyn BufRead + Send>, String> {
     let mut stream =
         UnixStream::connect(socket_path(data_dir)).map_err(|e| format!("connect: {e}"))?;
     stream
@@ -122,14 +142,14 @@ pub fn subscribe(data_dir: &Path) -> Result<BufReader<UnixStream>, String> {
                 .get_ref()
                 .set_read_timeout(None)
                 .map_err(|e| e.to_string())?;
-            Ok(reader)
+            Ok(Box::new(reader))
         }
         Ok(Response::Err { message }) => Err(message),
         _ => Err("unexpected subscribe ack".to_string()),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(unix, test))]
 mod tests {
     use super::*;
     use crate::pty_daemon;
@@ -176,10 +196,42 @@ mod tests {
     #[test]
     fn subscribe_acks_and_hands_back_the_stream() {
         let dir = start_server("subscribe");
+        // `subscribe` returns only after the daemon's `Subscribed` ack has been
+        // read off the connection, so success here *is* the ack. The reader is
+        // boxed as `dyn BufRead` so the same signature can carry a
+        // `cfg(not(unix))` stub — what arrives on the stream from here on is
+        // covered end to end by `pty_daemon`'s
+        // `spawn_streams_chunks_to_subscribers`.
         let reader = subscribe(&dir).expect("subscribed");
-        // The ack was consumed; the stream is now event-only and open.
-        assert!(reader.get_ref().peer_addr().is_ok());
+
+        // The first subscriber must not wedge the server: a second connection
+        // still gets served.
+        let second = subscribe(&dir).expect("a second subscriber is accepted");
+
+        drop(reader);
+        drop(second);
         let _ = std::fs::remove_file(crate::pty_daemon::socket_path(&dir));
         let _ = std::fs::remove_dir_all(dir);
     }
+}
+
+// ── No daemon off unix ───────────────────────────────────────────────────────
+// `ptyd` leans on a Unix domain socket and on a child surviving its parent, so
+// there is no daemon to talk to here. Every caller in `pty.rs` already treats a
+// failure from this layer as "use the in-process host", which is the correct
+// behaviour on these targets rather than a degraded one.
+
+#[cfg(not(unix))]
+pub fn request(_data_dir: &Path, _request: &Request) -> Result<Response, String> {
+    Err("ptyd is not available on this platform".to_string())
+}
+
+#[cfg(not(unix))]
+pub fn ensure_daemon(_data_dir: &Path) -> Result<(), String> {
+    Err("ptyd is not available on this platform".to_string())
+}
+
+#[cfg(not(unix))]
+pub fn subscribe(_data_dir: &Path) -> Result<Box<dyn BufRead + Send>, String> {
+    Err("ptyd is not available on this platform".to_string())
 }

@@ -32,8 +32,9 @@ import {
   gitWorktreeAdd,
   gitWorktreeMerge,
   gitWorktreeRemove,
+  createPr,
 } from "./ipc/git";
-import { eventsToConversation } from "./components/ai/eventsToMsgs";
+import { eventsToConversation } from "./components/ai/replayConversation";
 import { loadPanelSession } from "./components/ai/utils";
 import type { AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider } from "./agent/providers";
@@ -59,13 +60,15 @@ import { isAgentFile } from "./components/fileMarks";
 import { SplitPane } from "./components/SplitPane";
 import { defaultLayout as defaultPanelLayout, PANEL_CONSTRAINTS, type PanelRect } from "./panelLayout";
 import { Z } from "./zLayers";
+import { detectLanguage } from "./editorLanguage";
+import { beginDragSession } from "./dragSession";
 import { CommandPalette } from "./components/CommandPalette";
 import { SearchPanel } from "./components/SearchPanel";
 import { useEditorTabs } from "./hooks/useEditorTabs";
 import { usePanelLayout, type AiPanelInstance } from "./hooks/usePanelLayout";
 import { useAiPanelFleet } from "./hooks/useAiPanelFleet";
 import { useArtifactInspector } from "./hooks/useArtifactInspector";
-import { listCheckpoints } from "./agent/client";
+import { listCheckpoints, readAgentRunEvents } from "./agent/client";
 import {
   DEFAULT_AI_PANEL_ID,
   conversationSessionKey,
@@ -105,26 +108,6 @@ const KeyboardShortcuts = lazy(() => import("./components/KeyboardShortcuts").th
 type Panel = "explorer" | "git" | "memory" | "skills" | "ai" | "runs" | "settings" | "profile";
 type ActivityPanel = Panel | "orchestrator" | "home";
 export type { HarnessSettings } from "./settingsStore";
-function detectLanguage(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return (
-    {
-      ts: "typescript",
-      tsx: "typescript",
-      js: "javascript",
-      jsx: "javascript",
-      rs: "rust",
-      py: "python",
-      json: "json",
-      md: "markdown",
-      html: "html",
-      css: "css",
-      toml: "ini",
-      yml: "yaml",
-      yaml: "yaml",
-    } as Record<string, string>
-  )[ext] ?? "plaintext";
-}
 
 function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
@@ -656,22 +639,14 @@ function App() {
     const startX = e.clientX;
     const startW = pane.getBoundingClientRect().width;
     const maxW = Math.max(420, workbenchSize.w - 24);
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
     function onMove(ev: MouseEvent) {
       // Left-edge drag: moving left grows the pane.
       setEditorDockWidth(Math.min(maxW, Math.max(420, startW - (ev.clientX - startX))));
     }
-    function onUp() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginDragSession({
+      cursor: "col-resize",
+      onMove,
+    });
   }
 
   // Explorer presentation in the free layout: a drawer docked to the
@@ -689,10 +664,6 @@ function App() {
     e.preventDefault();
     const startX = e.clientX;
     const startW = explorerRect.w;
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
     function onMove(ev: MouseEvent) {
       const w = Math.min(
         PANEL_CONSTRAINTS.explorer.maxW,
@@ -700,14 +671,10 @@ function App() {
       );
       updatePanelRect("explorer", { ...explorerRect, w });
     }
-    function onUp() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginDragSession({
+      cursor: "col-resize",
+      onMove,
+    });
   }
 
   /**
@@ -725,10 +692,6 @@ function App() {
       PANEL_CONSTRAINTS.terminal.maxH,
       Math.max(160, Math.round(bound * 0.72))
     );
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
     function onMove(ev: MouseEvent) {
       const h = Math.min(
         maxH,
@@ -736,14 +699,10 @@ function App() {
       );
       updatePanelRect("terminal", { ...terminalRect, h });
     }
-    function onUp() {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginDragSession({
+      cursor: "row-resize",
+      onMove,
+    });
   }
 
   // The explorer surface itself (tree, optionally stacked with the skills
@@ -1136,7 +1095,7 @@ function App() {
 
   async function resumeKlideRun(runId: string) {
     try {
-      const events = await invoke<AgentEvent[]>("agent_read_run", { runId });
+      const events = await readAgentRunEvents(runId);
       const convo = eventsToConversation(events, runId, eventsToTitle(events));
       // Open one fresh panel and land the resumed run in it — never broadcast
       // to existing panels. Resume is triggered from the Mission Control view,
@@ -1984,7 +1943,7 @@ function App() {
     { id: "orchestrator", label: "View: Orchestrator", action: () => { setView("orchestrator"); setPaletteOpen(false); } },
     { id: "back-to-workbench", label: "View: Back to Workbench", shortcut: "Esc", action: () => { setView("workbench"); setPaletteOpen(false); } },
     { id: "git-review", label: "View: Git Review", shortcut: "⌘⇧G", action: () => { setView((v) => v === "git-review" ? "workbench" : "git-review"); setPaletteOpen(false); } },
-    { id: "create-pr", label: "Git: Create Pull Request…", action: () => { setPaletteOpen(false); void (async () => { try { const pr = await invoke<string>("create_pr", { workspaceRoot, title: "Klide changes", body: null }); setFileNotice(`PR: ${pr}`); } catch(e) { setFileNotice(`PR failed: ${e}`); } })(); } },
+    { id: "create-pr", label: "Git: Create Pull Request…", action: () => { setPaletteOpen(false); void (async () => { try { const pr = await createPr(workspaceRoot, "Klide changes", null); setFileNotice(`PR: ${pr}`); } catch(e) { setFileNotice(`PR failed: ${e}`); } })(); } },
     { id: "worktree", label: "Agent: New Run in Worktree", action: () => { setPaletteOpen(false); void newWorktreeRun(); } },
     { id: "worktrees-view", label: "View: Worktrees", action: () => { setPaletteOpen(false); setWorktreesVisible(true); } },
     { id: "rollback", label: "Git: View Checkpoints", action: () => { setView("runs"); setPaletteOpen(false); } },

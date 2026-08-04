@@ -28,10 +28,10 @@
 
 #![cfg(unix)]
 
-use crate::pty_host::{
-    DelegateMissionLink, LiveSessionRow, PtyEventSink, PtyExitOutcome, RecentDelegateSession,
-    SessionHost, SessionSnapshot, SpawnSpec,
-};
+use crate::pty_host::{PtyEventSink, PtyExitOutcome, SessionHost, SpawnSpec};
+// The wire vocabulary lives in a module that is NOT unix-gated, so `pty.rs` can
+// name these types on every target. See `crate::pty_wire`.
+pub use crate::pty_wire::{Event, Request, Response};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -109,109 +109,6 @@ pub fn ensure_token(data_dir: &Path) -> Result<String, String> {
 /// translation. `spawn.command` arrives prebuilt: all provider knowledge
 /// (adapter spawn syntax, status-hook env) stays in the app; the daemon only
 /// runs what it is given.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Request {
-    /// Must be the first line on every connection, carrying the token from
-    /// [`token_path`]. No ack on success — the next request's response is
-    /// the ack. A wrong or missing token gets one `Err` line and a closed
-    /// connection.
-    Auth {
-        token: String,
-    },
-    /// Liveness + version check. A client seeing a version mismatch after an
-    /// app upgrade asks the daemon to shut down and starts a fresh one.
-    Ping,
-    /// Upgrade this connection to an event stream.
-    Subscribe,
-    /// Ask the daemon to exit once this response is written. Sessions die
-    /// with it — the client is expected to have drained/warned first.
-    Shutdown,
-    ReuseOrCd {
-        session_id: String,
-        cwd: Option<String>,
-    },
-    Spawn {
-        session_id: String,
-        provider: String,
-        cwd: Option<String>,
-        command: String,
-        env: Vec<(String, String)>,
-        task: Option<String>,
-        model: Option<String>,
-        resume_session_id: Option<String>,
-        mission_link: Option<DelegateMissionLink>,
-        /// Whether the daemon should watch output for the CLI announcing its
-        /// own session id (`delegate::lookup(provider)` — the daemon links
-        /// the same crate, so the detector runs in-process here too).
-        detect_session_id: bool,
-    },
-    Write {
-        session_id: String,
-        data: String,
-    },
-    Resize {
-        session_id: String,
-        rows: u16,
-        cols: u16,
-    },
-    Stop {
-        session_id: String,
-    },
-    Snapshot {
-        session_id: String,
-    },
-    LiveRows,
-    Recent,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Response {
-    Pong {
-        version: String,
-        pid: u32,
-    },
-    Subscribed,
-    Ok,
-    Err {
-        message: String,
-    },
-    Reused {
-        reused: bool,
-    },
-    Wrote {
-        wrote: bool,
-    },
-    Snapshot(SessionSnapshot),
-    LiveRows {
-        rows: Vec<LiveSessionRow>,
-    },
-    Recent {
-        sessions: Vec<RecentDelegateSession>,
-    },
-}
-
-/// Pushed to subscribed connections — the socket twin of the app's
-/// `delegate-pty:*` Tauri events plus the external-id detection callback.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    Chunk {
-        session_id: String,
-        data: String,
-        seq: u64,
-    },
-    Exit {
-        session_id: String,
-        outcome: PtyExitOutcome,
-    },
-    ExternalId {
-        session_id: String,
-        external_id: String,
-    },
-}
-
 pub struct DaemonState {
     host: SessionHost,
     /// Event-stream connections, keyed by a client id so a dead writer can be
@@ -591,9 +488,6 @@ fn handle_request(request: Request, state: &Arc<DaemonState>) -> Response {
         ),
         Request::LiveRows => Response::LiveRows {
             rows: state.host.live_rows(),
-        },
-        Request::Recent => Response::Recent {
-            sessions: state.host.recent_sessions(&state.scroll_dir()),
         },
         // Handled in handle_client before reaching here (they own the
         // connection's lifecycle, not just a response).

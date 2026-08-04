@@ -1,17 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { relativeTime } from "../time";
 import { listCheckpoints, revertCheckpoint, revertRunCheckpoints } from "../agent/client";
 import type { CheckpointEntry } from "../agent/types";
 import { DiffModal, type PendingEdit } from "./DiffModal";
 import { notify } from "../toast";
 
-function relativeTime(ts: number): string {
-  const min = Math.floor((Date.now() - ts) / 60000);
-  if (min < 1) return "just now";
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
 
 function extractTurn(toolCallId: string): number {
   const m = toolCallId.match(/^turn(\d+)/);

@@ -2098,9 +2098,17 @@ diff --git a/f b/f
             .find("generate_handler!")
             .expect("generate_handler! in lib.rs");
         let end = lib[start..].find(']').expect("end of handler list") + start;
+        // Match the whole git/GitHub family, not just the `git_` prefix. The
+        // prefix filter had a blind spot, and the drift it was written to stop
+        // had already re-formed inside it: `create_pr` and
+        // `github_commit_avatars` are registered git-domain commands that do not
+        // start with `git_`, and both were raw `invoke` calls in components that
+        // imported this very adapter for everything else.
         let mut registered: Vec<&str> = lib[start..end]
             .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .filter(|token| token.starts_with("git_"))
+            .filter(|token| {
+                token.starts_with("git_") || token.starts_with("github_") || *token == "create_pr"
+            })
             .collect();
         registered.sort_unstable();
         registered.dedup();
