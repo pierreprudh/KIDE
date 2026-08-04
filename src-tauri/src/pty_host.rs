@@ -740,9 +740,6 @@ impl SessionHost {
             .collect()
     }
 
-    pub fn recent_sessions(&self, scroll_dir: &Path) -> Vec<RecentDelegateSession> {
-        scan_recent_sessions(scroll_dir, &self.live_ids())
-    }
 }
 
 /// Pure scan over the scrollback dir — separated so it can be tested against

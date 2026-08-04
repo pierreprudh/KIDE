@@ -16,7 +16,7 @@
 //! `Recent` is the evidence — it is served but never sent.
 
 use crate::pty_host::{
-    DelegateMissionLink, LiveSessionRow, PtyExitOutcome, RecentDelegateSession, SessionSnapshot,
+    DelegateMissionLink, LiveSessionRow, PtyExitOutcome, SessionSnapshot,
 };
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -72,7 +72,11 @@ pub enum Request {
         session_id: String,
     },
     LiveRows,
-    Recent,
+    // NOTE: there is deliberately no `Recent` here. It existed, and was served,
+    // but `pty.rs` never sent it — `delegate_pty_recent_sessions` scans the
+    // shared scrollback dir directly, which is identical from either host. It
+    // was an artefact of maintaining this list by hand alongside
+    // `SessionHost`'s methods rather than deriving one from the other.
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -96,9 +100,6 @@ pub enum Response {
     Snapshot(SessionSnapshot),
     LiveRows {
         rows: Vec<LiveSessionRow>,
-    },
-    Recent {
-        sessions: Vec<RecentDelegateSession>,
     },
 }
 

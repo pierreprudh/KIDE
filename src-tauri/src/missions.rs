@@ -1450,7 +1450,7 @@ async fn dispatch_task(
             prompt,
         } => crate::pty::delegate_pty_spawn(
             app.clone(),
-            app.state::<crate::pty::DelegatePtyState>(),
+            app.state::<crate::pty_host::SessionHost>(),
             app.state::<crate::delegate::status::DelegateStatusState>(),
             run_id.clone(),
             provider,

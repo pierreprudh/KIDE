@@ -489,9 +489,6 @@ fn handle_request(request: Request, state: &Arc<DaemonState>) -> Response {
         Request::LiveRows => Response::LiveRows {
             rows: state.host.live_rows(),
         },
-        Request::Recent => Response::Recent {
-            sessions: state.host.recent_sessions(&state.scroll_dir()),
-        },
         // Handled in handle_client before reaching here (they own the
         // connection's lifecycle, not just a response).
         Request::Auth { .. } | Request::Subscribe | Request::Shutdown => unreachable!(),
