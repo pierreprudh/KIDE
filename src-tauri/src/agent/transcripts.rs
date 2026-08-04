@@ -16,6 +16,11 @@ struct TranscriptLine {
     event: AgentEvent,
 }
 
+/// The transcript format this build writes and understands. A line claiming a
+/// higher version was written by a newer Klide, and guessing at its meaning is
+/// how a "replayed" conversation quietly loses a turn.
+const TRANSCRIPT_SCHEMA_VERSION: u8 = 1;
+
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -99,21 +104,19 @@ pub fn append_event(
         | AgentEvent::SteeringInjected { ts, .. } => *ts,
     };
     let line = TranscriptLine {
-        schema_version: 1,
+        schema_version: TRANSCRIPT_SCHEMA_VERSION,
         run_id: run_id.to_string(),
         seq,
         ts,
         event: event.clone(),
     };
     let encoded = serde_json::to_string(&line).map_err(|e| e.to_string())?;
-    use std::io::Write;
-    let path = transcript_path(runs_dir, run_id);
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| format!("Unable to open transcript: {e}"))?;
-    writeln!(file, "{encoded}").map_err(|e| format!("Unable to append transcript: {e}"))
+    // One flushed `write_all` on an `O_APPEND` descriptor, through the same
+    // helper the Mission event log uses. A bare `writeln!` left the bytes in
+    // the page cache, so a crash could publish a torn line — and the Transcript
+    // is what replay, the Validation contract, the cost totals and the evidence
+    // packet are all derived from.
+    crate::durable::append_line(&transcript_path(runs_dir, run_id), &encoded)
 }
 
 pub fn write_summary(runs_dir: &Path, summary: &AgentRunSummary) -> Result<(), String> {
@@ -147,7 +150,9 @@ pub fn write_summary(runs_dir: &Path, summary: &AgentRunSummary) -> Result<(), S
     }
     let path = summary_path(runs_dir, &summary.id);
     let encoded = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
-    std::fs::write(path, encoded).map_err(|e| format!("Unable to write run summary: {e}"))
+    // Atomic: the run board polls these summaries while a run is still writing
+    // them, and a truncating write hands a mid-write reader half a document.
+    crate::durable::write_atomic(&path, encoded.as_bytes())
 }
 
 /// Walk the event stream once and return `(input_tokens, output_tokens, files_touched)`.
@@ -399,15 +404,58 @@ pub fn read_summary(runs_dir: &Path, run_id: &str) -> Result<AgentRunSummary, St
     serde_json::from_str(&text).map_err(|e| format!("Unable to parse run summary: {e}"))
 }
 
+/// Read a run's Transcript.
+///
+/// This used to `continue` past any line it could not parse, which made a
+/// damaged transcript indistinguishable from a shorter one: a resumed run was
+/// handed a history with a turn missing, `summarize_validation` under-counted
+/// (so the Validation contract read `unverified`), and the cost totals came out
+/// low — all silently.
+///
+/// Appends now go out through `durable::append_line`: one flushed `write_all`
+/// on an `O_APPEND` descriptor, which cannot interleave. That leaves exactly one
+/// way to get a bad line — a crash between the write and the flush, which can
+/// only ever damage the *last* line. So that one is tolerated (and reported),
+/// and anything else is refused rather than guessed at.
 pub fn read_events(runs_dir: &Path, run_id: &str) -> Result<Vec<AgentEvent>, String> {
     let path = transcript_path(runs_dir, run_id);
     let content =
-        std::fs::read_to_string(path).map_err(|e| format!("Unable to read transcript: {e}"))?;
-    let mut events = Vec::new();
-    for line in content.lines() {
-        let Ok(row) = serde_json::from_str::<TranscriptLine>(line) else {
+        std::fs::read_to_string(&path).map_err(|e| format!("Unable to read transcript: {e}"))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let last_index = lines.len().saturating_sub(1);
+    let mut events = Vec::with_capacity(lines.len());
+
+    for (index, raw) in lines.iter().enumerate() {
+        if raw.trim().is_empty() {
             continue;
+        }
+        let row: TranscriptLine = match serde_json::from_str(raw) {
+            Ok(row) => row,
+            Err(e) if index == last_index => {
+                // The documented crash artefact. Drop it, but say so — a silent
+                // drop here is the bug this function used to have.
+                eprintln!(
+                    "klide: transcript {path:?} ends in a torn line ({e}); \
+                     dropping the final partial event."
+                );
+                break;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Transcript {path:?} is corrupt at line {}: {e}. The transcript is \
+                     the record of what this run did, so Klide will not guess past it.",
+                    index + 1
+                ));
+            }
         };
+        if row.schema_version > TRANSCRIPT_SCHEMA_VERSION {
+            return Err(format!(
+                "Transcript {path:?} line {} was written by a newer Klide \
+                 (schemaVersion {} > {TRANSCRIPT_SCHEMA_VERSION}).",
+                index + 1,
+                row.schema_version
+            ));
+        }
         events.push(row.event);
     }
     Ok(events)
@@ -422,6 +470,11 @@ pub fn list_summaries(
     for entry in std::fs::read_dir(runs_dir).map_err(|e| format!("Unable to read runs dir: {e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
+        // `write_atomic` leaves a `.name.klide-tmp` sibling in flight; never
+        // read one as if it were a finished summary.
+        if crate::durable::is_tmp_path(&path) {
+            continue;
+        }
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
@@ -769,5 +822,146 @@ mod tests {
         assert!(validate_run_id("a\\b").is_err());
         assert!(validate_run_id(".").is_err());
         assert!(validate_run_id("").is_err());
+    }
+
+    // ── The durable-read contract ───────────────────────────────────────────
+    // A transcript is what replay, the Validation contract, the cost totals and
+    // the evidence packet are derived from. These pin the difference between
+    // "the crash artefact we tolerate" and "damage we refuse to guess past".
+
+    fn read_dir_for(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "klide-transcripts-read-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn read_events_round_trips_what_append_event_wrote() {
+        let dir = read_dir_for("roundtrip");
+        let id = "r1";
+        append_event(&dir, id, 0, &file_changed(id, "src/a.rs")).unwrap();
+        append_event(&dir, id, 1, &assistant_with_text(id, "hello")).unwrap();
+
+        let events = read_events(&dir, id).unwrap();
+        assert_eq!(events.len(), 2);
+        // One line per append, newline-terminated — no interleaving.
+        let raw = std::fs::read_to_string(transcript_path(&dir, id)).unwrap();
+        assert_eq!(raw.lines().count(), 2);
+        assert!(raw.ends_with('\n'));
+    }
+
+    #[test]
+    fn read_events_tolerates_a_torn_final_line() {
+        // The only damage an O_APPEND + sync_data writer can leave: a crash
+        // between the write and the flush, which truncates the last record.
+        let dir = read_dir_for("torn-tail");
+        let id = "r2";
+        append_event(&dir, id, 0, &file_changed(id, "src/a.rs")).unwrap();
+        append_event(&dir, id, 1, &assistant_with_text(id, "kept")).unwrap();
+
+        let path = transcript_path(&dir, id);
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"schemaVersion\":1,\"runId\":\"r2\",\"se");
+        std::fs::write(&path, raw).unwrap();
+
+        let events = read_events(&dir, id).unwrap();
+        assert_eq!(events.len(), 2, "the two whole records must survive");
+    }
+
+    #[test]
+    fn read_events_refuses_a_corrupt_interior_line_instead_of_dropping_it() {
+        // The regression this replaces: a dropped interior line handed a
+        // resumed run a history with a turn missing, and nothing said so.
+        let dir = read_dir_for("interior");
+        let id = "r3";
+        append_event(&dir, id, 0, &file_changed(id, "src/a.rs")).unwrap();
+        append_event(&dir, id, 1, &assistant_with_text(id, "middle")).unwrap();
+        append_event(&dir, id, 2, &assistant_with_text(id, "last")).unwrap();
+
+        let path = transcript_path(&dir, id);
+        let lines: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| l.to_string())
+            .collect();
+        let damaged = format!("{}\n{{\"not\":\"a line\"}}\n{}\n", lines[0], lines[2]);
+        std::fs::write(&path, damaged).unwrap();
+
+        let err = read_events(&dir, id).unwrap_err();
+        assert!(err.contains("corrupt at line 2"), "got: {err}");
+        assert!(err.contains("will not guess past it"), "got: {err}");
+    }
+
+    #[test]
+    fn read_events_refuses_a_transcript_from_a_newer_klide() {
+        let dir = read_dir_for("future");
+        let id = "r4";
+        append_event(&dir, id, 0, &file_changed(id, "src/a.rs")).unwrap();
+        let path = transcript_path(&dir, id);
+        let raw = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\"schemaVersion\":1", "\"schemaVersion\":9");
+        std::fs::write(&path, raw).unwrap();
+
+        let err = read_events(&dir, id).unwrap_err();
+        assert!(err.contains("newer Klide"), "got: {err}");
+    }
+
+    #[test]
+    fn read_events_skips_blank_padding() {
+        let dir = read_dir_for("blank");
+        let id = "r5";
+        append_event(&dir, id, 0, &file_changed(id, "src/a.rs")).unwrap();
+        let path = transcript_path(&dir, id);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("\n{raw}\n\n")).unwrap();
+        assert_eq!(read_events(&dir, id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn list_summaries_ignores_an_in_flight_atomic_write() {
+        // `write_atomic` leaves a `.name.klide-tmp` sibling mid-write; the run
+        // board must not parse one as a finished summary.
+        let dir = read_dir_for("tmp-skip");
+        let id = "r6";
+        append_event(&dir, id, 0, &file_changed(id, "src/a.rs")).unwrap();
+        write_summary(&dir, &summary_for(id)).unwrap();
+
+        let real = summary_path(&dir, id);
+        std::fs::write(crate::durable::tmp_path(&real), b"{ truncated").unwrap();
+
+        let rows = list_summaries(&dir, None, None).unwrap();
+        assert_eq!(rows.len(), 1, "the temp sibling must be skipped");
+        assert_eq!(rows[0].id, id);
+    }
+
+    fn summary_for(id: &str) -> AgentRunSummary {
+        AgentRunSummary {
+            id: id.to_string(),
+            path: String::new(),
+            source: "klide".to_string(),
+            title: "t".to_string(),
+            status: "done".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            cwd: None,
+            project: None,
+            git_branch: None,
+            created_ms: 0,
+            updated_ms: 0,
+            message_count: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            files_touched: 0,
+            cost_usd: None,
+            last_event: None,
+            worktree: None,
+            validation: None,
+            parent_id: None,
+        }
     }
 }
