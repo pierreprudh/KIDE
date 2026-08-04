@@ -24,6 +24,10 @@ export type RunLedgerEntry = Run & {
 export type RunCapabilities = {
   canRename: boolean;
   canResume: boolean;
+  /** No consumer yet. Kept because it is the flag a "reattach the CLI" action
+   *  on a board row would ask for, and the rule (a delegate run, or a task that
+   *  dispatched one) is already worked out and tested. Delete it if that action
+   *  is dropped rather than letting it drift. */
   canOpenTerminal: boolean;
   canOpenInOtherAgent: boolean;
   canReviewDiff: boolean;
@@ -168,7 +172,7 @@ function withCapabilities(
   };
 }
 
-export function taskToLedgerEntry(
+function taskToLedgerEntry(
   t: TaskSession,
   metadata?: RunLedgerMetadataStore,
 ): RunLedgerEntry {
@@ -204,7 +208,7 @@ function convoLastEvent(messages: KlideConvo["messages"]): string | undefined {
   return undefined;
 }
 
-export function convoToLedgerEntry(
+function convoToLedgerEntry(
   c: KlideConvo,
   metadata?: RunLedgerMetadataStore,
 ): RunLedgerEntry {
@@ -230,7 +234,7 @@ export function convoToLedgerEntry(
   return withCapabilities(run, "klide-convo", metadata);
 }
 
-export function transcriptToLedgerEntry(
+function transcriptToLedgerEntry(
   run: Run,
   metadata?: RunLedgerMetadataStore,
 ): RunLedgerEntry {
@@ -271,7 +275,7 @@ export function buildRunLedger({
 
 export type RunSourceFilter = RunSource | "all" | "subagent";
 
-export function sourceMatchesFilter(run: Pick<RunLedgerEntry, "source">, filter: RunSourceFilter): boolean {
+function sourceMatchesFilter(run: Pick<RunLedgerEntry, "source">, filter: RunSourceFilter): boolean {
   if (filter === "all") return true;
   if (filter === "subagent") return isDelegateId(run.source);
   return run.source === filter;

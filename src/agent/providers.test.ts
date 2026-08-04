@@ -7,10 +7,14 @@ import {
   defaultModelForProvider,
   isDelegateProvider,
   isManagedLocalProvider,
+  isKnownProvider,
   isProviderId,
   providerName,
+  providerShortName,
   selectableProviders,
 } from "./providers";
+import { DELEGATE_IDS } from "../delegates";
+import { SOURCE_LABEL } from "../runs";
 
 describe("Provider catalog", () => {
   it("exposes the wired LM Studio Provider to frontend pickers", () => {
@@ -71,5 +75,46 @@ describe("Provider catalog", () => {
 
   it("does not silently label an unknown provider as Ollama", () => {
     expect(providerName("not-a-provider" as never)).toBe("Unknown Provider");
+  });
+});
+
+describe("one answer per provider name", () => {
+  it("gives every catalog provider a name and a short name", () => {
+    // Mission Control had grown a second `PROVIDER_LABEL` table that disagreed
+    // with the catalog on four ids — `gemini`, `xai`, `mlx` and `omp`, the last
+    // of which was simply wrong (the product is Oh My Pi). The board wanting a
+    // terser word than the picker is a real requirement; two hand-kept tables
+    // was the wrong way to serve it.
+    for (const p of PROVIDER_CATALOG) {
+      expect(p.name.trim()).not.toBe("");
+      expect(providerName(p.id)).toBe(p.name);
+      expect(providerShortName(p.id).trim()).not.toBe("");
+    }
+  });
+
+  it("falls back to the full name when no short name is needed", () => {
+    expect(providerShortName("anthropic")).toBe(providerName("anthropic"));
+    expect(providerShortName("openai")).toBe(providerName("openai"));
+  });
+
+  it("shortens only where the catalog says to", () => {
+    expect(providerShortName("mlx")).toBe("MLX");
+    expect(providerName("mlx")).toBe("MLX (Apple Silicon)");
+    expect(providerShortName("gemini")).toBe("Gemini");
+    expect(providerShortName("xai")).toBe("xAI");
+  });
+
+  it("agrees with the run board's source labels for every delegate", () => {
+    // A delegate is both a Run source and a Provider, so its two names have to
+    // match or the same agent reads differently in two columns.
+    for (const id of DELEGATE_IDS) {
+      expect(providerName(id)).toBe(SOURCE_LABEL[id]);
+    }
+  });
+
+  it("recognises catalog ids and rejects everything else", () => {
+    expect(isKnownProvider("anthropic")).toBe(true);
+    expect(isKnownProvider("custom:my-box")).toBe(false);
+    expect(isKnownProvider("retired-provider")).toBe(false);
   });
 });

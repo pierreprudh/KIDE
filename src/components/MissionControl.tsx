@@ -68,7 +68,6 @@ import {
   type RunKind,
   type RunMessage,
   type RunSource,
-  type RunStatus,
   type RunToolCall,
 } from "../runs";
 import {
@@ -93,6 +92,7 @@ import { resolveRunInspection } from "../runInspection";
 import { compactConversationMessages, runMessagesToMarkdown } from "../transcripts";
 import { DELEGATE_IDS, isDelegateId, type DelegateId } from "../delegates";
 import { presentLiveDelegate, presentReasonTone, presentValidation, toneColor } from "../runPresentation";
+import { BRAND_LOGO_PATHS, providerBrandColor } from "./ai/icons";
 import { CheckpointPanel } from "./CheckpointPanel";
 import { listCheckpoints } from "../agent/client";
 import type { ArtifactRequest } from "./ArtifactInspector";
@@ -104,14 +104,16 @@ import type { ProviderId } from "../agent/types";
 import {
   DEFAULT_MODELS,
   isDelegateProvider,
+  isKnownProvider,
   providerName,
+  providerShortName,
   selectableProviders,
 } from "../agent/providers";
 import { ModelPicker } from "./ai/ModelPicker";
 import { dispatchRace, PartialRaceError, type RaceAgentPick } from "../agent/race";
 import { listRaces, raceForRun, subscribeRaces, type RaceGroup, type RaceMember } from "../races";
 import { refreshCustomCli } from "../customCli";
-import { resolveModelLogo as resolveKnownModelLogo } from "../modelIdentity";
+import { resolveModelLogo } from "../modelIdentity";
 import { renderMarkdown } from "./markdown";
 import { buildRunHandoff } from "../agentHandoff";
 import { notify } from "../toast";
@@ -154,37 +156,34 @@ function patchForFile(diff: string, path: string): string {
 // watch, type into (take over), or stop. Klide's own AI-panel conversations
 // are listed on the same board. Diff review on completion comes next.
 
-// Minimal status text for places that need an explicit state. No colored
-// dots: section headers and row copy already carry the hierarchy.
-function StatusDot({
-  status,
-  size: _size = 7,
-}: {
-  status: RunStatus;
-  size?: number;
-}) {
-  if (status !== "running" && status !== "waiting" && status !== "error") return null;
-  return <span aria-hidden style={{ display: "none" }} />;
-}
-
-function RunAttentionBadge({ run, compact }: { run: Run; compact?: boolean }) {
-  if (compact) return <StatusDot status={run.status} />;
-  const section = boardSectionForRun(run);
-  if (section === "ready_for_review") return null;
+/**
+ * The 7px the row's status dot used to occupy.
+ *
+ * There is no dot any more — section headers and the row's own copy carry the
+ * state, and chips and dots are off-brand here. But the removal was done by
+ * emptying the dot rather than removing it: `StatusDot` returned either `null`
+ * or a `display: none` span, so it could never paint, while
+ * `RunAttentionBadge` still wrapped it in a 7×7 flex box at 4 call sites.
+ *
+ * That box is kept — it holds the row's right rail at a stable width, and the
+ * board's spacing is tuned around it — but it is named for what it does now.
+ * The hover title stays, since it is the only thing the element still says.
+ * (If the rail should simply be 7px narrower, that is a design call, not a
+ * refactor.)
+ */
+function RowStatusSpacer({ run, compact }: { run: Run; compact?: boolean }) {
+  if (compact) return null;
+  if (boardSectionForRun(run) === "ready_for_review") return null;
   return (
     <span
       title={BOARD_SECTION_LABEL[boardSectionForRun(run)]}
       style={{
         display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
         flexShrink: 0,
         width: 7,
         height: 7,
       }}
-    >
-      <StatusDot status={run.status} size={7} />
-    </span>
+    />
   );
 }
 
@@ -357,8 +356,6 @@ function OmpLogo({ size = 13 }: { size?: number }) {
 // Anthropic company mark, hardcoded in Anthropic orange (#D97757). The
 // A-shape is filled on the path directly (not via `currentColor`) so the
 // brand color can never be defeated by an inherited CSS rule.
-const ANTHROPIC_BRAND_PATH =
-  "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z";
 
 function AnthropicMark({ size = 13 }: { size?: number }) {
   return (
@@ -370,7 +367,7 @@ function AnthropicMark({ size = 13 }: { size?: number }) {
       style={{ flexShrink: 0 }}
     >
       <path
-        d={ANTHROPIC_BRAND_PATH}
+        d={BRAND_LOGO_PATHS.anthropic}
         fill="#D97757"
         style={{ fill: "#D97757" }}
       />
@@ -380,55 +377,15 @@ function AnthropicMark({ size = 13 }: { size?: number }) {
 
 type AppUserInfo = { username: string; hostname: string; homeDir: string };
 
-// Resolve the logo for a model name → the model's provider/brand mark.
-// Brand marks first (DeepSeek, Claude, OpenAI/gpt, …), then provider-image
-// fallbacks, then the local-runtime (Ollama) mark for known on-device
-// families (lfm2.5, llama, qwen, gemma, …). Returns null when unrecognized so
-// callers can fall back to the Klide spark.
-function resolveModelLogo(model: string, size: number): React.ReactElement | null {
-  const knownLogo = resolveKnownModelLogo(model, size);
-  if (knownLogo) return knownLogo;
-  // Remaining on-device families (phi, nomic, …) with no distinct maker mark
-  // fall back to the local-runtime (Ollama) glyph.
-  if (/phi-?\d|nomic|mxbai|granite|smollm|starcoder/i.test(model))
-    return <ProviderLogo id="ollama" size={size} />;
-  return null;
-}
-
 function ModelBadge({ model, size = 13 }: { model: string; size?: number }) {
   return resolveModelLogo(model, size);
 }
 
-const PROVIDER_LABEL: Partial<Record<ProviderId, string>> = {
-  ollama: "Ollama",
-  mlx: "MLX",
-  lmstudio: "LM Studio",
-  llamacpp: "llama.cpp",
-  vllm: "vLLM",
-  "claude-code": SOURCE_LABEL["claude-code"],
-  codex: SOURCE_LABEL.codex,
-  opencode: SOURCE_LABEL.opencode,
-  omp: SOURCE_LABEL.omp,
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-  gemini: "Gemini",
-  mistral: "Mistral",
-  xai: "xAI",
-  deepseek: "DeepSeek",
-  openrouter: "OpenRouter",
-};
 
-const PROVIDER_ACCENT: Partial<Record<ProviderId, string>> = {
-  "claude-code": "#D97757",
-  anthropic: "#D97757",
-  openrouter: "#4A6CF7",
-  deepseek: "#4D6BFE",
-  omp: "#7C6BAE",
-  codex: "var(--fg-strong)",
-  opencode: "var(--fg-strong)",
-  openai: "var(--fg-strong)",
-};
-
+/// A provider's name for a board row. Built-ins come from the catalog, never
+/// from a table here — this used to be a local `PROVIDER_LABEL` that disagreed
+/// with the catalog on four ids. `providerShortName` is the catalog's own answer
+/// for a dense row.
 function providerLabel(provider: string | null | undefined): string | null {
   if (!provider) return null;
   // Self-hosted endpoints carry a user-editable name in the custom-provider
@@ -437,7 +394,7 @@ function providerLabel(provider: string | null | undefined): string | null {
   if (isCustomProvider(provider)) {
     return customProviderSync(provider)?.label || provider.slice("custom:".length) || "Custom";
   }
-  return PROVIDER_LABEL[provider as ProviderId] ?? provider;
+  return isKnownProvider(provider) ? providerShortName(provider) : provider;
 }
 
 function runAgentLabel(run: Pick<Run, "source" | "provider">): string {
@@ -448,7 +405,7 @@ function runAgentLabel(run: Pick<Run, "source" | "provider">): string {
 
 function runAgentColor(run: Pick<Run, "source" | "provider">): string {
   return run.source === "klide" && run.provider
-    ? PROVIDER_ACCENT[run.provider as ProviderId] ?? SOURCE_COLOR.klide
+    ? providerBrandColor(run.provider as ProviderId) ?? SOURCE_COLOR.klide
     : SOURCE_COLOR[run.source];
 }
 
@@ -456,12 +413,12 @@ function providerMark(provider: string | null | undefined, size: number): React.
   return provider ? <ProviderLogo id={provider as ProviderId} size={size} /> : null;
 }
 
-// Company marks for the main run avatar (Simple Icons, single-path,
-// currentColor): the avatar wears the company (Anthropic, OpenAI), while the
-// model badge in the subtitle wears the tool (Claude Code, Codex).
+// Company marks for the main run avatar: the avatar wears the company
+// (Anthropic, OpenAI), while the model badge in the subtitle wears the tool
+// (Claude Code, Codex). The path itself comes from `ai/icons`, which owns every
+// brand mark — this file used to carry two more copies of the same 2 KB string.
 const BRAND_PATH: Partial<Record<RunSource, string>> = {
-  "claude-code":
-    "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z",
+  "claude-code": BRAND_LOGO_PATHS.anthropic ?? "",
 };
 
 // A small inline checkmark-in-square — used for todos. We want this to read
@@ -673,10 +630,10 @@ function RunRow({
         flexShrink: 0,
       }}
     >
-      {hovered ? action : <RunAttentionBadge run={run} compact={compact || run.status === "running"} />}
+      {hovered ? action : <RowStatusSpacer run={run} compact={compact || run.status === "running"} />}
     </span>
   ) : (
-    <RunAttentionBadge run={run} compact={compact} />
+    <RowStatusSpacer run={run} compact={compact} />
   );
   const row = (
     <button
@@ -1474,7 +1431,10 @@ function RunEvidenceStrip({ run, hasMemory }: { run: Run; hasMemory?: boolean })
               whiteSpace: "nowrap",
             }}
           >
-            {run.status === "error" ? "Run did not complete" : reason.detail}
+            {/* Headline is the short state; the detail is the sub-line below.
+                Both used to render `reason.detail`, so a non-error row printed
+                the same sentence twice, one above the other. */}
+            {run.status === "error" ? "Run did not complete" : reason.label}
           </span>
           <span
             style={{
@@ -2034,7 +1994,7 @@ function ConversationAvatar({
   user?: boolean;
 }) {
   const initials = user ? initialsOf(label || "Me") : null;
-  const modelLogo = source === "opencode" ? resolveKnownModelLogo(model, 21) : null;
+  const modelLogo = source === "opencode" ? resolveModelLogo(model, 21) : null;
   const logo =
     source === "klide" && provider ? (
       <SourceLogo source={source} provider={provider} model={model} size={21} />
@@ -3022,7 +2982,6 @@ function TaskDetail({ task, theme }: { task: TaskSession; theme: ThemeId }) {
                 fontFamily: "var(--font-mono)",
               }}
             >
-              <StatusDot status={task.status} size={6} />
               {STATUS_LABEL[task.status]}
             </span>
           </div>
@@ -3303,7 +3262,6 @@ function RunDetail({
               fontFamily: "var(--font-mono)",
             }}
           >
-            <StatusDot status={run.status} size={6} />
             {LIFECYCLE_LABEL[run.lifecycle]}
           </span>
         </div>
