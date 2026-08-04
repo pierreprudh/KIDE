@@ -201,10 +201,26 @@ pub(crate) fn summarize_validation(events: &[AgentEvent]) -> AgentValidationSumm
     for event in events {
         match event {
             AgentEvent::ToolCallStarted {
-                tool_call_id, name, ..
+                tool_call_id,
+                name,
+                capability,
+                ..
             } => {
                 tool_names.insert(tool_call_id.clone(), name.clone());
-                if name == "run_command" {
+                // Ask what the Tool *was*, not what it was called. A
+                // workspace-defined command tool carries its author's name, and
+                // if it was already on the project allowlist the permission gate
+                // executes it without emitting a request — so both of the older
+                // signals missed it, `commands_run` stayed 0, and a run that had
+                // validated its own edits reported `unverified`.
+                //
+                // The `name` fallback keeps transcripts written before
+                // `capability` existed counting correctly.
+                let is_command = match capability.as_deref() {
+                    Some(cap) => cap == crate::agent::tools::ToolCapability::RunCommand.wire(),
+                    None => name == "run_command",
+                };
+                if is_command {
                     command_ids.insert(tool_call_id.clone());
                 }
             }
@@ -541,12 +557,22 @@ mod tests {
     }
 
     fn tool_started(id: &str, tool_call_id: &str, name: &str) -> AgentEvent {
+        tool_started_with_capability(id, tool_call_id, name, None)
+    }
+
+    fn tool_started_with_capability(
+        id: &str,
+        tool_call_id: &str,
+        name: &str,
+        capability: Option<&str>,
+    ) -> AgentEvent {
         AgentEvent::ToolCallStarted {
             run_id: id.to_string(),
             tool_call_id: tool_call_id.to_string(),
             name: name.to_string(),
             input: serde_json::json!({}),
             summary: name.to_string(),
+            capability: capability.map(|c| c.to_string()),
             ts: 1,
         }
     }
@@ -714,6 +740,49 @@ mod tests {
         assert_eq!(summary.commands_run, 1);
         assert_eq!(summary.commands_failed, 0);
         assert_eq!(summary.permissions_approved, 1);
+    }
+
+    #[test]
+    fn summarize_validation_counts_an_allowlisted_dynamic_command_by_capability() {
+        // The gap the capability field closes. A workspace-defined command tool
+        // that is already on the project allowlist takes `Precheck::Execute`, so
+        // it emits NO PermissionRequested — and its name is not `run_command`.
+        // Both older signals missed it: `commands_run` came out 0 and a run that
+        // had verified its own edits reported `unverified`.
+        let id = "test-run";
+        let call_id = "tool-1";
+        // A reviewed edit, then the project's own validation command.
+        let summary = summarize_validation(&[
+            diff_resolved(id, "apply"),
+            file_changed(id, "src/a.rs"),
+            tool_started_with_capability(id, call_id, "npm_test", Some("run_command")),
+            tool_finished(id, call_id, true),
+        ]);
+        assert_eq!(summary.commands_run, 1, "capability says it ran a command");
+        assert_eq!(summary.status, "passed");
+
+        // The same run as it would have been recorded before `capability`
+        // existed — and exactly what an allowlisted dynamic command tool used
+        // to produce: verified work, reported as unverified.
+        let legacy = summarize_validation(&[
+            diff_resolved(id, "apply"),
+            file_changed(id, "src/a.rs"),
+            tool_started(id, call_id, "npm_test"),
+            tool_finished(id, call_id, true),
+        ]);
+        assert_eq!(legacy.commands_run, 0);
+        assert_eq!(legacy.status, "unverified");
+    }
+
+    #[test]
+    fn summarize_validation_does_not_count_a_read_as_a_command() {
+        let id = "test-run";
+        let summary = summarize_validation(&[
+            tool_started_with_capability(id, "t1", "read_file", Some("read_workspace")),
+            tool_finished(id, "t1", true),
+        ]);
+        assert_eq!(summary.commands_run, 0);
+        assert_eq!(summary.status, "skipped");
     }
 
     #[test]

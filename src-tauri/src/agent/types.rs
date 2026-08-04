@@ -470,6 +470,16 @@ pub enum AgentEvent {
         name: String,
         input: serde_json::Value,
         summary: String,
+        /// The Tool's capability at dispatch time, as
+        /// [`crate::agent::tools::ToolCapability::wire`].
+        ///
+        /// Recorded because a Tool's *name* does not tell a later reader what it
+        /// did: a workspace-defined command tool is called whatever its author
+        /// called it, so `summarize_validation` counted zero commands for it and
+        /// reported the run `unverified`. `None` on transcripts written before
+        /// this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability: Option<String>,
         ts: i64,
     },
     ToolProgress {

@@ -874,11 +874,11 @@ fn start_request_for(
         // or advisor callbacks. Permission and optional diff-review pauses stay
         // enabled because they have durable supervisor state and may be
         // resolved after a surface reattaches.
-        disabled_tools: vec![
-            "userAnswerQuestion".to_string(),
-            "spawn_subagent".to_string(),
-            "consult_advisor".to_string(),
-        ],
+        //
+        // Derived from the Tool registry, never hand-listed: a fourth Pause
+        // tool added to the registry would otherwise stay silently callable
+        // here, in a run with nothing attached to answer it.
+        disabled_tools: crate::agent::tools::interactive_tool_names(),
         num_ctx: None,
         num_predict: None,
         reflection_level: None,

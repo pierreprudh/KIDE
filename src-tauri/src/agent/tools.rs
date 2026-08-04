@@ -139,6 +139,47 @@ pub fn tool_capability_label(capability: ToolCapability) -> &'static str {
     }
 }
 
+impl ToolCapability {
+    /// The stable wire spelling recorded on `ToolCallStarted`, so a Transcript
+    /// says what a Tool *was* instead of leaving every later reader to re-derive
+    /// it from the Tool's name. `tool_capability_label` is prose for humans;
+    /// this is the contract.
+    pub fn wire(self) -> &'static str {
+        match self {
+            ToolCapability::ReadWorkspace => "read_workspace",
+            ToolCapability::UpdatePlanState => "update_plan_state",
+            ToolCapability::WriteWorkspace => "write_workspace",
+            ToolCapability::RunCommand => "run_command",
+            ToolCapability::PauseForUser => "pause_for_user",
+            ToolCapability::Network => "network",
+        }
+    }
+}
+
+/// Every Tool whose capability is `PauseForUser` — the ones that stop a run to
+/// ask a human or another agent something.
+///
+/// A headless caller (a Mission attempt with no surface attached) has to turn
+/// these off, and used to do it with a hand-written list of three names. That
+/// list cannot notice a fourth Pause tool being added, which would then be
+/// offered to a model that has nothing to answer it. Ask the registry instead.
+///
+/// Note this is *not* the same as "every tool that can pause": the permission
+/// gate on a Command tool and the diff gate on a Write tool also pause, and
+/// they stay enabled because they have durable supervisor state and can be
+/// resolved after a surface reattaches.
+pub fn interactive_tool_names() -> Vec<String> {
+    registry()
+        .into_iter()
+        .filter(|e| e.kind.capability() == ToolCapability::PauseForUser)
+        .filter_map(|e| {
+            e.schema["function"]["name"]
+                .as_str()
+                .map(|n| n.to_string())
+        })
+        .collect()
+}
+
 // Tool executions receive a `Workspace`, never a raw root string — resolving
 // a path without going through the Workspace-rooted checks is unrepresentable.
 type ReadToolFn = fn(ws: &Workspace, input: &serde_json::Value, run_id: &str) -> ToolResult;
@@ -3271,6 +3312,12 @@ mod tests {
             find_tool_kind_for_workspace("workspace_probe", Some(&root)),
             Some(ToolKind::Command)
         );
+        assert_eq!(
+            find_tool_kind_for_workspace("workspace_probe", Some(&root))
+                .map(|k| k.capability().wire()),
+            Some("run_command"),
+            "a workspace-defined tool is command-capability whatever it is named"
+        );
         assert!(tool_allowed_in_mode(&AgentMode::Goal, ToolKind::Command));
         assert!(!tool_allowed_in_mode(&AgentMode::Plan, ToolKind::Command));
         assert!(tool_allowed_in_mode(&AgentMode::Goal, ToolKind::Network));
@@ -3555,5 +3602,63 @@ mod tests {
         assert_eq!(&s[spans[2].0..spans[2].1], "gamma");
         // Trailing newline does not create a phantom empty line.
         assert_eq!(line_spans("a\n").len(), 1);
+    }
+
+    #[test]
+    fn interactive_tool_names_are_every_pause_tool_and_only_those() {
+        let interactive = interactive_tool_names();
+
+        // Exactly the Pause-capability rows, derived rather than listed. A
+        // headless Mission attempt disables these; a fourth Pause tool added to
+        // the registry has to appear here automatically or it stays silently
+        // callable in a run with nothing attached to answer it.
+        let mut expected: Vec<String> = registry()
+            .into_iter()
+            .filter(|e| e.kind == ToolKind::Pause)
+            .map(|e| e.schema["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        expected.sort();
+        let mut got = interactive.clone();
+        got.sort();
+        assert_eq!(got, expected);
+
+        // The three the Mission path used to hand-list, so this test fails if
+        // one is renamed without the Mission side noticing.
+        for name in ["userAnswerQuestion", "spawn_subagent", ADVISOR_TOOL] {
+            assert!(
+                interactive.iter().any(|n| n == name),
+                "{name} must be treated as interactive"
+            );
+        }
+
+        // Gates that pause but are NOT Pause tools: the permission gate on a
+        // Command tool and the diff gate on a Write tool both have durable
+        // supervisor state and stay enabled headlessly.
+        for name in ["run_command", "write_file", "read_file"] {
+            assert!(
+                !interactive.iter().any(|n| n == name),
+                "{name} is not an interactive Tool"
+            );
+        }
+    }
+
+    #[test]
+    fn capability_wire_spellings_are_distinct_and_stable() {
+        // These land in Transcripts on disk, so a rename silently changes how
+        // every past run's Validation contract reads.
+        let all = [
+            ToolCapability::ReadWorkspace,
+            ToolCapability::UpdatePlanState,
+            ToolCapability::WriteWorkspace,
+            ToolCapability::RunCommand,
+            ToolCapability::PauseForUser,
+            ToolCapability::Network,
+        ];
+        let mut wires: Vec<&str> = all.iter().map(|c| c.wire()).collect();
+        wires.sort_unstable();
+        let count = wires.len();
+        wires.dedup();
+        assert_eq!(wires.len(), count, "wire spellings must be distinct");
+        assert_eq!(ToolCapability::RunCommand.wire(), "run_command");
     }
 }

@@ -433,6 +433,7 @@ mod tests {
                 name: "run_command".into(),
                 input: serde_json::json!({ "command": "cargo test" }),
                 summary: "run_command".into(),
+                capability: Some("run_command".into()),
                 ts: 2_000,
             },
             AgentEvent::ToolCallFinished {

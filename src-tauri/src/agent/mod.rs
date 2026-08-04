@@ -2233,6 +2233,7 @@ async fn run_agent_loop(
                 name: call.name.clone(),
                 input: call.input.clone(),
                 summary: tool_summary_for_workspace(&call, request.workspace_root.as_deref()),
+                capability: kind.map(|k| k.capability().wire().to_string()),
                 ts: now_ms(),
             })?;
 
