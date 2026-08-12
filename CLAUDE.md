@@ -45,98 +45,220 @@ If a UI element doesn't serve clarity, it doesn't ship.
 Klide/
 ├── README.md                  Project pitch + status
 ├── CLAUDE.md                  This file
+├── CONTEXT.md                 Domain language — reviews use this vocabulary; code drifts, not it
+├── CHANGELOG.md               Notable changes per milestone
 ├── TODO.md                    Current milestone + shipped history
 ├── Ideas.md                   Future ideas + inspiration
+├── HARNESS_CONTRACT.md        The harness trust model (modes, capabilities, permissions)
+├── KLIDE_HARNESS_SCHEMA.md    Tool interface schema
+├── docs/                      Design docs (delegate replay, competitors, website) + adr/
 ├── src/                       React + TypeScript frontend
 │   ├── main.tsx                 React boot
 │   ├── App.tsx                  Root layout — composes view/panel/editor state; threads props
 │   ├── theme.ts                 5 themes + Monaco theme defs
 │   ├── styles/tokens.css        CSS custom properties + design primitives
+│   ├── icons.tsx                App-wide icon vocabulary, one weight lever (Phosphor Light; brand/file marks stay hand-drawn)
+│   ├── zLayers.ts               Z scale for root-level overlay stacking
+│   ├── shortcuts.ts             Keyboard shortcut registry (names + displayed keycaps)
+│   ├── settingsStore.ts         Declarative persisted-settings catalog + useSetting
+│   ├── persistedStore.ts        Corruption-safe localStorage reads with per-element validation
+│   ├── toast.ts                 Global notification bus (surface: components/ToastHost.tsx)
+│   ├── errors.ts                errMessage — readable text from any thrown value
+│   ├── time.ts                  Shared elapsed-span + relative-time formatters
+│   ├── fileSearch.ts            The one fuzzy file-path ranking (⌘P + @file picker)
+│   ├── dragSession.ts           One reusable mouse-drag session for resize handles
+│   ├── editorLanguage.ts        Extension → Monaco language id, single table
+│   ├── terminalTheme.ts         One xterm theme/font/ANSI palette for every terminal surface
+│   ├── terminals.ts             Terminal tab store that survives panel remounts
+│   ├── tauriEvents.ts           Listener scope owning async Tauri event registrations
+│   ├── workspaceFs.ts           Workspace-rooted fs invokes (join, list, read)
+│   ├── projectPaths.ts          Path normalization + project/worktree ownership checks
+│   ├── recentFolders.ts         Recent-folder ordering (remember on open, promote on work)
+│   ├── focusHistory.ts          Focus rail history expand/collapse rules
+│   ├── railDestinations.tsx     Foot-of-rail destinations shared by both rails
+│   ├── modelIdentity.tsx        Model → display name + logo (modelBrand.tsx: maker mark + link)
+│   ├── favModels.ts             Shared starred-model list
+│   ├── runs.ts                  Agent run data layer
+│   ├── runLedger.ts             Unified run ledger — merges tasks/convos/transcripts
+│   ├── runPresentation.ts       The one status vocabulary: run state → word + tone
+│   ├── runInspection.ts         Mission Control detail-subject resolution + lineage
+│   ├── races.ts                 Persisted race-group membership + pub/sub
+│   ├── tasks.ts                 Delegated tasks
+│   ├── klideConvos.ts           AI panel → Mission Control pub/sub
+│   ├── transcripts.ts           Pure conversation compaction + markdown export
+│   ├── delegates.ts             Canonical DelegateId list (mirrors Rust delegate::ALL)
+│   ├── delegateStatusNotify.ts  Delegate-status events → toasts under a noise policy
+│   ├── diffComments.ts          Line-anchored diff comments sent back to running agents
+│   ├── customProviders.ts       Self-hosted OpenAI-wire providers (customCli.ts: user CLI agents)
+│   ├── memory.ts                Project Memory data layer (+ memoryDrafts.ts, memorySearch.ts)
+│   ├── gitGraph.ts              Lane layout for the commit graph (gitTypes.ts: wire types)
+│   ├── gridLayouts.ts           Freeform grid layouts (layouts.ts: fixed presets)
+│   ├── panelLayout.ts           Floating panel rect store
+│   ├── skills.ts                Skills store (loader + auto-grant)
+│   ├── worktrees.ts             Worktree wire types + setup notices
+│   ├── contextTray.ts           Project context snapshot for the composer
+│   ├── agentHandoff.ts          Handoff summaries from conversation messages
+│   ├── ipc/                     Typed Tauri command wire — one module per family, drift-tested
+│   │   ├── git.ts                 Every git_* / github_* / create_pr command + wire types
+│   │   ├── delegatePty.ts         Delegate PTY commands, events, reattach/replay handshake
+│   │   └── aiProviders.ts         Provider key status, model metadata, local-server start
 │   ├── hooks/
 │   │   ├── useFlipIndicator.ts  Shared FLIP animation for rail/tab indicators
-│   │   ├── useEditorTabs.ts    Open tabs: open/edit/save/close/rename, external-change watch, reveal
-│   │   └── usePanelLayout.ts   Workbench size + panel rects + AI-panel list (hydrate/persist/clamp)
+│   │   ├── useEditorTabs.ts     Open tabs: open/edit/save/close/rename, external-change watch
+│   │   ├── usePanelLayout.ts    Workbench size + panel rects + AI-panel list
+│   │   ├── useAiPanelFleet.ts   Reducer for panel handoffs, resume targets, race watch tabs
+│   │   ├── useArtifactInspector.ts Artifact Inspector docking state
+│   │   ├── useCustomProviders.ts React subscription to the custom-provider store
+│   │   ├── usePortalMenu.ts     Body-portaled dropdown state
+│   │   └── useUserInfo.ts       Cached local + GitHub identity for the rail footer
 │   ├── components/
-│   │   ├── ActivityBar.tsx      Left rail — top zone (6 tools, FLIP) + bottom zone (Settings + Profile, dock dot)
+│   │   ├── ActivityBar.tsx      Left rail — top zone (tools, FLIP) + bottom zone (Settings + Profile)
+│   │   ├── ActivityHeatmap.tsx  52-week run activity grid
 │   │   ├── AiPanel.tsx          AI chat panel host + run interaction surface
+│   │   ├── AnchoredWorkbench.tsx Anchored layout shell — sidebar, tabs, editor, terminal, AI panels
+│   │   ├── ArtifactInspector.tsx Dockable Monaco viewer for run artifacts (files, diffs, checkpoints)
 │   │   ├── CheckpointPanel.tsx  Per-run file checkpoint rollback UI
 │   │   ├── CommandPalette.tsx   Cmd+P / Cmd+Shift+P modal
 │   │   ├── ContextMenu.tsx      Right-click context menu
+│   │   ├── DiffModal.tsx        Blocking approve/reject modal for one pending agent edit
+│   │   ├── diffView.tsx         The one diff renderer — gutters, word highlights, line comments
+│   │   ├── DiffViewerPanel.tsx  Read-only side-by-side Monaco diff panel
 │   │   ├── EditorArea.tsx       Monaco editor wrapper
+│   │   ├── fileMarks.tsx        Agent-file star + shared file-type icon set
 │   │   ├── FileViewerPanel.tsx  Read-only Quick View overlay
 │   │   ├── FloatingPanel.tsx    Free-floating, resizable, draggable panel shell
-│   │   ├── GitReview.tsx        Full-view Git workbench (staging + diffs)
-│   │   ├── GridLayoutBuilder.tsx Drag-and-drop grid layout editor
-│   │   ├── GridWorkbench.tsx    Grid layout rendering
-│   │   ├── LayoutBento.tsx      Layout picker widget
-│   │   ├── LayoutCanvas.tsx     Visual layout editor
-│   │   ├── MemoryModal.tsx      Centered Memory handoff-notes modal
-│   │   ├── MemoryPanel.tsx      List+detail body inside MemoryModal
+│   │   ├── FocusMode.tsx        Chat-first fullscreen surface — project rail, start stage, composer
+│   │   ├── FocusGitIsland.tsx   Compact git lane-graph island on the Focus canvas
+│   │   ├── GitReview.tsx        Full-view Git workbench (staging + diffs + PRs)
+│   │   ├── GitHistoryGraph.tsx  Memoized commit lane graph with density zoom
+│   │   ├── GridLayoutBuilder.tsx Drag-and-drop grid layout editor (GridWorkbench.tsx renders it)
+│   │   ├── HoverPopover.tsx     Generic delayed hover popover
+│   │   ├── ImageView.tsx        Read-only image preview in the editor
+│   │   ├── InlineCommandReview.tsx Inline approval card for shell/network commands + allowlists
+│   │   ├── InlineDiffReview.tsx Inline hunk-peek edit review — apply, reject, request changes
+│   │   ├── Kbd.tsx              The single keycap renderer (KeyboardShortcuts.tsx: cheatsheet overlay)
+│   │   ├── LayoutBento.tsx      Layout picker widget (LayoutCanvas.tsx: visual layout editor)
+│   │   ├── markdown.tsx         Hand-rolled markdown renderer (code highlighting, tool markers)
+│   │   ├── MemoryModal.tsx      Centered Memory handoff-notes modal (MemoryPanel.tsx: its body)
 │   │   ├── MissionControl.tsx   Run board, attention/review, races + delegate handoff
+│   │   ├── MissionControlSkeleton.tsx Geometry-matched loading skeleton
+│   │   ├── MissionGraph.tsx     Mission dependency graph view + dependency editing
 │   │   ├── OrchestratorConsole.tsx Mission planner + chained execution board
 │   │   ├── ProfileModal.tsx     Local IDE profile (avatar + identity + workspace)
 │   │   ├── SearchPanel.tsx      Find-in-files results
-│   │   ├── SettingsPanel.tsx    Full settings (keychain, harness, stats)
+│   │   ├── SettingsPanel.tsx    Settings shell (sections live in settings/)
+│   │   ├── settings/            accounts, apiKeys, controls, customProviders, icons, localServers, stats
 │   │   ├── Sidebar.tsx          File explorer tree
 │   │   ├── SkillsModal.tsx      Skill editor + install + provenance groups
 │   │   ├── SplitPane.tsx        Vertical/horizontal split shell
-│   │   ├── StatusBar.tsx        Bottom bar — file/lang/branch/notice/chips
+│   │   ├── StatusBar.tsx        Bottom bar — file/lang/branch/notice
 │   │   ├── TabBar.tsx           Open file tabs (FLIP-animated underline)
-│   │   ├── TerminalPanel.tsx    xterm.js + Rust PTY
+│   │   ├── TerminalPanel.tsx    xterm.js + Rust PTY (floats as a card in Focus)
+│   │   ├── ToastHost.tsx        The single toast surface for src/toast.ts
 │   │   ├── TodoStrip.tsx        Project-wide todo list strip
-│   │   ├── WelcomeScreen.tsx    Empty-state screen
+│   │   ├── Tooltip.tsx          Portaled themed tooltip (replaces native title)
+│   │   ├── WelcomeScreen.tsx    Start/resume surface — recents, clone, new project
+│   │   ├── WorktreesModal.tsx   Worktree list — open-in-panel, merge, remove
 │   │   └── ai/                  Extracted AI panel modules
-│   │       ├── types.ts           Msg, QueuedTurn, Conversation
-│   │       ├── icons.tsx          Provider logos, action icons
-│   │       ├── utils.ts           Tokens, fuzzy files, persistence
-│   │       ├── system-prompt.ts   buildSystemPrompt
-│   │       ├── markdown.tsx       CodeBlock, renderMarkdown
+│   │       ├── types.ts           Msg, QueuedTurn, stored Conversation
+│   │       ├── icons.tsx          Provider logos, action icons, brand colors
+│   │       ├── utils.ts           Token estimate, persistence helpers
+│   │       ├── system-prompt.ts   buildSystemPrompt (Kit persona)
 │   │       ├── ChatMessage.tsx    renderMessageBody
-│   │       ├── eventsToMsgs.ts    AgentEvent replay into chat messages
+│   │       ├── MessageActions.tsx Hover per-message actions (copy, retry, branch, edit)
+│   │       ├── ModelPicker.tsx    Portaled model selector (filter, favorites, keyboard)
+│   │       ├── replayConversation.ts On-disk transcript → resumable panel Conversation
+│   │       ├── transcriptReducer.ts  Pure event → transcript shaping (tool cards, deltas, meta)
+│   │       ├── turnDriver.ts      Streaming state machine for one turn
+│   │       ├── conversationSession.ts Atomic live Conversation identity
+│   │       ├── contextBudget.ts   Context-window accounting + auto-compaction threshold
+│   │       ├── autonomyLadder.ts  The four rungs of Mode × diff-review policy
+│   │       ├── panelHost.ts       App↔AiPanel contract — identity, handoffs, resume policy
+│   │       ├── workspaceFiles.ts  Bounded file walk for @mentions
 │   │       ├── summarize.ts       Summarize-and-handoff + auto-skill detect
-│   │       ├── ConversationHistory.tsx
-│   │       └── DelegateTerminal.tsx
-│   ├── agent/
-│   │   ├── types.ts             Agent protocol types (events, diffs, permissions)
-│   │   ├── providers.ts         Provider definitions (16 providers)
-│   │   ├── client.ts            Frontend agent harness client
-│   │   ├── race.ts              Same-task multi-run dispatch into isolated worktrees
-│   │   ├── durableMissions.ts   Mission IPC + Markdown/events → MissionState projection
-│   │   ├── missionHarness.ts    MissionState reducer (projection model, not a second loop)
-│   │   ├── routingPolicy.ts     Deterministic tier/model routing
-│   │   └── tools.ts             Frontend tool list fetcher (fetches from Rust)
-│   ├── gridLayouts.ts           Freeform grid layouts
-│   ├── layouts.ts               Fixed-frame layout presets
-│   ├── memory.ts                Project Memory data layer
-│   ├── races.ts                 Persisted race-group membership + pub/sub
-│   ├── panelLayout.ts           Floating panel rect store
-│   ├── skills.ts                Skills store (loader + auto-grant)
-│   ├── tasks.ts                 Delegated tasks
-│   ├── runs.ts                  Agent run data layer
-│   └── klideConvos.ts           AI panel → Mission Control pub/sub
+│   │       ├── ConversationHistory.tsx / DelegateTerminal.tsx / RaceFollowUpBar.tsx
+│   └── agent/
+│       ├── types.ts             Agent protocol types (events, diffs, permissions)
+│       ├── providers.ts         Provider definitions (16 providers)
+│       ├── client.ts            Frontend agent harness client
+│       ├── foldEvents.ts        Sole owner of folding AgentEvent[] into conversation rows
+│       ├── race.ts              Same-task multi-run dispatch into isolated worktrees
+│       ├── durableMissions.ts   Mission IPC + Markdown/events → MissionState projection
+│       ├── missionHarness.ts    MissionState reducer (projection model, not a second loop)
+│       ├── missionGraph.ts      Pure mission dependency graph — layers, edges, cycle detection
+│       ├── planner.ts           Decomposes a goal into routed-ready tasks
+│       ├── routingPolicy.ts     Deterministic tier/model routing
+│       ├── budgetLedger.ts      Mission cost/time/retry envelopes + spend ledger
+│       ├── capacityPlanner.ts   Concurrency slots per run kind — admit, queue, defer
+│       ├── validationContracts.ts Validation contract model — checks, reviewers, status
+│       ├── advisor.ts           Advisor escalation config (advisorConsult.ts: nested one-shot run)
+│       ├── subagents.ts         Subagent role registry — @mentions, spawn tool, fan-out
+│       └── tools.ts             Frontend tool list fetcher (fetches from Rust)
 └── src-tauri/                 Rust backend
     ├── Cargo.toml
     ├── src/
-    │   ├── main.rs               Entry point
-    │   ├── lib.rs                Command registration + thin Tauri glue, AI chat dispatch, keychain keys, fs ops, find-in-files, profile info, shared helpers
+    │   ├── main.rs               Entry point (also the `klide ptyd` daemon entry)
+    │   ├── lib.rs                Command registration + thin Tauri glue, AI chat dispatch, fs ops, app menu
     │   ├── adapters.rs           Provider streaming trait + shared loop + 3 wire adapters (Ollama/OpenAI/Anthropic)
+    │   ├── providers.rs          Provider registry — one row per provider (wire, key, models, subscription)
+    │   ├── custom_providers.rs   User-added self-hosted OpenAI-wire endpoints
+    │   ├── custom_cli.rs         User-defined CLI agents via command templates
     │   ├── models.rs             Model discovery — list models, context windows, tool support
-    │   ├── git/                  Git + gh commands (status/diff/log/worktree/PR)
+    │   ├── pricing.rs            Hand-curated per-model token prices for run cost
+    │   ├── accounts.rs           Snapshot/list/restore delegate CLI login credentials
+    │   ├── git/                  mod.rs: git shell-outs · github.rs: gh seam, PRs, avatars, pinned identity
     │   ├── skills.rs             Filesystem-skill loader (4 dirs, provenance) + install/uninstall
     │   ├── local_servers.rs      Ollama / MLX local server start/stop/status
-    │   ├── pty.rs                PTY plumbing (native shell + delegate spawn)
+    │   ├── search.rs             Find-in-files over a Workspace with ignore policy
     │   ├── workspace.rs          Workspace module — owns the Workspace-rooted invariant
+    │   ├── worktree_setup.rs     Per-workspace worktree bootstrap recipe (copy/link/port/script)
     │   ├── memory.rs             Project memory markdown I/O
-    │   ├── delegate/             Delegate seam — adapter per CLI (mod.rs trait+registry+run-listing; claude_code/codex/opencode; runs.rs shared types)
+    │   ├── missions.rs           Durable Missions — authored specs, append-only events, drive loop
+    │   ├── durable.rs            Atomic + append-only write primitives for on-disk state
+    │   ├── pty.rs                Delegate PTY commands + host-choice rules (SessionHosting)
+    │   ├── pty_host.rs           Tauri-free PTY session host — sessions, scrollback, reader loop
+    │   ├── pty_daemon.rs         Detached `klide ptyd` server over a unix socket
+    │   ├── pty_client.rs         App-side socket transport to ptyd (stubbed off-unix)
+    │   ├── pty_wire.rs           Portable ptyd wire vocabulary — Request/Response/Event
+    │   ├── delegate/             Adapter per CLI (claude_code/codex/opencode/omp) + runs.rs shared types + chat.rs one-shot turns + status.rs hook server
     │   └── agent/
     │       ├── mod.rs             Agent supervisor + run loop
-    │       ├── tools.rs           Tool registry (schema + execution)
+    │       ├── run_core.rs        Tauri-free turn prep — provider quirks, message assembly, compaction
+    │       ├── tools.rs           Tool registry (schema + capability + execution)
+    │       ├── glob_match.rs      Shared */? matcher (glob tool + command allowlist)
+    │       ├── permission.rs      Permission engine — classify, prompt, remember, persist
+    │       ├── approval_store.rs  HEAD-fingerprinted persisted project approvals
+    │       ├── command_allowlist.rs Per-project run_command approvals + wildcard rules
+    │       ├── network_allowlist.rs Per-project network target approvals
+    │       ├── failure_budget.rs  Crash-loop quarantine for repeatedly failing runs
+    │       ├── steering.rs        Repeated/failing tool-call detection → steering nudges
+    │       ├── evidence.rs        Run summary + transcript → Markdown evidence
+    │       ├── eval.rs            Test-only golden scenarios over the real tool path
+    │       ├── todo.rs            On-disk agent TODO list + mutation events
     │       ├── types.rs           Agent types (events, diffs, summaries)
-    │       └── transcripts.rs     Transcript persistence (JSONL)
+    │       └── transcripts.rs     Transcript persistence (JSONL, durable appends + atomic summaries)
     └── capabilities/
 ```
 
 ## Architecture
+
+### Three surfaces, one state
+
+Klide opens on the surface that matches the task; all three share the same
+runs, transcripts, conversations, and review state.
+
+- **Welcome** (`WelcomeScreen.tsx`) — start or resume a project: recents,
+  clone, new project.
+- **Focus** (`FocusMode.tsx`) — chat-first fullscreen: project/thread rail on
+  the left, one centered conversation (an `AiPanel` `variant="focus"`, never a
+  duplicate chat implementation), a Git island, and the shared terminal docked
+  *under* the canvas so run subscriptions keep streaming while you shell.
+- **Workbench** (`AnchoredWorkbench.tsx`) — the editor-first IDE layout, plus
+  free-mode floating panels, fixed presets, and the grid builder.
+
+Icons across every rail come from `src/icons.tsx` (Phosphor Light behind an
+`Icon` primitive, one weight lever). Provider logos, file-type marks and
+AgentMark stay hand-drawn.
 
 ### One agent loop (Rust harness unified)
 
@@ -196,22 +318,35 @@ outcomes, visible budget and capacity, capability-based worker routing,
 automatic validation contracts, and durable background execution. Do not
 unpark scheduling or proactive suggestions ahead of those foundations.
 
-The first v0.6 tracer bullet establishes the durability boundary: Rust owns
-`.klide/missions/<id>/mission.md`, `tasks/*.md`, and append-only
-`events.jsonl`; TypeScript only compiles those documents/events into
-`MissionState`. A Mission Task owns zero or more Run attempts and one accepted
-attempt — Task id and Run id are never the same lifecycle object. The detached
-Rust Harness writes validation back to the linked Mission after it settles,
-and dependency readiness gates on an accepted attempt, never on process exit.
-Approval freezes the worker kind, provider, model, and diff-review policy into
-each task Markdown file. A one-at-a-time Rust Mission supervisor now selects an
-unattempted ready task, attaches and starts its Harness Run headlessly, and
-re-enters after validation; rejected attempts park for explicit retry. The
-tier-board only observes events and reattaches to operator pauses. When a
-workspace becomes active after process restart, Rust validates terminal orphan
-summaries and marks ambiguous missing/non-terminal Runs `attempt_interrupted`
-without replaying them. The Board/Graph switch reads and edits the same task
-Markdown dependencies; Rust rejects dependency cycles at the write boundary.
+The v0.6 durability boundary is shipped (slices 1–2 + Delegate dispatch, see
+TODO.md): Rust owns `.klide/missions/<id>/mission.md`, `tasks/*.md`, and
+append-only `events.jsonl`; TypeScript only compiles those documents/events
+into `MissionState`. A Mission Task owns zero or more Run attempts and one
+accepted attempt — Task id and Run id are never the same lifecycle object. The
+detached Rust Harness writes validation back to the linked Mission after it
+settles, and dependency readiness gates on an accepted attempt, never on
+process exit. Approval freezes the worker kind, provider, model, and
+diff-review policy into each task Markdown file. A one-at-a-time Rust Mission
+supervisor selects an unattempted ready task, starts its Harness Run
+headlessly, and re-enters after validation; rejected attempts park for
+explicit retry. The tier-board only observes events and reattaches to operator
+pauses. After a process restart, Rust validates terminal orphan summaries and
+marks ambiguous missing/non-terminal Runs `attempt_interrupted` without
+replaying them. The Board/Graph switch reads and edits the same task Markdown
+dependencies; Rust rejects dependency cycles at the write boundary
+(`first_dependency_cycle`). Approved Delegate tasks dispatch as bounded
+one-shot CLI commands behind the Delegate seam; exit moves the attempt to
+explicit operator review, never auto-acceptance.
+
+Durability itself is a module: `durable.rs` owns atomic replace and flushed
+append-only writes, and both the Mission log and the run Transcript go through
+it — a torn final line is tolerated and reported, interior corruption is an
+error, never a silent skip (2026-08-04 review).
+
+Still open for v0.6 proper: budget/capacity controls in the dispatch path
+(`budgetLedger.ts` / `capacityPlanner.ts` exist as models), capability-based
+routing without hard-coded provider brands, automatic validation contracts,
+and durable background execution / local-to-cloud handoff.
 
 - Keep the Rust harness as the only durable agent loop. Do not reintroduce a frontend tool-dispatch loop.
 - Treat Mission Control as the place to inspect runs and hand them off; delegate TUIs resume in AI panels.
@@ -256,6 +391,11 @@ ToolEntry { kind, schema, run_read, run_write_preview }
 | Rust → Frontend (request-scoped) | `Channel<T>` | AI token streaming, agent events |
 | Rust → Frontend (global) | `emit()` / `listen()` | PTY data, delegate PTY data |
 
+Covered command families go through typed wrappers in `src/ipc/` (git,
+delegate PTY, AI providers) or a domain data layer — not raw `invoke` in
+components. Rust drift tests (e.g. `every_git_command_has_a_frontend_wrapper`)
+enforce wrapper coverage for the git family.
+
 ## Features shipped (through v0.5)
 
 - [x] Activity bar — top zone (6 tools) with FLIP-animated indicator + bottom zone (Settings + Profile) with a dock-style dot and a hairline divider.
@@ -274,6 +414,7 @@ ToolEntry { kind, schema, run_read, run_write_preview }
 - [x] Settings — keychain-backed keys, harness settings editor, stats panel
 - [x] Skills — instruction bundles with tool allowlists, loaded from 4 filesystem locations, install/uninstall via `npx skills add`, provenance grouping
 - [x] Profile modal — local IDE profile (avatar + identity + workspace), `⌘.`
+- [x] Focus mode — chat-first fullscreen surface: project/thread rail, centered conversation, Git island, docked shell
 - [x] Layout system — fixed presets + freeform grid builder
 - [x] Command palette — Cmd+P files, Cmd+Shift+P commands (incl. `View: Open Profile`)
 - [x] Find in files — Cmd+Shift+F, Rust-backed search
@@ -295,7 +436,10 @@ npm run tauri dev      # full dev loop (Vite + Rust hot reload)
 - **The Rust harness is the agent run module.** AiPanel starts runs and renders events; it does not run its own tool loop. All modes (Chat, Plan, Goal) go through `startAgentRun()`.
 - **No API keys in the frontend.** Provider keys live in macOS Keychain (`keyring` crate), never in localStorage or React state.
 - **Workspace-rooted file access.** Agent tools verify paths are inside the workspace before reading/writing.
-- **Tools are defined once in Rust.** The `ToolEntry` struct bundles schema, kind, and execution together. Frontend fetches schemas over IPC.
+- **Tools are defined once in Rust.** The `ToolEntry` struct bundles schema, kind, and execution together. Frontend fetches schemas over IPC. The transcript records each call's *capability* at dispatch time — readers never guess trust effects from a tool's name.
+- **Durable state goes through `durable.rs`.** Missions and Transcripts use atomic replace + flushed appends; a reader must never see a torn document, and interior corruption is an error, not a `continue`.
+- **Icons come from `src/icons.tsx`.** One vocabulary, one weight lever; don't draw a private copy of a glyph in a component (provider/brand/file marks are the hand-drawn exception).
+- **GitHub identity is pinned.** Klide applies the account from `~/.klide/github_account.json` per-command via `GH_TOKEN`; it never follows or mutates gh's global active account.
 - **Styling: inline styles for now.** No CSS framework before v1.0. CSS custom properties in `src/styles/tokens.css` for theming.
 
 ## Reference

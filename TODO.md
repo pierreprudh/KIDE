@@ -26,7 +26,10 @@ them.
   evidence comparison, winner merge, and explicit worktree cleanup.
 - [ ] Publish the first signed/notarized macOS bundle.
 - [ ] Validate Windows and Linux after replacing the Apple-only keyring feature
-  selection with target-specific backends.
+  selection with target-specific backends. (Half done 2026-08-04: the delegate
+  PTY layer no longer fails to compile off unix — wire types moved to ungated
+  `pty_wire.rs`, `pty_client` stubs "no daemon here" on non-unix. The keyring
+  feature selection is the remaining blocker.)
 - [ ] Make worktree-per-run isolation the default parallel-agent flow.
 - [ ] Complete provider-aware waiting/exit markers for historical delegate runs.
 
@@ -81,6 +84,41 @@ them.
   Mission link and process outcome; exit moves the attempt to explicit
   operator review rather than acceptance. Accept/reject records durable
   validation, and restart recovery never replays an ambiguous Delegate.
+
+## OpenCode v2 delegate (deferred — upstream is beta, noted 2026-08-12)
+
+OpenCode 2.0 is a rewrite (Bun → Node, Electron desktop) whose server API is an
+intentional breaking change: a documented HTTP API plus a generated TypeScript
+client (`@opencode-ai/client`), with an OpenAPI 3.1 spec served at
+`http://localhost:4096/doc` and bearer auth via an `authorization` header. It
+installs as a **separate** binary — `npm i -g @opencode-ai/cli@next` → `opencode2`
+— so it coexists with the v1 `opencode` our current adapter drives. Upstream
+warns beta data may be wiped and the API may still move, so this stays deferred
+until it stabilizes; nothing here blocks v0.5.1 or v0.6.
+
+Why it's worth doing when it lands: the v2 server exposes over HTTP most of what
+`delegate/opencode.rs` currently obtains by scraping — sessions, durable
+history, event streams, models/providers, permissions, questions/forms, PTY
+sessions, shell processes, skills, MCP, filesystem, snapshots/reverts,
+compaction, and VCS status/diff.
+
+- [ ] Add `OpenCode2` as its own `DelegateAdapter` beside the existing one, so
+  v1 keeps working on the SQLite/`opencode export` path and only the new kind
+  talks to the API. Do not migrate the v1 adapter in place.
+- [ ] Drive run listing and transcripts from the API instead of reading
+  `~/.local/share/opencode/opencode.db` and parsing the session id out of
+  startup stdout.
+- [ ] Evaluate `GET /api/experimental/session/{id}/log?after=<seq>&follow=true`
+  (newline-delimited `{ id, event, data }`, replay-then-follow) against our
+  hand-built delegate replay contract — capped scrollback ring + monotonic
+  `seq` + `delegate_pty_snapshot` then dedupe. If it holds, the v2 kind reads
+  upstream's log rather than carrying our own ring buffer, and its PTY
+  endpoints may cover what `ptyd` does for v1.
+- [ ] Handle the renamed config surface when we read or write opencode config:
+  one global `~/.config/opencode/cli.json`, `agent`→`agents`, `prompt`→`system`,
+  `disable`→`disabled`, MCP under `mcp.servers`.
+
+Docs: <https://opencode.ai/v2/docs/migrate-v1>, <https://opencode.ai/v2/docs/build/client>.
 
 ## Stabilize v0.2
 

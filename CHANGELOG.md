@@ -54,6 +54,99 @@ open; these are the shell and correctness changes landed so far.
 - The harness measures model time per turn, and conversations carry a creation
   date, so duration is never re-derived from wall-clock time at render.
 - Self-hosted provider endpoints can be renamed from Settings.
+- Vision detection stops waving through text-only models: `claude-3-5-haiku`
+  (Anthropic's one text-only chat model, dotted OpenRouter spelling included)
+  and the o-series small builds (`o1-mini`, `o1-preview`, `o3-mini`) no longer
+  read as vision-capable. And the adapter seam now forwards only the image
+  formats the hosted APIs accept (jpeg/png/gif/webp) — an svg or bmp
+  attachment is dropped instead of 400-failing the whole turn.
+- Reopening the Mission console no longer re-announces a mission that finished
+  long ago: terminal events toast exactly once, when they happen. Both console
+  effects read the event log through one `terminalOutcome` helper, so the
+  reopen state and the announcement can't disagree about whether a mission is
+  parked.
+
+### Focus shell and terminal
+
+- The native shell docks *under* the Focus canvas instead of replacing it, so
+  the conversation keeps its mount and its run subscriptions keep streaming
+  while you work in the shell. It is the same single PTY the workbench drawer
+  shows, at the same remembered height — opening it in Focus never starts a
+  second one.
+- One icon vocabulary: thirty private glyph copies across ActivityBar,
+  FocusMode, StatusBar, WelcomeScreen and the rail destinations now resolve to
+  `src/icons.tsx` (Phosphor Light behind an `Icon` primitive; provider logos,
+  file-type marks and AgentMark stay hand-drawn). The AI panel's mark is a
+  speech bubble, not the sparkle cliché.
+- In Focus the terminal renders as a floating card — inset, four rounded
+  corners, a hairline all the way round — because xterm's composited canvas
+  can ignore a radius clip in this webview. Split panes now share their
+  alignment rules with the header, so a tab sits over the pane it names and
+  both dividers resolve to the same pixel.
+
+### GitHub identity
+
+- Klide pins its GitHub identity in `~/.klide/github_account.json` and applies
+  it per-command via `GH_TOKEN`, instead of wearing whichever account `gh`
+  happened to have active — the avatar, PR author, and push credentials can no
+  longer disagree (and pushes from the wrong account no longer 403). Settings
+  grows a GitHub account row to choose it.
+
+### Architecture review (2026-08-04, PR #31)
+
+Six reproduced defects fixed:
+
+- **The Transcript is as durable as the Mission log.** Appends go through one
+  flushed `O_APPEND` write and summaries through an atomic replace
+  (`durable.rs`), so a crash can't publish a torn line and the polling run
+  board can't read half a summary. Reading now tolerates exactly one thing — a
+  torn *final* line — and errors on interior corruption instead of silently
+  skipping it, which used to shorten replayed history, under-count the
+  Validation contract, and lower cost totals with no sign anything was wrong.
+- **Validation no longer misreports allowlisted command tools.** The
+  transcript records each tool call's *capability* at dispatch time instead of
+  leaving readers to guess from the tool's name, so a run that validated its
+  own edits through a workspace-defined command tool no longer reads
+  `unverified`. Headless Mission attempts derive the interactive tools to
+  disable from the Pause capability rather than a hand-written list.
+- **Live ptyd sessions survive the persistence toggle.** The toggle only
+  routes *new* spawns; existing daemon sessions keep write, snapshot, and
+  reuse — previously keystrokes into them were silently dropped and reattach
+  repainted without a dedup high-water mark.
+- **The delegate layer compiles off unix.** The ptyd wire types moved to an
+  ungated `pty_wire.rs` and the client answers "no daemon here" on non-unix
+  targets — one of two real blockers behind the Windows/Linux TODO item (the
+  keyring feature selection remains the other).
+- **The git IPC drift guard got its blind spot closed.** `create_pr` and
+  `github_commit_avatars` gained wrappers and the guard now matches the whole
+  family, the skills wire is typed end-to-end, and a literal NUL byte that had
+  been hiding `settings/accounts.tsx` from every grep is gone.
+- **Persistent-approval trust has teeth.** The repository fingerprint guarding
+  persisted permission decisions is now covered by tests that fail if it stops
+  moving for tracked edits, new commits, or untracked-file contents.
+
+And the duplication sweep behind them:
+
+- One `SessionHosting` trait over the in-process and ptyd session hosts, with
+  the reuse/broadcast policies tested against fake hosts.
+- `src/runPresentation.ts` — one module turns a Run's state into its word and
+  tone (was eight drifting tables); the two legitimate meanings of "waiting"
+  are documented and pinned instead of "fixed" into agreement.
+- `ai/contextBudget.ts` extracts the auto-compaction arithmetic behind 21
+  tests (the draft can no longer trigger a paid summarisation call), and
+  `ai/autonomyLadder.ts` single-sources the Mode × diff-review ladder. The
+  Focus start stage's fake context gauge — chosen window size divided by the
+  largest option — is a label now.
+- Mission Control gives one answer per provider name, colour, and mark
+  (`providerShortName`, `providerBrandColor`, shared brand paths).
+- The four Pause ceremonies collapse into one `run_pause_tool`;
+  `AgentEvent::ts()` replaces two 23-arm matches; one shared `glob_match`
+  serves the glob tool and the command allowlist.
+- Shared modules earn their callers: `time.ts` owns `relativeTime` (four
+  byte-identical copies gone), new `fileSearch.ts` gives ⌘P and the `@file`
+  picker the same ranking, new `dragSession.ts` ends the stashed-cursor resize
+  ritual, new `editorLanguage.ts` ends the twin extension tables, and the Rust
+  menu builds from one `MENU_ITEMS` table with a source-reading drift test.
 
 ## v0.5.0 — Agent Operations (2026-07-16; closeout 2026-07-21)
 
