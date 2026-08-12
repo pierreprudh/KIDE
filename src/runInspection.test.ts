@@ -73,7 +73,10 @@ describe("resolveRunInspection", () => {
       source: null,
       model: null,
       status: "queued",
+      workspaceRoot: "/workspace/KIDE",
       cwd: "/workspace/KIDE",
+      branch: null,
+      worktree: null,
       startedMs: 1,
     };
 

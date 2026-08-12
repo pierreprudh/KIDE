@@ -30,7 +30,11 @@ them.
   PTY layer no longer fails to compile off unix — wire types moved to ungated
   `pty_wire.rs`, `pty_client` stubs "no daemon here" on non-unix. The keyring
   feature selection is the remaining blocker.)
-- [ ] Make worktree-per-run isolation the default parallel-agent flow.
+- [x] Make worktree-per-run isolation the default parallel-agent flow. Fresh
+  Klide conversations and Mission Control task dispatches now create a branch
+  before starting the Harness or delegate CLI; the worktree pin survives layout
+  switches, failed delegate spawns clean up untouched checkouts, and only
+  non-Git folders fall back to local execution.
 - [ ] Complete provider-aware waiting/exit markers for historical delegate runs.
 
 ## v0.6 — Dependable orchestration

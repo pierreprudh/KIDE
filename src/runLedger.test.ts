@@ -59,7 +59,10 @@ function task(over: Partial<TaskSession> = {}): TaskSession {
     source: null,
     model: null,
     status: "queued",
+    workspaceRoot: ROOT,
     cwd: ROOT,
+    branch: null,
+    worktree: null,
     startedMs: 500,
     ...over,
   };

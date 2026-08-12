@@ -233,6 +233,15 @@ type Props = {
   harnessSettings?: AiHarnessSettings;
   onDuplicate?: (snapshot: { provider: ProviderId; model: string }) => void;
   onForkConversationInWorktree?: (conversation: Conversation, baseRoot: string | null) => void;
+  /** Fresh conversations ask the host for an isolated checkout before their
+   *  first turn. `true` means the host moved the turn to a remounted panel;
+   *  `false` is reserved for non-Git folders and continues locally. */
+  onRequestIsolatedRun?: (request: {
+    text: string;
+    attachments: Attachment[];
+    provider: ProviderId;
+    model: string;
+  }) => Promise<boolean>;
   /** The host's Provider for this panel. Live, like `model` — surfaces outside
    *  the panel (the Focus hero) edit the pair, and the two must move together
    *  or a run goes out with a model the Provider doesn't serve. Absent means
@@ -267,6 +276,7 @@ type Props = {
    *  Starts a fresh conversation first if the restored session already has
    *  messages (the hero composer always means "new chat"). */
   initialMessage?: string | null;
+  initialAttachments?: Attachment[];
   onInitialMessageConsumed?: () => void;
   /** A message to send into the CURRENT conversation as a follow-up turn —
    *  the race "ask both" composer fans one text out to every racer's panel
@@ -485,6 +495,7 @@ export function AiPanel({
   harnessSettings,
   onDuplicate,
   onForkConversationInWorktree,
+  onRequestIsolatedRun,
   provider: hostProvider,
   onProviderChange,
   onOpenSettingsSection,
@@ -497,6 +508,7 @@ export function AiPanel({
   initialTask,
   onInitialConsumed,
   initialMessage,
+  initialAttachments,
   onInitialMessageConsumed,
   followUpMessage,
   onFollowUpConsumed,
@@ -726,6 +738,8 @@ export function AiPanel({
   const [connected, setConnected] = useState(false);
   const [serverRunning, setServerRunning] = useState(false);
   const [serverStarting, setServerStarting] = useState(false);
+  const [preparingWorkspace, setPreparingWorkspace] = useState(false);
+  const preparingWorkspaceRef = useRef(false);
   const [serverError, setServerError] = useState<string | null>(null);
   // Distinct files this run has written, so the composer can offer a one-click
   // "undo what this run did" without a round-trip to Mission Control. Reset
@@ -738,6 +752,13 @@ export function AiPanel({
   // there is no harness run to abort yet, so we flag the pending send to bail
   // once the server is ready instead of launching a turn they backed out of.
   const cancelledWarmupRef = useRef(false);
+  // A panel mounted on a worktree was deliberately placed there and may send
+  // its first turn immediately. Only an EMPTY main-checkout conversation must
+  // isolate: a restored historical conversation cannot safely change cwd in
+  // the middle of its transcript. New conversation flips this back to true.
+  const needsFreshWorkspaceRef = useRef(
+    !worktreeName && conversationSession.messages.length === 0,
+  );
   const [serverRefresh] = useState(0);
   const [agentMode, setAgentMode] = useState<AgentMode>(
     () => normalizeAgentMode(localStorage.getItem("klide.agentMode"))
@@ -1761,6 +1782,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     setHistoryOpen(false);
     abortActiveHarnessRun();
     const nid = genId();
+    needsFreshWorkspaceRef.current = true;
     transitionConversation({ type: "fresh-started", conversationId: nid });
     setMeasuredPromptTokens(null);
     setMeasuredUsageTokens(null);
@@ -1797,7 +1819,10 @@ This user request requires workspace inspection. Before answering, you MUST call
   // Two-phase on purpose — `newConversation()` mints the fresh conversation id
   // via state, so the actual send waits one render for that id to commit
   // before going through the normal composer path (warmup, modes, queueing).
-  const [pendingHeroSend, setPendingHeroSend] = useState<string | null>(null);
+  const [pendingHeroSend, setPendingHeroSend] = useState<{
+    text: string;
+    attachments: Attachment[];
+  } | null>(null);
   const consumedInitialMessageRef = useRef<string | null>(null);
   useEffect(() => {
     const text = initialMessage?.trim();
@@ -1805,14 +1830,14 @@ This user request requires workspace inspection. Before answering, you MUST call
     consumedInitialMessageRef.current = text;
     onInitialMessageConsumed?.();
     if (msgsRef.current.length > 0) newConversation();
-    setPendingHeroSend(text);
+    setPendingHeroSend({ text, attachments: initialAttachments ?? [] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialMessage]);
   useEffect(() => {
     if (pendingHeroSend === null) return;
-    const text = pendingHeroSend;
+    const turn = pendingHeroSend;
     setPendingHeroSend(null);
-    void send({ text });
+    void send({ text: turn.text, attachments: turn.attachments });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingHeroSend]);
 
@@ -2796,15 +2821,50 @@ This user request requires workspace inspection. Before answering, you MUST call
     setMsgs(msgs.slice(0, i));
   }
 
-  async function send(opts?: { text?: string; mode?: AgentMode }) {
+  async function send(opts?: { text?: string; mode?: AgentMode; attachments?: Attachment[] }) {
     const text = opts?.text ?? input;
-    const stagedImages = pendingImages;
-    if (serverStarting) return;
+    const stagedImages = opts?.attachments ?? pendingImages;
+    if (serverStarting || preparingWorkspaceRef.current) return;
     // An image-only turn (no text) is valid; a bare empty turn is not.
     if (!text.trim() && stagedImages.length === 0) return;
+    // Delegate TUIs do not accept image-only turns. Check before creating a
+    // checkout so a no-op send cannot leave an unused worktree behind.
+    if (providerDelegatesWork && !text.trim()) return;
+    if (needsFreshWorkspaceRef.current && onRequestIsolatedRun) {
+      preparingWorkspaceRef.current = true;
+      setPreparingWorkspace(true);
+      try {
+        const handedOff = await onRequestIsolatedRun({
+          text,
+          attachments: stagedImages,
+          provider,
+          model,
+        });
+        if (handedOff) {
+          setInput("");
+          setPendingImages([]);
+          setMention(null);
+          setSlash(null);
+          setNextSendMode(null);
+          return;
+        }
+        // The host returns false only for a non-Git workspace. Do not retry the
+        // same impossible isolation on every turn in this conversation.
+        needsFreshWorkspaceRef.current = false;
+      } catch {
+        // The host owns the user-facing failure notice. Keep the draft and the
+        // isolation requirement intact so retry cannot fall through to main.
+        if (opts?.text !== undefined) setInput(text);
+        if (opts?.attachments !== undefined) setPendingImages(stagedImages);
+        return;
+      } finally {
+        preparingWorkspaceRef.current = false;
+        setPreparingWorkspace(false);
+      }
+    }
+    needsFreshWorkspaceRef.current = false;
     if (providerDelegatesWork) {
       // Delegate TUIs take text only — images aren't wired to their stdin.
-      if (!text.trim()) return;
       setInput(""); setMention(null); setSlash(null); setNextSendMode(null);
       await writeDelegatePty(delegateSessionId(currentId, provider), `${text}\r`);
       return;
@@ -2968,7 +3028,7 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   // ── RENDER ──
 
-  const canSend = !!input.trim() && !serverStarting;
+  const canSend = !!input.trim() && !serverStarting && !preparingWorkspace;
   // Hover-revealed "Send to both" over the send button (race panels only).
   const [raceSendHover, setRaceSendHover] = useState(false);
   // One provider selector, placed in the panel header normally and in the
@@ -3861,7 +3921,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             onPaste={onComposerPaste}
             onDrop={onComposerDrop}
             onDragOver={(e) => { if (canAttachImages && Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === "file")) e.preventDefault(); }}
-            placeholder={serverStarting ? `Starting ${providerName(provider)}...` : streaming ? "Queue another message…" : canAttachImages ? "Ask anything, @ to attach a file, paste an image…" : "Ask anything, @ to attach a file…"}
+            placeholder={preparingWorkspace ? "Preparing isolated worktree…" : serverStarting ? `Starting ${providerName(provider)}...` : streaming ? "Queue another message…" : canAttachImages ? "Ask anything, @ to attach a file, paste an image…" : "Ask anything, @ to attach a file…"}
             rows={1}
             data-ai-composer
             style={{ width: "100%", minHeight: 40, maxHeight: 168, resize: "none", background: "transparent", border: "none", color: "var(--fg-strong)", font: "inherit", fontSize: 13.5, lineHeight: 1.55, padding: "12px 14px 8px", outline: "none", display: "block" }}

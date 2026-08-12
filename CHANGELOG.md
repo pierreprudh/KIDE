@@ -51,6 +51,12 @@ open; these are the shell and correctness changes landed so far.
 
 ### Harness and providers
 
+- Fresh Klide conversations and Mission Control tasks now run in a dedicated
+  Git worktree by default. The checkout is created before the Harness or
+  delegate CLI starts, remains pinned across every workspace layout, and is
+  cleaned up if a delegate fails to launch without writing work. Non-Git
+  folders continue locally; other isolation failures never silently fall back
+  to the main checkout.
 - The harness measures model time per turn, and conversations carry a creation
   date, so duration is never re-derived from wall-clock time at render.
 - Self-hosted provider endpoints can be renamed from Settings.
