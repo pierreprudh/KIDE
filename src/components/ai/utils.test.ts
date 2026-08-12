@@ -172,3 +172,69 @@ describe("conversation start time", () => {
     expect(conversationStartedAt(conversation({ updatedAt: 42 }))).toBe(42);
   });
 });
+
+describe("reading a conversation is not using it", () => {
+  const stored = conversation({
+    id: "old-thread",
+    title: "Hello",
+    msgs: [
+      { role: "user", content: "Hello", ts: 1_000 },
+      { role: "assistant", content: "hi there", ts: 2_000 },
+    ],
+    updatedAt: 2_000,
+    createdAt: 1_000,
+  });
+
+  it("keeps the stored time when a re-save carries the same messages", () => {
+    saveConversations([stored]);
+
+    // What loading a conversation does: snapshot it verbatim, stamped `now`.
+    const saved = persistConversation({ ...stored, updatedAt: 9_999_000 });
+
+    expect(saved[0].updatedAt).toBe(2_000);
+  });
+
+  it("does not let a read reorder the history around it", () => {
+    const newer = conversation({
+      id: "newer-thread",
+      title: "Newer",
+      msgs: [{ role: "user", content: "Newer", ts: 5_000 }],
+      updatedAt: 5_000,
+      createdAt: 5_000,
+    });
+    saveConversations([newer, stored]);
+
+    persistConversation({ ...stored, updatedAt: 9_999_000 });
+
+    // The thread that was actually worked on most recently stays on top.
+    expect(loadConversations<Conversation>().map((c) => c.id)).toEqual([
+      "newer-thread",
+      "old-thread",
+    ]);
+  });
+
+  it("still stamps the time when a turn is actually added", () => {
+    saveConversations([stored]);
+
+    const saved = persistConversation({
+      ...stored,
+      msgs: [...stored.msgs, { role: "user", content: "one more thing", ts: 9_000 }],
+      updatedAt: 9_000,
+    });
+
+    expect(saved[0].updatedAt).toBe(9_000);
+  });
+
+  it("saves a metadata edit without counting it as activity", () => {
+    saveConversations([stored]);
+
+    const saved = persistConversation({
+      ...stored,
+      model: "gpt-5.6-mini",
+      updatedAt: 9_999_000,
+    });
+
+    expect(saved[0].model).toBe("gpt-5.6-mini");
+    expect(saved[0].updatedAt).toBe(2_000);
+  });
+});

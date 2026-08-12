@@ -84,7 +84,9 @@ type Props = {
   onSwitchProject: (root: string) => void;
   /** Back to the hero home — the next submit starts a fresh conversation. */
   onNewChat: () => void;
-  onOpenConversation: (convo: Conversation) => void;
+  /** `continueWith` carries the history reader's composed text: resume the
+   *  conversation, then send that as its next turn. */
+  onOpenConversation: (convo: Conversation, continueWith?: string) => void;
   onSubmit: (text: string) => void;
   onOpenMissionControl: () => void;
   /** The rail's shared destinations — the same handler the free-mode activity
@@ -540,11 +542,15 @@ function HistoryReader({
   projectRoot,
   onClose,
   onContinue,
+  controls,
 }: {
   conversation: Conversation;
   projectRoot?: string | null;
   onClose: () => void;
-  onContinue: () => void;
+  /** Picking the thread back up: the conversation is resumed into the live
+   *  panel and this text is sent into it as the next turn. */
+  onContinue: (text: string) => void;
+  controls: FocusComposerControls;
 }) {
   const provider = conversation.provider ?? "ollama";
   const delegate = isDelegateProvider(provider);
@@ -552,73 +558,67 @@ function HistoryReader({
     ? basename(projectRoot)
     : conversation.cwd ? basename(conversation.cwd) : null;
   const folder = linkedFolderLabel(conversation.cwd, projectRoot);
+  // Everything the meta line no longer spends a word on, on one hover.
+  const duration = conversationDuration(conversation);
+  const metaDetail = [
+    `Started ${new Date(conversationStartedAt(conversation)).toLocaleString()}`,
+    `Last activity ${new Date(conversation.updatedAt).toLocaleString()}`,
+    duration >= 1000 ? `Ran ${formatSpan(duration)}` : null,
+    providerName(provider),
+    project,
+    folder,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  // With the header bar gone, Escape is what leaves — the rail is still there
+  // to switch conversations, but a keyboard user needs a way out of the read.
+  // Not while composing, though: leaving would take a half-written turn with
+  // it, and the reader has no draft to come back to.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.isContentEditable) return;
+      const tag = target?.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT") return;
+      onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   return (
     <section
       className="klide-focus-history-reader klide-focus-chat-in"
       aria-label={`Conversation history: ${conversation.title || "Untitled"}`}
     >
-      <header className="klide-focus-history-header">
-        <button
-          type="button"
-          className="klide-focus-history-back"
-          onClick={onClose}
-          aria-label="Back from conversation history"
-          title="Back"
-        >
-          <svg {...iconProps} width={16} height={16}>
-            <path d="m15 18-6-6 6-6" />
-          </svg>
-        </button>
-
-        <span className="klide-focus-history-provider" aria-hidden="true">
-          <ProviderLogo id={provider} size={20} />
-        </span>
-
-        <div className="klide-focus-history-heading">
-          <h1>{conversation.title || "Untitled conversation"}</h1>
-          <div className="klide-focus-history-meta">
-            <span>{providerName(provider)}</span>
-            {conversation.model ? <span>{conversation.model}</span> : null}
-            {project ? <span title={projectRoot ?? undefined}>{project}</span> : null}
-            {folder ? <span title={conversation.cwd ?? undefined}>{folder}</span> : null}
-            {/* When it started, and how long it ran — `updatedAt` alone dated
-                the last token and said nothing about the session's length. */}
-            <span title={`Last activity ${new Date(conversation.updatedAt).toLocaleString()}`}>
-              {new Date(conversationStartedAt(conversation)).toLocaleString()}
-            </span>
-            {conversationDuration(conversation) >= 1000 ? (
-              <span title="Time from the first message to the last">
-                {formatSpan(conversationDuration(conversation))}
-              </span>
-            ) : null}
-          </div>
-        </div>
-
-        {delegate ? (
-          <span
-            className="klide-focus-history-readonly"
-            title="Delegate and CLI conversations are temporarily read-only in Focus mode"
-          >
-            CLI history · read only
-          </span>
-        ) : (
-          <button
-            type="button"
-            className="klide-focus-history-continue"
-            onClick={onContinue}
-          >
-            Continue
-            <svg {...iconProps} width={14} height={14}>
-              <path d="M5 12h14" />
-              <path d="m13 6 6 6-6 6" />
-            </svg>
-          </button>
-        )}
-      </header>
-
       <div className="klide-focus-history-scroll">
         <div className="klide-focus-history-transcript">
+          {/* Identity rides at the top of the transcript and scrolls away with
+              it, rather than holding a bar over the read. It sits on the same
+              avatar/body grid as an assistant turn and wears the same provider
+              mark, so it reads as the head of this conversation rather than a
+              panel heading that happens to be above one. */}
+          <header className="klide-focus-history-intro">
+            <span className="klide-focus-history-avatar" aria-hidden="true">
+              <ProviderLogo id={provider} size={16} />
+            </span>
+            <div className="klide-focus-history-intro-body">
+              <h1>{conversation.title || "Untitled conversation"}</h1>
+              {/* Two facts, held apart by space rather than punctuation. The
+                  provider mark beside this already says who answered and the
+                  rail says which project, so neither is repeated here. The
+                  exact timestamp, the run's length, and the folder stay
+                  available on hover — quieted, not dropped. */}
+              <div className="klide-focus-history-meta">
+                {conversation.model ? <span>{conversation.model}</span> : null}
+                <span className="klide-focus-history-when" title={metaDetail}>
+                  {relativeTime(conversationStartedAt(conversation))}
+                </span>
+              </div>
+            </div>
+          </header>
           {conversation.msgs.length === 0 ? (
             <div className="klide-focus-history-empty">
               This conversation has no saved messages.
@@ -662,6 +662,25 @@ function HistoryReader({
           )}
         </div>
       </div>
+
+      {/* Continuing is not a separate mode you enter — the composer is simply
+          here, the way it is everywhere else in Focus. Typing into it resumes
+          this conversation and sends the turn. */}
+      {delegate ? (
+        <div
+          className="klide-focus-history-readonly"
+          title="Delegate and CLI conversations are temporarily read-only in Focus mode"
+        >
+          CLI history · read only
+        </div>
+      ) : (
+        <FocusComposer
+          controls={controls}
+          onSubmit={onContinue}
+          placeholder="Continue this conversation…"
+          autoFocus={false}
+        />
+      )}
     </section>
   );
 }
@@ -808,12 +827,22 @@ export function FocusMode({
     });
   }
 
-  function toggleProviderHistory(project: string, historyProvider: ProviderId) {
+  // `currentlyExpanded` is the state the row is actually rendering, resolved by
+  // providerHistoryExpanded at the call site. Taking it from there rather than
+  // recomputing a default here is the whole point: this used to fall back to
+  // `historyProvider === provider`, which disagrees with the renderer's
+  // "active OR newest" rule. On the newest group of a non-active provider the
+  // two answers differed, so the first click wrote the value the row already
+  // had and nothing moved — it took two clicks to collapse.
+  function toggleProviderHistory(
+    project: string,
+    historyProvider: ProviderId,
+    currentlyExpanded: boolean,
+  ) {
     const key = providerHistoryKey(project, historyProvider);
     setExpandedProviderGroups((prev) => {
       const next = new Map(prev);
-      const isExpanded = next.get(key) ?? historyProvider === provider;
-      next.set(key, !isExpanded);
+      next.set(key, !currentlyExpanded);
       return next;
     });
     // This click is now the only thing animating in that project.
@@ -895,6 +924,39 @@ export function FocusMode({
   const projectConvos = useMemo(
     () => (activeProjectRoot ? convosByProject.get(activeProjectRoot) ?? [] : []),
     [activeProjectRoot, convosByProject]
+  );
+  // The dispatch settings the composer edits, wherever it is mounted. Both the
+  // start stage and the history reader read and write this same set, so what
+  // you pick while reading an old thread is what the resumed run uses.
+  const composerControls = useMemo<FocusComposerControls>(
+    () => ({
+      workspaceRoot,
+      provider,
+      onProviderChange,
+      model,
+      onModelChange,
+      effort,
+      onEffortChange,
+      contextWindow,
+      onContextWindowChange,
+      requireDiffReview,
+      onRequireDiffReviewChange,
+      onOpenSettingsSection,
+    }),
+    [
+      workspaceRoot,
+      provider,
+      onProviderChange,
+      model,
+      onModelChange,
+      effort,
+      onEffortChange,
+      contextWindow,
+      onContextWindowChange,
+      requireDiffReview,
+      onRequireDiffReviewChange,
+      onOpenSettingsSection,
+    ]
   );
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1109,7 +1171,13 @@ export function FocusMode({
                                     REVEAL_PHASE_GAP_MS
                                   : 0
                               }
-                              onToggle={() => toggleProviderHistory(p, providerHistory.provider)}
+                              onToggle={() =>
+                                toggleProviderHistory(
+                                  p,
+                                  providerHistory.provider,
+                                  providerExpanded,
+                                )
+                              }
                               onOpen={openHistoryConversation}
                             />
                           );
@@ -1233,11 +1301,12 @@ export function FocusMode({
             conversation={historyConversation}
             projectRoot={linkedProjectByConversationId.get(historyConversation.id)}
             onClose={() => setHistoryConversation(null)}
-            onContinue={() => {
+            onContinue={(text) => {
               const conversation = historyConversation;
               setHistoryConversation(null);
-              onOpenConversation(conversation);
+              onOpenConversation(conversation, text);
             }}
+            controls={composerControls}
           />
         ) : null}
         <div
@@ -1377,24 +1446,13 @@ export function FocusMode({
           </div>
         ) : (
           <FocusHome
-            workspaceRoot={workspaceRoot}
             projectName={projectName}
             branch={branch}
             onPingGit={() => setGitPing((n) => n + 1)}
             recent={projectConvos.slice(0, 3)}
             onOpenConversation={onOpenConversation}
             onSubmit={onSubmit}
-            provider={provider}
-            onProviderChange={onProviderChange}
-            model={model}
-            onModelChange={onModelChange}
-            effort={effort}
-            onEffortChange={onEffortChange}
-            contextWindow={contextWindow}
-            onContextWindowChange={onContextWindowChange}
-            requireDiffReview={requireDiffReview}
-            onRequireDiffReviewChange={onRequireDiffReviewChange}
-            onOpenSettingsSection={onOpenSettingsSection}
+            controls={composerControls}
           />
         )}
         </div>
@@ -2264,35 +2322,12 @@ function FocusAddMenu({
   );
 }
 
-function FocusHome({
-  workspaceRoot,
-  projectName,
-  branch,
-  onPingGit,
-  recent,
-  onOpenConversation,
-  onSubmit,
-  provider,
-  onProviderChange,
-  model,
-  onModelChange,
-  effort,
-  onEffortChange,
-  contextWindow,
-  onContextWindowChange,
-  requireDiffReview,
-  onRequireDiffReviewChange,
-  onOpenSettingsSection,
-}: {
+/** Everything the composer needs beyond its own draft. Bundled because the
+ *  composer now has two homes — the start stage and the history reader — and
+ *  threading fourteen props through both invites them to drift apart. There is
+ *  one composer in Focus, the same way there is one chat surface. */
+export type FocusComposerControls = {
   workspaceRoot: string | null;
-  projectName: string | null;
-  branch: string | null;
-  /** Draw the eye to the git island — the branch in the context strip is the
-   *  one thing in there that has somewhere to point. */
-  onPingGit: () => void;
-  recent: Conversation[];
-  onOpenConversation: (convo: Conversation) => void;
-  onSubmit: (text: string) => void;
   provider: ProviderId;
   onProviderChange: (provider: ProviderId) => void;
   model: string;
@@ -2304,7 +2339,46 @@ function FocusHome({
   requireDiffReview: boolean;
   onRequireDiffReviewChange: (required: boolean) => void;
   onOpenSettingsSection: (section: string) => void;
+};
+
+/** The bottom-anchored task dock: context strip, textarea, and the provider /
+ *  model / effort / context controls that decide how the next run is dispatched.
+ *  Mounted by the start stage and by the history reader, so "send" always means
+ *  the same thing and the run always reaches the same Rust harness. */
+function FocusComposer({
+  controls,
+  branch,
+  onPingGit,
+  onSubmit,
+  placeholder = "Describe a task or ask a question…",
+  autoFocus = true,
+}: {
+  controls: FocusComposerControls;
+  /** Omitted in the history reader — the strip points at the current checkout,
+   *  which has nothing to do with the conversation being read. */
+  branch?: string | null;
+  onPingGit?: () => void;
+  onSubmit: (text: string) => void;
+  placeholder?: string;
+  /** The start stage takes the caret on arrival; the history reader does not —
+   *  you opened it to read, and the cursor jumping to the composer would say
+   *  otherwise. */
+  autoFocus?: boolean;
 }) {
+  const {
+    workspaceRoot,
+    provider,
+    onProviderChange,
+    model,
+    onModelChange,
+    effort,
+    onEffortChange,
+    contextWindow,
+    onContextWindowChange,
+    requireDiffReview,
+    onRequireDiffReviewChange,
+    onOpenSettingsSection,
+  } = controls;
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
   const [agentMode, setAgentMode] = useState<AgentMode>(
@@ -2387,8 +2461,8 @@ function FocusHome({
   }, [provider, model]);
 
   useEffect(() => {
-    taRef.current?.focus();
-  }, []);
+    if (autoFocus) taRef.current?.focus();
+  }, [autoFocus]);
 
   function submit() {
     const text = draft.trim();
@@ -2419,6 +2493,145 @@ function FocusHome({
 
   const canSend = draft.trim().length > 0;
 
+  // The persistent task dock combines Codex's context ribbon with Claude's
+  // bottom-anchored composer.
+  return (
+    <div className="klide-focus-composer-dock">
+      {branch && onPingGit && (
+        <div className="klide-focus-context-strip" role="group" aria-label="Task context">
+          <button
+            type="button"
+            onClick={onPingGit}
+            title={`On ${branch} — show me the git panel`}
+          >
+            <GitIcon size={13} />
+            {branch}
+          </button>
+        </div>
+      )}
+
+      <div className="klide-focus-composer" data-focused={focused || undefined}>
+        <textarea
+          ref={taRef}
+          name="task-prompt"
+          aria-label={placeholder}
+          autoComplete="off"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          placeholder={placeholder}
+          rows={2}
+        />
+
+        <div className="klide-focus-composer-footer">
+          <div className="klide-focus-provider-control">
+            <FocusAddMenu
+              workspaceRoot={workspaceRoot}
+              mode={agentMode}
+              supportsTools={supportsTools}
+              requireDiffReview={requireDiffReview}
+              onModeChange={selectAgentMode}
+              onRequireDiffReviewChange={onRequireDiffReviewChange}
+              onAddFile={addFile}
+            />
+            <InlineMenu
+              label="Provider"
+              display={providerName(provider)}
+              leading={<ProviderLogo id={provider} size={13} />}
+              options={providerMenuOptions}
+              selected={provider}
+              onSelect={(v) => {
+                if (typeof v === "string" && !v.startsWith("__heading_")) {
+                  onProviderChange(v as ProviderId);
+                }
+              }}
+            />
+          </div>
+
+          <div className="klide-focus-model-controls">
+            <ModelPicker
+              provider={provider}
+              model={model}
+              availableModels={models}
+              disabled={false}
+              onChange={onModelChange}
+            />
+            <InlineMenu
+              label="Reasoning effort"
+              display={effort ?? "auto"}
+              leading={<EffortBars level={effortLevelOf(effort)} size={13} />}
+              header={{
+                icon: <EffortBars level={effortLevelOf(effort)} />,
+                title: "Reasoning effort",
+                caption: "Applied per model, saved in harness settings",
+              }}
+              width={216}
+              options={EFFORT_OPTIONS}
+              selected={effort}
+              onSelect={(v) => onEffortChange(v === undefined ? undefined : String(v))}
+            />
+            <InlineMenu
+              label="Context window"
+              display={contextLabel(contextWindow)}
+              header={{
+                icon: <ContextGaugeIcon />,
+                title: "Context window",
+                // Klide can't set the window on a self-hosted OpenAI-wire
+                // endpoint — the server owns it (num_ctx in a Modelfile, and
+                // so on). Say so here rather than let the override read as
+                // if it reached the server. Same signal the AI panel gives.
+                caption: isCustomProvider(provider)
+                  ? "Set server-side for a self-hosted endpoint"
+                  : "Override the auto-detected window",
+              }}
+              width={200}
+              options={CONTEXT_OPTIONS}
+              selected={contextWindow}
+              onSelect={(v) => onContextWindowChange(typeof v === "number" ? v : undefined)}
+            />
+            <button
+              type="button"
+              onClick={submit}
+              aria-label="Send task"
+              disabled={!canSend}
+              className="klide-focus-send"
+              data-ready={canSend || undefined}
+            >
+              <SendIcon size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FocusHome({
+  projectName,
+  branch,
+  onPingGit,
+  recent,
+  onOpenConversation,
+  onSubmit,
+  controls,
+}: {
+  projectName: string | null;
+  branch: string | null;
+  /** Draw the eye to the git island — the branch in the context strip is the
+   *  one thing in there that has somewhere to point. */
+  onPingGit: () => void;
+  recent: Conversation[];
+  onOpenConversation: (convo: Conversation) => void;
+  onSubmit: (text: string) => void;
+  controls: FocusComposerControls;
+}) {
   return (
     <div className="klide-focus-home">
       <section className="klide-focus-stage" aria-labelledby="klide-focus-title">
@@ -2466,122 +2679,12 @@ function FocusHome({
         </div>
       </section>
 
-      {/* The persistent task dock combines Codex's context ribbon with
-          Claude's bottom-anchored composer. */}
-      <div className="klide-focus-composer-dock">
-        {branch && (
-          <div className="klide-focus-context-strip" role="group" aria-label="Task context">
-            <button
-              type="button"
-              onClick={onPingGit}
-              title={`On ${branch} — show me the git panel`}
-            >
-              <GitIcon size={13} />
-              {branch}
-            </button>
-          </div>
-        )}
-
-        <div className="klide-focus-composer" data-focused={focused || undefined}>
-          <textarea
-            ref={taRef}
-            name="task-prompt"
-            aria-label="Describe a task or ask a question"
-            autoComplete="off"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder="Describe a task or ask a question…"
-            rows={2}
-          />
-
-          <div className="klide-focus-composer-footer">
-            <div className="klide-focus-provider-control">
-              <FocusAddMenu
-                workspaceRoot={workspaceRoot}
-                mode={agentMode}
-                supportsTools={supportsTools}
-                requireDiffReview={requireDiffReview}
-                onModeChange={selectAgentMode}
-                onRequireDiffReviewChange={onRequireDiffReviewChange}
-                onAddFile={addFile}
-              />
-              <InlineMenu
-                label="Provider"
-                display={providerName(provider)}
-                leading={<ProviderLogo id={provider} size={13} />}
-                options={providerMenuOptions}
-                selected={provider}
-                onSelect={(v) => {
-                  if (typeof v === "string" && !v.startsWith("__heading_")) {
-                    onProviderChange(v as ProviderId);
-                  }
-                }}
-              />
-            </div>
-
-            <div className="klide-focus-model-controls">
-              <ModelPicker
-                provider={provider}
-                model={model}
-                availableModels={models}
-                disabled={false}
-                onChange={onModelChange}
-              />
-              <InlineMenu
-                label="Reasoning effort"
-                display={effort ?? "auto"}
-                leading={<EffortBars level={effortLevelOf(effort)} size={13} />}
-                header={{
-                  icon: <EffortBars level={effortLevelOf(effort)} />,
-                  title: "Reasoning effort",
-                  caption: "Applied per model, saved in harness settings",
-                }}
-                width={216}
-                options={EFFORT_OPTIONS}
-                selected={effort}
-                onSelect={(v) => onEffortChange(v === undefined ? undefined : String(v))}
-              />
-              <InlineMenu
-                label="Context window"
-                display={contextLabel(contextWindow)}
-                header={{
-                  icon: <ContextGaugeIcon />,
-                  title: "Context window",
-                  // Klide can't set the window on a self-hosted OpenAI-wire
-                  // endpoint — the server owns it (num_ctx in a Modelfile, and
-                  // so on). Say so here rather than let the override read as
-                  // if it reached the server. Same signal the AI panel gives.
-                  caption: isCustomProvider(provider)
-                    ? "Set server-side for a self-hosted endpoint"
-                    : "Override the auto-detected window",
-                }}
-                width={200}
-                options={CONTEXT_OPTIONS}
-                selected={contextWindow}
-                onSelect={(v) => onContextWindowChange(typeof v === "number" ? v : undefined)}
-              />
-              <button
-                type="button"
-                onClick={submit}
-                aria-label="Send task"
-                disabled={!canSend}
-                className="klide-focus-send"
-                data-ready={canSend || undefined}
-              >
-                <SendIcon size={14} />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <FocusComposer
+        controls={controls}
+        branch={branch}
+        onPingGit={onPingGit}
+        onSubmit={onSubmit}
+      />
     </div>
   );
 }

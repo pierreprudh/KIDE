@@ -5208,122 +5208,73 @@ button:focus-visible .menu-leadout {
   background: color-mix(in srgb, var(--panel-glass) 18%, transparent);
 }
 
-.klide-focus-history-header {
-  min-height: 72px;
-  display: flex;
+/* The read opens with its own name instead of a bar holding one: the intro
+   scrolls away with the transcript, so nothing hovers over an old
+   conversation you are only passing through. It borrows the turn grid —
+   same 30px mark, same 10px gutter — so the title's text edge lands on the
+   same line as every assistant reply below it. The hairline closes the
+   masthead at the column's width rather than cutting the whole canvas. */
+.klide-focus-history-intro {
+  width: min(680px, 92%);
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  padding: 12px clamp(18px, 3vw, 42px);
+  gap: 10px;
+  padding-bottom: 19px;
   border-bottom: 1px solid var(--panel-border);
-  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 72%, transparent);
-  backdrop-filter: blur(28px) saturate(1.18);
-  -webkit-backdrop-filter: blur(28px) saturate(1.18);
 }
 
-.klide-focus-history-back {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  color: var(--fg-subtle);
-  background: transparent;
-  transition: transform 220ms var(--ease-spring), opacity 180ms var(--ease-out);
-}
-
-.klide-focus-history-back:hover {
-  color: var(--fg-strong);
-  border-color: var(--panel-border);
-  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
-  transform: translateX(-2px);
-}
-
-.klide-focus-history-provider {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  color: var(--fg-strong);
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--panel-highlight) 84%, transparent), transparent 50%),
-    color-mix(in srgb, var(--panel-glass) 78%, transparent);
-  box-shadow:
-    inset 0 1px 0 var(--panel-highlight),
-    0 8px 22px rgba(28, 28, 28, 0.045);
-}
-
-.klide-focus-history-heading {
+.klide-focus-history-intro-body {
   min-width: 0;
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.klide-focus-history-heading h1 {
+.klide-focus-history-intro h1 {
   margin: 0;
   overflow: hidden;
   color: var(--fg-strong);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: -0.014em;
-  line-height: 1.25;
+  letter-spacing: -0.012em;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Two facts, set apart by a wide gutter and a step down in tone — no dot
+   between them. Punctuation would be doing work that space already does. */
 .klide-focus-history-meta {
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
+  align-items: baseline;
+  gap: 14px;
   overflow: hidden;
   color: var(--fg-subtle);
   font-size: 10.5px;
-  white-space: nowrap;
 }
 
 .klide-focus-history-meta span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.klide-focus-history-meta span + span::before {
-  content: "·";
-  margin-right: 6px;
-  opacity: 0.52;
+.klide-focus-history-when {
+  flex-shrink: 0;
+  opacity: 0.62;
 }
 
+/* Where a delegate transcript would otherwise offer a composer — CLI history
+   is still read-only in Focus, so say so in that slot rather than nowhere. */
 .klide-focus-history-readonly {
   flex-shrink: 0;
+  padding: 0 clamp(18px, 3vw, 42px) 22px;
   color: var(--fg-subtle);
   font-size: 11px;
-}
-
-.klide-focus-history-continue {
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex-shrink: 0;
-  padding: 0 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--panel-border));
-  border-radius: 10px;
-  color: var(--fg-strong);
-  background: color-mix(in srgb, var(--accent-soft) 58%, var(--panel-glass));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 84%, transparent);
-  font-size: 12px;
-  font-weight: 550;
-  transition: transform 240ms var(--ease-spring), opacity 180ms var(--ease-out);
-}
-
-.klide-focus-history-continue:hover {
-  transform: translateY(-1px);
+  text-align: center;
 }
 
 .klide-focus-history-scroll {
@@ -5331,8 +5282,15 @@ button:focus-visible .menu-leadout {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 30px 28px 76px;
+  padding: 30px 28px 20px;
   overscroll-behavior: contain;
+}
+
+/* The composer centres itself here the way `.klide-focus-home` centres it on
+   the start stage — the reader is a plain column, so it has to be said. */
+.klide-focus-history-reader > .klide-focus-composer-dock {
+  align-self: center;
+  margin-bottom: 22px;
 }
 
 .klide-focus-history-transcript {
@@ -6146,8 +6104,6 @@ button:focus-visible .menu-leadout {
   .klide-focus-provider-history-chevron,
   .klide-focus-tree-elbow,
   .klide-focus-nav-chevron,
-  .klide-focus-history-back,
-  .klide-focus-history-continue,
   .klide-focus-composer,
   .klide-focus-composer::before,
   .klide-focus-send {

@@ -197,6 +197,15 @@ export function saveConversations<T>(
   }
 }
 
+/** Do these two records hold the same conversation, message for message? */
+function sameMessages(a: Msg[] | undefined, b: Msg[] | undefined): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((message, index) => {
+    const other = b[index];
+    return message?.role === other?.role && message?.content === other?.content;
+  });
+}
+
 function conversationIndexChanged(
   conversation: Conversation,
   existing: Conversation[],
@@ -242,7 +251,13 @@ export function upsertConversation(
   const createdAt = previous
     ? conversationStartedAt(previous)
     : (conv.createdAt ?? conversationStartedAt(conv));
+  // The index is ordered by recency, not by write order — a record that was
+  // re-saved without gaining a turn keeps its place instead of jumping the
+  // queue. Sorting rather than unshifting also means the prune below drops the
+  // genuinely oldest thread. The upserted record leads among equal times, and
+  // Array#sort is stable, so it keeps that lead.
   const next = [{ ...conv, createdAt }, ...existing.filter((c) => c.id !== conv.id)];
+  next.sort((a, b) => b.updatedAt - a.updatedAt);
   return next.slice(0, MAX_CONVERSATIONS);
 }
 
@@ -257,11 +272,23 @@ export function persistConversation(
   // argument remains only so older callers cannot reintroduce last-writer-wins
   // while they migrate; it is intentionally ignored.
   const current = loadConversations<Conversation>();
-  const next = upsertConversation(conv, current);
+  // Loading a conversation re-snapshots it verbatim, and the snapshot always
+  // carries a fresh `updatedAt`. Letting that land would make reading a thread
+  // count as working on it: it would climb to the top of its provider group,
+  // drag the group's own sort position with it, and read "just now" though
+  // nothing was said. Activity is what changes the messages — so when they are
+  // identical to the stored record, keep the time that record already had.
+  // Metadata edits (model, branch) still save; they just don't count as use.
+  const previous = current.find((item) => item.id === conv.id);
+  const stamped =
+    previous && sameMessages(previous.msgs, conv.msgs)
+      ? { ...conv, updatedAt: previous.updatedAt }
+      : conv;
+  const next = upsertConversation(stamped, current);
   // Streaming persists on every token. Avoid making Focus rebuild its rail on
   // every text delta; the first snapshot already contains the selected model,
   // so notify only when navigation-visible metadata or ordering changes.
-  const navigationChanged = conversationIndexChanged(conv, current);
+  const navigationChanged = conversationIndexChanged(stamped, current);
   return saveConversations(
     next,
     undefined,

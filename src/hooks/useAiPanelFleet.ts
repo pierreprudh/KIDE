@@ -11,6 +11,13 @@ export type AiPanelFleetState = {
   raceWatchTabs: RaceWatchTab[];
   focusActiveTabId: string | null;
   followUpsByPanel: Record<string, RaceFollowUp>;
+  /** Text typed into a history reader's composer, parked until the panel has
+   *  actually loaded the conversation being resumed. It cannot be handed over
+   *  as a follow-up in the same pass: AiPanel declares its follow-up effect
+   *  above its resume effect, so a same-render pair sends the turn into the
+   *  outgoing conversation and then `loadConversation` overwrites it. Holding
+   *  it here until `resume-consumed` makes "continue this one" mean it. */
+  pendingContinuation: { panelId: string; text: string; nonce: number } | null;
 };
 
 export const initialAiPanelFleetState: AiPanelFleetState = {
@@ -19,12 +26,18 @@ export const initialAiPanelFleetState: AiPanelFleetState = {
   raceWatchTabs: [],
   focusActiveTabId: null,
   followUpsByPanel: {},
+  pendingContinuation: null,
 };
 
 export type AiPanelFleetAction =
   | { type: "handoffs-queued"; handoffs: PendingAiPanel[] }
   | { type: "handoff-consumed"; panelId: string }
-  | { type: "resume-targeted"; panelId: string; convo: Conversation }
+  | {
+      type: "resume-targeted";
+      panelId: string;
+      convo: Conversation;
+      continueWith?: { text: string; nonce: number };
+    }
   | { type: "resume-consumed"; panelId: string }
   | {
       type: "race-watch-started";
@@ -76,11 +89,34 @@ export function aiPanelFleetReducer(
       return {
         ...state,
         resumeTarget: { panelId: action.panelId, convo: action.convo },
+        pendingContinuation: action.continueWith
+          ? {
+              panelId: action.panelId,
+              text: action.continueWith.text,
+              nonce: action.continueWith.nonce,
+            }
+          : null,
       };
-    case "resume-consumed":
-      return state.resumeTarget?.panelId === action.panelId
-        ? { ...state, resumeTarget: null }
-        : state;
+    case "resume-consumed": {
+      if (state.resumeTarget?.panelId !== action.panelId) return state;
+      // The panel has the conversation now, so a parked continuation is safe
+      // to release into the normal follow-up path.
+      const continuation =
+        state.pendingContinuation?.panelId === action.panelId
+          ? state.pendingContinuation
+          : null;
+      return {
+        ...state,
+        resumeTarget: null,
+        pendingContinuation: continuation ? null : state.pendingContinuation,
+        followUpsByPanel: continuation
+          ? {
+              ...state.followUpsByPanel,
+              [action.panelId]: { text: continuation.text, nonce: continuation.nonce },
+            }
+          : state.followUpsByPanel,
+      };
+    }
     case "race-watch-started":
       return {
         ...state,
@@ -120,6 +156,10 @@ export function aiPanelFleetReducer(
         pendingByPanel: omitPanel(state.pendingByPanel, action.panelId),
         resumeTarget:
           state.resumeTarget?.panelId === action.panelId ? null : state.resumeTarget,
+        pendingContinuation:
+          state.pendingContinuation?.panelId === action.panelId
+            ? null
+            : state.pendingContinuation,
         raceWatchTabs: tabs,
         focusActiveTabId: active,
         followUpsByPanel: omitPanel(state.followUpsByPanel, action.panelId),
@@ -154,8 +194,17 @@ export function useAiPanelFleet() {
       dispatch({ type: "handoffs-queued", handoffs }),
     consumeHandoff: (panelId: string) =>
       dispatch({ type: "handoff-consumed", panelId }),
-    targetResume: (panelId: string, convo: Conversation) =>
-      dispatch({ type: "resume-targeted", panelId, convo }),
+    /** `continueWith` carries the history reader's composed text: the panel
+     *  resumes the conversation first, then the turn is sent into it. */
+    targetResume: (panelId: string, convo: Conversation, continueWith?: string) => {
+      const text = continueWith?.trim();
+      dispatch({
+        type: "resume-targeted",
+        panelId,
+        convo,
+        continueWith: text ? { text, nonce: Date.now() } : undefined,
+      });
+    },
     consumeResume: (panelId: string) =>
       dispatch({ type: "resume-consumed", panelId }),
     registerResumedRun: (runId: string, panelId: string) =>
