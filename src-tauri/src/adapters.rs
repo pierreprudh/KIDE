@@ -816,6 +816,16 @@ fn normalize_openai_messages(messages: Vec<serde_json::Value>) -> Vec<serde_json
                 }
                 for img in images {
                     if let Some(url) = img.as_str() {
+                        // A data URI must carry a format the API accepts; a
+                        // plain URL passes through (the provider fetches it).
+                        if let Some(rest) = url.strip_prefix("data:") {
+                            let forwardable = rest
+                                .split_once(";base64,")
+                                .is_some_and(|(mime, _)| forwardable_image_media_type(mime));
+                            if !forwardable {
+                                continue;
+                            }
+                        }
                         parts.push(serde_json::json!({
                             "type": "image_url",
                             "image_url": { "url": url }
@@ -851,12 +861,25 @@ fn anthropic_push(
     turns.push((role.to_string(), blocks));
 }
 
+/// The image formats the hosted wires actually accept — both Anthropic and
+/// the OpenAI-compatible APIs document jpeg/png/gif/webp. Anything else an
+/// attachment can carry (svg, bmp, avif, tiff…) comes back as a 400 that
+/// fails the *whole turn*, so an unsupported image is dropped at this seam
+/// instead of being forwarded to sink the request. Ollama is not gated: it
+/// decodes locally and reports its own per-model errors.
+fn forwardable_image_media_type(media_type: &str) -> bool {
+    matches!(
+        media_type.trim().to_ascii_lowercase().as_str(),
+        "image/jpeg" | "image/jpg" | "image/png" | "image/gif" | "image/webp"
+    )
+}
+
 // Turn a `data:<mime>;base64,…` URI into an Anthropic image block, or None if
-// it isn't a base64 data URI we can forward.
+// it isn't a base64 data URI in a format the API accepts.
 fn anthropic_image_block(data_uri: Option<&str>) -> Option<serde_json::Value> {
     let rest = data_uri?.strip_prefix("data:")?;
     let (media_type, data) = rest.split_once(";base64,")?;
-    if data.is_empty() {
+    if data.is_empty() || !forwardable_image_media_type(media_type) {
         return None;
     }
     Some(serde_json::json!({
@@ -1232,6 +1255,37 @@ mod tests {
         assert_eq!(parts[1]["image_url"]["url"], "data:image/jpeg;base64,ZZ");
         // The neutral field is removed so strict shims don't 400 on it.
         assert!(out[0].get("images").is_none());
+    }
+
+    #[test]
+    fn unsupported_image_formats_are_dropped_instead_of_sinking_the_turn() {
+        // Anthropic 400s the whole request on an svg/bmp/avif image block;
+        // dropping the image keeps the turn alive. The text must survive.
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": "what's this?",
+            "images": ["data:image/svg+xml;base64,PHN2Zz4="],
+        })];
+        let (_system, turns) = anthropic_messages(messages);
+        let blocks = turns[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+
+        // Same seam on the OpenAI wire: the bmp data URI is dropped, a plain
+        // URL passes through untouched (the provider fetches it itself).
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": "caption this",
+            "images": [
+                "data:image/bmp;base64,Qk0=",
+                "https://example.com/photo.png",
+            ],
+        })];
+        let out = normalize_openai_messages(messages);
+        let parts = out[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["image_url"]["url"], "https://example.com/photo.png");
     }
 
     #[test]

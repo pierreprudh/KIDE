@@ -901,7 +901,9 @@ pub(crate) async fn ai_model_supports_vision(
     model: String,
 ) -> Result<bool, String> {
     if provider == "anthropic" {
-        return Ok(true);
+        return Ok(claude_model_supports_vision(
+            &model.trim().to_ascii_lowercase(),
+        ));
     }
     if provider == "ollama" {
         return Ok(ollama_advertises_vision(&model).await.unwrap_or(false));
@@ -913,6 +915,15 @@ pub(crate) async fn ai_model_supports_vision(
     Ok(openai_wire_model_supports_vision(&model))
 }
 
+/// Anthropic's chat models are vision-capable with one exception: the 3.5
+/// Haiku line is text-only. Sending it an image 400s the whole turn, which is
+/// exactly what this gate exists to prevent — so the blanket "anthropic ⇒
+/// vision" answer was a bug, not a simplification. Normalizes `3.5` → `3-5`
+/// because OpenRouter spells the id with a dot.
+fn claude_model_supports_vision(name: &str) -> bool {
+    !name.replace('.', "-").contains("3-5-haiku")
+}
+
 fn openai_wire_model_supports_vision(model: &str) -> bool {
     let lower = model.trim().to_ascii_lowercase();
     let name = lower.rsplit('/').next().unwrap_or(lower.as_str());
@@ -920,18 +931,26 @@ fn openai_wire_model_supports_vision(model: &str) -> bool {
     if name.contains("vision") || name.contains("-vl") || name.contains("vl-") {
         return true;
     }
-    name.starts_with("gpt-4o")
+    // The o-series is vision-capable except its text-only small builds:
+    // o1-mini, o1-preview, o3-mini. (o4-mini *is* multimodal.)
+    let o_series = (name.starts_with("o1") || name.starts_with("o3") || name.starts_with("o4"))
+        && !name.starts_with("o1-mini")
+        && !name.starts_with("o1-preview")
+        && !name.starts_with("o3-mini");
+    let claude = (name.starts_with("claude-3")
+        || name.starts_with("claude-opus")
+        || name.starts_with("claude-sonnet")
+        || name.starts_with("claude-haiku")
+        || name.starts_with("claude-fable")
+        || name.starts_with("claude-mythos"))
+        && claude_model_supports_vision(name);
+    o_series
+        || claude
+        || name.starts_with("gpt-4o")
         || name.starts_with("chatgpt-4o")
         || name.starts_with("gpt-4.1")
         || name.starts_with("gpt-4-turbo")
         || name.starts_with("gpt-5")
-        || name.starts_with("o1")
-        || name.starts_with("o3")
-        || name.starts_with("o4")
-        || name.starts_with("claude-3")
-        || name.starts_with("claude-opus")
-        || name.starts_with("claude-sonnet")
-        || name.starts_with("claude-haiku")
         || name.starts_with("gemini")
         || name.starts_with("pixtral")
         || name.starts_with("llava")
@@ -1202,6 +1221,34 @@ mod tests {
         assert!(!is_claude_model_id("claude-fable")); // no version at all
         assert!(!is_claude_model_id("claude-sonnet-latest")); // non-numeric tail
         assert!(!is_claude_model_id("claude-sonnet-4-x"));
+    }
+
+    #[test]
+    fn vision_gate_excludes_the_text_only_models_it_used_to_wave_through() {
+        // The 3.5 Haiku line is Anthropic's one text-only chat model —
+        // including the dotted OpenRouter spelling.
+        assert!(!claude_model_supports_vision("claude-3-5-haiku-20241022"));
+        assert!(!claude_model_supports_vision("claude-3.5-haiku"));
+        assert!(claude_model_supports_vision("claude-3-5-sonnet-20241022"));
+        assert!(claude_model_supports_vision("claude-haiku-4-5"));
+        assert!(claude_model_supports_vision("claude-fable-5"));
+
+        // The same exception applies on the OpenAI wire (OpenRouter ids).
+        assert!(!openai_wire_model_supports_vision(
+            "anthropic/claude-3.5-haiku"
+        ));
+        assert!(openai_wire_model_supports_vision(
+            "anthropic/claude-sonnet-4-6"
+        ));
+
+        // o-series: the text-only small builds must not ride the prefix.
+        assert!(!openai_wire_model_supports_vision("o1-mini"));
+        assert!(!openai_wire_model_supports_vision("o1-preview"));
+        assert!(!openai_wire_model_supports_vision("openai/o3-mini"));
+        assert!(openai_wire_model_supports_vision("o1"));
+        assert!(openai_wire_model_supports_vision("o3"));
+        assert!(openai_wire_model_supports_vision("o4-mini"));
+        assert!(openai_wire_model_supports_vision("gpt-4o-mini"));
     }
 
     #[test]
