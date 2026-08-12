@@ -109,6 +109,29 @@ export type DurableMissionBundle = {
 };
 
 /**
+ * The mission's standing terminal outcome, if its event log currently ends in
+ * one: the latest `mission_completed` / `mission_parked` line, unless a later
+ * `attempt_attached` shows the mission was driven past it — a parked mission
+ * that was retried is live again, not parked. Both console effects (reopen
+ * state and the one-time announcement) must read the log the same way, so the
+ * reading lives here rather than twice in the component.
+ */
+export function terminalOutcome(
+  events: DurableMissionEventLine[],
+): DurableMissionEventLine | null {
+  let terminal: DurableMissionEventLine | null = null;
+  for (const line of events) {
+    if (line.event.type !== "mission_completed" && line.event.type !== "mission_parked") continue;
+    if (!terminal || line.seq > terminal.seq) terminal = line;
+  }
+  if (!terminal) return null;
+  const continued = events.some(
+    (line) => line.seq > terminal.seq && line.event.type === "attempt_attached",
+  );
+  return continued ? null : terminal;
+}
+
+/**
  * Compile authored Markdown + Rust-owned events into the existing headless
  * Mission state. This is a projection only: refreshing from disk is always
  * authoritative, and no UI lifecycle state needs to be persisted separately.

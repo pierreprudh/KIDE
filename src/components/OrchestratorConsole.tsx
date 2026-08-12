@@ -33,6 +33,7 @@ import {
   listDurableMissions,
   reviewDurableMissionAttempt,
   saveDurableMissionTask,
+  terminalOutcome,
   type DurableMissionBundle,
   type DurableMissionTaskDispatch,
 } from "../agent/durableMissions";
@@ -915,13 +916,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
         ? [[task.id, { provider: task.dispatch.provider as ProviderId, model: task.dispatch.model }]]
         : [])));
       const mission = projection.missions[latest.mission.id];
-      const lastLifecycle = [...latest.events].reverse().find((line) =>
-        line.event.type === "mission_completed" || line.event.type === "mission_parked"
-      );
-      const hasAttemptAfterLifecycle = lastLifecycle
-        ? latest.events.some((line) => line.seq > lastLifecycle.seq && line.event.type === "attempt_attached")
-        : false;
-      if (mission?.approvedAtMs != null && (!lastLifecycle || hasAttemptAfterLifecycle)) {
+      if (mission?.approvedAtMs != null && !terminalOutcome(latest.events)) {
         setMissionOn(true);
       }
     }).catch((error) => {
@@ -970,21 +965,27 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
     }
   }, [durableState, durableBundle, real]);
 
+  // Announce a terminal event exactly once, when it happens. The bundle
+  // replays the whole event log on every (re)mount, so without a baseline the
+  // toast re-announced a mission that finished last week each time the console
+  // opened. First sight of a mission records its standing outcome as history;
+  // only a terminal event with a higher seq than the baseline is news.
+  const announcedTerminal = useRef<{ missionId: string; seq: number } | null>(null);
   useEffect(() => {
     if (!durableBundle) return;
-    const terminal = [...durableBundle.events].reverse().find((line) =>
-      line.event.type === "mission_completed" || line.event.type === "mission_parked"
-    );
-    if (!terminal) return;
-    const continued = durableBundle.events.some((line) =>
-      line.seq > terminal.seq && line.event.type === "attempt_attached"
-    );
-    if (continued) return;
-    setMissionOn(false);
-    if (terminal.event.type === "mission_completed") {
+    const missionId = durableBundle.mission.id;
+    const outcome = terminalOutcome(durableBundle.events);
+    if (outcome) setMissionOn(false);
+    if (announcedTerminal.current?.missionId !== missionId) {
+      announcedTerminal.current = { missionId, seq: outcome?.seq ?? 0 };
+      return;
+    }
+    if (!outcome || outcome.seq <= announcedTerminal.current.seq) return;
+    announcedTerminal.current = { missionId, seq: outcome.seq };
+    if (outcome.event.type === "mission_completed") {
       notify("Mission complete — every task has an accepted Run", { tone: "success" });
-    } else if (terminal.event.type === "mission_parked") {
-      notify(`Mission parked — ${terminal.event.reason}`, { tone: "warn" });
+    } else if (outcome.event.type === "mission_parked") {
+      notify(`Mission parked — ${outcome.event.reason}`, { tone: "warn" });
     }
   }, [durableBundle]);
 

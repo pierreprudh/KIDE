@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileDurableMissionBundle, type DurableMissionBundle } from "./durableMissions";
+import { compileDurableMissionBundle, terminalOutcome, type DurableMissionBundle } from "./durableMissions";
 import { readyMissionTaskIds } from "./missionHarness";
 
 const validation = {
@@ -290,5 +290,49 @@ describe("durable Mission projection", () => {
 
     expect(state.tasks.inspect.acceptedRunId).toBe("run-a");
     expect(state.tasks.implement.status).toBe("ready");
+  });
+});
+
+describe("terminalOutcome", () => {
+  const line = (
+    seq: number,
+    event: DurableMissionBundle["events"][number]["event"],
+  ): DurableMissionBundle["events"][number] => (
+    { schemaVersion: 1, missionId: "mission-one", seq, ts: seq + 1, event }
+  );
+
+  it("returns the latest terminal event", () => {
+    const outcome = terminalOutcome([
+      line(0, { type: "plan_approved" }),
+      line(1, { type: "mission_parked", reason: "dispatch failed" }),
+      line(2, { type: "attempt_attached", taskId: "inspect", runId: "run-a" }),
+      line(3, { type: "mission_completed" }),
+    ]);
+    expect(outcome?.seq).toBe(3);
+    expect(outcome?.event.type).toBe("mission_completed");
+  });
+
+  it("is null while the mission has no terminal event", () => {
+    expect(terminalOutcome([
+      line(0, { type: "plan_approved" }),
+      line(1, { type: "attempt_attached", taskId: "inspect", runId: "run-a" }),
+    ])).toBeNull();
+  });
+
+  it("treats a mission driven past a park as live again, not parked", () => {
+    expect(terminalOutcome([
+      line(0, { type: "mission_parked", reason: "dispatch failed" }),
+      line(1, { type: "attempt_attached", taskId: "inspect", runId: "run-b" }),
+    ])).toBeNull();
+  });
+
+  it("reads seq order, not array order", () => {
+    const outcome = terminalOutcome([
+      line(3, { type: "mission_completed" }),
+      line(1, { type: "mission_parked", reason: "budget" }),
+      line(0, { type: "plan_approved" }),
+    ]);
+    expect(outcome?.seq).toBe(3);
+    expect(outcome?.event.type).toBe("mission_completed");
   });
 });
