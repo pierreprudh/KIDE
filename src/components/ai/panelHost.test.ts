@@ -100,7 +100,7 @@ describe("panelWorkspace", () => {
     expect(ws.worktreeName).toBe("fix-tests");
   });
 
-  it("anchored/grid surfaces ignore the panel cwd and stay in the main workspace", () => {
+  it("can explicitly ignore a panel cwd for a main-checkout-only projection", () => {
     const ws = panelWorkspace({ cwd: "/repo/.worktrees/fix-tests" }, "/repo", false);
     expect(ws.root).toBe("/repo");
     expect(ws.worktreeName).toBeUndefined();

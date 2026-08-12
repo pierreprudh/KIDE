@@ -36,7 +36,7 @@ import {
 } from "./ipc/git";
 import { eventsToConversation } from "./components/ai/replayConversation";
 import { loadPanelSession } from "./components/ai/utils";
-import type { AgentEvent, ProviderId } from "./agent/types";
+import type { AgentAttachment, AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider } from "./agent/providers";
 import type { Conversation, Msg } from "./components/ai/types";
 import { summarizeAndHandoff } from "./components/ai/summarize";
@@ -90,6 +90,7 @@ import {
 import { createListenerScope } from "./tauriEvents";
 import { linkedProjectForPath } from "./projectPaths";
 import { promoteWorkedFolder, rememberOpenedFolder } from "./recentFolders";
+import { createIsolatedRunWorkspace, isNotGitRepositoryError } from "./runIsolation";
 import "./styles/tokens.css";
 
 const MissionControl = lazy(() => import("./components/MissionControl").then((m) => ({ default: m.MissionControl })));
@@ -131,6 +132,10 @@ function App() {
   // the hero composer's text on its way into the AI panel.
   const [focusChatActive, setFocusChatActive] = useState(false);
   const [focusInitialMessage, setFocusInitialMessage] = useState<string | null>(null);
+  const [isolatedRunStarts, setIsolatedRunStarts] = useState<Record<string, {
+    text: string;
+    attachments: AgentAttachment[];
+  }>>({});
   // The shell docked under Focus's canvas. Not persisted: Focus should open on
   // its home (or the conversation you left), never on a terminal you forgot.
   const [focusTerminalOpen, setFocusTerminalOpen] = useState(false);
@@ -272,6 +277,7 @@ function App() {
     appendAiPanel,
     setAiPanelProvider,
     setAiPanelModel,
+    setAiPanelCwd,
     closeAiPanel,
   } = usePanelLayout({ workspaceRoot, view, focusMode });
   const [skills, setSkills] = useState<Skill[]>(() => loadSkills());
@@ -783,8 +789,9 @@ function App() {
     const { root, worktreeName } = panelWorkspace(
       panel,
       workspaceRoot,
-      opts?.respectWorktree ?? false
+      opts?.respectWorktree ?? true
     );
+    const isolatedStart = isolatedRunStarts[panelId];
     return (
       <AiPanel
         key={conversationSessionKey(panelId, root, opts?.key)}
@@ -832,6 +839,9 @@ function App() {
         harnessSettings={harnessSettings}
         onDuplicate={opts?.duplicatable ? appendAiPanel : undefined}
         onForkConversationInWorktree={forkConversationInWorktree}
+        onRequestIsolatedRun={workspaceRoot ? (request) =>
+          startPanelRunInWorktree(panelId, request)
+        : undefined}
         onClose={
           opts?.closable
             ? () => {
@@ -843,8 +853,17 @@ function App() {
         resumeConversation={resumeConversationFor(panelId, resumeTarget)}
         onResumeConsumed={() => consumeResume(panelId)}
         variant={opts?.variant}
-        initialMessage={opts?.initialMessage ?? null}
-        onInitialMessageConsumed={() => setFocusInitialMessage(null)}
+        initialMessage={opts?.initialMessage ?? isolatedStart?.text ?? null}
+        initialAttachments={isolatedStart?.attachments}
+        onInitialMessageConsumed={() => {
+          setFocusInitialMessage(null);
+          setIsolatedRunStarts((starts) => {
+            if (!(panelId in starts)) return starts;
+            const next = { ...starts };
+            delete next[panelId];
+            return next;
+          });
+        }}
         followUpMessage={followUpsByPanel[panelId] ?? null}
         onFollowUpConsumed={() => consumeFollowUp(panelId)}
         onSendToRace={
@@ -1112,7 +1131,7 @@ function App() {
         focusPanel(existing);
         return;
       }
-      const panelId = appendAiPanel();
+      const panelId = appendAiPanel({ cwd: convo.cwd ?? undefined });
       registerResumedRun(runId, panelId);
       targetResume(panelId, convo);
     } catch (e) {
@@ -1430,6 +1449,57 @@ function App() {
     setView("workbench");
     if (!aiVisible) togglePanel("ai");
     appendAiPanel({ cwd: path });
+  }
+
+  // Default launch path for a fresh Conversation. AiPanel hands its first
+  // turn here before starting either the Harness or a Delegate TUI; once the
+  // checkout exists, changing the panel cwd remounts the Conversation session
+  // against that workspace and the queued turn is consumed there. A non-Git
+  // folder is the only case allowed to continue in the local checkout.
+  async function startPanelRunInWorktree(
+    panelId: string,
+    request: {
+      text: string;
+      attachments: AgentAttachment[];
+      provider: ProviderId;
+      model: string;
+    },
+  ): Promise<boolean> {
+    if (!workspaceRoot) return false;
+    const identity =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : Date.now().toString(36);
+    try {
+      const isolated = await createIsolatedRunWorkspace({
+        baseRoot: workspaceRoot,
+        kind: "run",
+        title: request.text || "image task",
+        identity,
+      });
+      setAiPanelProvider(panelId, request.provider);
+      setAiPanelModel(panelId, request.model);
+      setAiPanelCwd(panelId, isolated.cwd);
+      setIsolatedRunStarts((starts) => ({
+        ...starts,
+        [panelId]: { text: request.text, attachments: request.attachments },
+      }));
+      setFileNotice(
+        `Isolated run ready on ${isolated.branch}${worktreeSetupSummary(isolated.setup)}.`,
+      );
+      return true;
+    } catch (err) {
+      if (isNotGitRepositoryError(err)) {
+        setFileNotice("This folder is not a Git repository — running locally.");
+        return false;
+      }
+      setFileNotice(
+        `Run not started — worktree creation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      // Do not silently fall through to the main checkout after an isolation
+      // failure. The composed turn remains available for the user to retry.
+      throw err;
+    }
   }
 
   // Fleet: create a fresh git worktree (isolated branch) and open an AI panel

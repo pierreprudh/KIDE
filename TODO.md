@@ -27,7 +27,11 @@ them.
 - [ ] Publish the first signed/notarized macOS bundle.
 - [ ] Validate Windows and Linux after replacing the Apple-only keyring feature
   selection with target-specific backends.
-- [ ] Make worktree-per-run isolation the default parallel-agent flow.
+- [x] Make worktree-per-run isolation the default parallel-agent flow. Fresh
+  Klide conversations and Mission Control task dispatches now create a branch
+  before starting the Harness or delegate CLI; the worktree pin survives layout
+  switches, failed delegate spawns clean up untouched checkouts, and only
+  non-Git folders fall back to local execution.
 - [ ] Complete provider-aware waiting/exit markers for historical delegate runs.
 
 ## v0.6 — Dependable orchestration

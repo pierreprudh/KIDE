@@ -6,9 +6,15 @@
 // component. Mission Control reads this store via useSyncExternalStore.
 
 import { onDelegateExit, spawnDelegatePty, stopDelegatePty } from "./ipc/delegatePty";
+import { gitWorktreeRemove } from "./ipc/git";
 import { readValidatedArray } from "./persistedStore";
 import type { RunStatus } from "./runs";
 import { isDelegateId, type DelegateId } from "./delegates";
+import {
+  createIsolatedRunWorkspace,
+  isNotGitRepositoryError,
+  type IsolatedRunWorkspace,
+} from "./runIsolation";
 
 // Every delegate can be dispatched to a task. Derives from the one delegate
 // list so a new delegate is offerable without editing this file.
@@ -25,7 +31,12 @@ export type TaskSession = {
   // re-show what the run was launched with.
   model: string | null;
   status: RunStatus;
+  /** The project checkout the task was created from. `cwd` moves to the
+   *  isolated checkout once an agent is dispatched. */
+  workspaceRoot: string | null;
   cwd: string | null;
+  branch: string | null;
+  worktree: string | null;
   startedMs: number;
 };
 
@@ -69,7 +80,15 @@ function readTasks(): TaskSession[] {
       source: safeSource(task.source),
       model: typeof task.model === "string" ? task.model : null,
       status: safeStatus(task.status),
+      workspaceRoot:
+        typeof task.workspaceRoot === "string"
+          ? task.workspaceRoot
+          : typeof task.cwd === "string"
+            ? task.cwd
+            : null,
       cwd: typeof task.cwd === "string" ? task.cwd : null,
+      branch: typeof task.branch === "string" ? task.branch : null,
+      worktree: typeof task.worktree === "string" ? task.worktree : null,
       startedMs: typeof task.startedMs === "number" ? task.startedMs : Date.now(),
     }))
     .sort((a, b) => b.startedMs - a.startedMs)
@@ -154,7 +173,10 @@ export function addTask(title: string, workspaceRoot: string | null): TaskSessio
     source: null,
     model: null,
     status: "queued",
+    workspaceRoot,
     cwd: workspaceRoot,
+    branch: null,
+    worktree: null,
     startedMs: Date.now(),
   };
   sessions = [task, ...sessions];
@@ -191,6 +213,9 @@ export async function dispatchTask(
   if (model && model.trim()) {
     localStorage.setItem(`klide-last-model-${source}`, model.trim());
   }
+  // Claim the task before awaiting worktree creation. Quick-send and the
+  // detail action can otherwise race two dispatches while Git is preparing
+  // the same deterministic branch.
   dispatched.add(id);
   patch(id, {
     source,
@@ -198,16 +223,65 @@ export async function dispatchTask(
     status: "running",
     startedMs: Date.now(),
   });
+  let launchTask = task;
+  let isolated: IsolatedRunWorkspace | null = null;
+  // A re-dispatch reuses the checkout it already owns. A first dispatch gets
+  // a fresh branch before the CLI starts, so no agent mutation can land in
+  // the main checkout. Non-Git folders are the sole local fallback.
+  if (task.workspaceRoot && !task.worktree) {
+    try {
+      isolated = await createIsolatedRunWorkspace({
+        baseRoot: task.workspaceRoot,
+        kind: "task",
+        title: task.title,
+        identity: task.id,
+      });
+      launchTask = {
+        ...task,
+        cwd: isolated.cwd,
+        branch: isolated.branch,
+        worktree: isolated.worktree,
+      };
+      patch(id, {
+        cwd: isolated.cwd,
+        branch: isolated.branch,
+        worktree: isolated.worktree,
+      });
+    } catch (err) {
+      if (!isNotGitRepositoryError(err)) {
+        patch(id, { status: "error" });
+        throw err;
+      }
+    }
+  }
   try {
     await spawnDelegatePty(id, {
       provider: source,
-      workspaceRoot: task.cwd,
-      task: task.title,
+      workspaceRoot: launchTask.cwd,
+      task: launchTask.title,
       model: model && model.trim() ? model.trim() : null,
       parentRunId: id, // task is its own parent (task spawns delegate with same session id)
     });
   } catch (err) {
     patch(id, { status: "error" });
+    // The CLI never started, so remove the checkout this attempt created.
+    // Refuse force: if anything else wrote there, preserve it and retain its
+    // metadata on the task so the work remains reachable.
+    if (isolated) {
+      try {
+        await gitWorktreeRemove(isolated.baseRoot, isolated.cwd, {
+          cleanFiles: isolated.setup.bootstrapped,
+          deleteBranch: isolated.branch,
+        });
+        patch(id, {
+          cwd: isolated.baseRoot,
+          branch: null,
+          worktree: null,
+        });
+      } catch {
+        // Preserve the isolated checkout + original error for manual recovery.
+      }
+    }
     throw err;
   }
 }

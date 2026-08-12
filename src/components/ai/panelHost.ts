@@ -87,9 +87,9 @@ export function resumeConversationFor<C>(
   return target !== null && target.panelId === panelId ? target.convo : null;
 }
 
-/** Where a panel's runs live. A worktree-pinned panel (floating surfaces only)
- *  works its own checkout and shows the worktree name under the composer;
- *  anchored/grid surfaces always run in the main workspace. */
+/** Where a panel's runs live. A worktree pin follows the Conversation session
+ *  across Focus, anchored, grid, and free surfaces; changing layout must never
+ *  move an agent back into the main checkout. */
 export function panelWorkspace(
   panel: Pick<AiPanelInstance, "cwd"> | undefined,
   workspaceRoot: string | null,

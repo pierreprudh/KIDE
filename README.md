@@ -158,7 +158,7 @@ Klide v0.5 is feature-complete and remains under active development. Its fronten
 
 Current priorities:
 
-- v0.5.1: dogfood race/restart/merge behavior, default worktree isolation, and historical Delegate lifecycle signals
+- v0.5.1: dogfood race/restart/merge behavior and default worktree isolation, plus historical Delegate lifecycle signals
 - v0.5.1: publish a signed/notarized macOS build, then validate Windows and Linux
 - v0.6: make Missions, budgets, capacity, routing, and validation contracts one dependable orchestration layer
 

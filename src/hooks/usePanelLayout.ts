@@ -533,6 +533,15 @@ export function usePanelLayout(opts: {
     });
   }
 
+  function setAiPanelCwd(id: string, cwd: string | undefined) {
+    setAiPanels((panels) => {
+      const seed = panels.length === 0
+        ? [{ id, rect: fallbackAiRect() }]
+        : panels;
+      return seed.map((panel) => panel.id === id ? { ...panel, cwd } : panel);
+    });
+  }
+
   function closeAiPanel(id: string) {
     setAiPanels((panels) => {
       if (panels.length <= 1) return panels;
@@ -564,6 +573,7 @@ export function usePanelLayout(opts: {
     appendAiPanel,
     setAiPanelProvider,
     setAiPanelModel,
+    setAiPanelCwd,
     closeAiPanel,
   };
 }
