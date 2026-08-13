@@ -31,7 +31,7 @@ export function LiquidAiLogo({ size = 14 }: LogoProps) {
   return <ImgLogo src="/liquidai-logo.png" themeClass="provider-logo-img" size={size} />;
 }
 
-// Qwen's mark is purple — keep its colour in both themes.
+// Qwen's mark is brand blue — keep its colour in both themes.
 export function QwenLogo({ size = 14 }: LogoProps) {
   return <ImgLogo src="/qwen-logo.png" themeClass="color-logo-img" size={size} />;
 }
