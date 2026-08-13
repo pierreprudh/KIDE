@@ -194,11 +194,21 @@ function TreeElbow() {
     <span className="klide-focus-tree-elbow" aria-hidden="true">
       <svg viewBox="0 0 13 16" fill="none" shapeRendering="geometricPrecision">
         <path
+          className="klide-focus-tree-elbow-base"
           d="M.5 7 A8 8 0 0 0 8.5 15 H13"
           stroke="currentColor"
           vectorEffect="non-scaling-stroke"
           /* Normalises the path to 100 units so the reveal's dash animation in
              tokens.css is independent of the radius. */
+          pathLength={100}
+        />
+        {/* Selection is a second stroke over the resting tree. Keeping the
+            neutral path underneath lets the active colour sweep around the
+            turn without making the branch disappear while it draws. */}
+        <path
+          className="klide-focus-tree-elbow-active"
+          d="M.5 7 A8 8 0 0 0 8.5 15 H13"
+          vectorEffect="non-scaling-stroke"
           pathLength={100}
         />
       </svg>
@@ -322,12 +332,15 @@ function ConvoRow({
   onOpen,
   indent = false,
   selected = false,
+  onSelectedPath = false,
   revealDelay,
 }: {
   convo: Conversation;
   onOpen: () => void;
   indent?: boolean;
   selected?: boolean;
+  /** Marks the vertical history segment leading to the selected conversation. */
+  onSelectedPath?: boolean;
   /** Set only for rows in a tree — a flat search result appears at once. */
   revealDelay?: string;
 }) {
@@ -342,34 +355,29 @@ function ConvoRow({
       className="klide-focus-convo-row"
       data-nested={indent || undefined}
       data-selected={selected || undefined}
+      data-selected-path={onSelectedPath || undefined}
       aria-current={selected ? "page" : undefined}
       style={
         revealDelay ? ({ "--rail-reveal-delay": revealDelay } as CSSProperties) : undefined
       }
     >
       {indent ? <TreeElbow /> : null}
-      {ModelLogo ? (
-        <span
-          className="klide-focus-convo-model"
-          title={identity.name}
-          aria-hidden="true"
-        >
-          <ModelLogo size={15} />
+      <span className="klide-focus-convo-content">
+        {ModelLogo ? (
+          <span
+            className="klide-focus-convo-model"
+            title={identity.name}
+            aria-hidden="true"
+          >
+            <ModelLogo size={15} />
+          </span>
+        ) : null}
+        <span className="klide-focus-convo-title">
+          {convo.title || "Untitled"}
         </span>
-      ) : null}
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {convo.title || "Untitled"}
-      </span>
-      <span className="klide-focus-convo-time">
-        {relativeTime(convo.updatedAt)}
+        <span className="klide-focus-convo-time">
+          {relativeTime(convo.updatedAt)}
+        </span>
       </span>
     </button>
   );
@@ -460,8 +468,10 @@ function ProviderHistoryGroup({
   onOpen: (conversation: Conversation) => void;
 }) {
   const readOnly = isDelegateProvider(group.provider);
-  const containsSelectedConversation = selectedConversationId !== undefined &&
-    group.conversations.some((conversation) => conversation.id === selectedConversationId);
+  const selectedConversationIndex = selectedConversationId === undefined
+    ? -1
+    : group.conversations.findIndex((conversation) => conversation.id === selectedConversationId);
+  const containsSelectedConversation = selectedConversationIndex >= 0;
   const countLabel = `${group.conversations.length} ${group.conversations.length === 1 ? "conversation" : "conversations"}`;
 
   return (
@@ -519,6 +529,7 @@ function ProviderHistoryGroup({
            conversation fades in. Rows then override it with their own. */
         <div
           className="klide-focus-provider-conversations"
+          data-contains-selected={containsSelectedConversation || undefined}
           style={{ "--rail-reveal-delay": `${conversationRevealBase}ms` } as CSSProperties}
         >
           {group.conversations.map((conversation, index) => (
@@ -528,6 +539,7 @@ function ProviderHistoryGroup({
               indent
               revealDelay={revealDelay(index, CONVO_REVEAL_STEP_MS, conversationRevealBase)}
               selected={selectedConversationId === conversation.id}
+              onSelectedPath={selectedConversationIndex >= index}
               onOpen={() => onOpen(conversation)}
             />
           ))}

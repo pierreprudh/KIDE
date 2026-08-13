@@ -4132,6 +4132,40 @@ button:focus-visible .menu-leadout {
   transition: background var(--motion-med) var(--ease-out);
 }
 
+/* The selected conversation is shown by the route through the history tree,
+   not by washing the whole row with colour. Keep the neutral trunk underneath
+   and lay the active route over only the segments that lead to the selected
+   turn. This lets the trunk continue quietly below a selected row while its
+   incoming vertical and curved elbow remain one uninterrupted stroke. */
+.klide-focus-provider-conversations[data-contains-selected="true"]::after,
+.klide-focus-provider-conversations > .klide-focus-convo-row[data-selected-path="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 1px;
+  background: var(--rail-tree-line-active);
+  pointer-events: none;
+}
+
+.klide-focus-provider-conversations[data-contains-selected="true"]::after {
+  top: calc(-1 * (var(--rail-icon-inset) - var(--rail-branch-gap)));
+  height: calc(
+    var(--rail-icon-inset) - var(--rail-branch-gap) + var(--rail-row-gap)
+  );
+}
+
+.klide-focus-provider-conversations > .klide-focus-convo-row[data-selected-path="true"]::after {
+  top: 0;
+  bottom: calc(-1 * var(--rail-row-gap));
+}
+
+/* At the selected row the active route peels into the elbow. The neutral trunk
+   beneath it remains visible when later conversations follow. */
+.klide-focus-provider-conversations > .klide-focus-convo-row[data-selected="true"]::after {
+  bottom: auto;
+  height: var(--rail-branch-depart);
+}
+
 /* A group's trunk climbs back up into its parent row, so the child tree reads as
    descending from the parent's icon rather than starting a row late.
 
@@ -4302,6 +4336,12 @@ button:focus-visible .menu-leadout {
   --rail-reveal-trunk: 340ms;
   --rail-reveal-branch: 400ms;
   --rail-reveal-row: 420ms;
+  /* Selection rides over the resting tree as a quicker second gesture. The
+     vertical leads and the curve begins just before it settles, so the handoff
+     reads as one continuous stroke instead of two animations. */
+  --rail-select-trunk: 240ms;
+  --rail-select-branch: 360ms;
+  --rail-select-branch-in: 180ms;
   /* Offsets inside a single row's gesture. */
   --rail-reveal-branch-in: 40ms;
   --rail-reveal-row-in: 80ms;
@@ -4330,13 +4370,40 @@ button:focus-visible .menu-leadout {
     var(--rail-reveal-delay, 0ms) backwards;
 }
 
+/* The active colour traces the same vertical geometry on top of the neutral
+   tree. Its finish overlaps the selected curve's first frames for a seamless
+   handoff at the shared junction pixel. */
+.klide-focus-provider-conversations[data-contains-selected="true"]::after,
+.klide-focus-provider-conversations > .klide-focus-convo-row[data-selected-path="true"]::after {
+  transform-origin: top center;
+  animation: klide-focus-selected-trunk-draw var(--rail-select-trunk) var(--ease-soft)
+    var(--rail-reveal-delay, 0ms) backwards;
+}
+
 /* …and the curve unrolls just behind the trunk, so the line reads as arriving
    at the row rather than appearing beside it. `pathLength` on the path
    normalises the dash to 100 units, so this holds at any radius. */
-.klide-focus-tree-elbow path {
+.klide-focus-tree-elbow-base {
   stroke-dasharray: 100;
   animation: klide-focus-branch-draw var(--rail-reveal-branch) var(--ease-soft)
     calc(var(--rail-reveal-delay, 0ms) + var(--rail-reveal-branch-in)) backwards;
+}
+
+/* A separate active stroke preserves the resting branch beneath the colour
+   sweep. On every selection change the newly selected path is introduced by
+   the selector, so its dash animation replays around the curve. */
+.klide-focus-tree-elbow-active {
+  stroke: var(--rail-tree-line-active);
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  opacity: 0;
+}
+
+.klide-focus-convo-row[data-selected="true"] .klide-focus-tree-elbow-active {
+  stroke-dashoffset: 0;
+  opacity: 1;
+  animation: klide-focus-selected-branch-draw var(--rail-select-branch) var(--ease-soft)
+    calc(var(--rail-reveal-delay, 0ms) + var(--rail-select-branch-in)) backwards;
 }
 
 @keyframes klide-focus-row-reveal {
@@ -4359,11 +4426,36 @@ button:focus-visible .menu-leadout {
   }
 }
 
+@keyframes klide-focus-selected-trunk-draw {
+  from {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+  22% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
 @keyframes klide-focus-branch-draw {
   from {
     stroke-dashoffset: 100;
   }
   to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes klide-focus-selected-branch-draw {
+  from {
+    opacity: 1;
+    stroke-dashoffset: 100;
+  }
+  to {
+    opacity: 1;
     stroke-dashoffset: 0;
   }
 }
@@ -4400,22 +4492,12 @@ button:focus-visible .menu-leadout {
   height: calc(var(--rail-junction) + 1px);
   pointer-events: none;
   color: var(--rail-tree-line);
-  transition: color var(--motion-med) var(--ease-out);
 }
 
 .klide-focus-tree-elbow svg {
   display: block;
   width: 100%;
   height: 100%;
-}
-
-/* The tree does not react to hover — a structure that flickers as the pointer
-   crosses it is noise. Rows answer hover with their own fill; the line only
-   changes for the one state worth marking, and then only on the *branch* into
-   the row. The trunk running past it stays neutral: the accent is saying
-   "this row", not "everything on this line". */
-.klide-focus-convo-row[data-selected="true"] .klide-focus-tree-elbow {
-  color: var(--rail-tree-line-active);
 }
 
 .klide-focus-convo-model {
@@ -4427,17 +4509,49 @@ button:focus-visible .menu-leadout {
   color: var(--fg-subtle);
 }
 
-.klide-focus-convo-row:hover {
+.klide-focus-convo-content {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--rail-gap);
+  flex: 1;
+  border-radius: var(--radius-lg);
+}
+
+/* Nested rows reserve the leading edge for the tree. Their hover surface starts
+   after the elbow's run, keeping the curved branch crisp and visually outside
+   the conversation highlight. It reaches through the row's right padding so
+   the trailing edge still aligns with every other rail hover. */
+.klide-focus-convo-row[data-nested="true"] .klide-focus-convo-content {
+  margin-right: calc(-1 * var(--rail-row-pad));
+  padding-right: var(--rail-row-pad);
+}
+
+.klide-focus-convo-row:hover,
+.klide-focus-convo-row:focus-visible {
   color: var(--fg-strong);
+}
+
+.klide-focus-convo-row:not([data-nested="true"]):hover,
+.klide-focus-convo-row:not([data-nested="true"]):focus-visible,
+.klide-focus-convo-row[data-nested="true"]:hover .klide-focus-convo-content,
+.klide-focus-convo-row[data-nested="true"]:focus-visible .klide-focus-convo-content {
   background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
 }
 
-/* "You are here" is the one place the rail spends accent — and it has to out-
-   weigh the active project's neutral fill above it, since the open
-   conversation is the more specific answer to "where am I". */
+.klide-focus-convo-title {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The active route carries "you are here"; the row itself stays calm. Its text
+   remains strong, and the usual quiet fill is reserved for actual hover. */
 .klide-focus-convo-row[data-selected="true"] {
   color: var(--fg-strong);
-  background: color-mix(in srgb, var(--accent-soft) 100%, var(--bg-hover) 40%);
 }
 
 
@@ -6085,9 +6199,12 @@ button:focus-visible .menu-leadout {
   .klide-focus-provider-conversations > .klide-focus-convo-row,
   .klide-focus-provider-groups::before,
   .klide-focus-provider-conversations::before,
+  .klide-focus-provider-conversations[data-contains-selected="true"]::after,
   .klide-focus-provider-history::before,
   .klide-focus-provider-conversations > .klide-focus-convo-row::before,
-  .klide-focus-tree-elbow path {
+  .klide-focus-provider-conversations > .klide-focus-convo-row[data-selected-path="true"]::after,
+  .klide-focus-tree-elbow-base,
+  .klide-focus-tree-elbow-active {
     animation: none;
   }
   .klide-focus-home-card,
