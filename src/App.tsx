@@ -2292,17 +2292,14 @@ function App() {
                     endFocusRaceWatch();
                     setFocusChatActive(false);
                   }}
-                  onOpenConversation={(convo, continueWith) => {
+                  onOpenConversation={(convo) => {
                     // A conversation from another project's history brings its
                     // project along — resuming it against the wrong workspace
                     // would point every tool at the wrong tree.
                     endFocusRaceWatch();
                     markFolderWorked(convo.cwd);
                     if (convo.cwd && convo.cwd !== workspaceRoot) changeRoot(convo.cwd);
-                    // `continueWith` rides along rather than going through
-                    // `initialMessage`: that path force-starts a fresh chat,
-                    // which would throw away the history just pulled back.
-                    targetResume(aiPanels[0]?.id ?? "ai-main", convo, continueWith);
+                    targetResume(aiPanels[0]?.id ?? "ai-main", convo);
                     setFocusChatActive(true);
                   }}
                   onSubmit={(text) => {

@@ -72,6 +72,7 @@ import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
+import { mayActivateModel } from "./ai/modelActivationPolicy";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
 import { favModelsFor } from "../favModels";
 import { buildSystemPrompt } from "./ai/system-prompt";
@@ -109,6 +110,7 @@ import {
   contextTone as contextToneFor,
   conversationCost,
   lastCompactionIndex,
+  shouldAutoCompact,
   COMPACT_KEEP_RECENT,
   COMPACT_PROMPT_RATIO,
 } from "./ai/contextBudget";
@@ -471,6 +473,42 @@ function storedModelForProvider(id: ProviderId): string {
   return stored || defaultModelForProvider(id);
 }
 
+type ModelInspection = {
+  supportsTools: boolean;
+  supportsReflection: boolean;
+  supportsVision: boolean;
+  contextLimit: number;
+};
+
+/**
+ * Model metadata is intentionally inspected as one unit. Ollama's reflection
+ * fallback is not just metadata: it can issue a tiny probe chat, which loads a
+ * cold model. Keeping the calls behind this function lets a resumed transcript
+ * remain a passive reader until send() explicitly activates it.
+ */
+async function inspectModelForRun(
+  provider: ProviderId,
+  model: string,
+  allowActivationProbe = true,
+): Promise<ModelInspection> {
+  const [tools, reflection, vision, context] = await Promise.allSettled([
+    queryModelSupportsTools(provider, model),
+    allowActivationProbe ? queryModelSupportsReflection(provider, model) : Promise.resolve(false),
+    queryModelSupportsVision(provider, model),
+    readProviderContextWindow(provider, model),
+  ]);
+  return {
+    supportsTools:
+      tools.status === "fulfilled" ? tools.value : !isManagedLocalProvider(provider),
+    supportsReflection: reflection.status === "fulfilled" ? reflection.value : false,
+    supportsVision: vision.status === "fulfilled" ? vision.value : false,
+    contextLimit:
+      context.status === "fulfilled" && Number.isFinite(context.value) && context.value > 0
+        ? context.value
+        : 128_000,
+  };
+}
+
 export function AiPanel({
   workspaceRoot,
   worktreeName,
@@ -767,6 +805,13 @@ export function AiPanel({
   const [modelSupportsTools, setModelSupportsTools] = useState(true);
   const [modelSupportsReflection, setModelSupportsReflection] = useState(false);
   const [modelSupportsVision, setModelSupportsVision] = useState(false);
+  // A saved transcript is view-only until the user sends again. In particular,
+  // don't let Ollama's reflection probe or historical token-count pass load a
+  // cold model merely because the user browsed history.
+  const [modelActivationDeferred, setModelActivationDeferred] = useState(
+    () => Boolean(resumeConversation) || conversationSession.messages.length > 0,
+  );
+  const manuallyInspectedModelRef = useRef<string | null>(null);
   // Images pasted/dropped into the composer, staged as data-URI attachments
   // until the turn is sent. Only offered when the model can see them.
   const [pendingImages, setPendingImages] = useState<Attachment[]>([]);
@@ -1426,16 +1471,19 @@ This user request requires workspace inspection. Before answering, you MUST call
   });
   const showCompactPrompt = canCompact && contextRatio >= COMPACT_PROMPT_RATIO;
 
-  async function compactConversation(source: "manual" | "agent" = "manual") {
-    if (!canCompact) return;
+  async function compactConversation(
+    source: "manual" | "agent" = "manual",
+    contextWindow = effectiveContextLimit,
+  ): Promise<boolean> {
+    if (!canCompact) return false;
     setCompactSource(source);
     setCompacting(true);
     setCompactError(null);
     try {
       const older = msgs.slice(0, msgs.length - COMPACT_KEEP_RECENT);
       const recent = msgs.slice(msgs.length - COMPACT_KEEP_RECENT);
-      if (older.length === 0) return;
-      const summary = await summarizeForCompaction(provider, model, older, effectiveContextLimit);
+      if (older.length === 0) return false;
+      const summary = await summarizeForCompaction(provider, model, older, contextWindow);
       if (!summary) throw new Error("Could not build a summary to compact with.");
       // Write the marker into the transcript the harness replays from — this
       // is what actually shrinks the next turn's context.
@@ -1464,30 +1512,14 @@ This user request requires workspace inspection. Before answering, you MUST call
       // smaller) estimate until the next turn re-measures.
       setMeasuredPromptTokens(null);
       setMeasuredUsageTokens(null);
+      return true;
     } catch (e) {
       setCompactError(String(e));
+      return false;
     } finally {
       setCompacting(false);
     }
   }
-
-  // Safety net: when the conversation actually outgrows the window (the 0.8
-  // prompt was ignored and we're now at/over 100%), compact automatically so it
-  // can't balloon to multiples of the limit. Fires once per overflow episode —
-  // the ref re-arms only after compaction drops the gauge back under the limit.
-  const autoCompactArmedRef = useRef(true);
-  useEffect(() => {
-    if (streaming || compacting || !canCompact) return;
-    // `rawRatio` measures the committed conversation, not the draft being
-    // typed — a long unsent draft must not arm a paid summarisation call.
-    if (budget.rawRatio < 1) {
-      autoCompactArmedRef.current = true;
-      return;
-    }
-    if (!autoCompactArmedRef.current) return;
-    autoCompactArmedRef.current = false;
-    void compactConversation("agent");
-  }, [streaming, compacting, canCompact, budget.rawRatio]);
 
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations<Conversation>());
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1521,6 +1553,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   // keyed by index + length + model so a model switch re-counts.
   const tokenCountedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (!mayActivateModel({ deferred: modelActivationDeferred, managedLocal: isLocalProvider })) return;
     let cancelled = false;
     msgs.forEach((m, i) => {
       if (m.role !== "user" || m.tokenInfo || !m.content.trim()) return;
@@ -1544,7 +1577,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     return () => {
       cancelled = true;
     };
-  }, [msgs, provider, model]);
+  }, [msgs, provider, model, modelActivationDeferred, isLocalProvider]);
 
   function abortActiveHarnessRun() {
     const runId = activeHarnessRunRef.current;
@@ -1783,6 +1816,8 @@ This user request requires workspace inspection. Before answering, you MUST call
     abortActiveHarnessRun();
     const nid = genId();
     needsFreshWorkspaceRef.current = true;
+    setModelActivationDeferred(false);
+    manuallyInspectedModelRef.current = null;
     transitionConversation({ type: "fresh-started", conversationId: nid });
     setMeasuredPromptTokens(null);
     setMeasuredUsageTokens(null);
@@ -1960,6 +1995,11 @@ This user request requires workspace inspection. Before answering, you MUST call
   function loadConversation(c: Conversation) {
     setHistoryOpen(false);
     abortActiveHarnessRun();
+    // Adopting history must not become an implicit model request. The saved
+    // Provider/model pair is shown immediately, but inspection + warm-up wait
+    // for the first real send from this transcript.
+    setModelActivationDeferred(true);
+    manuallyInspectedModelRef.current = null;
     transitionConversation({ type: "resumed", conversation: c });
     // Keep the host's panel record aligned with the atomically adopted
     // Conversation configuration.
@@ -2163,29 +2203,48 @@ This user request requires workspace inspection. Before answering, you MUST call
     return () => clearInterval(timer);
   }, [provider]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function checkToolSupport() {
-      try {
-        const supports = await queryModelSupportsTools(provider, model);
-        if (!cancelled) setModelSupportsTools(supports);
-      } catch { if (!cancelled) setModelSupportsTools(!isLocalProvider); }
+  function applyModelInspection(inspection: ModelInspection) {
+    setModelSupportsTools(inspection.supportsTools);
+    setModelSupportsReflection(inspection.supportsReflection);
+    setModelSupportsVision(inspection.supportsVision);
+    setContextLimit(inspection.contextLimit);
+    if (!inspection.supportsVision) setPendingImages([]);
+  }
+
+  async function activateModelInspectionForSend(): Promise<ModelInspection> {
+    if (!modelActivationDeferred || !isLocalProvider) {
+      return {
+        supportsTools: modelSupportsTools,
+        supportsReflection: modelSupportsReflection,
+        supportsVision: modelSupportsVision,
+        contextLimit,
+      };
     }
-    void checkToolSupport();
-    return () => { cancelled = true; };
-  }, [provider, model]);
+    const inspection = await inspectModelForRun(provider, model);
+    // Clearing the gate re-arms the ordinary effect below. Mark this exact
+    // pair so it does not immediately repeat the same probes we just awaited.
+    manuallyInspectedModelRef.current = `${provider}\u0000${model}`;
+    applyModelInspection(inspection);
+    setModelActivationDeferred(false);
+    return inspection;
+  }
 
   useEffect(() => {
-    let cancelled = false;
-    async function checkReflectionSupport() {
-      try {
-        const supports = await queryModelSupportsReflection(provider, model);
-        if (!cancelled) setModelSupportsReflection(supports);
-      } catch { if (!cancelled) setModelSupportsReflection(false); }
+    const allowActivationProbe = mayActivateModel({
+      deferred: modelActivationDeferred,
+      managedLocal: isLocalProvider,
+    });
+    const inspectionKey = `${provider}\u0000${model}`;
+    if (manuallyInspectedModelRef.current === inspectionKey) {
+      manuallyInspectedModelRef.current = null;
+      return;
     }
-    void checkReflectionSupport();
+    let cancelled = false;
+    void inspectModelForRun(provider, model, allowActivationProbe).then((inspection) => {
+      if (!cancelled) applyModelInspection(inspection);
+    });
     return () => { cancelled = true; };
-  }, [provider, model]);
+  }, [provider, model, modelActivationDeferred, isLocalProvider]);
 
   useEffect(() => {
     if (!lightboxImage) return;
@@ -2193,36 +2252,6 @@ This user request requires workspace inspection. Before answering, you MUST call
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [lightboxImage]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function checkVisionSupport() {
-      try {
-        const supports = await queryModelSupportsVision(provider, model);
-        if (cancelled) return;
-        setModelSupportsVision(supports);
-        // Switching to a non-vision model drops any staged images so we never
-        // send them somewhere blind.
-        if (!supports) setPendingImages([]);
-      } catch {
-        if (!cancelled) setModelSupportsVision(false);
-      }
-    }
-    void checkVisionSupport();
-    return () => { cancelled = true; };
-  }, [provider, model]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadContextWindow() {
-      try {
-        const windowSize = await readProviderContextWindow(provider, model);
-        if (!cancelled && Number.isFinite(windowSize) && windowSize > 0) setContextLimit(windowSize);
-      } catch { if (!cancelled) setContextLimit(128_000); }
-    }
-    void loadContextWindow();
-    return () => { cancelled = true; };
-  }, [provider, model]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2873,6 +2902,25 @@ This user request requires workspace inspection. Before answering, you MUST call
     if (!(await ensureLocalServerReady())) return;
     // User hit Stop while the server was warming up — back out before launching.
     if (cancelledWarmupRef.current) { cancelledWarmupRef.current = false; return; }
+    // This is the activation boundary for a resumed local conversation. The
+    // transcript itself stays passive; only a genuine send may inspect/warm
+    // its saved model. Await the result so this first turn gets the correct
+    // tool/reflection flags instead of the previous conversation's values.
+    const modelInspection = await activateModelInspectionForSend();
+    const supportsToolsForTurn = modelInspection.supportsTools;
+    const supportsReflectionForTurn = modelInspection.supportsReflection;
+    // Opening a large saved transcript is passive. If it no longer fits, fold
+    // its older turns only now — after an actual message was submitted, and
+    // before that message is appended or dispatched. On failure keep the draft
+    // intact so retry cannot accidentally send an overflowing context.
+    const contextLimitForTurn =
+      provider === "ollama" && ctxOverride && ctxOverride > 0
+        ? ctxOverride
+        : modelInspection.contextLimit;
+    const ratioAfterSend = contextLimitForTurn > 0 ? budget.used / contextLimitForTurn : 0;
+    if (shouldAutoCompact({ trigger: "send", canCompact, ratioAfterSend })) {
+      if (!(await compactConversation("agent", contextLimitForTurn))) return;
+    }
     // `@<subagent> <task>` re-flavors this turn with a named subagent's role +
     // mode. The directive's mode wins over the picker; the rest of the turn
     // (the task text) runs through the normal harness path, badged in the chat.
@@ -2883,9 +2931,9 @@ This user request requires workspace inspection. Before answering, you MUST call
       ? directive.subagent.mode
       : opts?.mode ?? nextSendMode ?? agentModeRef.current;
     const availableMode: AgentMode =
-      !modelSupportsTools && !providerDelegatesWork && requestedMode === "goal" ? "chat" : requestedMode;
+      !supportsToolsForTurn && !providerDelegatesWork && requestedMode === "goal" ? "chat" : requestedMode;
     const mode: AgentMode =
-      availableMode === "chat" && modelSupportsTools && asksForWorkspaceInspection(effectiveText)
+      availableMode === "chat" && supportsToolsForTurn && asksForWorkspaceInspection(effectiveText)
         ? "plan"
         : availableMode;
     setInput(""); setMention(null); setSlash(null); setNextSendMode(null);
@@ -2894,7 +2942,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     // Staged images ride ahead of @-mention file attachments on the turn.
     const attachments = [...stagedImages, ...collected];
     const activeProjectContext = lensItemsForPrompt(projectContext, effectiveText, contextMode);
-    enqueueTurn({ clientId: genId(), text: effectiveText, mode, provider, model: subagentModel ?? model, modelSupportsTools, modelSupportsReflection, reflectionLevel, attachments, subagent: directive?.subagent.id, projectContext: activeProjectContext.length > 0 ? { mode: contextMode, items: activeProjectContext } : undefined });
+    enqueueTurn({ clientId: genId(), text: effectiveText, mode, provider, model: subagentModel ?? model, modelSupportsTools: supportsToolsForTurn, modelSupportsReflection: supportsReflectionForTurn, reflectionLevel: supportsReflectionForTurn ? panelReflectionLevel : undefined, attachments, subagent: directive?.subagent.id, projectContext: activeProjectContext.length > 0 ? { mode: contextMode, items: activeProjectContext } : undefined });
     // A subagent named *inside* a larger message (not a leading directive) runs
     // in the background, concurrent with the main answer above.
     if (!directive) {
@@ -3028,7 +3076,7 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   // ── RENDER ──
 
-  const canSend = !!input.trim() && !serverStarting && !preparingWorkspace;
+  const canSend = !!input.trim() && !serverStarting && !preparingWorkspace && !compacting;
   // Hover-revealed "Send to both" over the send button (race panels only).
   const [raceSendHover, setRaceSendHover] = useState(false);
   // One provider selector, placed in the panel header normally and in the

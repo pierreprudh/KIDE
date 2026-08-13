@@ -5211,8 +5211,83 @@ button:focus-visible .menu-leadout {
   flex-direction: column;
 }
 
-.klide-focus-current-surface[data-hidden="true"] {
-  display: none;
+.klide-focus-conversation-error {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  text-align: center;
+  animation: klide-focus-chat-in 420ms var(--ease-soft) both;
+}
+
+.klide-focus-conversation-error pre {
+  margin: 0 0 22px;
+  color: color-mix(in srgb, var(--accent) 72%, var(--fg-dim));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 1.35;
+  text-align: left;
+  text-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 15%, transparent);
+  user-select: none;
+}
+
+.klide-focus-conversation-error h1 {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: 22px;
+  font-weight: 520;
+  letter-spacing: -0.022em;
+}
+
+.klide-focus-conversation-error p {
+  max-width: 440px;
+  margin: 10px 0 22px;
+  color: var(--fg-subtle);
+  font-size: 13px;
+  line-height: 1.55;
+  text-wrap: balance;
+}
+
+.klide-focus-conversation-error p span {
+  color: var(--fg);
+}
+
+.klide-focus-conversation-error button {
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  background: color-mix(in srgb, var(--panel-glass) 62%, transparent);
+  box-shadow: inset 0 1px 0 var(--panel-highlight);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out),
+    transform 180ms var(--ease-spring);
+}
+
+.klide-focus-conversation-error button:hover {
+  color: var(--fg-strong);
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  transform: translateY(-1px);
+}
+
+.klide-focus-conversation-error button:active {
+  transform: translateY(0);
+}
+
+.klide-focus-conversation-error button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Focus terminal — a bottom dock that takes real layout space: opening it moves
@@ -5310,192 +5385,6 @@ button:focus-visible .menu-leadout {
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 72%, transparent);
   backdrop-filter: blur(26px) saturate(1.18);
   -webkit-backdrop-filter: blur(26px) saturate(1.18);
-}
-
-.klide-focus-history-reader {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--panel-glass) 18%, transparent);
-}
-
-/* The read opens with its own name instead of a bar holding one: the intro
-   scrolls away with the transcript, so nothing hovers over an old
-   conversation you are only passing through. It borrows the turn grid —
-   same 30px mark, same 10px gutter — so the title's text edge lands on the
-   same line as every assistant reply below it. The hairline closes the
-   masthead at the column's width rather than cutting the whole canvas. */
-.klide-focus-history-intro {
-  width: min(680px, 92%);
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 19px;
-  border-bottom: 1px solid var(--panel-border);
-}
-
-.klide-focus-history-intro-body {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.klide-focus-history-intro h1 {
-  margin: 0;
-  overflow: hidden;
-  color: var(--fg-strong);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.012em;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Two facts, set apart by a wide gutter and a step down in tone — no dot
-   between them. Punctuation would be doing work that space already does. */
-.klide-focus-history-meta {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  overflow: hidden;
-  color: var(--fg-subtle);
-  font-size: 10.5px;
-}
-
-.klide-focus-history-meta span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.klide-focus-history-when {
-  flex-shrink: 0;
-  opacity: 0.62;
-}
-
-/* Where a delegate transcript would otherwise offer a composer — CLI history
-   is still read-only in Focus, so say so in that slot rather than nowhere. */
-.klide-focus-history-readonly {
-  flex-shrink: 0;
-  padding: 0 clamp(18px, 3vw, 42px) 22px;
-  color: var(--fg-subtle);
-  font-size: 11px;
-  text-align: center;
-}
-
-.klide-focus-history-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 30px 28px 20px;
-  overscroll-behavior: contain;
-}
-
-/* The composer centres itself here the way `.klide-focus-home` centres it on
-   the start stage — the reader is a plain column, so it has to be said. */
-.klide-focus-history-reader > .klide-focus-composer-dock {
-  align-self: center;
-  margin-bottom: 22px;
-}
-
-.klide-focus-history-transcript {
-  width: min(780px, 100%);
-  display: flex;
-  flex-direction: column;
-  gap: 19px;
-  margin: 0 auto;
-}
-
-.klide-focus-history-turn,
-.klide-focus-history-process {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 96px;
-}
-
-.klide-focus-history-turn {
-  width: min(680px, 92%);
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-}
-
-.klide-focus-history-turn[data-role="user"] {
-  align-self: flex-end;
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.klide-focus-history-avatar {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--panel-border);
-  border-radius: 9px;
-  color: var(--fg-subtle);
-  background: color-mix(in srgb, var(--panel-glass) 72%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 72%, transparent);
-}
-
-.klide-focus-history-turn-body {
-  min-width: 0;
-}
-
-.klide-focus-history-role {
-  margin: 0 2px 5px;
-  color: var(--fg-subtle);
-  font-size: 10.5px;
-  font-weight: 550;
-}
-
-.klide-focus-history-turn[data-role="user"] .klide-focus-history-role {
-  text-align: right;
-}
-
-.klide-focus-history-bubble {
-  overflow: hidden;
-  padding: 11px 13px;
-  border: 1px solid var(--panel-border);
-  border-radius: 13px 13px 13px 5px;
-  color: var(--fg);
-  background: color-mix(in srgb, var(--panel-glass) 74%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--panel-highlight) 78%, transparent),
-    0 8px 24px rgba(28, 28, 28, 0.035);
-  font-size: 13px;
-  line-height: 1.58;
-  backdrop-filter: blur(18px) saturate(1.1);
-  -webkit-backdrop-filter: blur(18px) saturate(1.1);
-}
-
-.klide-focus-history-turn[data-role="user"] .klide-focus-history-bubble {
-  border-radius: 13px 13px 5px 13px;
-  background: color-mix(in srgb, var(--accent-soft) 48%, var(--panel-glass));
-}
-
-.klide-focus-history-process {
-  width: min(650px, calc(100% - 40px));
-  margin-left: 40px;
-  padding-left: 12px;
-  border-left: 1px solid color-mix(in srgb, var(--accent) 25%, var(--panel-border));
-  color: var(--fg-subtle);
-  font-size: 12px;
-}
-
-.klide-focus-history-empty {
-  padding: 70px 20px;
-  color: var(--fg-subtle);
-  font-size: 13px;
-  text-align: center;
 }
 
 .klide-focus-home {
@@ -6189,6 +6078,7 @@ button:focus-visible .menu-leadout {
   .klide-focus-git-island,
   .klide-focus-rise,
   .klide-focus-chat-in,
+  .klide-focus-conversation-error,
   .klide-focus-brand-search,
   .klide-focus-provider-conversations,
   .klide-focus-home-card,

@@ -39,9 +39,6 @@ import { usePortalMenu } from "../hooks/usePortalMenu";
 import { useCustomProviders } from "../hooks/useCustomProviders";
 import {
   CONVERSATIONS_CHANGED_EVENT,
-  conversationDuration,
-  conversationStartedAt,
-  formatSpan,
   loadConversations,
   relativeTime,
   isSubsequence,
@@ -62,11 +59,9 @@ import {
 import { isCustomProvider, type CustomProvider } from "../customProviders";
 import { ModelPicker } from "./ai/ModelPicker";
 import { ProviderLogo } from "./ai/icons";
-import { renderMessageBody } from "./ai/ChatMessage";
 import { modelIdentity } from "../modelIdentity";
 import { providerHistoryExpanded } from "../focusHistory";
 import {
-  linkedFolderLabel,
   linkedProjectForPath,
   normalizeProjectPath,
 } from "../projectPaths";
@@ -84,9 +79,8 @@ type Props = {
   onSwitchProject: (root: string) => void;
   /** Back to the hero home — the next submit starts a fresh conversation. */
   onNewChat: () => void;
-  /** `continueWith` carries the history reader's composed text: resume the
-   *  conversation, then send that as its next turn. */
-  onOpenConversation: (convo: Conversation, continueWith?: string) => void;
+  /** Resume a saved conversation in the same live Focus chat surface. */
+  onOpenConversation: (convo: Conversation) => void;
   onSubmit: (text: string) => void;
   onOpenMissionControl: () => void;
   /** The rail's shared destinations — the same handler the free-mode activity
@@ -442,6 +436,18 @@ const REVEAL_STAGGER_CAP = 12;
  *  list of what you are working on rather than a full recents browser. */
 const PROJECT_ROW_LIMIT = 3;
 
+/** Re-resolve a rail snapshot at click time; rendered history can be stale if
+ * another panel pruned or rewrote the local index between render and click. */
+export function retrievableConversation(
+  conversationId: string,
+  conversations: Conversation[],
+): Conversation | null {
+  return conversations.find(
+    (conversation) =>
+      conversation.id === conversationId && Array.isArray(conversation.msgs),
+  ) ?? null;
+}
+
 function revealDelay(index: number, stepMs: number, baseMs = 0): string {
   return `${baseMs + Math.min(index, REVEAL_STAGGER_CAP) * stepMs}ms`;
 }
@@ -549,154 +555,6 @@ function ProviderHistoryGroup({
   );
 }
 
-function HistoryReader({
-  conversation,
-  projectRoot,
-  onClose,
-  onContinue,
-  controls,
-}: {
-  conversation: Conversation;
-  projectRoot?: string | null;
-  onClose: () => void;
-  /** Picking the thread back up: the conversation is resumed into the live
-   *  panel and this text is sent into it as the next turn. */
-  onContinue: (text: string) => void;
-  controls: FocusComposerControls;
-}) {
-  const provider = conversation.provider ?? "ollama";
-  const delegate = isDelegateProvider(provider);
-  const project = projectRoot
-    ? basename(projectRoot)
-    : conversation.cwd ? basename(conversation.cwd) : null;
-  const folder = linkedFolderLabel(conversation.cwd, projectRoot);
-  // Everything the meta line no longer spends a word on, on one hover.
-  const duration = conversationDuration(conversation);
-  const metaDetail = [
-    `Started ${new Date(conversationStartedAt(conversation)).toLocaleString()}`,
-    `Last activity ${new Date(conversation.updatedAt).toLocaleString()}`,
-    duration >= 1000 ? `Ran ${formatSpan(duration)}` : null,
-    providerName(provider),
-    project,
-    folder,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  // With the header bar gone, Escape is what leaves — the rail is still there
-  // to switch conversations, but a keyboard user needs a way out of the read.
-  // Not while composing, though: leaving would take a half-written turn with
-  // it, and the reader has no draft to come back to.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
-      const target = e.target as HTMLElement | null;
-      if (target?.isContentEditable) return;
-      const tag = target?.tagName;
-      if (tag === "TEXTAREA" || tag === "INPUT") return;
-      onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <section
-      className="klide-focus-history-reader klide-focus-chat-in"
-      aria-label={`Conversation history: ${conversation.title || "Untitled"}`}
-    >
-      <div className="klide-focus-history-scroll">
-        <div className="klide-focus-history-transcript">
-          {/* Identity rides at the top of the transcript and scrolls away with
-              it, rather than holding a bar over the read. It sits on the same
-              avatar/body grid as an assistant turn and wears the same provider
-              mark, so it reads as the head of this conversation rather than a
-              panel heading that happens to be above one. */}
-          <header className="klide-focus-history-intro">
-            <span className="klide-focus-history-avatar" aria-hidden="true">
-              <ProviderLogo id={provider} size={16} />
-            </span>
-            <div className="klide-focus-history-intro-body">
-              <h1>{conversation.title || "Untitled conversation"}</h1>
-              {/* Two facts, held apart by space rather than punctuation. The
-                  provider mark beside this already says who answered and the
-                  rail says which project, so neither is repeated here. The
-                  exact timestamp, the run's length, and the folder stay
-                  available on hover — quieted, not dropped. */}
-              <div className="klide-focus-history-meta">
-                {conversation.model ? <span>{conversation.model}</span> : null}
-                <span className="klide-focus-history-when" title={metaDetail}>
-                  {relativeTime(conversationStartedAt(conversation))}
-                </span>
-              </div>
-            </div>
-          </header>
-          {conversation.msgs.length === 0 ? (
-            <div className="klide-focus-history-empty">
-              This conversation has no saved messages.
-            </div>
-          ) : (
-            conversation.msgs.map((message, index) => {
-              const process = message.role === "tool" || message.role === "system";
-              if (process) {
-                return (
-                  <div
-                    key={`${message.role}-${index}`}
-                    className="klide-focus-history-process"
-                  >
-                    {renderMessageBody(message)}
-                  </div>
-                );
-              }
-              const user = message.role === "user";
-              return (
-                <article
-                  key={`${message.role}-${index}`}
-                  className="klide-focus-history-turn"
-                  data-role={message.role}
-                >
-                  {!user ? (
-                    <span className="klide-focus-history-avatar" aria-hidden="true">
-                      <ProviderLogo id={provider} size={16} />
-                    </span>
-                  ) : null}
-                  <div className="klide-focus-history-turn-body">
-                    <div className="klide-focus-history-role">
-                      {user ? "You" : providerName(provider)}
-                    </div>
-                    <div className="klide-focus-history-bubble">
-                      {renderMessageBody(message)}
-                    </div>
-                  </div>
-                </article>
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      {/* Continuing is not a separate mode you enter — the composer is simply
-          here, the way it is everywhere else in Focus. Typing into it resumes
-          this conversation and sends the turn. */}
-      {delegate ? (
-        <div
-          className="klide-focus-history-readonly"
-          title="Delegate and CLI conversations are temporarily read-only in Focus mode"
-        >
-          CLI history · read only
-        </div>
-      ) : (
-        <FocusComposer
-          controls={controls}
-          onSubmit={onContinue}
-          placeholder="Continue this conversation…"
-          autoFocus={false}
-        />
-      )}
-    </section>
-  );
-}
-
 /* ----------------------------------------------------------------- screen */
 
 export function FocusMode({
@@ -771,7 +629,10 @@ export function FocusMode({
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [historyConversation, setHistoryConversation] = useState<Conversation | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [conversationOpenError, setConversationOpenError] = useState<{
+    title: string;
+  } | null>(null);
   // "Ask both" strip composer — local draft, cleared on send.
   const [raceAsk, setRaceAsk] = useState("");
   const { username, hostname, avatarUrl } = useUserInfo();
@@ -910,6 +771,12 @@ export function FocusMode({
     setConvos(loadConversations<Conversation>());
   }, [chatActive, searchOpen]);
 
+  // Leaving the live chat means there is no active conversation for the rail
+  // to mark. Opening history sets the id again before the live panel appears.
+  useEffect(() => {
+    if (!chatActive) setSelectedConversationId(null);
+  }, [chatActive]);
+
   const projectName = activeProjectRoot ? basename(activeProjectRoot) : null;
   const folderedHistory = useMemo(() => {
     const byProject = new Map<string, Conversation[]>();
@@ -938,8 +805,7 @@ export function FocusMode({
     [activeProjectRoot, convosByProject]
   );
   // The dispatch settings the composer edits, wherever it is mounted. Both the
-  // start stage and the history reader read and write this same set, so what
-  // you pick while reading an old thread is what the resumed run uses.
+  // start stage and the live Focus chat read and write this same set.
   const composerControls = useMemo<FocusComposerControls>(
     () => ({
       workspaceRoot,
@@ -983,24 +849,48 @@ export function FocusMode({
   }, [convos, query]);
 
   function openHistoryConversation(conversation: Conversation) {
-    setHistoryConversation(conversation);
-    const conversationProject = linkedProjectByConversationId.get(conversation.id);
-    if (!conversationProject) return;
+    // The row is a rendered snapshot. Resolve it against durable local history
+    // once more before handing it to AiPanel so a pruned/corrupt entry gets a
+    // deliberate empty state instead of reopening whichever chat was active.
+    const resolved = retrievableConversation(
+      conversation.id,
+      loadConversations<Conversation>(),
+    );
+    setSelectedConversationId(conversation.id);
+    if (!resolved) {
+      setConversationOpenError({
+        title: conversation.title || "Untitled conversation",
+      });
+      setSearchOpen(false);
+      setQuery("");
+      return;
+    }
+    setConversationOpenError(null);
+    const conversationProject = linkedProjectByConversationId.get(resolved.id);
+    if (conversationProject) {
+      const historyProvider = resolved.provider ?? "ollama";
+      setExpandedProjects((prev) => {
+        if (prev.has(conversationProject)) return prev;
+        const next = new Set(prev);
+        next.add(conversationProject);
+        return next;
+      });
+      setExpandedProviderGroups((prev) => {
+        const key = providerHistoryKey(conversationProject, historyProvider);
+        if (prev.get(key) === true) return prev;
+        const next = new Map(prev);
+        next.set(key, true);
+        return next;
+      });
+    }
+    // History is navigation, not a second reader mode. Resume the saved
+    // conversation into the fully wired AiPanel used by every live Focus chat.
+    onOpenConversation(resolved);
+  }
 
-    const historyProvider = conversation.provider ?? "ollama";
-    setExpandedProjects((prev) => {
-      if (prev.has(conversationProject)) return prev;
-      const next = new Set(prev);
-      next.add(conversationProject);
-      return next;
-    });
-    setExpandedProviderGroups((prev) => {
-      const key = providerHistoryKey(conversationProject, historyProvider);
-      if (prev.get(key) === true) return prev;
-      const next = new Map(prev);
-      next.set(key, true);
-      return next;
-    });
+  function clearConversationNavigation() {
+    setSelectedConversationId(null);
+    setConversationOpenError(null);
   }
 
   const searching = searchOpen && query.trim().length > 0;
@@ -1059,7 +949,7 @@ export function FocusMode({
             icon={<NewTaskIcon size={RAIL_GLYPH} />}
             label="New task"
             onClick={() => {
-              setHistoryConversation(null);
+              clearConversationNavigation();
               onNewChat();
             }}
           />
@@ -1067,7 +957,7 @@ export function FocusMode({
             icon={<MissionIcon size={RAIL_GLYPH} />}
             label="Mission Control"
             onClick={() => {
-              setHistoryConversation(null);
+              clearConversationNavigation();
               onOpenMissionControl();
             }}
           />
@@ -1075,7 +965,7 @@ export function FocusMode({
             icon={<OrchestratorIcon size={RAIL_GLYPH} />}
             label="Orchestrator"
             onClick={() => {
-              setHistoryConversation(null);
+              clearConversationNavigation();
               onOpenPanel("orchestrator");
             }}
           />
@@ -1083,7 +973,7 @@ export function FocusMode({
             icon={<MemoryIcon size={RAIL_GLYPH} />}
             label="Memory"
             onClick={() => {
-              setHistoryConversation(null);
+              clearConversationNavigation();
               onOpenPanel("memory");
             }}
           />
@@ -1091,7 +981,7 @@ export function FocusMode({
             icon={<SkillsIcon size={RAIL_GLYPH} />}
             label="Skills"
             onClick={() => {
-              setHistoryConversation(null);
+              clearConversationNavigation();
               onOpenPanel("skills");
             }}
           />
@@ -1114,7 +1004,7 @@ export function FocusMode({
                     <ConvoRow
                       key={c.id}
                       convo={c}
-                      selected={historyConversation?.id === c.id}
+                      selected={selectedConversationId === c.id}
                       onOpen={() => openHistoryConversation(c)}
                     />
                   ))}
@@ -1149,7 +1039,7 @@ export function FocusMode({
                           // current one just folds its history open/closed.
                           if (isActive) toggleProject(p);
                           else {
-                            setHistoryConversation(null);
+                            clearConversationNavigation();
                             onSwitchProject(p);
                           }
                         }}
@@ -1159,7 +1049,7 @@ export function FocusMode({
                       <div
                         className="klide-focus-provider-groups"
                         data-contains-selected={
-                          history.some((c) => c.id === historyConversation?.id) || undefined
+                          history.some((c) => c.id === selectedConversationId) || undefined
                         }
                       >
                         {providerHistories.map((providerHistory, providerIndex) => {
@@ -1175,7 +1065,7 @@ export function FocusMode({
                               key={providerHistory.provider}
                               group={providerHistory}
                               expanded={providerExpanded}
-                              selectedConversationId={historyConversation?.id}
+                              selectedConversationId={selectedConversationId ?? undefined}
                               revealIndex={providerIndex}
                               conversationRevealBase={
                                 cascadingProjects.has(p)
@@ -1232,7 +1122,7 @@ export function FocusMode({
             icon={<settingsDest.Icon size={15} />}
             label={settingsDest.label}
             onClick={() => {
-              setHistoryConversation(null);
+              clearConversationNavigation();
               onOpenPanel("settings");
             }}
           />
@@ -1247,7 +1137,10 @@ export function FocusMode({
               className="klide-rail-profile"
               aria-label={`Open ${profileDest.label.toLowerCase()}`}
               title={profileDest.label}
-              onClick={() => onOpenPanel("profile")}
+              onClick={() => {
+                clearConversationNavigation();
+                onOpenPanel("profile");
+              }}
             >
               <span className="klide-rail-profile-avatar" aria-hidden>
                 {initialsOf(username || "?")}
@@ -1284,7 +1177,10 @@ export function FocusMode({
               className="klide-rail-view-switch"
               aria-label="Leave Focus — Free layout"
               title="Leave Focus — Free layout"
-              onClick={onExitFocus}
+              onClick={() => {
+                clearConversationNavigation();
+                onExitFocus();
+              }}
             >
               <FreeLayoutIcon size={14} />
             </button>
@@ -1296,7 +1192,7 @@ export function FocusMode({
       {/* Its top inset is the title-bar band, so that strip drags the window
           too — the canvas below it keeps its own clicks. */}
       <main className="klide-focus-main" data-tauri-drag-region>
-        {workspaceRoot && !chatActive && !historyConversation ? (
+        {workspaceRoot && !chatActive && !conversationOpenError ? (
           <FocusGitIsland
             workspaceRoot={workspaceRoot}
             branch={branch}
@@ -1308,24 +1204,16 @@ export function FocusMode({
             onOpen={() => onOpenPanel("git")}
           />
         ) : null}
-        {historyConversation ? (
-          <HistoryReader
-            conversation={historyConversation}
-            projectRoot={linkedProjectByConversationId.get(historyConversation.id)}
-            onClose={() => setHistoryConversation(null)}
-            onContinue={(text) => {
-              const conversation = historyConversation;
-              setHistoryConversation(null);
-              onOpenConversation(conversation, text);
+        <div className="klide-focus-current-surface">
+        {conversationOpenError ? (
+          <ConversationRetrievalError
+            title={conversationOpenError.title}
+            onBack={() => {
+              clearConversationNavigation();
+              onNewChat();
             }}
-            controls={composerControls}
           />
-        ) : null}
-        <div
-          className="klide-focus-current-surface"
-          data-hidden={historyConversation ? true : undefined}
-        >
-        {chatActive ? (
+        ) : chatActive ? (
           <div
             className="klide-focus-chat-in"
             style={{
@@ -1462,7 +1350,7 @@ export function FocusMode({
             branch={branch}
             onPingGit={() => setGitPing((n) => n + 1)}
             recent={projectConvos.slice(0, 3)}
-            onOpenConversation={onOpenConversation}
+            onOpenConversation={openHistoryConversation}
             onSubmit={onSubmit}
             controls={composerControls}
           />
@@ -1477,6 +1365,34 @@ export function FocusMode({
         {renderTerminal()}
       </main>
     </div>
+  );
+}
+
+function ConversationRetrievalError({
+  title,
+  onBack,
+}: {
+  title: string;
+  onBack: () => void;
+}) {
+  return (
+    <section
+      className="klide-focus-conversation-error"
+      aria-labelledby="klide-focus-conversation-error-title"
+    >
+      <pre aria-hidden="true">{String.raw`       .--------.
+      /        /|
+     +--------+ |
+     |  404   | |
+     |  ...   | /
+     +--------+`}</pre>
+      <h1 id="klide-focus-conversation-error-title">Conversation unavailable</h1>
+      <p>
+        <span>“{title}”</span> is no longer in local history. It may have been
+        removed, or its saved record may be damaged.
+      </p>
+      <button type="button" onClick={onBack}>Back to new task</button>
+    </section>
   );
 }
 
@@ -2334,10 +2250,8 @@ function FocusAddMenu({
   );
 }
 
-/** Everything the composer needs beyond its own draft. Bundled because the
- *  composer now has two homes — the start stage and the history reader — and
- *  threading fourteen props through both invites them to drift apart. There is
- *  one composer in Focus, the same way there is one chat surface. */
+/** Everything the start-stage composer needs beyond its own draft. Keeping the
+ *  dispatch controls bundled leaves FocusHome's boundary readable. */
 export type FocusComposerControls = {
   workspaceRoot: string | null;
   provider: ProviderId;
@@ -2354,9 +2268,7 @@ export type FocusComposerControls = {
 };
 
 /** The bottom-anchored task dock: context strip, textarea, and the provider /
- *  model / effort / context controls that decide how the next run is dispatched.
- *  Mounted by the start stage and by the history reader, so "send" always means
- *  the same thing and the run always reaches the same Rust harness. */
+ *  model / effort / context controls that decide how a new run is dispatched. */
 function FocusComposer({
   controls,
   branch,
@@ -2366,15 +2278,10 @@ function FocusComposer({
   autoFocus = true,
 }: {
   controls: FocusComposerControls;
-  /** Omitted in the history reader — the strip points at the current checkout,
-   *  which has nothing to do with the conversation being read. */
   branch?: string | null;
   onPingGit?: () => void;
   onSubmit: (text: string) => void;
   placeholder?: string;
-  /** The start stage takes the caret on arrival; the history reader does not —
-   *  you opened it to read, and the cursor jumping to the composer would say
-   *  otherwise. */
   autoFocus?: boolean;
 }) {
   const {
