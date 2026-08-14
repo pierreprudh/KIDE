@@ -275,3 +275,108 @@ function makeId(prefix: string): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `${prefix}:${crypto.randomUUID()}`;
   return `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
 }
+
+// ── The wire ────────────────────────────────────────────────────────────────
+//
+// Everything above is the *authored* side of the Validation contract — the
+// checks a routing decision plans for a task before it runs. What comes back
+// from a settled Run is the Rust Harness's evidence snapshot
+// (`AgentValidationSummary` in `src-tauri/src/agent/types.rs`), and it crosses
+// the IPC boundary twice: on `AgentRunSummary.validation` for the run board,
+// and inside the durable Mission log's `attempt_validation_recorded` event.
+// Both crossings parse here, so the words Rust writes are a union — not a
+// `string` — everywhere downstream, and a new word on the wire is a tsc error
+// instead of a silently colour-less row.
+
+/**
+ * The status words the Rust producers actually write — `summarize_validation`
+ * in `agent/transcripts.rs` and `delegate_review_validation` in `missions.rs`.
+ * Summary statuses use all four; check statuses use the first three.
+ * `validationWire.test.ts` reads those two functions and fails when this list
+ * drifts from the Rust source.
+ */
+export const VALIDATION_WIRE_STATUSES = ["passed", "failed", "skipped", "unverified"] as const;
+
+export type ValidationWireStatus = (typeof VALIDATION_WIRE_STATUSES)[number];
+
+/**
+ * A Mission log and a Transcript summary are durable history: a snapshot
+ * written by a newer (or older) Klide may carry a word this build doesn't
+ * know. The parser maps it to `"unknown"` rather than throwing, so old logs
+ * still render — quietly, without asserting a verdict.
+ */
+export type ValidationStatus = ValidationWireStatus | "unknown";
+
+export type RecordedValidationCheck = {
+  id: string;
+  label: string;
+  status: ValidationStatus;
+  required: boolean;
+  evidence?: string;
+};
+
+/**
+ * The parsed evidence snapshot for one settled Run — the Validation contract
+ * as recorded, not as planned. `runs.ts` aliases this as
+ * `RunValidationSummary` and `missionHarness.ts` as `MissionAttemptValidation`;
+ * the shape has one owner.
+ */
+export type RecordedValidation = {
+  status: ValidationStatus;
+  checks: RecordedValidationCheck[];
+  filesChanged: number;
+  commandsRun: number;
+  commandsFailed: number;
+  diffReviews: number;
+  permissionsApproved: number;
+  permissionsDenied: number;
+  warnings: string[];
+};
+
+export function parseValidationStatus(raw: unknown): ValidationStatus {
+  return typeof raw === "string" && (VALIDATION_WIRE_STATUSES as readonly string[]).includes(raw)
+    ? (raw as ValidationWireStatus)
+    : "unknown";
+}
+
+/**
+ * The parser at the IPC edge: raw wire value in, typed snapshot out. Tolerant
+ * on purpose — unknown statuses become `"unknown"`, missing counts become 0,
+ * malformed checks keep their position — because the input is durable history
+ * that must still render, never a reason to crash a board.
+ */
+export function parseValidationSummary(raw: unknown): RecordedValidation {
+  const source = isRecord(raw) ? raw : {};
+  return {
+    status: parseValidationStatus(source.status),
+    checks: Array.isArray(source.checks) ? source.checks.map(parseValidationCheck) : [],
+    filesChanged: toCount(source.filesChanged),
+    commandsRun: toCount(source.commandsRun),
+    commandsFailed: toCount(source.commandsFailed),
+    diffReviews: toCount(source.diffReviews),
+    permissionsApproved: toCount(source.permissionsApproved),
+    permissionsDenied: toCount(source.permissionsDenied),
+    warnings: Array.isArray(source.warnings)
+      ? source.warnings.filter((warning): warning is string => typeof warning === "string")
+      : [],
+  };
+}
+
+function parseValidationCheck(raw: unknown, index: number): RecordedValidationCheck {
+  const source = isRecord(raw) ? raw : {};
+  return {
+    id: typeof source.id === "string" ? source.id : `check-${index}`,
+    label: typeof source.label === "string" ? source.label : "",
+    status: parseValidationStatus(source.status),
+    required: source.required === true,
+    evidence: typeof source.evidence === "string" ? source.evidence : undefined,
+  };
+}
+
+function toCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}

@@ -14,6 +14,11 @@ import {
   presentRunStatus,
   toneColor,
 } from "./runPresentation";
+import {
+  parseValidationSummary,
+  type RecordedValidation,
+  type RecordedValidationCheck,
+} from "./agent/validationContracts";
 
 export type RunSource = DelegateId | "klide";
 export type RunStatus = "running" | "waiting" | "queued" | "done" | "cancelled" | "error";
@@ -54,25 +59,11 @@ export type RunRoutineInfo = {
   label: string;
 };
 
-export type RunValidationCheck = {
-  id: string;
-  label: string;
-  status: string;
-  required: boolean;
-  evidence?: string;
-};
-
-export type RunValidationSummary = {
-  status: string;
-  checks: RunValidationCheck[];
-  filesChanged: number;
-  commandsRun: number;
-  commandsFailed: number;
-  diffReviews: number;
-  permissionsApproved: number;
-  permissionsDenied: number;
-  warnings: string[];
-};
+/** The Harness's evidence snapshot, parsed at the IPC edge by
+ *  `parseValidationSummary` — statuses are the wire union, never a bare
+ *  string. The shape's one owner is `agent/validationContracts.ts`. */
+export type RunValidationCheck = RecordedValidationCheck;
+export type RunValidationSummary = RecordedValidation;
 
 export type Run = {
   id: string;
@@ -174,7 +165,8 @@ type AgentRunDto = {
   status: string;
   subagentCount?: number;
   lastEvent?: string;
-  validation?: RunValidationSummary | null;
+  /** Raw `AgentValidationSummary` wire value; `fromDto` parses it. */
+  validation?: unknown;
   parentId?: string;
 };
 
@@ -490,7 +482,7 @@ function fromDto(a: AgentRunDto): Run {
     createdMs: a.createdMs ?? a.updatedMs ?? 0,
     subagentCount: a.subagentCount,
     lastEvent: a.lastEvent,
-    validation: a.validation ?? null,
+    validation: a.validation == null ? null : parseValidationSummary(a.validation),
     parentId: a.parentId,
   };
 }
