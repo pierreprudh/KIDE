@@ -51,6 +51,25 @@ open; these are the shell and correctness changes landed so far.
 
 ### Harness and providers
 
+- Subagents are the harness's own work. `spawn_subagent` used to emit an event
+  and park on the question pause while the AI panel resolved the role, composed
+  the child prompt, ran the nested Run, and answered with its last message — so
+  closing or reloading the panel mid-subagent left the parent parked forever and
+  its report lost. The Rust harness now owns all of it behind the supervisor
+  seam: the role comes from `agent::subagents`, the child inherits the parent's
+  system prompt with a role block appended, and the report is read from the
+  child's transcript, which is durable. A subagent survives a panel unmount, a
+  reload and a reattach, like every other Harness run.
+- Cancelling a run now cancels the subagent it is waiting on, instead of
+  orphaning a child that keeps running headless.
+- A run that names an editing subagent is refused. The tool promises a delegate
+  that "cannot edit", and only the schema's `enum` was holding that line; the
+  model's menu is now derived from the roles that are read-only, and the same
+  list is checked again when the call arrives. Editing roles stay reachable
+  where they always were — a human naming one in an `@mention`.
+- A run waiting on a subagent reports `Paused` rather than borrowing the
+  question pause's `WaitingForPermission`, which claimed a prompt was waiting
+  when nothing was.
 - Fresh Klide conversations and Mission Control tasks now run in a dedicated
   Git worktree by default. The checkout is created before the Harness or
   delegate CLI starts, remains pinned across every workspace layout, and is

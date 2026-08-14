@@ -2341,43 +2341,6 @@ This user request requires workspace inspection. Before answering, you MUST call
       onMeasuredUsage: setMeasuredUsageTokens,
     });
 
-    // The main run called `spawn_subagent` and is parked on a oneshot. Run the
-    // named read-only subagent as a nested child run (Mission Control nests it
-    // by parentId), accumulate its final answer, and resolve the parent through
-    // the shared question channel — that text becomes the tool result.
-    const runSubagentChild = async (event: Extract<AgentEvent, { type: "subagent_requested" }>) => {
-      const def = resolveSubagent(event.subagent);
-      if (!def) {
-        await resolveUserQuestion({ runId: event.runId, requestId: event.requestId, answer: `Unknown subagent "${event.subagent}".` });
-        return;
-      }
-      const base = buildSystemPrompt(workspaceRoot, stopAfterRejection, skills, def.mode, turn.modelSupportsTools && def.mode !== "chat", projectRules, harnessSettings, turn.model);
-      const systemPrompt = buildSubagentSystemPrompt(def, base);
-      let report = "";
-      try {
-        const session = await startAgentRun({
-          runId: event.requestId,
-          workspaceRoot, mode: def.mode, provider: turn.provider, model: def.model ?? turn.model,
-          text: event.task, attachments: [],
-          context: { workspaceRoot, attachments: [], lensItems: [], estimatedTokens: 0, omitted: [] },
-          systemPrompt,
-          parentId: event.runId,
-          maxTurns: harnessSettings?.maxTurns && harnessSettings.maxTurns > 0 ? harnessSettings.maxTurns : undefined,
-        }, (ev) => {
-          if (ev.type === "assistant_message") {
-            const text = extractAssistantText(ev.content);
-            if (text.trim()) report = text;
-          } else if (ev.type === "run_error") {
-            report = `Subagent error: ${ev.error.message}`;
-          }
-        });
-        await session.done;
-      } catch (e) {
-        report = `Subagent run failed: ${(e as Error).message}`;
-      }
-      await resolveUserQuestion({ runId: event.runId, requestId: event.requestId, answer: report.trim() || "(subagent produced no output)" });
-    };
-
     // The executor (this run's model) called `consult_advisor` and is parked on
     // the shared question oneshot. Put its question to a STRONGER advisor model
     // as a one-shot chat run (no tools), nested by parentId, and resolve the
@@ -2427,8 +2390,11 @@ This user request requires workspace inspection. Before answering, you MUST call
           }
           break;
         }
+        // Both halves of a subagent exchange are display-only here: the Rust
+        // harness resolves the role, runs the child, and feeds its report back
+        // as the tool result, so the pair survives this panel unmounting
+        // mid-subagent. The transcript rows come from the turn driver.
         case "subagent_requested": {
-          void runSubagentChild(event);
           break;
         }
         case "subagent_resolved": {
