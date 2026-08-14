@@ -726,10 +726,7 @@ where
     // "Reject" sticks; tell the model to change course rather than re-surfacing
     // the same diff.
     let edit_key = format!("{}::{}", proposal.path, proposal.new_hash);
-    let already_rejected = with_run_handle(ctx.sup, ctx.id, |h| {
-        h.rejected_edits.lock().unwrap().contains(&edit_key)
-    })
-    .unwrap_or(false);
+    let already_rejected = permission::write_already_rejected(ctx, &edit_key);
     if already_rejected {
         return Ok(ToolOutcome::Produced(ToolResult {
             ok: false,
@@ -842,9 +839,7 @@ Do not propose it again — take a different approach or ask the user what they'
         // Remember this rejection so a byte-identical re-proposal is
         // auto-declined above instead of prompting again. (A revised edit
         // addressing the feedback hashes differently, so it prompts normally.)
-        with_run_handle(ctx.sup, ctx.id, |h| {
-            h.rejected_edits.lock().unwrap().insert(edit_key.clone());
-        });
+        permission::remember_write_rejection(ctx, &edit_key);
         let verb = if proposal.is_create {
             "created"
         } else {

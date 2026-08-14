@@ -16,7 +16,7 @@ use super::tools::NormalizedToolCall;
 use super::transcripts::now_ms;
 use super::types::{AgentEvent, AgentRunStatus, PermissionRequest};
 use super::{command_allowlist, network_allowlist};
-use super::{pause_for_user, with_run_handle, AgentRunHandle, PauseOutcome, ToolCtx};
+use super::{pause_for_user, with_run_handle, PauseOutcome, ToolCtx};
 
 /// Which trust namespace a gated Tool draws on. Command- and network-capability
 /// tools keep separate run-scoped sets and separate project allowlists so trust
@@ -25,6 +25,86 @@ use super::{pause_for_user, with_run_handle, AgentRunHandle, PauseOutcome, ToolC
 pub enum Capability {
     Command,
     Network,
+}
+
+/// Everything the engine remembers about this run's approvals and rejections,
+/// across every gated capability — commands, network targets, and rejected
+/// edits. One value on the run handle instead of five loose sets, so the
+/// "remembers per-run approvals/rejections" half of the engine is testable
+/// without a supervisor.
+#[derive(Default)]
+pub struct TrustMemory {
+    /// Commands approved with scope "run"/"project" earlier in this run —
+    /// re-running an identical command skips the prompt.
+    approved_commands: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Commands rejected this run: proposing the same one again is
+    /// auto-declined, not re-asked.
+    rejected_commands: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Network targets approved for this run (`web_search`, `host:docs.rs`).
+    approved_network: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Network targets rejected this run.
+    rejected_network: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Edit proposals rejected this run, keyed `<path>::<new_hash>`. Write has
+    /// no approved set: a write approval is the diff decision itself and is
+    /// never remembered across proposals — only a rejection sticks, so one
+    /// "Reject" stops the byte-identical re-proposal.
+    rejected_edits: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl TrustMemory {
+    pub fn approved(&self, cap: Capability, key: &str) -> bool {
+        match cap {
+            Capability::Command => self.approved_commands.lock().unwrap().contains(key),
+            Capability::Network => self.approved_network.lock().unwrap().contains(key),
+        }
+    }
+
+    pub fn rejected(&self, cap: Capability, key: &str) -> bool {
+        match cap {
+            Capability::Command => self.rejected_commands.lock().unwrap().contains(key),
+            Capability::Network => self.rejected_network.lock().unwrap().contains(key),
+        }
+    }
+
+    pub fn remember_approved(&self, cap: Capability, key: &str) {
+        let set = match cap {
+            Capability::Command => &self.approved_commands,
+            Capability::Network => &self.approved_network,
+        };
+        set.lock().unwrap().insert(key.to_string());
+    }
+
+    pub fn remember_rejected(&self, cap: Capability, key: &str) {
+        let set = match cap {
+            Capability::Command => &self.rejected_commands,
+            Capability::Network => &self.rejected_network,
+        };
+        set.lock().unwrap().insert(key.to_string());
+    }
+
+    pub fn write_rejected(&self, edit_key: &str) -> bool {
+        self.rejected_edits.lock().unwrap().contains(edit_key)
+    }
+
+    pub fn remember_write_rejection(&self, edit_key: &str) {
+        self.rejected_edits
+            .lock()
+            .unwrap()
+            .insert(edit_key.to_string());
+    }
+}
+
+/// Was this exact edit (path + resulting content hash) already rejected this
+/// run? The Write capability's rejection memory lives in the engine like the
+/// other capabilities'; the diff ceremony itself stays with the Write handler.
+pub fn write_already_rejected(ctx: &ToolCtx<'_>, edit_key: &str) -> bool {
+    with_run_handle(ctx.sup, ctx.id, |h| h.trust.write_rejected(edit_key)).unwrap_or(false)
+}
+
+pub fn remember_write_rejection(ctx: &ToolCtx<'_>, edit_key: &str) {
+    with_run_handle(ctx.sup, ctx.id, |h| {
+        h.trust.remember_write_rejection(edit_key)
+    });
 }
 
 /// What the pre-check concluded before any prompt is shown.
@@ -53,42 +133,6 @@ pub enum GateDecision {
 }
 
 impl Capability {
-    fn run_approved(&self, h: &AgentRunHandle, key: &str) -> bool {
-        match self {
-            Capability::Command => h.approved_commands.lock().unwrap().contains(key),
-            Capability::Network => h.approved_network.lock().unwrap().contains(key),
-        }
-    }
-
-    fn run_rejected(&self, h: &AgentRunHandle, key: &str) -> bool {
-        match self {
-            Capability::Command => h.rejected_commands.lock().unwrap().contains(key),
-            Capability::Network => h.rejected_network.lock().unwrap().contains(key),
-        }
-    }
-
-    fn remember_approved(&self, h: &AgentRunHandle, key: &str) {
-        match self {
-            Capability::Command => {
-                h.approved_commands.lock().unwrap().insert(key.to_string());
-            }
-            Capability::Network => {
-                h.approved_network.lock().unwrap().insert(key.to_string());
-            }
-        }
-    }
-
-    fn remember_rejected(&self, h: &AgentRunHandle, key: &str) {
-        match self {
-            Capability::Command => {
-                h.rejected_commands.lock().unwrap().insert(key.to_string());
-            }
-            Capability::Network => {
-                h.rejected_network.lock().unwrap().insert(key.to_string());
-            }
-        }
-    }
-
     /// Persist a project-scoped approval to the on-disk allowlist. `persist`
     /// is the value to store (a command string, or a network target); for the
     /// command capability the user may have widened it to a wildcard `pattern`.
@@ -164,7 +208,7 @@ pub fn request_id(ctx: &ToolCtx<'_>, call: &NormalizedToolCall) -> String {
 /// command-specific). Falls back to `Ask` whenever the run handle is missing.
 pub fn precheck(ctx: &ToolCtx<'_>, cap: Capability, run_key: &str, project_ok: bool) -> Precheck {
     let (run_ok, run_no) = with_run_handle(ctx.sup, ctx.id, |h| {
-        (cap.run_approved(h, run_key), cap.run_rejected(h, run_key))
+        (h.trust.approved(cap, run_key), h.trust.rejected(cap, run_key))
     })
     .unwrap_or((false, false));
 
@@ -255,7 +299,7 @@ pub fn record(
     match decision {
         GateDecision::Approved { scope, pattern } => {
             if scope == "run" || scope == "project" {
-                with_run_handle(ctx.sup, ctx.id, |h| cap.remember_approved(h, run_key));
+                with_run_handle(ctx.sup, ctx.id, |h| h.trust.remember_approved(cap, run_key));
             }
             if scope == "project" {
                 if let Some(root) = ctx.request.workspace_root.as_deref() {
@@ -264,7 +308,7 @@ pub fn record(
             }
         }
         GateDecision::Rejected => {
-            with_run_handle(ctx.sup, ctx.id, |h| cap.remember_rejected(h, run_key));
+            with_run_handle(ctx.sup, ctx.id, |h| h.trust.remember_rejected(cap, run_key));
         }
         GateDecision::Cancelled => {}
     }
@@ -336,6 +380,34 @@ mod tests {
         assert!(!network_allowlist::is_allowed(&runs_dir, &root, "host:example.com").unwrap());
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(runs_dir);
+    }
+
+    #[test]
+    fn trust_memory_keeps_capabilities_separate() {
+        let trust = TrustMemory::default();
+        trust.remember_approved(Capability::Command, "cargo test");
+        trust.remember_rejected(Capability::Network, "host:evil.example");
+
+        assert!(trust.approved(Capability::Command, "cargo test"));
+        // Trust never bleeds across capability kinds: the same key in the
+        // other namespace stays unknown.
+        assert!(!trust.approved(Capability::Network, "cargo test"));
+        assert!(trust.rejected(Capability::Network, "host:evil.example"));
+        assert!(!trust.rejected(Capability::Command, "host:evil.example"));
+        assert!(!trust.approved(Capability::Command, "cargo build"));
+    }
+
+    #[test]
+    fn trust_memory_write_rejection_sticks_and_stays_its_own_namespace() {
+        let trust = TrustMemory::default();
+        assert!(!trust.write_rejected("src/a.rs::abc123"));
+        trust.remember_write_rejection("src/a.rs::abc123");
+        assert!(trust.write_rejected("src/a.rs::abc123"));
+        // A revised edit hashes differently and prompts normally.
+        assert!(!trust.write_rejected("src/a.rs::def456"));
+        // Edit keys never read as commands or network targets.
+        assert!(!trust.rejected(Capability::Command, "src/a.rs::abc123"));
+        assert!(!trust.rejected(Capability::Network, "src/a.rs::abc123"));
     }
 
     #[test]
