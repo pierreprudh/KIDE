@@ -38,6 +38,8 @@ import {
   type DurableMissionTaskDispatch,
 } from "../agent/durableMissions";
 import { wouldCreateCycle, type GraphTask } from "../agent/missionGraph";
+import { presentMissionBoard, type LiveCard, type MissionTaskRow } from "../agent/missionBoard";
+import type { MissionTaskStatus } from "../agent/missionHarness";
 import type { AgentEvent, DiffProposal, PermissionRequest, ProviderId } from "../agent/types";
 import { readAgentRunEvents, reattachAgentRun, resolveDiff, resolvePermission } from "../agent/client";
 import { DiffModal } from "./DiffModal";
@@ -114,15 +116,11 @@ function useOrchestratorModel(tasks: PlannedTask[], mode: ModeKey) {
     const envelope = BUDGET_PRESETS[preset];
     const byTier: Record<ModelTier, Routed[]> = { local: [], cheap: [], strong: [], specialist: [] };
     for (const r of routed) byTier[r.assignment.modelTier].push(r);
-    const readyCount = routed.filter((r) => (r.task.dependsOn ?? []).length === 0).length;
-    return { routed, totalCost, totalMs, envelope, byTier, readyCount };
+    return { routed, totalCost, totalMs, envelope, byTier };
   }, [tasks, mode]);
 }
 
 // ── Real dispatch (slice-1 seam) ─────────────────────────────────────────────
-type CardStatus = "idle" | "running" | "review" | "done" | "error" | "interrupted";
-type LiveCard = { status: CardStatus; activity: string };
-
 function activityFromEvent(prev: LiveCard, ev: AgentEvent): LiveCard {
   switch (ev.type) {
     case "tool_call_started":
@@ -302,9 +300,18 @@ function SegmentedModes({ mode, setMode }: { mode: ModeKey; setMode: (m: ModeKey
 // Status: sage = live, brick = failed, muted = idle/done — plain status words,
 // no edge rails, dots, or halos. "done" recedes to a quiet muted check so the
 // live work stays the focus.
-function StatusBadge({ status }: { status: CardStatus }) {
+function StatusBadge({ status }: { status: MissionTaskStatus }) {
   if (status === "done") return <span style={{ display: "inline-flex", color: "var(--fg-subtle)" }}><IconCheck size={11} /></span>;
-  const color = status === "idle" ? "var(--fg-dim)" : toneColor(presentMissionCardTone(status));
+  const word = status === "failed"
+    ? "error"
+    : status === "interrupted"
+      ? "interrupted"
+      : status === "review"
+        ? "review"
+        : status === "running" || status === "validating"
+          ? "working"
+          : "idle"; // queued / ready / blocked / assigned / waiting / cancelled
+  const color = word === "idle" ? "var(--fg-dim)" : toneColor(presentMissionCardTone(status));
   return (
     <span
       style={{
@@ -314,7 +321,7 @@ function StatusBadge({ status }: { status: CardStatus }) {
         lineHeight: 1,
       }}
     >
-      {status === "error" ? "error" : status === "interrupted" ? "interrupted" : status === "review" ? "review" : status === "running" ? "working" : "idle"}
+      {word}
     </span>
   );
 }
@@ -868,7 +875,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
   // Board = model-routing lanes; Graph = the dependency DAG. Both project the
   // same tasks — the graph is a view, not a second state model.
   const [viewMode, setViewMode] = useState<"board" | "graph">("graph");
-  const { routed, byTier, totalCost, totalMs, readyCount } = useOrchestratorModel(tasks, mode);
+  const { routed, byTier, totalCost, totalMs } = useOrchestratorModel(tasks, mode);
   const durableState = useMemo(
     () => durableBundle ? compileDurableMissionBundle(durableBundle) : null,
     [durableBundle]
@@ -878,13 +885,31 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
     : false;
 
   const real = useMissionRunObserver();
-  const titleById = useMemo(() => Object.fromEntries(routed.map((r) => [r.task.taskId, r.task.title])), [routed]);
 
   // ── Mission supervision ───────────────────────────────────────────────────
   // Rust owns selection, attempt attachment, Harness launch, validation, and
   // accept-gated continuation. React only observes the durable projection and
   // answers explicit permission/diff pauses after reattaching to a Run.
   const [missionOn, setMissionOn] = useState(false);
+
+  // The one board projection: task status (durable + live arbitrated),
+  // readiness, block reasons. Board cards, the ready readout, the Run Mission
+  // gate, and the graph all read these rows — nothing re-derives them inline.
+  const boardRows = useMemo(
+    () => presentMissionBoard({
+      state: durableState,
+      missionId: durableBundle?.mission.id ?? null,
+      plan: tasks,
+      liveCards: real.live,
+      missionLive: missionOn,
+    }),
+    [durableState, durableBundle?.mission.id, tasks, real.live, missionOn]
+  );
+  const rowById = useMemo(
+    () => new Map<string, MissionTaskRow>(boardRows.map((row) => [row.taskId, row])),
+    [boardRows]
+  );
+  const readyCount = useMemo(() => boardRows.filter((row) => row.ready).length, [boardRows]);
 
   // Reconstruct the latest Mission after this surface remounts. The authored
   // task Markdown restores the list; events restore attempts and acceptance.
@@ -1071,7 +1096,9 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
       out[task.taskId] = {
         title: task.title,
         phase: task.phase,
-        status: durableState?.tasks[task.taskId]?.status ?? "queued",
+        // The same arbitrated status the board card shows — Board and Graph
+        // must never disagree about one Task in one render.
+        status: rowById.get(task.taskId)?.status ?? "queued",
         risk: task.risk,
         description: task.description,
         worker: ov ? providerName(ov.provider) : WORKER_LABEL[assignment.workerKind],
@@ -1081,7 +1108,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
       };
     }
     return out;
-  }, [routed, overrides, durableState]);
+  }, [routed, overrides, rowById]);
 
   async function toggleDependency(dependentId: string, prerequisiteId: string) {
     const task = tasks.find((candidate) => candidate.taskId === dependentId);
@@ -1393,26 +1420,12 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     {items.map((r) => {
                       const t = r.task;
-                      const dep = t.dependsOn?.[0];
-                      const liveCard = real.live[t.taskId];
-                      const durableTask = durableState?.tasks[t.taskId];
+                      const row = rowById.get(t.taskId);
+                      const liveCard = row?.live ?? null;
                       const durableSpec = durableBundle?.tasks.find((task) => task.id === t.taskId);
-                      const lastAttempt = durableTask?.attempts[durableTask.attempts.length - 1];
-                      const projectedStatus: CardStatus = durableTask?.acceptedRunId
-                        ? "done"
-                        : lastAttempt?.status === "review"
-                          ? "review"
-                          : lastAttempt?.status === "running"
-                            ? "running"
-                            : lastAttempt?.status === "interrupted"
-                              ? "interrupted"
-                              : lastAttempt
-                                ? "error"
-                                : "idle";
-                      const status: CardStatus = projectedStatus === "done" || projectedStatus === "review" || projectedStatus === "error" || projectedStatus === "interrupted"
-                        ? projectedStatus
-                        : liveCard?.status ?? projectedStatus;
-                      const canRunReal = !!workspaceRoot && !!durableBundle && status !== "running" && status !== "review" && !missionOn;
+                      const lastAttempt = row?.lastAttempt ?? null;
+                      const status: MissionTaskStatus = row?.status ?? "queued";
+                      const canRunReal = !!workspaceRoot && !!durableBundle && status !== "running" && status !== "review" && status !== "validating" && !missionOn;
                       const ov = overrides[t.taskId] ?? null;
                       const isOpen = expanded === t.taskId;
                       const effWorker = ov ? providerName(ov.provider) : WORKER_LABEL[r.assignment.workerKind];
@@ -1422,7 +1435,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
                         <article
                           key={t.taskId}
                           className="klide-orch-card"
-                          data-live={status === "running" ? "running" : status === "review" ? "review" : status === "error" ? "error" : status === "interrupted" ? "interrupted" : undefined}
+                          data-live={status === "running" ? "running" : status === "review" ? "review" : status === "failed" ? "error" : status === "interrupted" ? "interrupted" : undefined}
                           style={{
                             padding: 14,
                             borderRadius: "var(--radius-md)",
@@ -1479,23 +1492,14 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
                               </button>
                             </div>
                           )}
-                          {dep && (() => {
-                            // Mission-aware dep line: parked upstream failure →
-                            // blocked; an interrupted upstream → retry (amber, not
-                            // a failure); waiting its turn in a live mission → queued.
-                            const depFailed = (t.dependsOn ?? []).some((d) => durableState?.tasks[d]?.status === "failed");
-                            const depInterrupted = !depFailed && (t.dependsOn ?? []).some((d) => durableState?.tasks[d]?.status === "interrupted");
-                            const queued = missionOn && !liveCard && !depFailed && !depInterrupted;
-                            const depTitle = (titleById[dep] ?? dep).slice(0, 24);
-                            return (
-                              <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "var(--fs-xs)", color: depFailed ? "var(--danger)" : depInterrupted ? "var(--warning)" : "var(--fg-dim)", marginBottom: 8 }}>
-                                <IconDep size={11} />
-                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                  {depFailed ? `blocked · ${depTitle} failed` : depInterrupted ? `blocked · ${depTitle} interrupted` : queued ? `queued · after ${depTitle}` : `after ${depTitle}`}
-                                </span>
-                              </div>
-                            );
-                          })()}
+                          {row?.block && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "var(--fs-xs)", color: row.block.tone === "danger" ? "var(--danger)" : row.block.tone === "warning" ? "var(--warning)" : "var(--fg-dim)", marginBottom: 8 }}>
+                              <IconDep size={11} />
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {row.block.reason}
+                              </span>
+                            </div>
+                          )}
                           {liveCard && (
                             <div
                               className="klide-orch-activity"

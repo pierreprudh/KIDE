@@ -38,6 +38,7 @@
 
 import type { RunStatus, RunLifecycleStatus, RunBoardSection, RunBoardReasonTone } from "./runs";
 import type { LiveDelegateSession } from "./ipc/delegatePty";
+import type { MissionTaskStatus } from "./agent/missionHarness";
 
 /** The eight words. Nothing outside this module invents a ninth. */
 export type StateWord =
@@ -166,23 +167,23 @@ export function presentValidation(status: string | null | undefined): StateTone 
   }
 }
 
-/** The Orchestrator board's card states. Its words stay lowercase mono — a
+/** The Orchestrator board's card states — the MissionTaskStatus vocabulary,
+ *  as arbitrated by `agent/missionBoard.ts`. Its words stay lowercase mono — a
  *  deliberately quieter register than the run board's — but the tones come from
  *  here so a colour decision is made once. */
-export function presentMissionCardTone(
-  status: "idle" | "running" | "review" | "done" | "error" | "interrupted"
-): StateTone {
+export function presentMissionCardTone(status: MissionTaskStatus): StateTone {
   switch (status) {
     case "running":
+    case "validating":
       return "active";
     case "review":
     case "interrupted":
       return "attention";
-    case "error":
+    case "failed":
       return "bad";
-    case "done":
-      return "quiet";
-    case "idle":
+    default:
+      // queued / ready / blocked / assigned / waiting / done / cancelled all
+      // recede — the board's live work carries the colour.
       return "quiet";
   }
 }

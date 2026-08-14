@@ -399,14 +399,21 @@ export function taskDependenciesAccepted(
   return task.dependencies.every((dependencyId) => tasksById[dependencyId]?.acceptedRunId != null);
 }
 
+/** Ready to attempt, ignoring the mission-approval gate: not yet accepted, no
+ *  attempt in flight, every dependency accepted. The board projection also uses
+ *  this as its pre-approval preview of what approval would unlock. */
+export function missionTaskReady(task: MissionTask, tasksById: Record<string, MissionTask>): boolean {
+  if (task.acceptedRunId !== null) return false;
+  if (task.attempts.some((attempt) => attempt.status === "running" || attempt.status === "review")) return false;
+  return taskDependenciesAccepted(task, tasksById);
+}
+
 export function readyMissionTaskIds(state: MissionState, missionId: string): string[] {
   const mission = state.missions[missionId];
   if (!mission || mission.approvedAtMs === null) return [];
   return mission.taskIds.filter((taskId) => {
     const task = state.tasks[taskId];
-    if (!task || task.acceptedRunId !== null) return false;
-    if (task.attempts.some((attempt) => attempt.status === "running" || attempt.status === "review")) return false;
-    return taskDependenciesAccepted(task, state.tasks);
+    return task ? missionTaskReady(task, state.tasks) : false;
   });
 }
 
