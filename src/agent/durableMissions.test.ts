@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { compileDurableMissionBundle, terminalOutcome, type DurableMissionBundle } from "./durableMissions";
+import {
+  compileDurableMissionBundle,
+  plannedTaskToSpecInput,
+  specToPlannedTask,
+  terminalOutcome,
+  type DurableMissionBundle,
+  type DurableMissionTaskSpec,
+} from "./durableMissions";
 import { readyMissionTaskIds } from "./missionHarness";
+import type { PlannedTask } from "./planner";
 
 const validation = {
   status: "skipped",
@@ -334,5 +342,63 @@ describe("terminalOutcome", () => {
     ]);
     expect(outcome?.seq).toBe(3);
     expect(outcome?.event.type).toBe("mission_completed");
+  });
+});
+
+describe("plannedTaskToSpecInput / specToPlannedTask", () => {
+  const fullTask: PlannedTask = {
+    taskId: "t4",
+    title: "Implement core logic",
+    description: "Wire the new module into the existing call sites.",
+    acceptanceCriteria: ["Unit tests pass", "No new tsc errors"],
+    phase: "Build",
+    mode: "goal",
+    risk: "high",
+    writesFiles: true,
+    dependsOn: ["t2", "t3"],
+    needsRepoWideContext: true,
+    needsStrongReasoning: true,
+    needsDelegateCli: true,
+    needsVisualReview: true,
+  };
+
+  function specFrom(input: ReturnType<typeof plannedTaskToSpecInput>): DurableMissionTaskSpec {
+    return { ...input, schemaVersion: 1, missionId: "mission-one", createdMs: 1, updatedMs: 2 };
+  }
+
+  it("round-trips a fully specified task", () => {
+    expect(specToPlannedTask(specFrom(plannedTaskToSpecInput(fullTask)))).toEqual(fullTask);
+  });
+
+  it("round-trips a minimal task, filling only the acceptance-criteria fallback", () => {
+    const minimal: PlannedTask = {
+      taskId: "t1",
+      title: "Map the modules",
+      phase: "Understand",
+      mode: "plan",
+      risk: "low",
+      writesFiles: false,
+    };
+    const spec = specFrom(plannedTaskToSpecInput(minimal));
+    // Never persisted empty: with no description either, the criterion falls
+    // back to satisfying the title.
+    expect(spec.acceptanceCriteria).toEqual(["The task outcome satisfies: Map the modules"]);
+    expect(spec.bodyMarkdown).toBe("");
+    expect(spec.dependencies).toEqual([]);
+    expect(specToPlannedTask(spec)).toEqual({
+      ...minimal,
+      acceptanceCriteria: spec.acceptanceCriteria,
+      description: undefined,
+      dependsOn: undefined,
+      needsRepoWideContext: undefined,
+      needsStrongReasoning: undefined,
+      needsDelegateCli: undefined,
+      needsVisualReview: undefined,
+    });
+  });
+
+  it("uses the description as the acceptance criterion when criteria are missing", () => {
+    const spec = plannedTaskToSpecInput({ ...fullTask, acceptanceCriteria: undefined });
+    expect(spec.acceptanceCriteria).toEqual([fullTask.description]);
   });
 });

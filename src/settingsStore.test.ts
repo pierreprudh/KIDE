@@ -6,6 +6,7 @@ import {
   getSetting,
   resetSettingsCacheForTests,
   setSetting,
+  settingsSearchIndex,
   subscribeSetting,
   type SettingDef,
 } from "./settingsStore";
@@ -75,6 +76,26 @@ describe("get/set/subscribe", () => {
     off();
     setSetting(def, 14);
     expect(hit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("settingsSearchIndex", () => {
+  it("surfaces every catalog entry that declares a search row", () => {
+    const index = settingsSearchIndex();
+    const rowKey = (e: { label: string; section: string }) => `${e.section}::${e.label}`;
+    const indexed = new Set(index.map(rowKey));
+    for (const [name, def] of Object.entries(SETTINGS) as Array<[string, SettingDef<unknown>]>) {
+      if (!def.search) continue;
+      for (const entry of Array.isArray(def.search) ? def.search : [def.search]) {
+        expect(indexed.has(rowKey(entry)), `SETTINGS.${name} row "${entry.label}" missing from the derived index`).toBe(true);
+      }
+    }
+  });
+
+  it("dedupes rows shared by several settings", () => {
+    const index = settingsSearchIndex();
+    const keys = index.map((e) => `${e.section}::${e.label}`);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 

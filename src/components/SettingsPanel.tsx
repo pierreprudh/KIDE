@@ -16,7 +16,7 @@ import { PROVIDER_GROUPS, DEFAULT_MODELS } from "../agent/providers";
 import { ModelPicker } from "./ai/ModelPicker";
 import { DEFAULT_ADVISOR_PROVIDER, DEFAULT_ADVISOR_MODEL } from "../agent/advisor";
 import { refreshCustomCli, type CustomCli } from "../customCli";
-import { SETTINGS, useSetting } from "../settingsStore";
+import { SETTINGS, settingsSearchIndex, useSetting, type SettingsSectionId } from "../settingsStore";
 import { useFlipIndicator } from "../hooks/useFlipIndicator";
 import { LayoutCanvas } from "./LayoutCanvas";
 import { GridLayoutBuilder } from "./GridLayoutBuilder";
@@ -73,17 +73,9 @@ import {
   TerminalIcon,
 } from "./settings/icons";
 
-type SectionId =
-  | "general"
-  | "appearance"
-  | "layout"
-  | "ai"
-  | "local-ai"
-  | "api"
-  | "subscription"
-  | "editor"
-  | "terminal"
-  | "stats";
+// The section vocabulary lives in the settings store so SettingDefs can name
+// their section without importing this component.
+type SectionId = SettingsSectionId;
 
 type Props = {
   aiVisible: boolean;
@@ -204,41 +196,30 @@ const SECTION_SUBTITLES: Record<SectionId, string> = {
 
 // Searchable index for the "Look for a setting" box. Each entry points at the
 // section that holds it; typing surfaces the matching entries so you can jump
-// straight there instead of hunting through tabs. Keywords cover the words a
-// user is likely to type (synonyms included) rather than the exact label.
+// straight there instead of hunting through tabs.
+//
+// Store-backed settings derive their rows from the SETTINGS catalog
+// (`search` on each SettingDef), so the index cannot drift from what the
+// store actually holds. Only things that are NOT persisted settings — panel
+// toggles, key managers, whole panes — stay in the hand list below.
 type SettingIndexEntry = { label: string; section: SectionId; keywords: string };
-const settingsIndex: SettingIndexEntry[] = [
+const panelOnlyIndex: SettingIndexEntry[] = [
   { label: "Panel visibility", section: "general", keywords: "explorer sidebar terminal ai panel show hide toggle" },
-  { label: "Startup", section: "general", keywords: "startup launch reopen restore last project welcome" },
-  { label: "Auto-save", section: "general", keywords: "autosave auto save delay focus blur dirty unsaved" },
-  { label: "Files & tabs", section: "general", keywords: "hidden files dotfiles confirm close unsaved tabs" },
-  { label: "Theme", section: "appearance", keywords: "theme dark light color colour palette appearance" },
-  { label: "Automatic light/dark theme", section: "appearance", keywords: "auto theme system light dark switch" },
   { label: "Panel sizes", section: "layout", keywords: "layout width height size resize panel" },
   { label: "Layout presets", section: "layout", keywords: "layout preset bento grid workbench arrange" },
-  { label: "AI model", section: "ai", keywords: "ai model assistant provider default" },
-  { label: "Diff review before edits", section: "ai", keywords: "diff review approve confirm edits write apply" },
-  { label: "Stop after rejection", section: "ai", keywords: "stop reject rejection halt edits" },
-  { label: "System prompts", section: "ai", keywords: "prompt system chat plan goal instructions" },
-  { label: "Tool overrides", section: "ai", keywords: "tools tool enable disable allow override" },
-  { label: "Context window", section: "ai", keywords: "context window tokens length size" },
-  { label: "Effort & reflection", section: "ai", keywords: "effort budget reflection thinking reasoning" },
-  { label: "Max parallel tools", section: "ai", keywords: "parallel tools concurrency simultaneous" },
-  { label: "Max turns", section: "ai", keywords: "max turns loop limit iterations" },
-  { label: "Command timeout", section: "ai", keywords: "command timeout shell run seconds" },
-  { label: "Test after edit", section: "ai", keywords: "test verify after edit syntax check command" },
-  { label: "Auto-draft memory on run done", section: "ai", keywords: "memory draft auto note handoff summarize pending review" },
   { label: "Local servers (Ollama / MLX)", section: "local-ai", keywords: "local ollama mlx server start stop concurrency model" },
   { label: "API keys", section: "api", keywords: "api key keychain anthropic openai mistral xai deepseek openrouter token secret" },
   { label: "CLI subscriptions", section: "subscription", keywords: "subscription claude code codex opencode omp oh my pi ollama signin login account auth cli" },
   { label: "GitHub account", section: "subscription", keywords: "github account gh avatar profile picture identity work personal switch pin push pr" },
-  { label: "Editor font size", section: "editor", keywords: "editor font size text monaco" },
-  { label: "Line numbers", section: "editor", keywords: "editor line numbers gutter" },
-  { label: "Word wrap", section: "editor", keywords: "editor word wrap soft" },
-  { label: "Minimap", section: "editor", keywords: "editor minimap overview" },
   { label: "Terminal", section: "terminal", keywords: "terminal shell font xterm" },
   { label: "Usage & stats", section: "stats", keywords: "stats usage tokens cost transcripts runs" },
 ];
+// Merged and shown in section order, so derived and hand rows interleave the
+// way the section rail reads.
+const sectionRank = new Map(sections.map((s, i) => [s.id, i]));
+const settingsIndex: SettingIndexEntry[] = [...settingsSearchIndex(), ...panelOnlyIndex].sort(
+  (a, b) => (sectionRank.get(a.section) ?? 99) - (sectionRank.get(b.section) ?? 99)
+);
 
 function matchSettings(query: string): SettingIndexEntry[] {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);

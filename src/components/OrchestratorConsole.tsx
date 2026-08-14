@@ -31,8 +31,10 @@ import {
   createDurableMission,
   dispatchDurableMissionTask,
   listDurableMissions,
+  plannedTaskToSpecInput,
   reviewDurableMissionAttempt,
   saveDurableMissionTask,
+  specToPlannedTask,
   terminalOutcome,
   type DurableMissionBundle,
   type DurableMissionTaskDispatch,
@@ -897,21 +899,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
       const projection = compileDurableMissionBundle(latest);
       setDurableBundle(latest);
       setGoal(latest.mission.intent);
-      setTasks(latest.tasks.map((task) => ({
-        taskId: task.id,
-        title: task.title,
-        description: task.bodyMarkdown || undefined,
-        acceptanceCriteria: task.acceptanceCriteria,
-        phase: task.phase,
-        mode: task.mode,
-        risk: task.risk,
-        writesFiles: task.writesFiles,
-        dependsOn: task.dependencies.length ? task.dependencies : undefined,
-        needsRepoWideContext: task.needsRepoWideContext || undefined,
-        needsStrongReasoning: task.needsStrongReasoning || undefined,
-        needsDelegateCli: task.needsDelegateCli || undefined,
-        needsVisualReview: task.needsVisualReview || undefined,
-      })));
+      setTasks(latest.tasks.map(specToPlannedTask));
       setOverrides(Object.fromEntries(latest.tasks.flatMap((task) => task.dispatch
         ? [[task.id, { provider: task.dispatch.provider as ProviderId, model: task.dispatch.model }]]
         : [])));
@@ -1029,23 +1017,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
     if (!workspaceRoot || !durableBundle || savingTaskId) return;
     setSavingTaskId(task.taskId);
     try {
-      const saved = await saveDurableMissionTask(workspaceRoot, durableBundle.mission.id, {
-        id: task.taskId,
-        title: task.title,
-        bodyMarkdown: task.description ?? "",
-        phase: task.phase,
-        mode: task.mode,
-        risk: task.risk,
-        writesFiles: task.writesFiles,
-        dependencies: task.dependsOn ?? [],
-        acceptanceCriteria: task.acceptanceCriteria?.length
-          ? task.acceptanceCriteria
-          : [task.description ?? `The task outcome satisfies: ${task.title}`],
-        needsRepoWideContext: task.needsRepoWideContext === true,
-        needsStrongReasoning: task.needsStrongReasoning === true,
-        needsDelegateCli: task.needsDelegateCli === true,
-        needsVisualReview: task.needsVisualReview === true,
-      });
+      const saved = await saveDurableMissionTask(workspaceRoot, durableBundle.mission.id, plannedTaskToSpecInput(task));
       setDurableBundle(saved);
       notify("Task saved to Mission Markdown", { tone: "success" });
     } catch (error) {
@@ -1177,23 +1149,7 @@ export function OrchestratorConsole({ workspaceRoot = null }: { workspaceRoot?: 
         title: goal.trim().slice(0, 120),
         intent: goal.trim(),
         mode: "goal",
-        tasks: result.map((task) => ({
-          id: task.taskId,
-          title: task.title,
-          bodyMarkdown: task.description ?? "",
-          phase: task.phase,
-          mode: task.mode,
-          risk: task.risk,
-          writesFiles: task.writesFiles,
-          dependencies: task.dependsOn ?? [],
-          acceptanceCriteria: task.acceptanceCriteria?.length
-            ? task.acceptanceCriteria
-            : [task.description ?? `The task outcome satisfies: ${task.title}`],
-          needsRepoWideContext: task.needsRepoWideContext === true,
-          needsStrongReasoning: task.needsStrongReasoning === true,
-          needsDelegateCli: task.needsDelegateCli === true,
-          needsVisualReview: task.needsVisualReview === true,
-        })),
+        tasks: result.map(plannedTaskToSpecInput),
       });
       setDurableBundle(bundle);
       if (!usedFallback) notify(`Planned and saved ${result.length} task${result.length === 1 ? "" : "s"}`, { tone: "success" });

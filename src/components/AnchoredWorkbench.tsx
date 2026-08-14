@@ -8,6 +8,7 @@ import type { RenderAiPanel } from "./ai/panelHost";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { EditorArea } from "./EditorArea";
+import { ImageView } from "./ImageView";
 import { SearchPanel } from "./SearchPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { SplitPane } from "./SplitPane";
@@ -22,6 +23,7 @@ type Tab = {
   dirty: boolean;
   externalChanged?: boolean;
   diskCode?: string;
+  dataUri?: string;
 };
 type Panel = "explorer" | "git" | "memory" | "skills" | "ai" | "runs" | "settings" | "profile";
 
@@ -193,7 +195,7 @@ export function AnchoredWorkbench(props: Props) {
     >
       {tabs.length > 0 && (
         <TabBar
-          tabs={tabs.map((t) => ({ path: t.path, dirty: t.dirty }))}
+          tabs={tabs.map((t) => ({ path: t.path, dirty: t.dirty, externalChanged: t.externalChanged }))}
           activeIdx={activeIdx}
           onSelect={onSelectTab}
           onClose={onCloseTab}
@@ -207,18 +209,22 @@ export function AnchoredWorkbench(props: Props) {
         onOpenFile={onOpenFile}
       />
       <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <EditorArea
-          code={active?.code ?? ""}
-          onChange={onChangeCode}
-          language={language ?? "plaintext"}
-          hasFile={active !== null}
-          theme={theme}
-          fontSize={editorFontSize}
-          lineNumbers={editorLineNumbers}
-          wordWrap={editorWordWrap}
-          minimap={editorMinimap}
-          onEditorMount={onMountEditor}
-        />
+        {active?.dataUri ? (
+          <ImageView src={active.dataUri} name={active.path} />
+        ) : (
+          <EditorArea
+            code={active?.code ?? ""}
+            onChange={onChangeCode}
+            language={language ?? "plaintext"}
+            hasFile={active !== null}
+            theme={theme}
+            fontSize={editorFontSize}
+            lineNumbers={editorLineNumbers}
+            wordWrap={editorWordWrap}
+            minimap={editorMinimap}
+            onEditorMount={onMountEditor}
+          />
+        )}
       </div>
     </div>
   );
