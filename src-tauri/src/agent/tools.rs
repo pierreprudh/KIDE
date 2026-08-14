@@ -59,6 +59,33 @@ const MAX_WEB_REDIRECTS: usize = 5;
 /// both Plan and Goal (unlike other Pause tools, which are Goal-only). Named
 /// once here so the offer filter, the mode gate, and the loop dispatch agree.
 pub const ADVISOR_TOOL: &str = "consult_advisor";
+/// The builtin shell-command tool name. Every other command-capability tool
+/// is a dynamic tool from `.agents/tools.json`.
+pub const RUN_COMMAND_TOOL: &str = "run_command";
+
+/// Which Pause ceremony a Pause entry runs. Tool identity is registry data:
+/// the run loop dispatches on this, never on a tool-name literal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseFlavor {
+    /// `userAnswerQuestion` — ask the user, feed the verbatim answer back.
+    Question,
+    /// `spawn_subagent` — park while the frontend runs a nested child run.
+    Subagent,
+    /// `consult_advisor` — park while a stronger model answers one question.
+    Advisor,
+}
+
+/// The Pause flavor for a tool name, `None` for non-Pause tools. Lives beside
+/// the registry entries so the mapping can't drift from them unnoticed —
+/// `every_pause_entry_has_a_flavor` pins that.
+pub fn pause_flavor(name: &str) -> Option<PauseFlavor> {
+    match name {
+        "userAnswerQuestion" => Some(PauseFlavor::Question),
+        "spawn_subagent" => Some(PauseFlavor::Subagent),
+        ADVISOR_TOOL => Some(PauseFlavor::Advisor),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct NormalizedToolCall {
@@ -808,7 +835,7 @@ fn dynamic_tool_schema(def: &DynamicToolDef) -> serde_json::Value {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DynamicToolCommand {
+pub struct CommandInvocation {
     pub tool_name: String,
     pub command: String,
     pub cwd: String,
@@ -817,11 +844,51 @@ pub struct DynamicToolCommand {
     pub reason: String,
 }
 
+/// Resolve a command-capability call into the concrete invocation the
+/// permission gate shows the user. The registry owns which name is which:
+/// the builtin `run_command` reads its `command` input and runs at the
+/// workspace root; every other command-capability name is a dynamic tool
+/// whose command comes from its `.agents/tools.json` template.
+pub fn command_invocation(
+    call: &NormalizedToolCall,
+    workspace_root: &str,
+    default_timeout_secs: u64,
+) -> Result<CommandInvocation, ToolResult> {
+    if call.name == RUN_COMMAND_TOOL {
+        let command = call
+            .input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if command.is_empty() {
+            return Err(err("run_command requires a non-empty command.".to_string()));
+        }
+        return Ok(CommandInvocation {
+            tool_name: RUN_COMMAND_TOOL.to_string(),
+            summary: format!("$ {command}"),
+            reason: "The agent wants to run a shell command in the workspace.".to_string(),
+            command,
+            cwd: workspace_root.to_string(),
+            // Clamped so a bad setting can't disable the runaway guard.
+            timeout_secs: default_timeout_secs.clamp(1, 1800),
+        });
+    }
+    match dynamic_tool_command(&call.name, &call.input, workspace_root) {
+        Some(result) => result,
+        None => Err(err(format!(
+            "Unknown command-capability tool: {}",
+            call.name
+        ))),
+    }
+}
+
 pub fn dynamic_tool_command(
     name: &str,
     input: &serde_json::Value,
     workspace_root: &str,
-) -> Option<Result<DynamicToolCommand, ToolResult>> {
+) -> Option<Result<CommandInvocation, ToolResult>> {
     let def = find_dynamic_tool_def(name, Some(workspace_root))?;
     let ws = match Workspace::new(workspace_root) {
         Ok(ws) => ws,
@@ -839,7 +906,7 @@ pub fn dynamic_tool_command(
     };
     let timeout_secs = def.timeout_secs.clamp(1, 1800);
 
-    Some(Ok(DynamicToolCommand {
+    Some(Ok(CommandInvocation {
         tool_name: def.name.clone(),
         summary: format!("{}: $ {}", def.name, full_command),
         reason: format!(
@@ -3578,6 +3645,87 @@ mod tests {
         assert_eq!(&s[spans[2].0..spans[2].1], "gamma");
         // Trailing newline does not create a phantom empty line.
         assert_eq!(line_spans("a\n").len(), 1);
+    }
+
+    #[test]
+    fn every_pause_entry_has_a_flavor_and_only_pause_entries_do() {
+        // The loop dispatches Pause ceremony on `pause_flavor`, so a fourth
+        // Pause tool added to the registry without a flavor would silently
+        // fall through to the question ceremony — pin the mapping to the
+        // entries, in both directions, with distinct flavors per entry.
+        let mut seen = Vec::new();
+        for entry in registry() {
+            let name = entry.schema["function"]["name"].as_str().unwrap();
+            match (entry.kind, pause_flavor(name)) {
+                (ToolKind::Pause, Some(flavor)) => {
+                    assert!(
+                        !seen.contains(&flavor),
+                        "{name}: flavor {flavor:?} already used by another Pause entry"
+                    );
+                    seen.push(flavor);
+                }
+                (ToolKind::Pause, None) => {
+                    panic!("Pause entry {name} has no PauseFlavor — add it to pause_flavor()")
+                }
+                (_, Some(flavor)) => {
+                    panic!("non-Pause entry {name} maps to {flavor:?} — flavor implies Pause")
+                }
+                (_, None) => {}
+            }
+        }
+        assert_eq!(seen.len(), 3, "expected the three Pause ceremonies");
+    }
+
+    #[test]
+    fn command_invocation_resolves_builtin_and_dynamic_and_rejects_unknown() {
+        let dir = std::env::temp_dir().join(format!("klide-cmd-inv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".agents")).unwrap();
+        std::fs::write(
+            dir.join(".agents/tools.json"),
+            r#"{"tools":[{"name":"lint","description":"Lint","command":"npm run lint","cwd":"workspace","timeout_secs":60}]}"#,
+        )
+        .unwrap();
+        let root = dir.to_str().unwrap();
+
+        // Builtin: reads the `command` input, runs at the workspace root,
+        // clamps the timeout.
+        let call = NormalizedToolCall {
+            id: "t1".to_string(),
+            name: RUN_COMMAND_TOOL.to_string(),
+            input: serde_json::json!({ "command": "  ls -la  " }),
+        };
+        let inv = command_invocation(&call, root, 9_999).expect("builtin resolves");
+        assert_eq!(inv.command, "ls -la");
+        assert_eq!(inv.cwd, root);
+        assert_eq!(inv.timeout_secs, 1800, "timeout must clamp to the guard cap");
+
+        // Builtin with an empty command is refused.
+        let empty = NormalizedToolCall {
+            id: "t2".to_string(),
+            name: RUN_COMMAND_TOOL.to_string(),
+            input: serde_json::json!({ "command": "   " }),
+        };
+        assert!(command_invocation(&empty, root, 180).is_err());
+
+        // Dynamic: the template from .agents/tools.json wins.
+        let dynamic = NormalizedToolCall {
+            id: "t3".to_string(),
+            name: "lint".to_string(),
+            input: serde_json::json!({}),
+        };
+        let inv = command_invocation(&dynamic, root, 180).expect("dynamic resolves");
+        assert_eq!(inv.command, "npm run lint");
+
+        // Unknown command-capability names are refused, not guessed.
+        let unknown = NormalizedToolCall {
+            id: "t4".to_string(),
+            name: "not_a_tool".to_string(),
+            input: serde_json::json!({}),
+        };
+        let refused = command_invocation(&unknown, root, 180).unwrap_err();
+        assert!(refused.content.contains("Unknown command-capability tool"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
