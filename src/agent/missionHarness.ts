@@ -1,5 +1,6 @@
 import type { AgentMode } from "./types";
 import type { WorkerAssignment } from "./routingPolicy";
+import type { RecordedValidation } from "./validationContracts";
 
 export type MissionStatus =
   | "draft"
@@ -38,23 +39,10 @@ export type MissionTaskAttemptStatus =
   | "accepted"
   | "rejected";
 
-export type MissionAttemptValidation = {
-  status: string;
-  checks: Array<{
-    id: string;
-    label: string;
-    status: string;
-    required: boolean;
-    evidence?: string;
-  }>;
-  filesChanged: number;
-  commandsRun: number;
-  commandsFailed: number;
-  diffReviews: number;
-  permissionsApproved: number;
-  permissionsDenied: number;
-  warnings: string[];
-};
+/** The Rust Harness's evidence snapshot for one attempt, already parsed at
+ *  the IPC edge by `parseValidationSummary` — statuses are the wire union,
+ *  never a bare string. The shape's one owner is `validationContracts.ts`. */
+export type MissionAttemptValidation = RecordedValidation;
 
 /** A Task is the durable unit of intent; Runs are replaceable attempts. */
 export type MissionTaskAttempt = {
