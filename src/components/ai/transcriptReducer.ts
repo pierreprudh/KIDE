@@ -1,267 +1,126 @@
-// Pure transcript-shaping core for the AI panel's live run.
+// The live Msg[] view of one run's fold.
 //
 // The AiPanel streams a run's `AgentEvent`s into a `Msg[]` (the Conversation).
-// Historically that transform lived in a ~270-line closure inside the component,
-// reachable only by mounting the panel and feeding a real event stream — so the
-// subtle, bug-prone parts (the tool-card walk-past, delta application, and the
-// token / TTFT / cost math) had no test surface.
+// The event → row logic itself lives in `src/agent/foldEvents.ts` — the ONE
+// fold, shared with replay — and this module is the React-facing shell around
+// it: it owns the run's *region* of the panel's message array and keeps that
+// region in sync with the fold's rows.
 //
-// These functions are that logic, lifted out as pure operations over plain
-// values: `(msgs, …) → { msgs, … }`. The component keeps the effectful shell
-// (setState, the delta flush timer, IPC); this module owns the shaping and is
-// unit-tested directly in transcriptReducer.test.ts.
+// What the shell adds on top of the fold:
+// - a per-row projection cache, so an event only rebuilds the Msg objects of
+//   the rows it touched — every other Msg keeps its reference across renders
+//   (per-token deltas re-project exactly one assistant bubble);
+// - the region splice: the panel array holds restored history before the run
+//   and panel-appended rows after it (queued turns, compaction markers), and
+//   `project` replaces only `[regionStart, regionStart + projected.length)`;
+// - adoption of the placeholder bubble the panel inserts before the first
+//   event, so that Msg keeps its identity until the stream first writes to it;
+// - a foreign-edit guard: if something else rewrote the region (the panel's
+//   error path, or a conversation switch mid-flush), the shell detaches
+//   instead of clobbering what it no longer owns.
+//
+// Framework-free and unit-tested in transcriptReducer.test.ts; the timing,
+// delta batching, and event routing live in the turn driver.
 
 import type { AgentEvent } from "../../agent/types";
-import type { AgentToolCall as ToolCall } from "../../agent/tools";
-import { estimateTokens } from "./utils";
+import {
+  createFold,
+  foldedRowToMsgs,
+  type FoldLiveTiming,
+  type FoldStep,
+} from "../../agent/foldEvents";
 import type { Msg } from "./types";
 
-/** Delegate-console tagging carried on every assistant/tool row of a turn. */
+/** Delegate-console tagging carried on every assistant row of a turn. */
 export type TranscriptDelegate = { delegateConsole?: boolean; delegateProvider?: string };
 
 export type Pricing = { inputPerMillion: number; outputPerMillion: number } | null;
 
-/** Per-message footer metrics (matches the `meta` field on an assistant Msg). */
-export type AssistantMeta = {
-  ms?: number;
-  modelMs?: number;
-  tokens?: number;
-  promptTokens?: number;
-  ttftMs?: number;
-  tps?: number;
-  exact?: boolean;
-  costUsd?: number;
+export type RunTranscript = {
+  /** Feed one event into the fold. Cheap (per-token safe); nothing is
+   *  projected until `project` runs. Returns the fold's step so the caller
+   *  can read the finalized turn meta. */
+  apply(event: AgentEvent, live?: FoldLiveTiming): FoldStep;
+  /** Re-project the rows touched since the last call and splice the run's
+   *  region into `current`. Returns the next array, or null when nothing
+   *  changed — or when the region was edited from outside, after which the
+   *  transcript stays detached for good. */
+  project(current: Msg[]): Msg[] | null;
+  /** Index (in the last projected array) of the run's current assistant
+   *  bubble — the row the error path replaces with a failure message. */
+  assistantIndex(): number;
 };
 
-/** Timing captured across a single provider turn, owned by the component. */
-export type TurnTiming = { turnStartedAt: number; firstTokenAt: number | null };
-
-/**
- * Ensure an assistant bubble exists at/after `nextAssistantIdx` and return its
- * index. After a `tool_call_started` splice, `nextAssistantIdx` points at a tool
- * card; the old guard (`role !== "assistant" → drop`) silently discarded every
- * assistant update from that point on, so multi-turn tool runs never showed
- * their final answer. Walk past tool cards; insert a fresh bubble for the new
- * turn when the slot isn't already an assistant row.
- *
- * Pure: returns a new array (cloned only when it inserts).
- */
-export function locateAssistant(
-  msgs: Msg[],
-  nextAssistantIdx: number,
-  delegate: TranscriptDelegate
-): { msgs: Msg[]; index: number } {
-  let i = nextAssistantIdx;
-  // Walk past tool cards and steering markers — both are annotations attached
-  // to the current turn, not the next assistant bubble.
-  while (msgs[i]?.role === "tool" || isSteeringRow(msgs[i])) i += 1;
-  if (msgs[i]?.role === "assistant") {
-    return { msgs, index: i };
-  }
-  const next = [...msgs];
-  next.splice(i, 0, { role: "assistant", content: "", ...delegate });
-  return { msgs: next, index: i };
-}
-
-/** A loop-monitor steering marker: a system row carrying `steering`. */
-function isSteeringRow(msg: Msg | undefined): boolean {
-  return msg?.role === "system" && "steering" in msg && msg.steering !== undefined;
-}
-
-/**
- * Splice a steering marker after the current turn's cursor and advance it past
- * the new row, so the next assistant bubble lands after it. Called when the loop
- * monitor injects a nudge — see `steering.rs` / the turn driver.
- */
-export function insertSteering(
-  msgs: Msg[],
-  nextAssistantIdx: number,
-  reason: string
-): { msgs: Msg[]; index: number } {
-  const next = [...msgs];
-  const at = nextAssistantIdx + 1;
-  next.splice(at, 0, { role: "system", content: reason, steering: { reason } });
-  return { msgs: next, index: at };
-}
-
-/**
- * Apply a throttled delta (accumulated content + thinking) to the current
- * assistant bubble, creating one if needed. Returns the new array and the
- * resolved assistant index (which the component stores back as nextAssistantIdx).
- */
-export function appendDelta(
-  msgs: Msg[],
-  nextAssistantIdx: number,
-  content: string,
-  thinking: string,
-  delegate: TranscriptDelegate
-): { msgs: Msg[]; index: number } {
-  const located = locateAssistant(msgs, nextAssistantIdx, delegate);
-  const next = [...located.msgs];
-  const existing = next[located.index] as Msg & { role: "assistant" };
-  const newContent = (existing.content || "") + content;
-  const newThinking = [existing.thinking, thinking].filter(Boolean).join("") || undefined;
-  next[located.index] = { ...existing, content: newContent, thinking: newThinking, ...delegate };
-  return { msgs: next, index: located.index };
-}
-
-/**
- * Insert a "Running <name>…" tool row after the current assistant bubble.
- * Returns the new array and the advanced nextAssistantIdx.
- */
-export function startToolCall(
-  msgs: Msg[],
-  nextAssistantIdx: number,
-  name: string,
-  toolCallId: string
-): { msgs: Msg[]; index: number } {
-  const next = [...msgs];
-  next.splice(nextAssistantIdx + 1, 0, {
-    role: "tool",
-    content: `Running ${name}...`,
-    toolName: name,
-    toolCallId,
-    tool_call_id: toolCallId,
-  });
-  return { msgs: next, index: nextAssistantIdx + 1 };
-}
-
-/**
- * Replace a tool row's "Running…" placeholder with its result. Matches by id
- * over the whole list — ids are unique per run, and searching from
- * nextAssistantIdx+1 used to skip the very row the result belongs to.
- */
-export function finishToolCall(msgs: Msg[], toolCallId: string, resultContent: string): Msg[] {
-  const next = [...msgs];
-  for (let i = 0; i < next.length; i++) {
-    const msg = next[i];
-    if (msg.role === "tool" && (msg.toolCallId === toolCallId || msg.tool_call_id === toolCallId)) {
-      next[i] = {
-        role: "tool",
-        content: resultContent,
-        toolName: msg.toolName,
-        toolCallId,
-        tool_call_id: toolCallId,
-      };
-      break;
-    }
-  }
-  return next;
-}
-
-type AssistantMessageEvent = Extract<AgentEvent, { type: "assistant_message" }>;
-
-/**
- * Fold a finalized `assistant_message` into the transcript: build the assistant
- * Msg with real content, thinking, tool calls, and the per-message meta footer
- * (duration, tokens, TTFT, tok/s, cost). Prefers the provider's own usage block
- * over length estimates; leaves cost undefined for local / subscription turns.
- *
- * Pure: all timing is passed in (`timing`, `now`) so tests are deterministic.
- * `measuredPromptTokens` / `measuredUsage` are surfaced for the component to
- * push into the context gauge state when the provider reported prompt tokens.
- */
-export function finalizeAssistantMessage(input: {
-  msgs: Msg[];
-  nextAssistantIdx: number;
-  event: AssistantMessageEvent;
-  timing: TurnTiming;
-  now: number;
-  pricing: Pricing;
+export function createRunTranscript(opts: {
+  /** Where the run's rows start in the panel's message array. */
+  regionStart: number;
+  /** The pre-inserted empty assistant bubble this run streams into, adopted
+   *  as the fold's open row so its Msg identity survives until first write. */
+  seed: Msg | null;
   delegate: TranscriptDelegate;
-}): {
-  msgs: Msg[];
-  index: number;
-  meta: AssistantMeta;
-  measuredPromptTokens?: number;
-  measuredUsage?: { prompt: number; completion: number };
-} {
-  const { event, timing, now, pricing, delegate } = input;
-  const text = event.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  const thinking = event.content
-    .filter((b) => b.type === "thinking")
-    .map((b) => b.text)
-    .join("")
-    .trim();
-  const tcBlocks = event.content.filter((b) => b.type === "tool_call");
-  const tcCalls: ToolCall[] = tcBlocks.map((b) => ({
-    id: ("toolCallId" in b ? b.toolCallId : "") as string,
-    name: "name" in b ? (b.name as string) : "",
-    args: "input" in b ? b.input : {},
-  }));
-
-  // Wall clock for the turn: what the user waited, tools and diff reviews
-  // included. `modelMs` is the provider's own share, measured in the harness
-  // around the request — so a turn that paused on a diff review no longer
-  // reports that pause as model time. TTFT comes from the harness too, where
-  // the first chunk actually lands; the panel's own first-delta stamp is the
-  // fallback for older transcripts and non-harness turns.
-  const turnMs = now - timing.turnStartedAt;
-  const modelMs = event.timing?.modelMs;
-  const ttftMs =
-    event.timing?.ttftMs ??
-    (timing.firstTokenAt !== null ? timing.firstTokenAt - timing.turnStartedAt : undefined);
-
-  const located = locateAssistant(input.msgs, input.nextAssistantIdx, delegate);
-  const next = [...located.msgs];
-  const existing = next[located.index] as Msg & { role: "assistant" };
-  // Empty text with streamed deltas → keep the streamed content.
-  const msgContent = text || existing.content || "";
-  const estimatedTokens = estimateTokens(msgContent) + estimateTokens(thinking);
-
-  // Prefer the provider's real counts when present — Ollama reports eval_count,
-  // OpenAI/Anthropic send a usage block. The estimate is the fallback.
-  const usage = event.usage;
-  const tokens = usage?.completionTokens !== undefined ? usage.completionTokens : estimatedTokens;
-
-  let measuredPromptTokens: number | undefined;
-  let measuredUsage: { prompt: number; completion: number } | undefined;
-  if (usage?.promptTokens !== undefined) {
-    const completion = usage.completionTokens ?? tokens;
-    measuredPromptTokens = usage.promptTokens + completion;
-    measuredUsage = { prompt: usage.promptTokens, completion };
+  pricing: Pricing;
+}): RunTranscript {
+  const fold = createFold({
+    pricing: opts.pricing,
+    seedOpenAssistant: opts.seed !== null,
+  });
+  const view = { delegate: opts.delegate, runningPlaceholders: true };
+  // Projection cache: rowMsgs[i] is fold row i's Msg objects; flat is their
+  // concatenation — exactly what occupies the region right now.
+  const rowMsgs: Msg[][] = [];
+  let flat: Msg[] = [];
+  const dirty = new Set<number>();
+  let detached = false;
+  if (opts.seed) {
+    rowMsgs.push([opts.seed]);
+    flat = [opts.seed];
   }
 
-  // tok/s over decode time. Prefer the provider's own eval_duration, then the
-  // harness-measured provider time minus TTFT; panel wall-clock is the last
-  // resort because tool calls and rendering inflate it.
-  const decodeBaseMs = modelMs ?? turnMs;
-  const decodeMs = ttftMs !== undefined ? decodeBaseMs - ttftMs : decodeBaseMs;
-  let tps: number | undefined;
-  if (
-    usage?.completionTokens !== undefined &&
-    usage?.evalDurationMs !== undefined &&
-    usage.evalDurationMs > 0
-  ) {
-    tps = Math.round(usage.completionTokens / (usage.evalDurationMs / 1000));
-  } else if (tokens > 0 && decodeMs > 100) {
-    tps = Math.round(tokens / (decodeMs / 1000));
-  }
-  const exact = usage?.completionTokens !== undefined;
+  return {
+    apply(event, live) {
+      const step = fold.apply(event, live);
+      for (const i of step.changed) dirty.add(i);
+      return step;
+    },
 
-  // Per-message cost. The provider's own figure wins when present (OpenRouter
-  // reports the real charged amount); otherwise fall back to token counts ×
-  // list price. Local / subscription turns leave costUsd undefined.
-  const costUsd =
-    usage?.costUsd !== undefined
-      ? usage.costUsd
-      : pricing && usage?.promptTokens !== undefined && usage?.completionTokens !== undefined
-        ? (usage.promptTokens * pricing.inputPerMillion +
-            usage.completionTokens * pricing.outputPerMillion) /
-          1_000_000
-        : undefined;
+    project(current) {
+      if (detached) return null;
+      const rows = fold.rows();
+      if (dirty.size === 0 && rowMsgs.length === rows.length) return null;
+      // Foreign-edit guard: everything we projected last time must still be
+      // there, by reference. If not, someone else owns the region now.
+      for (let i = 0; i < flat.length; i++) {
+        if (current[opts.regionStart + i] !== flat[i]) {
+          detached = true;
+          return null;
+        }
+      }
+      for (const i of dirty) rowMsgs[i] = foldedRowToMsgs(rows[i], view);
+      // Safety net for rows the step reporting ever misses.
+      for (let i = rowMsgs.length; i < rows.length; i++) {
+        rowMsgs[i] = foldedRowToMsgs(rows[i], view);
+      }
+      dirty.clear();
+      const nextFlat: Msg[] = [];
+      for (const msgs of rowMsgs) nextFlat.push(...msgs);
+      const next = [
+        ...current.slice(0, opts.regionStart),
+        ...nextFlat,
+        ...current.slice(opts.regionStart + flat.length),
+      ];
+      flat = nextFlat;
+      return next;
+    },
 
-  const meta: AssistantMeta = { ms: turnMs, modelMs, tokens, promptTokens: usage?.promptTokens, ttftMs, tps, exact, costUsd };
-  next[located.index] = {
-    role: "assistant",
-    content: msgContent,
-    thinking: thinking || undefined,
-    toolCalls: tcCalls.length ? tcCalls : undefined,
-    ...delegate,
-    meta,
-    // The event's own stamp, so a live message and the same message replayed
-    // from the transcript carry the same timestamp.
-    ts: event.ts,
+    assistantIndex() {
+      const rows = fold.rows();
+      let offset = 0;
+      let found = opts.regionStart;
+      for (let i = 0; i < rowMsgs.length && i < rows.length; i++) {
+        if (rows[i].kind === "assistant") found = opts.regionStart + offset;
+        offset += rowMsgs[i].length;
+      }
+      return found;
+    },
   };
-  return { msgs: next, index: located.index, meta, measuredPromptTokens, measuredUsage };
 }

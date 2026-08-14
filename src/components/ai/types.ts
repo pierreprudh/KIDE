@@ -74,7 +74,17 @@ export type Msg =
         reason: string;
       };
     }
-  | { role: "tool"; content: string; toolName: string; toolCallId?: string; tool_call_id?: string };
+  | {
+      role: "tool";
+      content: string;
+      toolName: string;
+      toolCallId?: string;
+      /** Legacy duplicate of `toolCallId`, written by the pre-2026-08 live
+       *  path only so it could match its own rows. Nothing writes or reads it
+       *  anymore; the field stays so stored conversations that carry it keep
+       *  round-tripping through this type. */
+      tool_call_id?: string;
+    };
 
 export type QueuedTurn = {
   clientId: string;

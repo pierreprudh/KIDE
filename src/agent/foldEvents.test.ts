@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { foldAgentEvents, foldedToMsgs, foldedToRunMessages } from "./foldEvents";
+import {
+  compactionMsg,
+  createFold,
+  extractAssistantText,
+  foldAgentEvents,
+  foldedRowToMsgs,
+  foldedToMsgs,
+  foldedToRunMessages,
+} from "./foldEvents";
 import type {
   AgentAttachment,
   AgentContentBlock,
@@ -84,6 +92,10 @@ function toolFinished(toolCallId: string, content: string, ok = true): AgentEven
 
 function compacted(summary: string): AgentEvent {
   return { type: "context_compacted", runId: RUN, summary, ts: at() };
+}
+
+function delta(text: string, thinking?: string): AgentEvent {
+  return { type: "assistant_delta", runId: RUN, messageId: `d-${ts}`, text, thinking, ts: at() };
 }
 
 function steered(reason: string): AgentEvent {
@@ -212,7 +224,10 @@ describe("foldAgentEvents", () => {
     });
 
     it("falls back to a length estimate and marks it inexact", () => {
-      const text = "x".repeat(40);
+      // The estimate is `estimateTokens` (chars / 3.7), the app-wide
+      // estimator — the same constant the live path and the context gauge
+      // use, so an estimated count reads identically live and after reload.
+      const text = "x".repeat(37);
       const rows = foldAgentEvents([userMessage("hi"), assistantMessage(text)]);
       const row = rows[1];
       if (row.kind !== "assistant") throw new Error("expected assistant");
@@ -222,11 +237,11 @@ describe("foldAgentEvents", () => {
 
     it("counts thinking text toward the estimate", () => {
       const rows = foldAgentEvents([
-        assistantMessage("x".repeat(20), { thinking: "y".repeat(20) }),
+        assistantMessage("x".repeat(37), { thinking: "y".repeat(37) }),
       ]);
       const row = rows[0];
       if (row.kind !== "assistant") throw new Error("expected assistant");
-      expect(row.meta?.tokens).toBe(10);
+      expect(row.meta?.tokens).toBe(20);
     });
 
     it("omits tps when the provider reports no eval duration", () => {
@@ -380,8 +395,10 @@ describe("foldedToMsgs — the AI panel shape", () => {
     );
     expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
     const assistant = msgs[1] as Extract<Msg, { role: "assistant" }>;
+    // Raw input, not a JSON string — the structured tool rows and the memory
+    // summarizer's path extraction read fields off it, live and on replay.
     expect(assistant.toolCalls).toEqual([
-      { id: "t1", name: "read_file", args: JSON.stringify({ path: "a.ts" }) },
+      { id: "t1", name: "read_file", args: { path: "a.ts" } },
     ]);
     expect(msgs[2]).toMatchObject({ role: "tool", content: "file body", toolName: "read_file", toolCallId: "t1" });
   });
@@ -428,6 +445,180 @@ describe("foldedToMsgs — the AI panel shape", () => {
     const msgs = foldedToMsgs(foldAgentEvents([assistantMessage("plain answer")]));
     const assistant = msgs[0] as Extract<Msg, { role: "assistant" }>;
     expect(assistant.toolCalls).toBeUndefined();
+  });
+});
+
+describe("createFold — one walk, two paces", () => {
+  it("applied one event at a time equals the batch fold, meta included", () => {
+    const events: AgentEvent[] = [
+      userMessage("read it"),
+      delta("rea"),
+      delta("ding", "hm"),
+      assistantMessage("reading", {
+        thinking: "hmm",
+        toolCalls: [{ toolCallId: "t1", name: "read_file", input: { path: "a.ts" } }],
+        usage: { completionTokens: 12, promptTokens: 300 },
+        timing: { modelMs: 900, ttftMs: 100 },
+      }),
+      toolStarted("t1", "read_file", { path: "a.ts" }),
+      toolFinished("t1", "file body"),
+      delta("do"),
+      delta("ne"),
+      assistantMessage("all done"),
+      compacted("gist"),
+      steered("nudge"),
+    ];
+    const incremental = createFold();
+    for (const event of events) incremental.apply(event);
+    expect(incremental.rows()).toEqual(foldAgentEvents(events));
+  });
+
+  it("accumulates deltas into an open row, then finalizes that same row", () => {
+    const fold = createFold();
+    fold.apply(delta("Hel"));
+    const step = fold.apply(delta("lo", "thinking…"));
+    expect(step.changed).toEqual([0]);
+    expect(fold.rows()).toHaveLength(1);
+    expect(fold.rows()[0]).toMatchObject({ kind: "assistant", text: "Hello", thinking: "thinking…" });
+    fold.apply(assistantMessage("Hello there"));
+    expect(fold.rows()).toHaveLength(1);
+    expect(fold.rows()[0]).toMatchObject({ kind: "assistant", text: "Hello there" });
+  });
+
+  it("keeps streamed content when the final message text is empty", () => {
+    const fold = createFold();
+    fold.apply(delta("streamed so far"));
+    fold.apply(assistantMessage(""));
+    expect(fold.rows()[0]).toMatchObject({ kind: "assistant", text: "streamed so far" });
+  });
+
+  it("opens a fresh row for text that streams after a tool card", () => {
+    // A tool card splits the turn's text: whatever streams after it belongs in
+    // a new bubble under the card — same as the live view always rendered it.
+    const fold = createFold();
+    fold.apply(assistantMessage("calling", { toolCalls: [{ toolCallId: "t1", name: "grep" }] }));
+    fold.apply(toolStarted("t1", "grep"));
+    fold.apply(delta("final answer"));
+    expect(fold.rows().map((r) => r.kind)).toEqual(["assistant", "assistant"]);
+    expect(fold.rows()[1]).toMatchObject({ kind: "assistant", text: "final answer" });
+  });
+
+  it("seeds an open assistant row for the live placeholder and finalizes into it", () => {
+    const fold = createFold({ seedOpenAssistant: true });
+    expect(fold.rows()).toEqual([{ kind: "assistant", text: "", toolCalls: [] }]);
+    fold.apply(assistantMessage("hi"));
+    expect(fold.rows()).toHaveLength(1);
+    expect(fold.rows()[0]).toMatchObject({ kind: "assistant", text: "hi" });
+  });
+
+  it("reports which row a late tool result touched", () => {
+    const fold = createFold();
+    fold.apply(assistantMessage("first, a tool", { toolCalls: [{ toolCallId: "t1", name: "grep" }] }));
+    fold.apply(assistantMessage("follow-up prose"));
+    const step = fold.apply(toolFinished("t1", "3 matches"));
+    expect(step.changed).toEqual([0]);
+  });
+});
+
+describe("the tok/s rule — never wall clock", () => {
+  // Project memory: Rust measures model time (AgentTurnTiming); duration is
+  // never re-derived from Date.now(). The live path used to fall back to its
+  // wall clock here, so the same turn showed a different tok/s live than
+  // after a reload. Both paces now share this rule.
+  it("does not derive tok/s from the live turn clock", () => {
+    const fold = createFold();
+    const step = fold.apply(
+      assistantMessage("answer", { usage: { completionTokens: 100 } }),
+      { turnMs: 2_000 },
+    );
+    expect(step.finalizedMeta?.ms).toBe(2_000); // wall clock still shown as duration
+    expect(step.finalizedMeta?.tps).toBeUndefined(); // …but never as decode speed
+  });
+
+  it("live overrides feed ms and the TTFT fallback, not the decode window", () => {
+    const fold = createFold();
+    const step = fold.apply(
+      assistantMessage("answer", {
+        usage: { completionTokens: 40 },
+        timing: { modelMs: 2_400, ttftMs: 400 },
+      }),
+      { turnMs: 99_999, ttftFallbackMs: 5 },
+    );
+    expect(step.finalizedMeta?.tps).toBe(20); // 40 tokens over the harness's 2s decode
+    expect(step.finalizedMeta?.ms).toBe(99_999);
+    expect(step.finalizedMeta?.ttftMs).toBe(400); // harness TTFT wins over the fallback
+  });
+
+  it("uses the panel-measured TTFT only when the harness recorded none", () => {
+    const fold = createFold();
+    const step = fold.apply(assistantMessage("answer"), { turnMs: 1_000, ttftFallbackMs: 200 });
+    expect(step.finalizedMeta?.ttftMs).toBe(200);
+  });
+
+  it("estimates cost from pricing when the provider reports none, and only then", () => {
+    const priced = createFold({ pricing: { inputPerMillion: 3, outputPerMillion: 15 } });
+    const step = priced.apply(
+      assistantMessage("x", { usage: { promptTokens: 1_000_000, completionTokens: 1_000_000 } }),
+    );
+    expect(step.finalizedMeta?.costUsd).toBeCloseTo(18);
+    // The replay pace passes no pricing: local/subscription turns stay uncosted.
+    const unpriced = createFold();
+    const bare = unpriced.apply(assistantMessage("x"), { turnMs: 50 });
+    expect(bare.finalizedMeta?.costUsd).toBeUndefined();
+  });
+
+  it("carries provider prompt tokens through to the message meta", () => {
+    const msgs = foldedToMsgs(
+      foldAgentEvents([
+        userMessage("hi"),
+        assistantMessage("reply", { usage: { promptTokens: 500, completionTokens: 42 } }),
+      ]),
+    );
+    const assistant = msgs[1] as Extract<Msg, { role: "assistant" }>;
+    expect(assistant.meta).toMatchObject({ tokens: 42, promptTokens: 500, exact: true });
+  });
+});
+
+describe("shared row builders", () => {
+  it("compactionMsg builds the one compaction marker, pluralized", () => {
+    expect(compactionMsg(2, "the gist")).toEqual({
+      role: "system",
+      content: "Compacted 2 earlier messages to free context.",
+      compaction: { count: 2, summary: "the gist", source: "agent" },
+    });
+    expect(compactionMsg(1, "s").content).toBe("Compacted 1 earlier message to free context.");
+  });
+
+  it("extractAssistantText joins text blocks and ignores the rest", () => {
+    expect(
+      extractAssistantText([
+        { type: "thinking", text: "mull" },
+        { type: "text", text: "Hello " },
+        { type: "tool_call", toolCallId: "t1", name: "grep", input: {} },
+        { type: "text", text: "world" },
+      ]),
+    ).toBe("Hello world");
+    expect(extractAssistantText([])).toBe("");
+  });
+
+  it("foldedRowToMsgs shows a Running placeholder only for the live view", () => {
+    const rows = foldAgentEvents([
+      assistantMessage("working", { toolCalls: [{ toolCallId: "t1", name: "bash" }] }),
+      toolStarted("t1", "bash"),
+    ]);
+    const live = foldedRowToMsgs(rows[0], { runningPlaceholders: true });
+    expect(live.map((m) => m.role)).toEqual(["assistant", "tool"]);
+    expect(live[1]).toMatchObject({ role: "tool", content: "Running bash...", toolCallId: "t1" });
+    // Replay keeps its quieter shape: no row for a call that never finished.
+    expect(foldedRowToMsgs(rows[0]).map((m) => m.role)).toEqual(["assistant"]);
+  });
+
+  it("foldedRowToMsgs tags assistant rows with the delegate flags", () => {
+    const rows = foldAgentEvents([assistantMessage("hi")]);
+    const [msg] = foldedRowToMsgs(rows[0], {
+      delegate: { delegateConsole: true, delegateProvider: "Codex" },
+    });
+    expect(msg).toMatchObject({ role: "assistant", delegateConsole: true, delegateProvider: "Codex" });
   });
 });
 

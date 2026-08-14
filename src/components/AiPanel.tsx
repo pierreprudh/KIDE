@@ -81,6 +81,7 @@ import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
 import { eventsToMsgs, isSilentRunError } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
+import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
 import {
   conversationSessionReducer,
   restoreConversationSession,
@@ -2382,7 +2383,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           maxTurns: harnessSettings?.maxTurns && harnessSettings.maxTurns > 0 ? harnessSettings.maxTurns : undefined,
         }, (ev) => {
           if (ev.type === "assistant_message") {
-            const text = ev.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+            const text = extractAssistantText(ev.content);
             if (text.trim()) report = text;
           } else if (ev.type === "run_error") {
             report = `Subagent error: ${ev.error.message}`;
@@ -2418,14 +2419,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           // this the conversation just silently loses its early context and the
           // marker only appears after a reload (via foldEvents).
           const priorMsgs = msgsRef.current;
-          commit([
-            ...priorMsgs,
-            {
-              role: "system",
-              content: `Compacted ${priorMsgs.length} earlier message${priorMsgs.length === 1 ? "" : "s"} to free context.`,
-              compaction: { count: priorMsgs.length, summary: event.summary, source: "agent" },
-            },
-          ]);
+          commit([...priorMsgs, compactionMsg(priorMsgs.length, event.summary)]);
           break;
         }
         case "diff_proposed": {
@@ -2976,7 +2970,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         maxTurns: harnessSettings?.maxTurns && harnessSettings.maxTurns > 0 ? harnessSettings.maxTurns : undefined,
       }, (ev) => {
         if (ev.type === "assistant_message") {
-          const t = ev.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+          const t = extractAssistantText(ev.content);
           if (t.trim()) report = t;
         } else if (ev.type === "run_error") {
           report = `Subagent error: ${ev.error.message}`;
