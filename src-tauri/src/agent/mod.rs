@@ -1399,6 +1399,37 @@ struct NetworkInvocation {
     input: serde_json::Value,
 }
 
+const NETWORK_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Web Tools use reqwest's blocking client because the registry's read seam is
+/// synchronous. Keep that work off the async Harness thread: reqwest panics if
+/// its blocking runtime is dropped from an async context. Join failures and a
+/// DNS/request that outlives the bound become ordinary Tool errors, allowing
+/// the Harness to emit ToolCallFinished and continue the Run.
+async fn execute_network_tool(root: &str, call: &NormalizedToolCall, run_id: &str) -> ToolResult {
+    let root = root.to_string();
+    let call = call.clone();
+    let run_id = run_id.to_string();
+    let task = tokio::task::spawn_blocking(move || execute_read_only_tool(&root, &call, &run_id));
+
+    match tokio::time::timeout(NETWORK_TOOL_TIMEOUT, task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => ToolResult {
+            ok: false,
+            content: format!("Network tool failed unexpectedly: {error}"),
+            metadata: None,
+        },
+        Err(_) => ToolResult {
+            ok: false,
+            content: format!(
+                "Network tool timed out after {} seconds.",
+                NETWORK_TOOL_TIMEOUT.as_secs()
+            ),
+            metadata: None,
+        },
+    }
+}
+
 fn network_invocation(call: &NormalizedToolCall) -> Result<NetworkInvocation, ToolResult> {
     match call.name.as_str() {
         "web_search" => {
@@ -1490,9 +1521,9 @@ where
 
     match permission::precheck(ctx, permission::Capability::Network, &target, project_ok) {
         permission::Precheck::Execute => {
-            return Ok(ToolOutcome::Produced(execute_read_only_tool(
-                root_value, call, ctx.id,
-            )));
+            return Ok(ToolOutcome::Produced(
+                execute_network_tool(root_value, call, ctx.id).await,
+            ));
         }
         permission::Precheck::AutoReject(msg) => {
             return Ok(ToolOutcome::Produced(ToolResult {
@@ -1532,7 +1563,7 @@ where
 
     let result = match decision {
         permission::GateDecision::Approved { .. } => {
-            execute_read_only_tool(root_value, call, ctx.id)
+            execute_network_tool(root_value, call, ctx.id).await
         }
         _ => ToolResult {
             ok: false,
@@ -5006,7 +5037,9 @@ mod diff_gate_tests {
 
 #[cfg(test)]
 mod network_permission_tests {
+    use super::test_support::*;
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn web_fetch_permission_targets_the_host() {
@@ -5030,6 +5063,70 @@ mod network_permission_tests {
         let invocation = network_invocation(&call).expect("valid search");
         assert_eq!(invocation.target, "web_search");
         assert_eq!(invocation.input["target"], "web_search");
+    }
+
+    #[tokio::test]
+    async fn approved_network_tool_returns_without_panicking_the_async_harness() {
+        let root = std::env::temp_dir().join(format!(
+            "klide-network-tool-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let runs_dir = root.join("runs");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let sup = FakeSupervisor::with_run("network-run");
+        let cancel = CancellationToken::new();
+        let request = test_request(workspace.to_str().unwrap(), &[]);
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "network-run",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: runs_dir.as_path(),
+        };
+        let call = NormalizedToolCall {
+            id: "call_fetch".to_string(),
+            name: "web_fetch".to_string(),
+            // Public but deliberately closed: the result should be a normal
+            // Tool error, never a reqwest blocking-runtime panic.
+            input: serde_json::json!({ "url": "https://1.1.1.1:1/" }),
+        };
+        let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let sink = events.clone();
+        let mut emit = move |event: AgentEvent| -> Result<(), String> {
+            sink.lock().unwrap().push(event);
+            Ok(())
+        };
+
+        let (outcome, _) = tokio::join!(
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                process_network_tool(&ctx, &call, &mut emit),
+            ),
+            answer_permission(
+                &sup,
+                "network-run",
+                r#"{"behavior":"allow","scope":"once"}"#,
+            ),
+        );
+        let result = match outcome
+            .expect("approved network Tool must settle")
+            .expect("network gate must return normally")
+        {
+            ToolOutcome::Produced(result) => result,
+            ToolOutcome::Cancelled => panic!("network Tool was unexpectedly cancelled"),
+        };
+        assert!(!result.ok, "closed endpoint should return a Tool error");
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::PermissionResolved { .. })));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
