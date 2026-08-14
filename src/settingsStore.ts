@@ -53,11 +53,40 @@ export type HarnessSettings = {
   autoMemoryOnRunDone?: boolean;
 };
 
+/** Settings-panel section ids. Declared here (not in the component) so each
+ *  SettingDef can name where it lives without the store importing UI code;
+ *  the panel's own SectionId aliases this type. */
+export type SettingsSectionId =
+  | "general"
+  | "appearance"
+  | "layout"
+  | "ai"
+  | "local-ai"
+  | "api"
+  | "subscription"
+  | "editor"
+  | "terminal"
+  | "stats";
+
+/** One row in the Settings "Look for a setting" search index: the visible
+ *  label, the section the row jumps to, and the words a user is likely to
+ *  type (synonyms included) rather than the exact label. */
+export type SettingSearchEntry = {
+  label: string;
+  section: SettingsSectionId;
+  keywords: string;
+};
+
 export type SettingDef<T> = {
   key: string;
   fallback: () => T;
   /** Applied on every read — clamps/validates whatever storage held. */
   normalize?: (value: T) => T;
+  /** How this setting surfaces in the Settings search box. One setting can
+   *  surface several rows (harnessSettings bundles many knobs), and several
+   *  settings can share one row (the derived index dedupes by label+section).
+   *  Settings without `search` are reachable only by browsing sections. */
+  search?: SettingSearchEntry | SettingSearchEntry[];
 };
 
 // localStorage is absent under vitest's node environment; fall back to a
@@ -183,52 +212,180 @@ const clamp = (min: number, max: number) => (n: number) => Math.min(max, Math.ma
 // Keys are the historical localStorage names — do not rename without a
 // migration. Defaults + validation live here and nowhere else.
 
+// Two settings share the "Files & tabs" row; the auto-theme trio shares the
+// "Automatic light/dark theme" row. Shared rows are declared once so the
+// dedupe in settingsSearchIndex sees identical entries.
+const FILES_AND_TABS_SEARCH: SettingSearchEntry = {
+  label: "Files & tabs",
+  section: "general",
+  keywords: "hidden files dotfiles confirm close unsaved tabs",
+};
+const AUTO_THEME_SEARCH: SettingSearchEntry = {
+  label: "Automatic light/dark theme",
+  section: "appearance",
+  keywords: "auto theme system light dark switch",
+};
+
 export const SETTINGS = {
   theme: {
     key: "klide-theme",
     fallback: () => normalizeThemeId(null),
     normalize: (v: ThemeId) => normalizeThemeId(v),
+    search: {
+      label: "Theme",
+      section: "appearance",
+      keywords: "theme dark light color colour palette appearance",
+    },
   } as SettingDef<ThemeId>,
   /** Default ON for first-run users so Klide matches their OS theme out of
    *  the box. Users can disable the toggle in Settings → Appearance. */
-  autoTheme: { key: "klide-auto-theme", fallback: () => true } as SettingDef<boolean>,
+  autoTheme: {
+    key: "klide-auto-theme",
+    fallback: () => true,
+    search: AUTO_THEME_SEARCH,
+  } as SettingDef<boolean>,
   lightTheme: {
     key: "klide-light-theme",
     fallback: () => "klide-light" as ThemeId,
     normalize: (v: ThemeId) => normalizeThemeId(v),
+    search: AUTO_THEME_SEARCH,
   } as SettingDef<ThemeId>,
   darkTheme: {
     key: "klide-dark-theme",
     fallback: () => "cursor-dark" as ThemeId,
     normalize: (v: ThemeId) => normalizeThemeId(v),
+    search: AUTO_THEME_SEARCH,
   } as SettingDef<ThemeId>,
-  restoreLastProject: { key: "klide-restore-project", fallback: () => false } as SettingDef<boolean>,
+  restoreLastProject: {
+    key: "klide-restore-project",
+    fallback: () => false,
+    search: {
+      label: "Startup",
+      section: "general",
+      keywords: "startup launch reopen restore last project welcome",
+    },
+  } as SettingDef<boolean>,
   autoSaveMode: {
     key: "klide-autosave",
     fallback: () => "off" as "off" | "delay" | "blur",
     normalize: (v) => (v === "delay" || v === "blur" ? v : "off"),
+    search: {
+      label: "Auto-save",
+      section: "general",
+      keywords: "autosave auto save delay focus blur dirty unsaved",
+    },
   } as SettingDef<"off" | "delay" | "blur">,
-  showHiddenFiles: { key: "klide-show-hidden", fallback: () => true } as SettingDef<boolean>,
-  confirmCloseDirty: { key: "klide-confirm-close", fallback: () => true } as SettingDef<boolean>,
+  showHiddenFiles: {
+    key: "klide-show-hidden",
+    fallback: () => true,
+    search: FILES_AND_TABS_SEARCH,
+  } as SettingDef<boolean>,
+  confirmCloseDirty: {
+    key: "klide-confirm-close",
+    fallback: () => true,
+    search: FILES_AND_TABS_SEARCH,
+  } as SettingDef<boolean>,
   editorFontSize: {
     key: "klide-editor-font-size",
     fallback: () => 13,
     normalize: clamp(11, 20),
+    search: {
+      label: "Editor font size",
+      section: "editor",
+      keywords: "editor font size text monaco",
+    },
   } as SettingDef<number>,
-  editorLineNumbers: { key: "klide-editor-line-numbers", fallback: () => true } as SettingDef<boolean>,
-  editorWordWrap: { key: "klide-editor-word-wrap", fallback: () => false } as SettingDef<boolean>,
-  editorMinimap: { key: "klide-editor-minimap", fallback: () => true } as SettingDef<boolean>,
+  editorLineNumbers: {
+    key: "klide-editor-line-numbers",
+    fallback: () => true,
+    search: {
+      label: "Line numbers",
+      section: "editor",
+      keywords: "editor line numbers gutter",
+    },
+  } as SettingDef<boolean>,
+  editorWordWrap: {
+    key: "klide-editor-word-wrap",
+    fallback: () => false,
+    search: {
+      label: "Word wrap",
+      section: "editor",
+      keywords: "editor word wrap soft",
+    },
+  } as SettingDef<boolean>,
+  editorMinimap: {
+    key: "klide-editor-minimap",
+    fallback: () => true,
+    search: {
+      label: "Minimap",
+      section: "editor",
+      keywords: "editor minimap overview",
+    },
+  } as SettingDef<boolean>,
   aiModel: {
     key: "klide-ai-model",
     // Legacy fallback chain: the pre-rename Ollama-only key, then the stock default.
     fallback: () => readRaw("klide-ollama-model") || "llama3.1:8b",
+    search: {
+      label: "AI model",
+      section: "ai",
+      keywords: "ai model assistant provider default",
+    },
   } as SettingDef<string>,
   /** Global default for "require diff review" (auto-accept off). Each AI
    *  panel keeps its own in-memory override on top of this. */
-  requireDiffReview: { key: "klide-confirm-agent-edits", fallback: () => true } as SettingDef<boolean>,
-  stopAfterRejection: { key: "klide.stopAfterRejection", fallback: () => false } as SettingDef<boolean>,
+  requireDiffReview: {
+    key: "klide-confirm-agent-edits",
+    fallback: () => true,
+    search: {
+      label: "Diff review before edits",
+      section: "ai",
+      keywords: "diff review approve confirm edits write apply",
+    },
+  } as SettingDef<boolean>,
+  stopAfterRejection: {
+    key: "klide.stopAfterRejection",
+    fallback: () => false,
+    search: {
+      label: "Stop after rejection",
+      section: "ai",
+      keywords: "stop reject rejection halt edits",
+    },
+  } as SettingDef<boolean>,
   harnessSettings: {
     key: "klide.harnessSettings",
     fallback: () => ({}) as HarnessSettings,
+    // One stored object, many knobs — each surfaces as its own search row.
+    search: [
+      { label: "System prompts", section: "ai", keywords: "prompt system chat plan goal instructions" },
+      { label: "Tool overrides", section: "ai", keywords: "tools tool enable disable allow override" },
+      { label: "Context window", section: "ai", keywords: "context window tokens length size" },
+      { label: "Effort & reflection", section: "ai", keywords: "effort budget reflection thinking reasoning" },
+      { label: "Max parallel tools", section: "ai", keywords: "parallel tools concurrency simultaneous" },
+      { label: "Max turns", section: "ai", keywords: "max turns loop limit iterations" },
+      { label: "Command timeout", section: "ai", keywords: "command timeout shell run seconds" },
+      { label: "Test after edit", section: "ai", keywords: "test verify after edit syntax check command" },
+      { label: "Auto-draft memory on run done", section: "ai", keywords: "memory draft auto note handoff summarize pending review" },
+    ],
   } as SettingDef<HarnessSettings>,
 } as const;
+
+/** The store-backed slice of the Settings search index, derived from the
+ *  catalog so it cannot drift from what actually exists. Rows shared by
+ *  several settings are deduped by label+section; the panel appends its own
+ *  hand list for things that are not persisted settings (panel toggles,
+ *  whole panes) and owns ordering. */
+export function settingsSearchIndex(): SettingSearchEntry[] {
+  const rows: SettingSearchEntry[] = [];
+  const seen = new Set<string>();
+  for (const def of Object.values(SETTINGS) as SettingDef<unknown>[]) {
+    if (!def.search) continue;
+    for (const entry of Array.isArray(def.search) ? def.search : [def.search]) {
+      const id = `${entry.section}::${entry.label}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push(entry);
+    }
+  }
+  return rows;
+}
