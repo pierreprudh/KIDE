@@ -10,7 +10,7 @@ use super::tools::{
     tool_kind_label, NormalizedToolCall, ToolKind,
 };
 use super::types::{AgentAttachment, AgentContentBlock, AgentMode, StartRunRequest, ToolResult};
-use crate::AiChatResponse;
+use crate::providers::AiChatResponse;
 
 /// The handful of provider quirks the run loop's behavior depends on, gathered
 /// in one place so the loop asks about a capability instead of comparing

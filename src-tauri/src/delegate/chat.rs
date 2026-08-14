@@ -16,7 +16,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use super::Delegate;
-use crate::{text_from_message, AiChatResponse, StreamChunk};
+use crate::providers::{text_from_message, AiChatResponse, StreamChunk};
 
 /// Run one headless chat turn against a subscription delegate CLI: fold the
 /// conversation into a prompt, spawn the adapter's chat invocation, stream its

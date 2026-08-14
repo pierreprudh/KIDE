@@ -1,5 +1,6 @@
 mod accounts;
 mod adapters;
+mod cli;
 mod agent;
 mod custom_cli;
 mod custom_providers;
@@ -22,7 +23,7 @@ mod skills;
 mod workspace;
 mod worktree_setup;
 
-use crate::providers::ProviderKeyStatus;
+use crate::providers::{AiChatResponse, ProviderKeyStatus, StreamChunk};
 use memory::{memory_list, memory_read, memory_write};
 use pty::{
     delegate_daemon_set_enabled, delegate_daemon_status, delegate_pty_live_sessions,
@@ -30,19 +31,8 @@ use pty::{
     delegate_pty_stop, delegate_pty_write, pty_close, pty_resize, pty_spawn, pty_write,
     PtyState,
 };
-use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::Emitter;
-
-pub(crate) const OLLAMA_URL: &str = "http://localhost:11434";
-const MLX_DEFAULT_MODEL: &str = "mlx-community/Llama-3.1-8B-Instruct-4bit";
-pub(crate) const MLX_MODEL_PRESETS: &[&str] = &[
-    MLX_DEFAULT_MODEL,
-    "Qwen/Qwen3-4B-MLX-4bit",
-    "mlx-community/gemma-2-9b-it-4bit",
-    "mlx-community/gemma-4-E4B-it-qat-4bit",
-    "mlx-community/gemma-4-12B-it-qat-4bit",
-];
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,43 +53,17 @@ struct AppUserInfo {
     home_dir: String,
 }
 
-fn shell_one_line(cmd: &str, arg: &str) -> Option<String> {
-    let out = std::process::Command::new(cmd).arg(arg).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
-}
-
-/// Resolve the user's home directory (HOME, or USERPROFILE on Windows).
-/// Shared by the profile command and the MLX cache-dir logic.
-pub(crate) fn home_dir_path() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME") {
-        return Some(PathBuf::from(home));
-    }
-    if cfg!(windows) {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    } else {
-        None
-    }
-}
-
 #[tauri::command]
 fn app_user_info() -> AppUserInfo {
-    let username = shell_one_line("whoami", "")
+    let username = cli::shell_one_line("whoami", "")
         .or_else(|| std::env::var("USER").ok())
         .or_else(|| std::env::var("USERNAME").ok())
         .unwrap_or_default();
-    let hostname = shell_one_line("hostname", "")
+    let hostname = cli::shell_one_line("hostname", "")
         .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .unwrap_or_default();
-    let home = home_dir_path()
+    let home = cli::home_dir_path()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     AppUserInfo {
@@ -109,94 +73,9 @@ fn app_user_info() -> AppUserInfo {
     }
 }
 
-// Real token accounting reported by the provider (Ollama eval counts,
-// OpenAI/Anthropic usage blocks). All fields optional — adapters fill what
-// their wire format exposes; the UI falls back to estimates when absent.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AiUsage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) prompt_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) completion_tokens: Option<u64>,
-    /// Time spent generating the completion, ms (Ollama eval_duration).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) eval_duration_ms: Option<u64>,
-    /// Time spent processing the prompt, ms (Ollama prompt_eval_duration).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) prompt_eval_duration_ms: Option<u64>,
-    /// Real billed cost in USD, when the provider reports it directly.
-    /// OpenRouter attaches `usage.cost` to every response (the actual
-    /// charged amount, including any markup) — ground truth, not an
-    /// estimate. `None` for providers that don't report cost; those are
-    /// priced from the local table instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cost_usd: Option<f64>,
-}
-
-impl AiUsage {
-    fn is_empty(&self) -> bool {
-        self.prompt_tokens.is_none()
-            && self.completion_tokens.is_none()
-            && self.eval_duration_ms.is_none()
-            && self.prompt_eval_duration_ms.is_none()
-            && self.cost_usd.is_none()
-    }
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AiChatResponse {
-    pub(crate) content: String,
-    pub(crate) thinking: Option<String>,
-    pub(crate) tool_calls: Vec<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) usage: Option<AiUsage>,
-    /// Why generation stopped, as reported by the provider. Ollama's
-    /// `done_reason`: `"stop"` = the model finished naturally, `"length"` =
-    /// it hit `num_ctx` and was cut off mid-answer. `None` when the provider
-    /// doesn't report it. The harness uses `"length"` to warn the user the
-    /// reply is truncated rather than silently showing a half-answer.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) stop_reason: Option<String>,
-}
-
-// One streamed delta pushed to the frontend through the per-request Channel.
-// `content`/`thinking` are incremental fragments — the UI appends them for the
-// live typing effect, then reconciles against ai_chat's authoritative return.
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct StreamChunk {
-    pub(crate) content: String,
-    pub(crate) thinking: String,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AiConnectionStatus {
-    provider: String,
-    installed: bool,
-    connected: bool,
-    detail: String,
-    command_path: Option<String>,
-    login_options: Vec<String>,
-}
-
 // Keychain service name lives in `providers` (single source of truth for
 // key storage). `KEYCHAIN_SERVICE` was moved when the registry absorbed
 // the keychain helpers.
-
-// Anthropic requires this header on every Messages API call; pinning a known
-// version keeps the request/response shape stable as the API evolves.
-pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
-
-// Thin lib.rs-side wrappers around the registry. The lookup, the env-var
-// fallback, and the local-vs-hosted decision all live in
-// `providers::provider_key`; these are kept so call-sites in this file
-// can stay one short line and don't have to reach into the module.
-pub(crate) fn provider_key(provider: &str) -> Result<Option<String>, String> {
-    providers::provider_key(provider)
-}
 
 // The `ProviderKeyStatus` struct lives in `providers` (single source of
 // truth for the registry); this command is a thin shim that returns the
@@ -321,96 +200,9 @@ fn custom_cli_remove(id: String) -> Result<(), String> {
     custom_cli::remove(&id)
 }
 
-pub(crate) fn is_subscription_provider(provider: &str) -> bool {
-    providers::is_subscription(provider) || custom_cli::get(provider).is_some()
-}
-
-pub(crate) fn response_error(provider: &str, status: reqwest::StatusCode, body: &str) -> String {
-    // Cloudflare edge codes are opaque ("524 <unknown status code>"), and a
-    // self-hosted endpoint behind a tunnel is the common case — translate the
-    // ones we actually hit into an actionable hint instead of the raw code.
-    let hint = match status.as_u16() {
-        524 | 504 => Some(
-            "timed out waiting for the model (~100s proxy limit) — it may be cold or busy. \
-             Try a smaller or pre-warmed model, or a shorter conversation.",
-        ),
-        520..=523 => {
-            Some("the endpoint's edge could not reach its origin server — check the host is up.")
-        }
-        _ => None,
-    };
-    if let Some(hint) = hint {
-        return format!("{provider}: {hint} (HTTP {})", status.as_u16());
-    }
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        format!("{provider} returned {status}")
-    } else {
-        format!("{provider} returned {status}: {trimmed}")
-    }
-}
-
 #[tauri::command]
-fn ai_subscription_status(provider: String) -> Result<AiConnectionStatus, String> {
-    if let Some(custom) = custom_cli::get(&provider) {
-        let binary = custom.binary();
-        let resolved = resolve_command(&binary);
-        let command_path = resolved.as_ref().ok().cloned();
-        let installed = resolved.is_ok();
-        let login_options = custom.login_command.iter().cloned().collect();
-        return Ok(AiConnectionStatus {
-            provider,
-            installed,
-            connected: installed,
-            detail: if installed {
-                format!("{} is available for {}", binary, custom.label)
-            } else {
-                format!("{} is not installed or not on PATH", binary)
-            },
-            command_path,
-            login_options,
-        });
-    }
-
-    let entry = providers::lookup(&provider)
-        .ok_or_else(|| format!("Provider \"{provider}\" is not wired yet"))?;
-    let spec = entry
-        .subscription
-        .as_ref()
-        .ok_or_else(|| format!("Provider \"{provider}\" is not a subscription CLI"))?;
-    let resolved = resolve_command(spec.cmd);
-    let command_path = resolved.as_ref().ok().cloned();
-    let installed = resolved.is_ok();
-
-    // All per-CLI auth knowledge lives behind the Delegate seam. Every
-    // subscription provider is a delegate, so this lookup always resolves.
-    let adapter = delegate::lookup(&provider);
-    let login_options = adapter.map(|d| d.login_commands()).unwrap_or_default();
-
-    if !installed {
-        return Ok(AiConnectionStatus {
-            provider,
-            installed: false,
-            connected: false,
-            detail: format!("{} CLI is not installed or not on PATH", spec.cmd),
-            command_path: None,
-            login_options,
-        });
-    }
-
-    let (connected, detail) = match adapter {
-        Some(d) => d.check_auth(command_path.as_deref().unwrap_or(spec.cmd))?,
-        None => (false, "Unknown provider".to_string()),
-    };
-
-    Ok(AiConnectionStatus {
-        provider,
-        installed,
-        connected,
-        detail,
-        command_path,
-        login_options,
-    })
+fn ai_subscription_status(provider: String) -> Result<cli::AiConnectionStatus, String> {
+    cli::subscription_status(provider)
 }
 
 #[tauri::command]
@@ -436,6 +228,7 @@ fn search_in_files(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn ai_chat(
     provider: String,
     model: String,
@@ -447,229 +240,20 @@ async fn ai_chat(
     reflection_level: Option<String>,
     on_chunk: Channel<StreamChunk>,
 ) -> Result<AiChatResponse, String> {
-    // Built-in providers resolve through the static registry. A miss
-    // falls through to the custom (self-hosted) store below — those ids
-    // (prefixed `custom:`) can't live in the `const` registry because
-    // their URLs are typed in at runtime.
-    let Some(entry) = providers::lookup(&provider) else {
-        let cp = custom_providers::get(&provider)
-            .ok_or_else(|| format!("Provider \"{provider}\" is not wired yet"))?;
-        // Custom providers always speak the OpenAI wire. The token is
-        // optional (a no-auth local endpoint has none); tools are sent
-        // and stream usage is left off, matching the safe local-proxy
-        // posture (LM Studio rejects `stream_options`).
-        return adapters::openai_compatible_chat(
-            cp.id.clone(),
-            cp.chat_url(),
-            true,
-            false,
-            false,
-            false,
-            providers::custom_token(&cp.id),
-            None,
+    providers::dispatch(
+        providers::ProviderTurn {
+            provider,
             model,
             messages,
             tools,
-            &on_chunk,
-        )
-        .await;
-    };
-
-    // Subscription CLIs route first — the per-wire match is for
-    // streaming backends only. The `wire` field on subscription rows
-    // is a placeholder that's never reached.
-    if let Some(spec) = entry.subscription {
-        let adapter = delegate::lookup(entry.id)
-            .ok_or_else(|| format!("\"{}\" has no delegate adapter", entry.id))?;
-        return delegate::run_subscription_chat(
-            adapter,
-            spec.label,
-            model,
-            messages,
             workspace_root,
-            &on_chunk,
-        )
-        .await;
-    }
-
-    match entry.wire {
-        providers::WireFormat::Ollama => {
-            adapters::ollama_chat(
-                model,
-                messages,
-                tools,
-                num_ctx,
-                num_predict,
-                reflection_level,
-                &on_chunk,
-            )
-            .await
-        }
-        providers::WireFormat::Anthropic => {
-            adapters::anthropic_chat(model, messages, tools, reflection_level, &on_chunk).await
-        }
-        providers::WireFormat::OpenAi(cfg) => {
-            // Hosted providers require a key (`provider_key` errors when
-            // missing); local OpenAI-wire ones (MLX, LM Studio) return
-            // Ok(None) and send no auth header.
-            let key = provider_key(entry.id)?;
-            adapters::openai_compatible_chat(
-                entry.id.to_string(),
-                cfg.chat_url.to_string(),
-                cfg.include_tools,
-                cfg.include_usage_in_stream,
-                cfg.include_cost_accounting,
-                cfg.send_attribution,
-                key,
-                if cfg.supports_reasoning_effort {
-                    adapters::reflection_level_to_openai_effort(reflection_level.as_deref())
-                } else {
-                    None
-                },
-                model,
-                messages,
-                tools,
-                &on_chunk,
-            )
-            .await
-        }
-    }
-}
-
-fn is_executable_file(path: &std::path::Path) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
-fn executable_candidates(path: &std::path::Path) -> Vec<PathBuf> {
-    #[cfg(windows)]
-    {
-        let mut candidates = vec![path.to_path_buf()];
-        if path.extension().is_none() {
-            let extensions = std::env::var_os("PATHEXT")
-                .and_then(|value| value.into_string().ok())
-                .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
-            for extension in extensions.split(';').filter(|value| !value.is_empty()) {
-                let mut candidate = path.as_os_str().to_os_string();
-                candidate.push(extension);
-                candidates.push(PathBuf::from(candidate));
-            }
-        }
-        candidates
-    }
-    #[cfg(not(windows))]
-    {
-        vec![path.to_path_buf()]
-    }
-}
-
-fn resolved_executable(path: &std::path::Path) -> Option<String> {
-    executable_candidates(path)
-        .into_iter()
-        .find(|candidate| is_executable_file(candidate))
-        .map(|candidate| {
-            std::fs::canonicalize(&candidate)
-                .unwrap_or(candidate)
-                .to_string_lossy()
-                .to_string()
-        })
-}
-
-#[cfg(unix)]
-fn resolved_from_login_shell(command: &str) -> Option<String> {
-    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-    let output = std::process::Command::new(shell)
-        .arg("-lc")
-        .arg("command -v -- \"$1\"")
-        .arg("klide-resolve")
-        .arg(command)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    resolved_executable(std::path::Path::new(&path))
-}
-
-#[cfg(not(unix))]
-fn resolved_from_login_shell(_command: &str) -> Option<String> {
-    None
-}
-
-pub(crate) fn resolve_command(command: &str) -> Result<String, String> {
-    let command = command.trim();
-    if command.is_empty() {
-        return Err("Command is empty".to_string());
-    }
-
-    let requested = std::path::Path::new(command);
-    if requested.is_absolute() || requested.components().count() > 1 {
-        if let Some(path) = resolved_executable(requested) {
-            return Ok(path);
-        }
-    } else if let Some(path) = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .find_map(|directory| resolved_executable(&directory.join(command)))
-    }) {
-        return Ok(path);
-    }
-    if let Some(path) = resolved_from_login_shell(command) {
-        return Ok(path);
-    }
-
-    let home = std::env::var("HOME").unwrap_or_default();
-    // Delegate binaries keep their install-path fallbacks behind the seam;
-    // only non-delegate binaries (the MLX local server) stay tabled here.
-    let candidates = match delegate::ALL.iter().find(|d| d.binary() == command) {
-        Some(d) => d.install_paths(&home),
-        None => match command {
-            "mlx_lm.server" => vec![
-                format!("{home}/.pyenv/shims/mlx_lm.server"),
-                format!("{home}/.local/bin/mlx_lm.server"),
-            ],
-            _ => Vec::new(),
+            num_ctx,
+            num_predict,
+            reflection_level,
         },
-    };
-    candidates
-        .into_iter()
-        .find_map(|path| resolved_executable(std::path::Path::new(&path)))
-        .ok_or_else(|| format!("{command} CLI is not installed or not on PATH"))
-}
-
-pub(crate) fn ensure_command_available(command: &str) -> Result<(), String> {
-    resolve_command(command).map(|_| ())
-}
-
-fn text_from_message(message: &serde_json::Value) -> String {
-    message
-        .get("content")
-        .and_then(|content| {
-            if let Some(text) = content.as_str() {
-                return Some(text.to_string());
-            }
-            content.as_array().map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-        })
-        .unwrap_or_default()
+        &on_chunk,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1321,18 +905,6 @@ mod agent_log_path_tests {
         }
 
         let _ = std::fs::remove_dir_all(&home);
-    }
-}
-
-#[cfg(test)]
-mod command_resolution_tests {
-    use super::resolve_command;
-
-    #[test]
-    fn command_resolution_does_not_interpret_shell_syntax() {
-        assert!(resolve_command("does-not-exist; printf injected").is_err());
-        let known_command = if cfg!(windows) { "cmd" } else { "sh" };
-        assert!(resolve_command(known_command).is_ok());
     }
 }
 

@@ -47,7 +47,7 @@ use self::types::{
     PermissionOption,
     PermissionRequest, StartRunRequest, StartRunResponse, SubmitUserTurnRequest, ToolResult,
 };
-use crate::{ai_chat, AiChatResponse, AiUsage, StreamChunk};
+use crate::providers::{AiChatResponse, AiUsage, StreamChunk};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::future::Future;
@@ -150,16 +150,18 @@ impl AgentProviderCaller for RealProviderCaller {
         request: ProviderTurnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AiChatResponse, String>> + Send + 'a>> {
         Box::pin(async move {
-            ai_chat(
-                request.provider,
-                request.model,
-                request.messages,
-                request.tools,
-                request.workspace_root,
-                request.num_ctx,
-                request.num_predict,
-                request.reflection_level,
-                request.stream,
+            crate::providers::dispatch(
+                crate::providers::ProviderTurn {
+                    provider: request.provider,
+                    model: request.model,
+                    messages: request.messages,
+                    tools: request.tools,
+                    workspace_root: request.workspace_root,
+                    num_ctx: request.num_ctx,
+                    num_predict: request.num_predict,
+                    reflection_level: request.reflection_level,
+                },
+                &request.stream,
             )
             .await
         })
