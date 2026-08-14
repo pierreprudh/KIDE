@@ -10,6 +10,7 @@ import {
 import type { TaskSession, TaskSource } from "./tasks";
 import { DELEGATE_IDS, isDelegateId } from "./delegates";
 import { normalizeProjectPath, pathBelongsToProject } from "./projectPaths";
+import { createPersistedStore } from "./persistedStore";
 
 export type RunLedgerOrigin = "task" | "klide-convo" | "transcript";
 
@@ -67,10 +68,12 @@ export function runLedgerKey(run: Pick<Run, "source" | "id">): string {
   return `${run.source}:${run.id}`;
 }
 
-export function readRunLedgerMetadata(): RunLedgerMetadataStore {
-  try {
-    const raw = localStorage.getItem(LEDGER_METADATA_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
+// Rename/archive overrides used to be read + written as a bare blob, so
+// Mission Control had to mirror them in useState and pair every setState with
+// a write. The store gives them the same subscribe contract as tasks/convos.
+const metadataStore = createPersistedStore<RunLedgerMetadataStore>({
+  key: LEDGER_METADATA_KEY,
+  validate: (parsed) => {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: RunLedgerMetadataStore = {};
     for (const [key, value] of Object.entries(parsed)) {
@@ -83,17 +86,26 @@ export function readRunLedgerMetadata(): RunLedgerMetadataStore {
       };
     }
     return out;
-  } catch {
-    return {};
-  }
+  },
+});
+
+export function getRunLedgerMetadata(): RunLedgerMetadataStore {
+  return metadataStore.get();
 }
 
-export function writeRunLedgerMetadata(store: RunLedgerMetadataStore): void {
-  try {
-    localStorage.setItem(LEDGER_METADATA_KEY, JSON.stringify(store));
-  } catch {
-    /* storage full or unavailable */
-  }
+export function subscribeRunLedgerMetadata(fn: () => void): () => void {
+  return metadataStore.subscribe(fn);
+}
+
+/** Patch one run's overrides in a single mutate — one write, one notification. */
+export function patchRunLedgerMetadata(
+  run: Pick<Run, "source" | "id">,
+  patch: (current: RunLedgerMetadata) => RunLedgerMetadata,
+): void {
+  metadataStore.mutate((store) => {
+    const key = runLedgerKey(run);
+    return { ...store, [key]: patch(store[key] ?? {}) };
+  });
 }
 
 /**

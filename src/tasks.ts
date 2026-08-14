@@ -7,7 +7,7 @@
 
 import { onDelegateExit, spawnDelegatePty, stopDelegatePty } from "./ipc/delegatePty";
 import { gitWorktreeRemove } from "./ipc/git";
-import { readValidatedArray } from "./persistedStore";
+import { createPersistedStore, validatedArray } from "./persistedStore";
 import type { RunStatus } from "./runs";
 import { isDelegateId, type DelegateId } from "./delegates";
 import {
@@ -65,62 +65,49 @@ function safeSource(source: unknown): TaskSource | null {
   return typeof source === "string" && isDelegateId(source) ? source : null;
 }
 
-function readTasks(): TaskSession[] {
-  return readValidatedArray(
-    TASKS_KEY,
-    (task): task is Partial<TaskSession> & { id: string; title: string } =>
-      !!task &&
-      typeof task === "object" &&
-      typeof (task as Partial<TaskSession>).id === "string" &&
-      typeof (task as Partial<TaskSession>).title === "string",
-  )
-    .map((task) => ({
-      id: task.id,
-      title: task.title,
-      source: safeSource(task.source),
-      model: typeof task.model === "string" ? task.model : null,
-      status: safeStatus(task.status),
-      workspaceRoot:
-        typeof task.workspaceRoot === "string"
-          ? task.workspaceRoot
-          : typeof task.cwd === "string"
-            ? task.cwd
-            : null,
-      cwd: typeof task.cwd === "string" ? task.cwd : null,
-      branch: typeof task.branch === "string" ? task.branch : null,
-      worktree: typeof task.worktree === "string" ? task.worktree : null,
-      startedMs: typeof task.startedMs === "number" ? task.startedMs : Date.now(),
-    }))
-    .sort((a, b) => b.startedMs - a.startedMs)
-    .slice(0, MAX_TASKS);
-}
+const store = createPersistedStore<TaskSession[]>({
+  key: TASKS_KEY,
+  validate: (parsed) =>
+    validatedArray(
+      parsed,
+      (task): task is Partial<TaskSession> & { id: string; title: string } =>
+        !!task &&
+        typeof task === "object" &&
+        typeof (task as Partial<TaskSession>).id === "string" &&
+        typeof (task as Partial<TaskSession>).title === "string",
+    )
+      .map((task) => ({
+        id: task.id,
+        title: task.title,
+        source: safeSource(task.source),
+        model: typeof task.model === "string" ? task.model : null,
+        status: safeStatus(task.status),
+        workspaceRoot:
+          typeof task.workspaceRoot === "string"
+            ? task.workspaceRoot
+            : typeof task.cwd === "string"
+              ? task.cwd
+              : null,
+        cwd: typeof task.cwd === "string" ? task.cwd : null,
+        branch: typeof task.branch === "string" ? task.branch : null,
+        worktree: typeof task.worktree === "string" ? task.worktree : null,
+        startedMs: typeof task.startedMs === "number" ? task.startedMs : Date.now(),
+      }))
+      .sort((a, b) => b.startedMs - a.startedMs)
+      .slice(0, MAX_TASKS),
+  bound: (tasks) => tasks.slice(0, MAX_TASKS),
+});
 
-function persistTasks() {
-  try {
-    localStorage.setItem(TASKS_KEY, JSON.stringify(sessions.slice(0, MAX_TASKS)));
-  } catch {
-    /* storage full or unavailable */
-  }
-}
-
-let sessions: TaskSession[] = readTasks();
 // Session ids this module dispatched, so the app-wide exit event only flips
 // tasks we own (the AI panel runs its own delegates through the same PTY).
 // This used to also hold a copy of each session's output for replay; Rust's
 // scrollback is the authority for that and carries the `seq` the replay
 // handshake needs, so the terminal reads it via `attachDelegatePty` instead.
 const dispatched = new Set<string>();
-const subscribers = new Set<() => void>();
-
-function emitChange() {
-  for (const fn of subscribers) fn();
-}
 
 function patch(id: string, fields: Partial<TaskSession>) {
-  if (!sessions.some((s) => s.id === id)) return;
-  sessions = sessions.map((s) => (s.id === id ? { ...s, ...fields } : s));
-  persistTasks();
-  emitChange();
+  if (!store.get().some((s) => s.id === id)) return;
+  store.mutate((sessions) => sessions.map((s) => (s.id === id ? { ...s, ...fields } : s)));
 }
 
 // One app-wide listener, attached lazily on first use: the exit event is what
@@ -140,14 +127,11 @@ function wire() {
 
 export function subscribeTasks(fn: () => void): () => void {
   wire();
-  subscribers.add(fn);
-  return () => {
-    subscribers.delete(fn);
-  };
+  return store.subscribe(fn);
 }
 
 export function getTaskSessions(): TaskSession[] {
-  return sessions;
+  return store.get();
 }
 
 // The agent used for the previous dispatch — quick-send defaults to it so
@@ -179,9 +163,7 @@ export function addTask(title: string, workspaceRoot: string | null): TaskSessio
     worktree: null,
     startedMs: Date.now(),
   };
-  sessions = [task, ...sessions];
-  persistTasks();
-  emitChange();
+  store.mutate((sessions) => [task, ...sessions]);
   return task;
 }
 
@@ -205,7 +187,7 @@ export async function dispatchTask(
   source: TaskSource,
   model?: string
 ): Promise<void> {
-  const task = sessions.find((s) => s.id === id);
+  const task = store.get().find((s) => s.id === id);
   if (!task || task.status === "running") return;
   localStorage.setItem("klide-last-agent", source);
   // Only persist non-empty selections so a quick-send with no model chosen
@@ -302,10 +284,8 @@ export function renameTask(id: string, title: string): void {
 // Drop a task off the board (todos you no longer want, finished runs).
 // Running tasks must be stopped first.
 export function removeTask(id: string): void {
-  const task = sessions.find((s) => s.id === id);
+  const task = store.get().find((s) => s.id === id);
   if (!task || task.status === "running") return;
-  sessions = sessions.filter((s) => s.id !== id);
+  store.mutate((sessions) => sessions.filter((s) => s.id !== id));
   dispatched.delete(id);
-  persistTasks();
-  emitChange();
 }

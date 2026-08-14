@@ -66,7 +66,7 @@ const KLIDE_CLAUDE_SERVICE: &str = "Klide Claude Accounts";
 
 /// `~/.klide/accounts/<provider>/` — where snapshots + the index live.
 fn store_dir(provider: &str) -> Option<PathBuf> {
-    crate::home_dir_path().map(|h| h.join(".klide").join("accounts").join(provider))
+    crate::cli::home_dir_path().map(|h| h.join(".klide").join("accounts").join(provider))
 }
 
 fn index_path(provider: &str) -> Option<PathBuf> {
@@ -75,7 +75,7 @@ fn index_path(provider: &str) -> Option<PathBuf> {
 
 /// `~/.claude.json`.
 fn claude_config_path() -> Option<PathBuf> {
-    crate::home_dir_path().map(|h| h.join(".claude.json"))
+    crate::cli::home_dir_path().map(|h| h.join(".claude.json"))
 }
 
 // --- identity --------------------------------------------------------------
@@ -262,7 +262,7 @@ impl AccountProvider for CodexProvider {
         "codex login"
     }
     fn live_files(&self) -> Vec<PathBuf> {
-        crate::home_dir_path()
+        crate::cli::home_dir_path()
             .map(|h| vec![h.join(".codex").join("auth.json")])
             .unwrap_or_default()
     }
@@ -295,7 +295,7 @@ impl AccountProvider for OpenCodeProvider {
         "opencode auth login"
     }
     fn live_files(&self) -> Vec<PathBuf> {
-        crate::home_dir_path()
+        crate::cli::home_dir_path()
             .map(|h| {
                 let base = h.join(".local").join("share").join("opencode");
                 vec![base.join("auth.json"), base.join("account.json")]

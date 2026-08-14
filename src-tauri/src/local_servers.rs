@@ -4,7 +4,8 @@
 // canonicalization (Ollama-style tags don't apply) and an HF cache dir so
 // downloads land somewhere predictable.
 
-use crate::{home_dir_path, resolve_command, MLX_DEFAULT_MODEL, OLLAMA_URL};
+use crate::cli::{home_dir_path, resolve_command};
+use crate::providers::{MLX_DEFAULT_MODEL, OLLAMA_URL};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

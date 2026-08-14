@@ -1,7 +1,9 @@
 use super::todo;
 use super::glob_match::wildcard_match;
 use super::types::{AgentMode, DiffProposal, ToolResult};
-use crate::workspace::Workspace;
+use crate::workspace::{
+    is_sensitive_path, Access, Workspace, AGENT_MAX_READ_BYTES, AGENT_MAX_WRITE_BYTES,
+};
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
@@ -47,11 +49,9 @@ fn last_seen_hash(run_id: &str, rel_path: &str) -> Option<String> {
     store.get(run_id)?.get(rel_path).cloned()
 }
 
-const MAX_FILE_BYTES: u64 = 220_000;
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_SEARCH_RESULTS: usize = 200;
 const MAX_WALK_FILES: usize = 6_000;
-const MAX_WRITE_BYTES: u64 = 220_000;
 const MAX_WEB_RESPONSE_BYTES: u64 = 1_000_000;
 const MAX_WEB_REDIRECTS: usize = 5;
 
@@ -59,6 +59,33 @@ const MAX_WEB_REDIRECTS: usize = 5;
 /// both Plan and Goal (unlike other Pause tools, which are Goal-only). Named
 /// once here so the offer filter, the mode gate, and the loop dispatch agree.
 pub const ADVISOR_TOOL: &str = "consult_advisor";
+/// The builtin shell-command tool name. Every other command-capability tool
+/// is a dynamic tool from `.agents/tools.json`.
+pub const RUN_COMMAND_TOOL: &str = "run_command";
+
+/// Which Pause ceremony a Pause entry runs. Tool identity is registry data:
+/// the run loop dispatches on this, never on a tool-name literal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseFlavor {
+    /// `userAnswerQuestion` — ask the user, feed the verbatim answer back.
+    Question,
+    /// `spawn_subagent` — park while the frontend runs a nested child run.
+    Subagent,
+    /// `consult_advisor` — park while a stronger model answers one question.
+    Advisor,
+}
+
+/// The Pause flavor for a tool name, `None` for non-Pause tools. Lives beside
+/// the registry entries so the mapping can't drift from them unnoticed —
+/// `every_pause_entry_has_a_flavor` pins that.
+pub fn pause_flavor(name: &str) -> Option<PauseFlavor> {
+    match name {
+        "userAnswerQuestion" => Some(PauseFlavor::Question),
+        "spawn_subagent" => Some(PauseFlavor::Subagent),
+        ADVISOR_TOOL => Some(PauseFlavor::Advisor),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct NormalizedToolCall {
@@ -808,7 +835,7 @@ fn dynamic_tool_schema(def: &DynamicToolDef) -> serde_json::Value {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DynamicToolCommand {
+pub struct CommandInvocation {
     pub tool_name: String,
     pub command: String,
     pub cwd: String,
@@ -817,11 +844,51 @@ pub struct DynamicToolCommand {
     pub reason: String,
 }
 
+/// Resolve a command-capability call into the concrete invocation the
+/// permission gate shows the user. The registry owns which name is which:
+/// the builtin `run_command` reads its `command` input and runs at the
+/// workspace root; every other command-capability name is a dynamic tool
+/// whose command comes from its `.agents/tools.json` template.
+pub fn command_invocation(
+    call: &NormalizedToolCall,
+    workspace_root: &str,
+    default_timeout_secs: u64,
+) -> Result<CommandInvocation, ToolResult> {
+    if call.name == RUN_COMMAND_TOOL {
+        let command = call
+            .input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if command.is_empty() {
+            return Err(err("run_command requires a non-empty command.".to_string()));
+        }
+        return Ok(CommandInvocation {
+            tool_name: RUN_COMMAND_TOOL.to_string(),
+            summary: format!("$ {command}"),
+            reason: "The agent wants to run a shell command in the workspace.".to_string(),
+            command,
+            cwd: workspace_root.to_string(),
+            // Clamped so a bad setting can't disable the runaway guard.
+            timeout_secs: default_timeout_secs.clamp(1, 1800),
+        });
+    }
+    match dynamic_tool_command(&call.name, &call.input, workspace_root) {
+        Some(result) => result,
+        None => Err(err(format!(
+            "Unknown command-capability tool: {}",
+            call.name
+        ))),
+    }
+}
+
 pub fn dynamic_tool_command(
     name: &str,
     input: &serde_json::Value,
     workspace_root: &str,
-) -> Option<Result<DynamicToolCommand, ToolResult>> {
+) -> Option<Result<CommandInvocation, ToolResult>> {
     let def = find_dynamic_tool_def(name, Some(workspace_root))?;
     let ws = match Workspace::new(workspace_root) {
         Ok(ws) => ws,
@@ -839,7 +906,7 @@ pub fn dynamic_tool_command(
     };
     let timeout_secs = def.timeout_secs.clamp(1, 1800);
 
-    Some(Ok(DynamicToolCommand {
+    Some(Ok(CommandInvocation {
         tool_name: def.name.clone(),
         summary: format!("{}: $ {}", def.name, full_command),
         reason: format!(
@@ -1532,25 +1599,7 @@ fn read_file(ws: &Workspace, path: &str) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
-    if is_sensitive_agent_path(ws.root(), &full) {
-        return sensitive_path_error(ws.display(&full));
-    }
-    let metadata = match std::fs::metadata(&full) {
-        Ok(m) => m,
-        Err(e) => return err(format!("Unable to read metadata: {e}")),
-    };
-    if !metadata.is_file() {
-        return err(format!("{} is not a file", ws.display(&full)));
-    }
-    if metadata.len() > MAX_FILE_BYTES {
-        return err(format!(
-            "{} is too large to read safely ({} bytes, max {})",
-            ws.display(&full),
-            metadata.len(),
-            MAX_FILE_BYTES
-        ));
-    }
-    match std::fs::read_to_string(&full) {
+    match ws.read_text(&full, Access::Agent) {
         Ok(content) => {
             // Number the lines (1-indexed) the way omp's "hashline" read does:
             // `N: content`. Numbers help the model reason about *where* code is
@@ -1579,7 +1628,9 @@ automatically.\n```\n{}\n```",
                 })),
             }
         }
-        Err(e) => err(format!("Unable to read {} as text: {e}", ws.display(&full))),
+        // read_text's errors are already complete sentences (guard, cap,
+        // not-a-file, read failure).
+        Err(e) => err(e),
     }
 }
 
@@ -1672,56 +1723,6 @@ fn ignored_dir(name: &str) -> bool {
     )
 }
 
-fn is_sensitive_agent_path(root: &Path, path: &Path) -> bool {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    let components: Vec<String> = relative
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .map(|component| component.to_ascii_lowercase())
-        .collect();
-    if components.iter().any(|component| {
-        matches!(
-            component.as_str(),
-            ".ssh" | ".aws" | ".gnupg" | ".azure" | ".kube"
-        )
-    }) {
-        return true;
-    }
-    if components
-        .windows(2)
-        .any(|pair| pair[0] == ".config" && pair[1] == "gcloud")
-    {
-        return true;
-    }
-    let Some(name) = components.last() else {
-        return false;
-    };
-    name == ".env"
-        || name.starts_with(".env.")
-        || matches!(
-            name.as_str(),
-            ".npmrc"
-                | ".pypirc"
-                | ".netrc"
-                | ".git-credentials"
-                | "credentials"
-                | "credentials.json"
-                | "secrets.json"
-                | "secrets.yaml"
-                | "secrets.yml"
-        )
-        || [".pem", ".key", ".p12", ".pfx", ".jks"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-}
-
-fn sensitive_path_error(path: String) -> ToolResult {
-    err(format!(
-        "Access to {path} is blocked because it may contain credentials or private keys. \
-Open it locally yourself if needed; do not send its contents to a model."
-    ))
-}
-
 fn walk_files(root: &Path, start: &Path, out: &mut Vec<PathBuf>) {
     if out.len() >= MAX_WALK_FILES {
         return;
@@ -1737,7 +1738,7 @@ fn walk_files(root: &Path, start: &Path, out: &mut Vec<PathBuf>) {
         let Ok(ft) = entry.file_type() else {
             continue;
         };
-        if is_sensitive_agent_path(root, &path) {
+        if is_sensitive_path(root, &path) {
             continue;
         }
         if ft.is_dir() {
@@ -1762,8 +1763,8 @@ fn glob(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
-    if is_sensitive_agent_path(ws.root(), &start) {
-        return sensitive_path_error(ws.display(&start));
+    if let Err(e) = ws.guard(&start, Access::Agent) {
+        return err(e);
     }
     let mut files = Vec::new();
     walk_files(ws.root(), &start, &mut files);
@@ -1803,8 +1804,8 @@ fn grep(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
-    if is_sensitive_agent_path(ws.root(), &start) {
-        return sensitive_path_error(ws.display(&start));
+    if let Err(e) = ws.guard(&start, Access::Agent) {
+        return err(e);
     }
     let mut files = Vec::new();
     if start.is_file() {
@@ -1818,7 +1819,7 @@ fn grep(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
             break;
         }
         if std::fs::metadata(&file)
-            .map(|m| m.len() > MAX_FILE_BYTES)
+            .map(|m| m.len() > AGENT_MAX_READ_BYTES)
             .unwrap_or(true)
         {
             continue;
@@ -1882,8 +1883,11 @@ fn get_git_diff(root: &Path, input: &serde_json::Value) -> ToolResult {
         {
             return err("Git diff path must be a plain workspace-relative path.".to_string());
         }
-        if is_sensitive_agent_path(root, &root.join(p)) {
-            return sensitive_path_error(p.to_string());
+        if is_sensitive_path(root, &root.join(p)) {
+            return err(format!(
+                "Access to {p} is blocked because it may contain credentials or private keys. \
+Open it locally yourself if needed; do not send its contents to a model."
+            ));
         }
         args.push("--");
         args.push(p);
@@ -2587,8 +2591,9 @@ fn preview_write_file(
     let new_str = string_arg(input, "new_str").unwrap_or_default();
     let full = ws.resolve_existing(&path).map_err(err)?;
     let rel = ws.display(&full);
-    let current =
-        std::fs::read_to_string(&full).map_err(|e| err(format!("Cannot read {rel}: {e}")))?;
+    // Agent-tier read: an edit to a credential-shaped file is refused here,
+    // before a diff is ever proposed — the diff gate is review, not the guard.
+    let current = ws.read_text(&full, Access::Agent).map_err(err)?;
     // Staleness guard (omp's `#tag`, lite): if the live file no longer hashes
     // to what the model last read, the edit still targets the *current* text
     // (so it's safe to apply), but flag it so the diff reviewer — and the model
@@ -2619,7 +2624,7 @@ fn preview_write_file(
     } else {
         None
     };
-    if new_content.len() as u64 > MAX_WRITE_BYTES {
+    if new_content.len() as u64 > AGENT_MAX_WRITE_BYTES {
         return Err(err("Resulting file would be too large".to_string()));
     }
     Ok(DiffProposal {
@@ -2652,13 +2657,14 @@ fn preview_create_file(
     let contents = string_arg(input, "contents")
         .ok_or_else(|| err("create_file requires string contents".to_string()))?;
     let candidate = ws.resolve_new(&path).map_err(err)?;
+    ws.guard(&candidate, Access::Agent).map_err(err)?;
     let rel = ws.display(&candidate);
     if candidate.exists() {
         return Err(err(format!(
             "{rel} already exists. Use write_file to modify an existing file."
         )));
     }
-    if contents.len() as u64 > MAX_WRITE_BYTES {
+    if contents.len() as u64 > AGENT_MAX_WRITE_BYTES {
         return Err(err("Contents too large".to_string()));
     }
     Ok(DiffProposal {
@@ -2706,6 +2712,7 @@ fn preview_create_skill(
         .to_string();
     let rel = format!(".agents/skills/{safe_name}/SKILL.md");
     let full = ws.resolve_new(&rel).map_err(err)?;
+    ws.guard(&full, Access::Agent).map_err(err)?;
     if full.exists() {
         return Err(err(format!(
             "{rel} already exists. Use write_file to edit it."
@@ -2782,14 +2789,12 @@ fn verify_syntax(path: &str, content: &str) -> Option<String> {
 
 pub fn apply_write(root: &str, diff: &DiffProposal) -> Result<ToolResult, ToolResult> {
     let ws = Workspace::new(root).map_err(err)?;
-    // Re-validate at apply time: never trust a proposal path blindly.
+    // Re-validate at apply time: never trust a proposal path blindly. The
+    // agent-tier write also re-applies the sensitive-path refusal, so a
+    // proposal that skipped preview can't land on a credential file.
     let full = ws.resolve_new(&diff.path).map_err(err)?;
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| err(format!("Cannot create directory: {e}")))?;
-    }
-    std::fs::write(&full, &diff.new_content)
-        .map_err(|e| err(format!("Cannot write {}: {e}", diff.path)))?;
+    ws.write_text(&full, &diff.new_content, Access::Agent)
+        .map_err(err)?;
     // The model just wrote this file, so its current hash is the new one — keep
     // the snapshot fresh so a follow-up edit isn't falsely flagged as stale.
     record_snapshot(&diff.run_id, &diff.path, &diff.new_hash);
@@ -2912,6 +2917,59 @@ mod tests {
         let glob_result = glob(&ws, &serde_json::json!({ "pattern": "**/*" }));
         assert!(glob_result.ok);
         assert!(!glob_result.content.contains(".env"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_write_paths_block_common_secret_paths() {
+        let dir =
+            std::env::temp_dir().join(format!("klide-sensitive-writes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "TOKEN=old").unwrap();
+        let ws = Workspace::new(dir.to_str().unwrap()).unwrap();
+
+        // Editing an existing credential file is refused at preview.
+        let edit = preview_write_file(
+            &ws,
+            &serde_json::json!({ "path": ".env", "old_str": "TOKEN=old", "new_str": "TOKEN=new" }),
+            "run1",
+        );
+        let refused = edit.expect_err("editing .env must be refused");
+        assert!(refused.content.contains("blocked"), "{}", refused.content);
+
+        // Creating a new credential file is refused at preview.
+        let create = preview_create_file(
+            &ws,
+            &serde_json::json!({ "path": ".env.production", "contents": "TOKEN=new" }),
+            "run1",
+        );
+        let refused = create.expect_err("creating .env.production must be refused");
+        assert!(refused.content.contains("blocked"), "{}", refused.content);
+
+        // Apply re-checks: a proposal that skipped preview still can't land
+        // on a credential file.
+        let diff = DiffProposal {
+            id: "diff_run1_env".to_string(),
+            run_id: "run1".to_string(),
+            tool_call_id: "write_.env".to_string(),
+            path: ".env".to_string(),
+            old_content: "TOKEN=old".to_string(),
+            new_content: "TOKEN=leaked".to_string(),
+            old_hash: hash_content("TOKEN=old"),
+            new_hash: hash_content("TOKEN=leaked"),
+            unified_diff: String::new(),
+            is_create: false,
+            reason: None,
+        };
+        let applied = apply_write(dir.to_str().unwrap(), &diff);
+        let refused = applied.expect_err("applying a write to .env must be refused");
+        assert!(refused.content.contains("blocked"), "{}", refused.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".env")).unwrap(),
+            "TOKEN=old",
+            "the credential file must be untouched"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3578,6 +3636,87 @@ mod tests {
         assert_eq!(&s[spans[2].0..spans[2].1], "gamma");
         // Trailing newline does not create a phantom empty line.
         assert_eq!(line_spans("a\n").len(), 1);
+    }
+
+    #[test]
+    fn every_pause_entry_has_a_flavor_and_only_pause_entries_do() {
+        // The loop dispatches Pause ceremony on `pause_flavor`, so a fourth
+        // Pause tool added to the registry without a flavor would silently
+        // fall through to the question ceremony — pin the mapping to the
+        // entries, in both directions, with distinct flavors per entry.
+        let mut seen = Vec::new();
+        for entry in registry() {
+            let name = entry.schema["function"]["name"].as_str().unwrap();
+            match (entry.kind, pause_flavor(name)) {
+                (ToolKind::Pause, Some(flavor)) => {
+                    assert!(
+                        !seen.contains(&flavor),
+                        "{name}: flavor {flavor:?} already used by another Pause entry"
+                    );
+                    seen.push(flavor);
+                }
+                (ToolKind::Pause, None) => {
+                    panic!("Pause entry {name} has no PauseFlavor — add it to pause_flavor()")
+                }
+                (_, Some(flavor)) => {
+                    panic!("non-Pause entry {name} maps to {flavor:?} — flavor implies Pause")
+                }
+                (_, None) => {}
+            }
+        }
+        assert_eq!(seen.len(), 3, "expected the three Pause ceremonies");
+    }
+
+    #[test]
+    fn command_invocation_resolves_builtin_and_dynamic_and_rejects_unknown() {
+        let dir = std::env::temp_dir().join(format!("klide-cmd-inv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".agents")).unwrap();
+        std::fs::write(
+            dir.join(".agents/tools.json"),
+            r#"{"tools":[{"name":"lint","description":"Lint","command":"npm run lint","cwd":"workspace","timeout_secs":60}]}"#,
+        )
+        .unwrap();
+        let root = dir.to_str().unwrap();
+
+        // Builtin: reads the `command` input, runs at the workspace root,
+        // clamps the timeout.
+        let call = NormalizedToolCall {
+            id: "t1".to_string(),
+            name: RUN_COMMAND_TOOL.to_string(),
+            input: serde_json::json!({ "command": "  ls -la  " }),
+        };
+        let inv = command_invocation(&call, root, 9_999).expect("builtin resolves");
+        assert_eq!(inv.command, "ls -la");
+        assert_eq!(inv.cwd, root);
+        assert_eq!(inv.timeout_secs, 1800, "timeout must clamp to the guard cap");
+
+        // Builtin with an empty command is refused.
+        let empty = NormalizedToolCall {
+            id: "t2".to_string(),
+            name: RUN_COMMAND_TOOL.to_string(),
+            input: serde_json::json!({ "command": "   " }),
+        };
+        assert!(command_invocation(&empty, root, 180).is_err());
+
+        // Dynamic: the template from .agents/tools.json wins.
+        let dynamic = NormalizedToolCall {
+            id: "t3".to_string(),
+            name: "lint".to_string(),
+            input: serde_json::json!({}),
+        };
+        let inv = command_invocation(&dynamic, root, 180).expect("dynamic resolves");
+        assert_eq!(inv.command, "npm run lint");
+
+        // Unknown command-capability names are refused, not guessed.
+        let unknown = NormalizedToolCall {
+            id: "t4".to_string(),
+            name: "not_a_tool".to_string(),
+            input: serde_json::json!({}),
+        };
+        let refused = command_invocation(&unknown, root, 180).unwrap_err();
+        assert!(refused.content.contains("Unknown command-capability tool"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

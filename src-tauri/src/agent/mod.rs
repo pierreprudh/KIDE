@@ -9,6 +9,13 @@ mod network_allowlist;
 mod permission;
 mod run_core;
 mod steering;
+mod tool_handlers;
+use tool_handlers::{
+    last_tool_output, process_advisor_tool, process_command_tool, process_network_tool,
+    process_pause_tool, process_subagent_tool, process_write_tool, steer_via_advisor, AdvisorSteer,
+};
+#[cfg(test)]
+use tool_handlers::{network_invocation, parse_diff_decision, ADVISOR_ERROR_PREFIX};
 pub mod todo;
 pub mod tools;
 pub mod transcripts;
@@ -24,7 +31,7 @@ use self::run_core::{
     TurnStep,
 };
 use self::tools::{
-    apply_write, clear_run_snapshots, dynamic_tool_command, execute_read_only_tool,
+    apply_write, clear_run_snapshots, execute_read_only_tool,
     execute_write_tool_preview, find_tool_kind_for_workspace, preflight_command,
     run_command_capture, run_command_capture_in, schemas_for_mode, tool_summary_for_workspace,
     NormalizedToolCall, ToolKind,
@@ -40,7 +47,7 @@ use self::types::{
     PermissionOption,
     PermissionRequest, StartRunRequest, StartRunResponse, SubmitUserTurnRequest, ToolResult,
 };
-use crate::{ai_chat, AiChatResponse, AiUsage, StreamChunk};
+use crate::providers::{AiChatResponse, AiUsage, StreamChunk};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::future::Future;
@@ -70,26 +77,10 @@ pub struct AgentRunHandle {
     /// channel, which the run loop awaits before running (or skipping) the
     /// command.
     pub pending_permission: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
-    /// Commands the user approved with scope "run"/"project" earlier in this
-    /// run — re-running an identical command skips the prompt, so the agent
-    /// can `cargo check` repeatedly without re-asking each time.
-    pub approved_commands: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Edit proposals the user already rejected this run, keyed by
-    /// `<path>::<new_hash>`. If the model proposes the byte-identical change
-    /// again, the loop auto-declines it instead of re-prompting — so a single
-    /// "Reject" sticks and the agent is told to try something different rather
-    /// than re-surfacing the same diff.
-    pub rejected_edits: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Shell commands the user rejected this run. Same idea as `rejected_edits`:
-    /// proposing the exact same command again is auto-declined, not re-asked.
-    pub rejected_commands: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Network targets approved for this run, such as `web_search` or
-    /// `host:docs.rs`. Kept separate from command approvals so trust scopes
-    /// don't bleed across capability kinds.
-    pub approved_network: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Network targets rejected this run. Re-proposing the same target is
-    /// auto-declined instead of re-prompting.
-    pub rejected_network: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Everything the Permission engine remembers about this run — approved /
+    /// rejected commands and network targets, rejected edits. The engine owns
+    /// the type; the handle just carries it for the run's lifetime.
+    pub trust: permission::TrustMemory,
 }
 
 pub struct AgentSupervisorState {
@@ -159,16 +150,18 @@ impl AgentProviderCaller for RealProviderCaller {
         request: ProviderTurnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AiChatResponse, String>> + Send + 'a>> {
         Box::pin(async move {
-            ai_chat(
-                request.provider,
-                request.model,
-                request.messages,
-                request.tools,
-                request.workspace_root,
-                request.num_ctx,
-                request.num_predict,
-                request.reflection_level,
-                request.stream,
+            crate::providers::dispatch(
+                crate::providers::ProviderTurn {
+                    provider: request.provider,
+                    model: request.model,
+                    messages: request.messages,
+                    tools: request.tools,
+                    workspace_root: request.workspace_root,
+                    num_ctx: request.num_ctx,
+                    num_predict: request.num_predict,
+                    reflection_level: request.reflection_level,
+                },
+                &request.stream,
             )
             .await
         })
@@ -880,875 +873,6 @@ enum ToolOutcome {
     Cancelled,
 }
 
-/// Pause tool (`userAnswerQuestion`): ask the user a typed question and feed
-/// their verbatim answer back to the model. "(skipped)" is the sentinel the
-/// user can send to decline. Cancelling during the wait bubbles up as
-/// The ceremony every Pause tool performs.
-///
-/// All four of them — question, subagent, advisor, and the advisor escalation the
-/// loop monitor triggers — did the same six steps, and the closure that stashes
-/// the reply channel was byte-identical in each. What differs is only which args
-/// they read, which two events they emit, and what a skipped answer means.
-///
-/// Note the status: all four report `WaitingForPermission`, even though only one
-/// of them is a permission. That is the wire vocabulary being narrower than the
-/// states it has to describe (`AgentRunStatus` has no `WaitingForUser`), not a
-/// choice worth preserving — but widening it is a wire change with a frontend
-/// mirror, so it stays as-is here and is written down instead of re-derived four
-/// times.
-///
-/// `Ok(None)` means the run was cancelled while parked.
-async fn run_pause_tool<E, R, S>(
-    ctx: &ToolCtx<'_>,
-    call: &NormalizedToolCall,
-    emit: &mut E,
-    key_prefix: &str,
-    default_answer: &str,
-    requested: R,
-    resolved: S,
-) -> Result<Option<String>, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-    R: FnOnce(&str) -> AgentEvent,
-    S: FnOnce(&str, &str) -> AgentEvent,
-{
-    let request_id = format!("{key_prefix}_{}_{}", ctx.id, call.id);
-
-    let answer = match pause_for_user(
-        ctx.sup,
-        ctx.id,
-        AgentRunStatus::WaitingForPermission,
-        requested(&request_id),
-        default_answer,
-        ctx.cancel,
-        emit,
-        |handle, tx| {
-            *handle.pending_question.lock().unwrap() = Some(tx);
-        },
-    )
-    .await?
-    {
-        PauseOutcome::Cancelled => return Ok(None),
-        PauseOutcome::Resolved(answer) => answer,
-    };
-
-    emit(resolved(&request_id, &answer))?;
-    Ok(Some(answer))
-}
-
-/// `Cancelled`.
-async fn process_pause_tool<E>(
-    ctx: &ToolCtx<'_>,
-    call: &NormalizedToolCall,
-    emit: &mut E,
-) -> Result<ToolOutcome, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-{
-    let question = call
-        .input
-        .get("question")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(empty question)")
-        .to_string();
-    let Some(answer) = run_pause_tool(
-        ctx,
-        call,
-        emit,
-        "q",
-        "(skipped)",
-        |request_id| AgentEvent::UserQuestionRequested {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            question: question.clone(),
-            ts: now_ms(),
-        },
-        |request_id, answer| AgentEvent::UserQuestionResolved {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            answer: answer.to_string(),
-            ts: now_ms(),
-        },
-    )
-    .await?
-    else {
-        return Ok(ToolOutcome::Cancelled);
-    };
-
-    Ok(ToolOutcome::Produced(ToolResult {
-        ok: true,
-        content: if answer == "(skipped)" {
-            "[user skipped this question]".to_string()
-        } else {
-            answer
-        },
-        metadata: None,
-    }))
-}
-
-/// Subagent spawn tool (`spawn_subagent`): a Pause tool that delegates a
-/// focused, read-only investigation to a named subagent. The loop emits
-/// `SubagentRequested` and parks on the same oneshot the question pause uses;
-/// the frontend runs the child subagent (nested under this run via `parentId`)
-/// and resolves through `agent_resolve_question` with the subagent's report,
-/// which becomes this tool's result. Cancelling during the wait bubbles up as
-/// `Cancelled`.
-async fn process_subagent_tool<E>(
-    ctx: &ToolCtx<'_>,
-    call: &NormalizedToolCall,
-    emit: &mut E,
-) -> Result<ToolOutcome, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-{
-    let subagent = call
-        .input
-        .get("subagent")
-        .and_then(|v| v.as_str())
-        .unwrap_or("explorer")
-        .to_string();
-    let task = call
-        .input
-        .get("task")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let Some(report) = run_pause_tool(
-        ctx,
-        call,
-        emit,
-        "sub",
-        "(subagent produced no output)",
-        |request_id| AgentEvent::SubagentRequested {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            subagent: subagent.clone(),
-            task: task.clone(),
-            ts: now_ms(),
-        },
-        |request_id, report| AgentEvent::SubagentResolved {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            result: report.to_string(),
-            ts: now_ms(),
-        },
-    )
-    .await?
-    else {
-        return Ok(ToolOutcome::Cancelled);
-    };
-
-    Ok(ToolOutcome::Produced(ToolResult {
-        ok: true,
-        content: report,
-        metadata: Some(serde_json::json!({ "subagent": subagent })),
-    }))
-}
-
-/// Advisor consult tool (`consult_advisor`): a Pause tool that escalates one
-/// hard decision to a stronger advisor model. The loop emits `AdvisorRequested`
-/// and parks on the shared question oneshot; the frontend asks a bigger model
-/// (or a Claude Code session) the executor's question and resolves through
-/// `agent_resolve_question` with the advice, which becomes this tool's result.
-/// Distinct from `spawn_subagent`: the advisor gives *guidance*, not a nested
-/// agentic run — the executor stays in control and applies the advice itself.
-/// Cancelling during the wait bubbles up as `Cancelled`.
-/// Sentinel the frontend prepends when an advisor consult fails (no key,
-/// provider unreachable, empty reply). The shared question oneshot only carries
-/// a string, so this marker is how a failure crosses back — process_advisor_tool
-/// strips it and returns a NOT-ok tool result. Keep in sync with the same
-/// constant in AiPanel's runAdvisorConsult.
-const ADVISOR_ERROR_PREFIX: &str = "[advisor:error] ";
-
-async fn process_advisor_tool<E>(
-    ctx: &ToolCtx<'_>,
-    call: &NormalizedToolCall,
-    emit: &mut E,
-) -> Result<ToolOutcome, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-{
-    let question = call
-        .input
-        .get("question")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    // Fold optional `context` into the question so the advisor sees one
-    // self-contained prompt — the frontend forwards this verbatim.
-    let question = match call.input.get("context").and_then(|v| v.as_str()) {
-        Some(c) if !c.trim().is_empty() => format!("{question}\n\nContext:\n{}", c.trim()),
-        _ => question,
-    };
-    let Some(advice) = run_pause_tool(
-        ctx,
-        call,
-        emit,
-        "adv",
-        // A closed channel is a failure, not advice — mark it so below.
-        ADVISOR_ERROR_PREFIX,
-        |request_id| AgentEvent::AdvisorRequested {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            question: question.clone(),
-            ts: now_ms(),
-        },
-        |request_id, advice| AgentEvent::AdvisorResolved {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            advice: advice.to_string(),
-            ts: now_ms(),
-        },
-    )
-    .await?
-    else {
-        return Ok(ToolOutcome::Cancelled);
-    };
-
-    // A failed consult (no key, provider down, empty reply) is prefixed with
-    // ADVISOR_ERROR_PREFIX by the frontend. Surface it as a NOT-ok tool result
-    // so the executor treats it as a failure, not as guidance it should follow.
-    if let Some(msg) = advice.strip_prefix(ADVISOR_ERROR_PREFIX) {
-        return Ok(ToolOutcome::Produced(ToolResult {
-            ok: false,
-            content: format!("Advisor consult failed: {}", msg.trim()),
-            metadata: Some(serde_json::json!({ "advisor": true })),
-        }));
-    }
-
-    Ok(ToolOutcome::Produced(ToolResult {
-        ok: true,
-        content: format!("Advisor guidance:\n{advice}"),
-        metadata: Some(serde_json::json!({ "advisor": true })),
-    }))
-}
-
-/// Outcome of an auto-escalated advisor consult (see `steer_via_advisor`).
-enum AdvisorSteer {
-    /// The advisor answered; inject this guidance into the next turn.
-    Advice(String),
-    /// No advisor configured, or the consult failed — fall back to the plain
-    /// steering nudge so the run still gets a course-correction.
-    FallbackNudge,
-    /// The user cancelled while the consult was parked; the caller settles the
-    /// run and returns (only it can leave the loop).
-    Cancelled,
-}
-
-/// Consult a stronger advisor *without* a model-initiated tool call: the loop
-/// monitor detected a stuck failure loop and is escalating on the executor's
-/// behalf. Emits the same `AdvisorRequested`/`AdvisorResolved` pause the
-/// `consult_advisor` tool uses, so any run-owner (AI panel or headless mission)
-/// services it unchanged. A closed channel or an `ADVISOR_ERROR_PREFIX` reply
-/// (no advisor configured, provider down) degrades to `FallbackNudge`.
-async fn steer_via_advisor<E>(
-    sup: &dyn RunSupervisor,
-    id: &str,
-    request_id: String,
-    question: String,
-    cancel: &CancellationToken,
-    emit: &mut E,
-) -> Result<AdvisorSteer, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-{
-    let advice = match pause_for_user(
-        sup,
-        id,
-        AgentRunStatus::WaitingForPermission,
-        AgentEvent::AdvisorRequested {
-            run_id: id.to_string(),
-            request_id: request_id.clone(),
-            question,
-            ts: now_ms(),
-        },
-        ADVISOR_ERROR_PREFIX,
-        cancel,
-        emit,
-        |handle, tx| {
-            *handle.pending_question.lock().unwrap() = Some(tx);
-        },
-    )
-    .await?
-    {
-        PauseOutcome::Cancelled => return Ok(AdvisorSteer::Cancelled),
-        PauseOutcome::Resolved(advice) => advice,
-    };
-
-    emit(AgentEvent::AdvisorResolved {
-        run_id: id.to_string(),
-        request_id,
-        advice: advice.clone(),
-        ts: now_ms(),
-    })?;
-
-    if advice.strip_prefix(ADVISOR_ERROR_PREFIX).is_some() {
-        return Ok(AdvisorSteer::FallbackNudge);
-    }
-    Ok(AdvisorSteer::Advice(advice))
-}
-
-/// The most recent tool result text in the provider message stream, truncated —
-/// the error the advisor most needs to see when a failure loop is escalated.
-fn last_tool_output(messages: &[serde_json::Value]) -> Option<String> {
-    messages.iter().rev().find_map(|m| {
-        if m.get("role").and_then(|r| r.as_str()) == Some("tool") {
-            m.get("content")
-                .and_then(|c| c.as_str())
-                .map(|s| s.chars().take(800).collect::<String>())
-        } else {
-            None
-        }
-    })
-}
-
-/// Command tool (`run_command` and dynamic command-capability tools): run a
-/// shell command, but only after the user approves it through the permission
-/// gate. Approvals/rejections are remembered per-run (and project-scoped ones
-/// persist to the on-disk allowlist) so an identical command doesn't re-prompt.
-/// Cancelling during the approval wait bubbles up as `Cancelled`.
-/// The four options every command/network gate offers, declared once so the
-/// optionId / behavior / scope wire contract can't drift between capabilities.
-/// Only the run/project labels differ ("Approve for this run" vs "Approve
-/// target for this run"). Serde owns the field names now, so the frontend
-/// mirror can't disagree with them by hand.
-fn standard_gate_options(run_label: &str, project_label: &str) -> Vec<PermissionOption> {
-    let option = |id: &str, label: &str, behavior: &str, scope: Option<&str>| PermissionOption {
-        option_id: id.to_string(),
-        label: label.to_string(),
-        behavior: behavior.to_string(),
-        scope: scope.map(str::to_string),
-    };
-    vec![
-        option("allow_once", "Approve", "allow", Some("once")),
-        option("allow_run", run_label, "allow", Some("run")),
-        option("allow_project", project_label, "allow", Some("project")),
-        option("deny", "Reject", "deny", None),
-    ]
-}
-
-async fn process_command_tool<E>(
-    ctx: &ToolCtx<'_>,
-    call: &NormalizedToolCall,
-    emit: &mut E,
-) -> Result<ToolOutcome, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-{
-    let root_value = match ctx.request.workspace_root.as_deref() {
-        Some(root) => root,
-        None => return Ok(ToolOutcome::Produced(no_workspace_result())),
-    };
-
-    let invocation = if call.name == "run_command" {
-        let command = call
-            .input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if command.is_empty() {
-            Err(ToolResult {
-                ok: false,
-                content: "run_command requires a non-empty command.".to_string(),
-                metadata: None,
-            })
-        } else {
-            // Default 180s; configurable for long builds. Clamped so a bad
-            // setting can't disable the runaway guard.
-            let timeout_secs = ctx
-                .request
-                .command_timeout_secs
-                .unwrap_or(180)
-                .clamp(1, 1800);
-            Ok((
-                "run_command".to_string(),
-                command.clone(),
-                root_value.to_string(),
-                timeout_secs,
-                format!("$ {command}"),
-                "The agent wants to run a shell command in the workspace.".to_string(),
-            ))
-        }
-    } else {
-        match dynamic_tool_command(&call.name, &call.input, root_value) {
-            Some(Ok(invocation)) => Ok((
-                invocation.tool_name,
-                invocation.command,
-                invocation.cwd,
-                invocation.timeout_secs,
-                invocation.summary,
-                invocation.reason,
-            )),
-            Some(Err(result)) => Err(result),
-            None => Err(ToolResult {
-                ok: false,
-                content: format!("Unknown command-capability tool: {}", call.name),
-                metadata: None,
-            }),
-        }
-    };
-
-    let (permission_tool_name, command, cwd, timeout_secs, permission_summary, reason) =
-        match invocation {
-            Err(result) => return Ok(ToolOutcome::Produced(result)),
-            Ok(inv) => inv,
-        };
-
-    let approval_key = if cwd == root_value {
-        command.clone()
-    } else {
-        format!("{cwd} :: {command}")
-    };
-    let preflight = preflight_command(root_value, &cwd, &command);
-    // Wildcard allowlist rules are intentionally narrower than exact approvals:
-    // if a wildcard command references outside-workspace paths, ask again so the
-    // path is visible to the user instead of hidden behind a broad pattern. That
-    // nuance is command-specific, so the project verdict is computed here and
-    // handed to the engine as a plain bool.
-    let matched_rule =
-        command_allowlist::match_rule(&ctx.request.command_allowlist, &command, &approval_key);
-    let project_ok = matched_rule
-        .as_ref()
-        .map(|rule| rule.exact || preflight.external_paths.is_empty())
-        .unwrap_or(false);
-
-    match permission::precheck(
-        ctx,
-        permission::Capability::Command,
-        &approval_key,
-        project_ok,
-    ) {
-        permission::Precheck::Execute => {
-            return Ok(ToolOutcome::Produced(
-                run_command_capture_in(root_value, &cwd, &command, timeout_secs).await,
-            ));
-        }
-        permission::Precheck::AutoReject(msg) => {
-            return Ok(ToolOutcome::Produced(ToolResult {
-                ok: false,
-                content: msg.to_string(),
-                metadata: None,
-            }));
-        }
-        permission::Precheck::Ask => {}
-    }
-
-    let external_paths = preflight.external_paths.clone();
-    let mut permission_reason = reason;
-    if !external_paths.is_empty() {
-        permission_reason.push_str(" It references paths outside the workspace: ");
-        permission_reason.push_str(&external_paths.join(", "));
-        permission_reason.push('.');
-    }
-    if let Some(rule) = matched_rule.as_ref() {
-        permission_reason.push_str(&format!(
-            " Project rule `{}` matched, but this command still needs approval.",
-            rule.pattern
-        ));
-    }
-
-    let perm = PermissionRequest {
-        id: permission::request_id(ctx, call),
-        run_id: ctx.id.to_string(),
-        tool_call_id: call.id.clone(),
-        tool_name: permission_tool_name.to_string(),
-        input: serde_json::json!({
-            "command": command,
-            "cwd": cwd,
-            "externalPaths": external_paths,
-            "matchedAllowRule": matched_rule.as_ref().map(|rule| rule.pattern.clone())
-        }),
-        summary: permission_summary,
-        reason: permission_reason,
-        options: standard_gate_options("Approve for this run", "Approve for this project"),
-    };
-
-    let decision = match permission::run_gate(ctx, call, perm, emit).await? {
-        permission::GateDecision::Cancelled => return Ok(ToolOutcome::Cancelled),
-        decision => decision,
-    };
-    permission::record(
-        ctx,
-        permission::Capability::Command,
-        &approval_key,
-        &command,
-        &decision,
-    );
-
-    let result = match decision {
-        permission::GateDecision::Approved { .. } => {
-            run_command_capture_in(root_value, &cwd, &command, timeout_secs).await
-        }
-        _ => ToolResult {
-            ok: false,
-            content: permission::Capability::Command
-                .rejected_message()
-                .to_string(),
-            metadata: None,
-        },
-    };
-    Ok(ToolOutcome::Produced(result))
-}
-
-struct NetworkInvocation {
-    target: String,
-    summary: String,
-    reason: String,
-    input: serde_json::Value,
-}
-
-fn network_invocation(call: &NormalizedToolCall) -> Result<NetworkInvocation, ToolResult> {
-    match call.name.as_str() {
-        "web_search" => {
-            let query = call
-                .input
-                .get("query")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| ToolResult {
-                    ok: false,
-                    content: "web_search requires a query.".to_string(),
-                    metadata: None,
-                })?;
-            Ok(NetworkInvocation {
-                target: "web_search".to_string(),
-                summary: format!("web_search {query}"),
-                reason: "The agent wants to search the web.".to_string(),
-                input: serde_json::json!({
-                    "query": query,
-                    "target": "web_search"
-                }),
-            })
-        }
-        "web_fetch" => {
-            let url = call
-                .input
-                .get("url")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| ToolResult {
-                    ok: false,
-                    content: "web_fetch requires a url.".to_string(),
-                    metadata: None,
-                })?;
-            let parsed = reqwest::Url::parse(url).map_err(|e| ToolResult {
-                ok: false,
-                content: format!("web_fetch requires a valid URL: {e}"),
-                metadata: None,
-            })?;
-            let host = parsed.host_str().ok_or_else(|| ToolResult {
-                ok: false,
-                content: "web_fetch URL must include a host.".to_string(),
-                metadata: None,
-            })?;
-            let host = host.to_ascii_lowercase();
-            Ok(NetworkInvocation {
-                target: format!("host:{host}"),
-                summary: format!("web_fetch {host}"),
-                reason: format!("The agent wants to fetch content from {host}."),
-                input: serde_json::json!({
-                    "url": url,
-                    "host": host,
-                    "target": format!("host:{host}")
-                }),
-            })
-        }
-        _ => Ok(NetworkInvocation {
-            target: format!("tool:{}", call.name),
-            summary: call.name.clone(),
-            reason: "The agent wants to use a network-capability tool.".to_string(),
-            input: serde_json::json!({
-                "target": format!("tool:{}", call.name)
-            }),
-        }),
-    }
-}
-
-async fn process_network_tool<E>(
-    ctx: &ToolCtx<'_>,
-    call: &NormalizedToolCall,
-    emit: &mut E,
-) -> Result<ToolOutcome, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-{
-    let root_value = match ctx.request.workspace_root.as_deref() {
-        Some(root) => root,
-        None => return Ok(ToolOutcome::Produced(no_workspace_result())),
-    };
-    let invocation = match network_invocation(call) {
-        Ok(invocation) => invocation,
-        Err(result) => return Ok(ToolOutcome::Produced(result)),
-    };
-    let target = invocation.target.clone();
-    let project_ok =
-        network_allowlist::is_allowed(ctx.runs_dir, root_value, &target).unwrap_or(false);
-
-    match permission::precheck(ctx, permission::Capability::Network, &target, project_ok) {
-        permission::Precheck::Execute => {
-            return Ok(ToolOutcome::Produced(execute_read_only_tool(
-                root_value, call, ctx.id,
-            )));
-        }
-        permission::Precheck::AutoReject(msg) => {
-            return Ok(ToolOutcome::Produced(ToolResult {
-                ok: false,
-                content: msg.to_string(),
-                metadata: None,
-            }));
-        }
-        permission::Precheck::Ask => {}
-    }
-
-    let perm = PermissionRequest {
-        id: permission::request_id(ctx, call),
-        run_id: ctx.id.to_string(),
-        tool_call_id: call.id.clone(),
-        tool_name: call.name.clone(),
-        input: invocation.input.clone(),
-        summary: invocation.summary.clone(),
-        reason: invocation.reason.clone(),
-        options: standard_gate_options(
-            "Approve target for this run",
-            "Approve target for this project",
-        ),
-    };
-
-    let decision = match permission::run_gate(ctx, call, perm, emit).await? {
-        permission::GateDecision::Cancelled => return Ok(ToolOutcome::Cancelled),
-        decision => decision,
-    };
-    permission::record(
-        ctx,
-        permission::Capability::Network,
-        &target,
-        &target,
-        &decision,
-    );
-
-    let result = match decision {
-        permission::GateDecision::Approved { .. } => {
-            execute_read_only_tool(root_value, call, ctx.id)
-        }
-        _ => ToolResult {
-            ok: false,
-            content: permission::Capability::Network
-                .rejected_message()
-                .to_string(),
-            metadata: None,
-        },
-    };
-    Ok(ToolOutcome::Produced(result))
-}
-
-/// Write tool (`write_file`, `create_file`): preview the edit as a diff, pass it
-/// through the diff-review gate (or auto-apply when review is off), and on
-/// "apply" write the file, save a checkpoint for rollback, and run the
-/// optional test-after-edit command. A byte-identical re-proposal of an
-/// already-rejected change is auto-declined. Cancelling during review bubbles
-/// up as `Cancelled`.
-/// Parse a resolved diff decision. The channel carries either a bare behavior
-/// string ("apply" / "reject" — also the pause's cancellation default) or the
-/// frontend's full decision JSON `{"behavior": "...", "note": "..."}` where
-/// `note` is the user's review feedback. Tolerates both; unknown shapes read
-/// as a plain rejection.
-fn parse_diff_decision(raw: &str) -> (String, Option<String>) {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
-        if let Some(obj) = value.as_object() {
-            let behavior = obj
-                .get("behavior")
-                .and_then(|b| b.as_str())
-                .unwrap_or("reject")
-                .to_string();
-            let note = obj
-                .get("note")
-                .and_then(|n| n.as_str())
-                .map(str::trim)
-                .filter(|n| !n.is_empty())
-                .map(str::to_string);
-            return (behavior, note);
-        }
-        if let Some(s) = value.as_str() {
-            return (s.to_string(), None);
-        }
-    }
-    (raw.to_string(), None)
-}
-
-async fn process_write_tool<E>(
-    ctx: &ToolCtx<'_>,
-    call: &NormalizedToolCall,
-    emit: &mut E,
-) -> Result<ToolOutcome, String>
-where
-    E: FnMut(AgentEvent) -> Result<(), String>,
-{
-    let root = match ctx.request.workspace_root.as_deref() {
-        Some(root) => root,
-        None => return Ok(ToolOutcome::Produced(no_workspace_result())),
-    };
-
-    let proposal = match execute_write_tool_preview(root, call, ctx.id) {
-        Ok(p) => p,
-        Err(error_result) => return Ok(ToolOutcome::Produced(error_result)),
-    };
-
-    // Identical to a change the user already rejected this run? (Same path +
-    // same resulting content.) Auto-decline without a second diff prompt so one
-    // "Reject" sticks; tell the model to change course rather than re-surfacing
-    // the same diff.
-    let edit_key = format!("{}::{}", proposal.path, proposal.new_hash);
-    let already_rejected = with_run_handle(ctx.sup, ctx.id, |h| {
-        h.rejected_edits.lock().unwrap().contains(&edit_key)
-    })
-    .unwrap_or(false);
-    if already_rejected {
-        return Ok(ToolOutcome::Produced(ToolResult {
-            ok: false,
-            content: format!(
-                "You already proposed this exact change to {} and the user rejected it. \
-Do not propose it again — take a different approach or ask the user what they'd prefer.",
-                proposal.path
-            ),
-            metadata: None,
-        }));
-    }
-
-    // Auto-accept mode (require_diff_review == Some(false)): apply without
-    // pausing. Still emit the proposed diff so the edit stays visible in the
-    // conversation, and the checkpoint written below keeps it revertable —
-    // which is what makes auto-accept safe. Otherwise pause for diff review.
-    let decision = if ctx.request.require_diff_review == Some(false) {
-        emit(AgentEvent::DiffProposed {
-            run_id: ctx.id.to_string(),
-            proposal: proposal.clone(),
-            ts: now_ms(),
-        })?;
-        "apply".to_string()
-    } else {
-        match pause_for_user(
-            ctx.sup,
-            ctx.id,
-            AgentRunStatus::WaitingForDiff,
-            AgentEvent::DiffProposed {
-                run_id: ctx.id.to_string(),
-                proposal: proposal.clone(),
-                ts: now_ms(),
-            },
-            "reject",
-            ctx.cancel,
-            emit,
-            |handle, tx| {
-                *handle.pending_diff.lock().unwrap() = Some(tx);
-            },
-        )
-        .await?
-        {
-            PauseOutcome::Cancelled => return Ok(ToolOutcome::Cancelled),
-            PauseOutcome::Resolved(decision) => decision,
-        }
-    };
-
-    let (behavior, note) = parse_diff_decision(&decision);
-    let mut decision_obj = serde_json::json!({ "behavior": behavior });
-    if let Some(n) = &note {
-        decision_obj["note"] = serde_json::json!(n);
-    }
-    emit(AgentEvent::DiffResolved {
-        run_id: ctx.id.to_string(),
-        proposal_id: proposal.id.clone(),
-        decision: decision_obj.clone(),
-        ts: now_ms(),
-    })?;
-
-    if behavior == "apply" {
-        match apply_write(root, &proposal) {
-            Ok(result) => {
-                let mut tool_result = result;
-                // Save checkpoint for rollback. Serialize through
-                // CheckpointEntry so the saved shape always matches what
-                // agent_list_checkpoints deserializes.
-                // Through the same two helpers the readers use. The writer used
-                // to rebuild both paths by hand, 1130 lines from the functions
-                // that define them, so the checkpoint format had two spellers.
-                let checkpoint_dir = checkpoint_dir(ctx.runs_dir, ctx.id);
-                let _ = std::fs::create_dir_all(&checkpoint_dir);
-                let checkpoint_file =
-                    checkpoint_file(ctx.runs_dir, ctx.id, &proposal.tool_call_id);
-                let entry = CheckpointEntry {
-                    tool_call_id: proposal.tool_call_id.clone(),
-                    path: proposal.path.clone(),
-                    old_content: proposal.old_content.clone(),
-                    new_content: proposal.new_content.clone(),
-                    is_create: proposal.is_create,
-                    workspace_root: root.to_string(),
-                    ts: now_ms(),
-                };
-                if let Ok(json) = serde_json::to_string(&entry) {
-                    let _ = std::fs::write(&checkpoint_file, json);
-                }
-                let timeout_secs = ctx
-                    .request
-                    .command_timeout_secs
-                    .unwrap_or(180)
-                    .clamp(1, 1800);
-                run_test_after_edit(
-                    root,
-                    ctx.request.test_after_edit_command.as_deref(),
-                    timeout_secs,
-                    &mut tool_result,
-                )
-                .await;
-                emit(AgentEvent::FileChanged {
-                    run_id: ctx.id.to_string(),
-                    path: proposal.path.clone(),
-                    old_hash: proposal.old_hash.clone(),
-                    new_hash: proposal.new_hash.clone(),
-                    ts: now_ms(),
-                })?;
-                Ok(ToolOutcome::Produced(tool_result))
-            }
-            Err(result) => Ok(ToolOutcome::Produced(result)),
-        }
-    } else {
-        // Remember this rejection so a byte-identical re-proposal is
-        // auto-declined above instead of prompting again. (A revised edit
-        // addressing the feedback hashes differently, so it prompts normally.)
-        with_run_handle(ctx.sup, ctx.id, |h| {
-            h.rejected_edits.lock().unwrap().insert(edit_key.clone());
-        });
-        let verb = if proposal.is_create {
-            "created"
-        } else {
-            "changed"
-        };
-        let content = match note {
-            // Review feedback turns the rejection into steering: tell the
-            // model to revise toward the note instead of abandoning course.
-            Some(note) => format!(
-                "The user reviewed this change to {} and rejected it with feedback:\n\
-{note}\n\n\
-The file was not {verb}. Revise the change to address the feedback (or ask \
-the user if it's unclear) — do not re-propose the same edit unchanged.",
-                proposal.path
-            ),
-            None => format!(
-                "Rejected by user: {} was not {verb}. Do not propose this exact change again — \
-take a different approach or ask the user what they'd prefer.",
-                proposal.path
-            ),
-        };
-        Ok(ToolOutcome::Produced(ToolResult {
-            ok: false,
-            content,
-            metadata: None,
-        }))
-    }
-}
 
 #[tauri::command]
 pub async fn agent_start_run(
@@ -1859,11 +983,7 @@ async fn start_run(
                 pending_diff: std::sync::Mutex::new(None),
                 pending_question: std::sync::Mutex::new(None),
                 pending_permission: std::sync::Mutex::new(None),
-                approved_commands: std::sync::Mutex::new(std::collections::HashSet::new()),
-                rejected_edits: std::sync::Mutex::new(std::collections::HashSet::new()),
-                rejected_commands: std::sync::Mutex::new(std::collections::HashSet::new()),
-                approved_network: std::sync::Mutex::new(std::collections::HashSet::new()),
-                rejected_network: std::sync::Mutex::new(std::collections::HashSet::new()),
+                trust: permission::TrustMemory::default(),
             },
         );
     }
@@ -2297,13 +1417,17 @@ async fn run_agent_loop(
             };
 
             let outcome = match kind {
-                Some(ToolKind::Pause) if call.name == "spawn_subagent" => {
-                    process_subagent_tool(&ctx, &call, &mut emit).await?
-                }
-                Some(ToolKind::Pause) if call.name == "consult_advisor" => {
-                    process_advisor_tool(&ctx, &call, &mut emit).await?
-                }
-                Some(ToolKind::Pause) => process_pause_tool(&ctx, &call, &mut emit).await?,
+                // Pause dispatch reads the registry's flavor, never a name
+                // literal — tool identity is registry data.
+                Some(ToolKind::Pause) => match tools::pause_flavor(&call.name) {
+                    Some(tools::PauseFlavor::Subagent) => {
+                        process_subagent_tool(&ctx, &call, &mut emit).await?
+                    }
+                    Some(tools::PauseFlavor::Advisor) => {
+                        process_advisor_tool(&ctx, &call, &mut emit).await?
+                    }
+                    _ => process_pause_tool(&ctx, &call, &mut emit).await?,
+                },
                 Some(ToolKind::Command) => process_command_tool(&ctx, &call, &mut emit).await?,
                 Some(ToolKind::Network) => process_network_tool(&ctx, &call, &mut emit).await?,
                 Some(ToolKind::Write) => process_write_tool(&ctx, &call, &mut emit).await?,
@@ -3953,11 +3077,7 @@ mod test_support {
             pending_diff: Mutex::new(None),
             pending_question: Mutex::new(None),
             pending_permission: Mutex::new(None),
-            approved_commands: Mutex::new(std::collections::HashSet::new()),
-            rejected_edits: Mutex::new(std::collections::HashSet::new()),
-            rejected_commands: Mutex::new(std::collections::HashSet::new()),
-            approved_network: Mutex::new(std::collections::HashSet::new()),
-            rejected_network: Mutex::new(std::collections::HashSet::new()),
+            trust: permission::TrustMemory::default(),
         }
     }
 
@@ -5006,7 +4126,9 @@ mod diff_gate_tests {
 
 #[cfg(test)]
 mod network_permission_tests {
+    use super::test_support::*;
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn web_fetch_permission_targets_the_host() {
@@ -5030,6 +4152,70 @@ mod network_permission_tests {
         let invocation = network_invocation(&call).expect("valid search");
         assert_eq!(invocation.target, "web_search");
         assert_eq!(invocation.input["target"], "web_search");
+    }
+
+    #[tokio::test]
+    async fn approved_network_tool_returns_without_panicking_the_async_harness() {
+        let root = std::env::temp_dir().join(format!(
+            "klide-network-tool-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let runs_dir = root.join("runs");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let sup = FakeSupervisor::with_run("network-run");
+        let cancel = CancellationToken::new();
+        let request = test_request(workspace.to_str().unwrap(), &[]);
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "network-run",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: runs_dir.as_path(),
+        };
+        let call = NormalizedToolCall {
+            id: "call_fetch".to_string(),
+            name: "web_fetch".to_string(),
+            // Public but deliberately closed: the result should be a normal
+            // Tool error, never a reqwest blocking-runtime panic.
+            input: serde_json::json!({ "url": "https://1.1.1.1:1/" }),
+        };
+        let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let sink = events.clone();
+        let mut emit = move |event: AgentEvent| -> Result<(), String> {
+            sink.lock().unwrap().push(event);
+            Ok(())
+        };
+
+        let (outcome, _) = tokio::join!(
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                process_network_tool(&ctx, &call, &mut emit),
+            ),
+            answer_permission(
+                &sup,
+                "network-run",
+                r#"{"behavior":"allow","scope":"once"}"#,
+            ),
+        );
+        let result = match outcome
+            .expect("approved network Tool must settle")
+            .expect("network gate must return normally")
+        {
+            ToolOutcome::Produced(result) => result,
+            ToolOutcome::Cancelled => panic!("network Tool was unexpectedly cancelled"),
+        };
+        assert!(!result.ok, "closed endpoint should return a Tool error");
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::PermissionResolved { .. })));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

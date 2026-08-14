@@ -3,8 +3,11 @@ import type { Conversation } from "../components/ai/types";
 import type { PendingAiPanel } from "../components/ai/panelHost";
 import {
   aiPanelFleetReducer,
+  createFleetController,
   initialAiPanelFleetState,
+  type AiPanelFleetAction,
   type AiPanelFleetState,
+  type PanelSeed,
 } from "./useAiPanelFleet";
 
 const convo = (id: string): Conversation => ({
@@ -99,6 +102,9 @@ describe("AI panel fleet reducer", () => {
         "ai-b": { text: "test", nonce: 1 },
       },
       pendingContinuation: null,
+      modelsByPanel: { "ai-a": ["llama3.1:8b"], "ai-b": ["qwen2.5:7b"] },
+      reviewOverrideByPanel: { "ai-a": false },
+      isolatedStartByPanel: { "ai-a": { text: "go", attachments: [] } },
     };
 
     const closed = reduce(state, { type: "panel-closed", panelId: "ai-a" });
@@ -108,6 +114,10 @@ describe("AI panel fleet reducer", () => {
     expect(closed.raceWatchTabs).toEqual([{ panelId: "ai-b", label: "B" }]);
     expect(closed.focusActiveTabId).toBe("ai-b");
     expect(closed.followUpsByPanel["ai-a"]).toBeUndefined();
+    // The settings maps live in the fleet precisely so a close clears them.
+    expect(closed.modelsByPanel).toEqual({ "ai-b": ["qwen2.5:7b"] });
+    expect(closed.reviewOverrideByPanel).toEqual({});
+    expect(closed.isolatedStartByPanel).toEqual({});
   });
 });
 
@@ -211,5 +221,196 @@ describe("resuming a conversation with a continuation", () => {
       "ai-b": { text: "ask both", nonce: 9 },
     });
     expect(state.pendingContinuation?.text).toBe("continue");
+  });
+});
+
+// ── admit / release ────────────────────────────────────────────────────
+
+/** Drives the controller against the real reducer with a fake layout module:
+ *  panels are ids in an array, geometry doesn't exist here. */
+function makeFleet(opts?: {
+  panelBoundToConversation?: (conversationId: string) => string | null;
+}) {
+  let state = initialAiPanelFleetState;
+  const open: string[] = [];
+  let counter = 0;
+  const revealed: string[] = [];
+  const focused: string[] = [];
+  const seeds: (PanelSeed | undefined)[] = [];
+  const dispatch = (action: AiPanelFleetAction) => {
+    state = aiPanelFleetReducer(state, action);
+  };
+  const controller = createFleetController(
+    {
+      createPanel: (seed) => {
+        const id = `panel-${++counter}`;
+        open.push(id);
+        seeds.push(seed);
+        return id;
+      },
+      removePanel: (panelId) => {
+        const idx = open.indexOf(panelId);
+        if (idx >= 0) open.splice(idx, 1);
+      },
+      focusPanel: (panelId) => focused.push(panelId),
+      revealSurface: (kind) => revealed.push(kind),
+      openPanelIds: () => [...open],
+      panelBoundToConversation: opts?.panelBoundToConversation ?? (() => null),
+    },
+    dispatch,
+    () => state,
+  );
+  return {
+    ...controller,
+    dispatch,
+    open,
+    revealed,
+    focused,
+    seeds,
+    get state() {
+      return state;
+    },
+  };
+}
+
+describe("fleet admission", () => {
+  it("admits a resumed run once — the second admit focuses the first panel", () => {
+    const fleet = makeFleet();
+
+    const first = fleet.admit({ kind: "resume-run", runId: "run-1", convo: convo("run-1") });
+    const second = fleet.admit({ kind: "resume-run", runId: "run-1", convo: convo("run-1") });
+
+    expect(second).toBe(first);
+    expect(fleet.open).toEqual([first]);
+    expect(fleet.focused).toEqual([first]);
+    // The surface is still revealed on the de-duped admit (the old rituals
+    // switched back to the workbench before their duplicate check too).
+    expect(fleet.revealed).toEqual(["resume-run", "resume-run"]);
+    expect(fleet.state.resumeTarget?.panelId).toBe(first);
+  });
+
+  it("re-admits a run whose panel has since been released", () => {
+    const fleet = makeFleet();
+
+    const first = fleet.admit({ kind: "resume-run", runId: "run-1", convo: convo("run-1") });
+    fleet.release(first);
+    const second = fleet.admit({ kind: "resume-run", runId: "run-1", convo: convo("run-1") });
+
+    expect(second).not.toBe(first);
+    expect(fleet.open).toEqual([second]);
+  });
+
+  it("de-dupes a CLI resume handoff on its session id, but never a fresh task", () => {
+    const fleet = makeFleet();
+
+    const a = fleet.admit({ kind: "handoff", provider: "codex", resumeSessionId: "sess-1" });
+    const b = fleet.admit({ kind: "handoff", provider: "codex", resumeSessionId: "sess-1" });
+    const c = fleet.admit({ kind: "handoff", provider: "codex", initialTask: "fix the tests" });
+    const d = fleet.admit({ kind: "handoff", provider: "codex", initialTask: "fix the tests" });
+
+    expect(b).toBe(a);
+    expect(d).not.toBe(c);
+    expect(fleet.open).toEqual([a, c, d]);
+  });
+
+  it("reattach lands on the panel already bound to the conversation", () => {
+    const fleet = makeFleet({
+      panelBoundToConversation: (id) => (id === "convo-live" ? "panel-spawner" : null),
+    });
+
+    const target = fleet.admit({
+      kind: "reattach",
+      provider: "claude-code",
+      conversationId: "convo-live",
+    });
+
+    expect(target).toBe("panel-spawner");
+    expect(fleet.open).toEqual([]);
+    expect(fleet.focused).toEqual(["panel-spawner"]);
+    expect(fleet.state.pendingByPanel).toEqual({});
+  });
+
+  it("seeds a fork panel from its conversation's provider, model, and worktree pin", () => {
+    const fleet = makeFleet();
+
+    const panelId = fleet.admit({
+      kind: "fork",
+      convo: { ...convo("c1"), provider: "ollama", model: "llama3.1:8b", cwd: "/wt/fork-1" },
+    });
+
+    expect(fleet.seeds[0]).toEqual({
+      provider: "ollama",
+      model: "llama3.1:8b",
+      cwd: "/wt/fork-1",
+    });
+    expect(fleet.state.resumeTarget?.panelId).toBe(panelId);
+  });
+});
+
+describe("fleet release", () => {
+  it("release is one verb: membership and every per-panel queue and map clear together", () => {
+    const fleet = makeFleet();
+
+    const panelId = fleet.admit({
+      kind: "handoff",
+      provider: "codex",
+      initialTask: "do the thing",
+    });
+    fleet.dispatch({ type: "panel-models-reported", panelId, models: ["m1"] });
+    fleet.dispatch({ type: "review-override-set", panelId, required: false });
+    fleet.dispatch({
+      type: "isolated-start-queued",
+      panelId,
+      start: { text: "go", attachments: [] },
+    });
+
+    fleet.release(panelId);
+
+    expect(fleet.open).toEqual([]);
+    expect(fleet.state.pendingByPanel).toEqual({});
+    expect(fleet.state.followUpsByPanel).toEqual({});
+    expect(fleet.state.modelsByPanel).toEqual({});
+    expect(fleet.state.reviewOverrideByPanel).toEqual({});
+    expect(fleet.state.isolatedStartByPanel).toEqual({});
+  });
+
+  it("race admit then endRaceWatch leaves no orphaned queues (the pendingByPanel leak)", () => {
+    const fleet = makeFleet();
+
+    fleet.admit({
+      kind: "race-watch",
+      focusActive: true,
+      racers: [
+        { runId: "run-a", provider: "ollama", model: "m", cwd: "/wt/a", label: "A" },
+        { runId: "run-b", provider: "ollama", model: "m", cwd: "/wt/b", label: "B" },
+      ],
+    });
+    // Leaving before any panel consumed its handoff — the old path cleared the
+    // tabs but left both entries stranded in pendingByPanel forever.
+    expect(Object.keys(fleet.state.pendingByPanel)).toHaveLength(2);
+
+    fleet.endRaceWatch();
+
+    expect(fleet.open).toEqual([]);
+    expect(fleet.state.pendingByPanel).toEqual({});
+    expect(fleet.state.raceWatchTabs).toEqual([]);
+    expect(fleet.state.focusActiveTabId).toBeNull();
+    expect(fleet.state.followUpsByPanel).toEqual({});
+  });
+
+  it("a released racer's run can be race-watched again in a fresh panel", () => {
+    const fleet = makeFleet();
+
+    fleet.admit({
+      kind: "race-watch",
+      focusActive: false,
+      racers: [{ runId: "run-a", provider: "ollama", label: "A" }],
+    });
+    fleet.endRaceWatch();
+    fleet.admit({ kind: "resume-run", runId: "run-a", convo: convo("run-a") });
+
+    // The registry entry died with the released panel — no focus on a ghost.
+    expect(fleet.open).toHaveLength(1);
+    expect(fleet.focused).toEqual([]);
   });
 });

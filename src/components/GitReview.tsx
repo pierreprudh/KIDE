@@ -9,7 +9,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { relativeTimeLong } from "../time";
-import { invoke } from "@tauri-apps/api/core";
+import { errMessage } from "../errors";
 import type { ThemeId } from "../theme";
 import type { GitFile, GitStatus } from "../gitTypes";
 import {
@@ -28,6 +28,33 @@ import {
 import { notify } from "../toast";
 import { listLiveDelegateSessions } from "../ipc/delegatePty";
 import {
+  checkoutBranchOutcome,
+  checkoutPrOutcome,
+  commitOutcome,
+  discardFileOutcome,
+  fetchOutcome,
+  mergePrOutcome,
+  mergePrTimeline,
+  openPrInBrowserOutcome,
+  prCounts as derivePrCounts,
+  pullOutcome,
+  pushOutcome,
+  splitStatusFiles,
+  stageAllOutcome,
+  stageFileOutcome,
+  stashPopOutcome,
+  stashPushOutcome,
+  submitPrOutcome,
+  totalAdditions as deriveTotalAdditions,
+  unstageAllOutcome,
+  unstageFileOutcome,
+  visiblePrs as deriveVisiblePrs,
+  type GitActionOutcome,
+  type GitReviewRefresh,
+  type PullRequestFilter,
+} from "../gitReview";
+import {
+  createPr as createPrRequest,
   gitCheckoutBranch,
   gitCommit,
   gitCommitDetails,
@@ -55,8 +82,6 @@ import {
   type PullRequestDetails,
 } from "../ipc/git";
 import { renderMarkdown } from "./markdown";
-
-type PullRequestFilter = "open" | "draft" | "merged" | "all";
 
 type Props = {
   workspaceRoot: string | null;
@@ -909,14 +934,7 @@ function TimelineCard({ author, action, at, nowMs, children }: {
 // GitHub-style conversation: the opening description, then commits + comments
 // interleaved in time, threaded on a single rail.
 function PRTimeline({ detail, nowMs }: { detail: PullRequestDetails; nowMs: number }) {
-  const events = useMemo(() => {
-    const rest = [
-      ...detail.commits.map((c) => ({ kind: "commit" as const, at: c.createdAtMs, commit: c })),
-      ...detail.commentThread.map((c) => ({ kind: "comment" as const, at: c.createdAtMs, comment: c })),
-    ];
-    rest.sort((a, b) => a.at - b.at);
-    return rest;
-  }, [detail]);
+  const events = useMemo(() => mergePrTimeline(detail), [detail]);
   const body = detail.body?.trim();
   return (
     <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: TL_ROW_GAP }}>
@@ -1380,142 +1398,102 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   }, [actionMessage]);
 
   const files = reviewStatus?.files ?? [];
-  const stagedFiles = files.filter((f) => f.staged);
-  const changedFiles = files.filter((f) => !f.staged);
-  const totalAdditions = useMemo(() => {
-    return changedFiles.length + stagedFiles.length;
-  }, [changedFiles.length, stagedFiles.length]);
+  const { stagedFiles, changedFiles } = splitStatusFiles(files);
+  const totalAdditions = useMemo(() => deriveTotalAdditions(files), [files]);
   const prList = prs ?? [];
-  const prCounts = useMemo(() => ({
-    open: prList.filter((pr) => pr.badge === "open").length,
-    draft: prList.filter((pr) => pr.badge === "draft").length,
-    merged: prList.filter((pr) => pr.badge === "merged").length,
-    all: prList.length,
-  }), [prList]);
-  const visiblePrs = useMemo(() => {
-    return prList.filter((pr) => {
-      if (prFilter === "open") return pr.badge === "open";
-      if (prFilter === "draft") return pr.badge === "draft";
-      if (prFilter === "merged") return pr.badge === "merged";
-      return true;
-    });
-  }, [prFilter, prList]);
+  const prCounts = useMemo(() => derivePrCounts(prList), [prList]);
+  const visiblePrs = useMemo(() => deriveVisiblePrs(prList, prFilter), [prFilter, prList]);
 
-  async function withAction<T>(label: string, fn: () => Promise<T>) {
-    setActionLoading(label);
+  const refreshers: Record<GitReviewRefresh, () => Promise<void>> = {
+    status: refreshStatus,
+    log: refreshLog,
+    prs: refreshPrs,
+    stashes: refreshStashes,
+  };
+
+  // The one place a Git Review action lands: run the command, show the
+  // outcome's notice (or the error), and — on success only — apply what the
+  // outcome says the surface needs: cleared selections first, re-fetches after.
+  async function runGitAction(outcome: GitActionOutcome, fn: () => Promise<unknown>) {
+    setActionLoading(outcome.message);
     try {
-      const result = await fn();
-      setActionMessage({ kind: "ok", text: label });
-      return result;
+      await fn();
+      setActionMessage({ kind: "ok", text: outcome.message });
     } catch (e) {
-      setActionMessage({ kind: "err", text: e instanceof Error ? e.message : String(e) });
-      throw e;
+      setActionMessage({ kind: "err", text: errMessage(e) });
+      return;
     } finally {
       setActionLoading(null);
     }
+    if (outcome.clearCommitMessage) setCommitMessage("");
+    if (outcome.closeBranchMenu) setBranchMenuOpen(false);
+    if (outcome.closeDiff) setOpen(null);
+    if (outcome.collapseExpandedPr) {
+      setExpandedPr(null);
+      setSelectedPr(null);
+    }
+    if (outcome.closePrComposer) setPrComposer(null);
+    for (const target of outcome.refresh) await refreshers[target]();
   }
 
   async function stageFile(path: string) {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Staged", () => gitStage(workspaceRoot, path));
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    await runGitAction(stageFileOutcome(), () => gitStage(workspaceRoot, path));
   }
   async function unstageFile(path: string) {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Unstaged", () => gitUnstage(workspaceRoot, path));
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    await runGitAction(unstageFileOutcome(), () => gitUnstage(workspaceRoot, path));
   }
   async function discardFile(path: string) {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Discarded", () => gitDiscard(workspaceRoot, path));
-      await refreshStatus();
-      if (open?.path === path) setOpen(null);
-    } catch { /* message already shown */ }
+    await runGitAction(discardFileOutcome(path, open?.path ?? null), () => gitDiscard(workspaceRoot, path));
   }
   async function stageAll() {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Staged all", () => gitStage(workspaceRoot, "."));
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    await runGitAction(stageAllOutcome(), () => gitStage(workspaceRoot, "."));
   }
   async function unstageAll() {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Unstaged all", () => gitUnstage(workspaceRoot, "."));
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    await runGitAction(unstageAllOutcome(), () => gitUnstage(workspaceRoot, "."));
   }
 
   async function commit() {
     if (!workspaceRoot || !commitMessage.trim() || stagedFiles.length === 0) return;
     setCommitLoading(true);
     try {
-      await withAction("Committed", () => gitCommit(workspaceRoot, commitMessage));
-      setCommitMessage("");
-      setOpen(null);
-      await refreshStatus();
-    } catch { /* message already shown */ }
-    finally { setCommitLoading(false); }
+      await runGitAction(commitOutcome(), () => gitCommit(workspaceRoot, commitMessage));
+    } finally {
+      setCommitLoading(false);
+    }
   }
 
   async function fetch() {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Fetched", () => gitFetch(workspaceRoot));
-      await refreshLog();
-      await refreshPrs();
-    } catch { /* message already shown */ }
+    await runGitAction(fetchOutcome(), () => gitFetch(workspaceRoot));
   }
   async function pull() {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Pulled", () => gitPull(workspaceRoot));
-      await refreshLog();
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    await runGitAction(pullOutcome(), () => gitPull(workspaceRoot));
   }
   async function push() {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Pushed", () => gitPush(workspaceRoot));
-      await refreshLog();
-      await refreshPrs();
-    } catch { /* message already shown */ }
+    await runGitAction(pushOutcome(), () => gitPush(workspaceRoot));
   }
   async function checkoutBranch(name: string) {
     if (!workspaceRoot || !name || name === log?.branch) {
       setBranchMenuOpen(false);
       return;
     }
-    try {
-      await withAction(`Switched to ${name}`, () => gitCheckoutBranch(workspaceRoot, name));
-      setBranchMenuOpen(false);
-      setOpen(null);
-      await refreshLog();
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    // On failure the branch menu stays open (the outcome never applies).
+    await runGitAction(checkoutBranchOutcome(name), () => gitCheckoutBranch(workspaceRoot, name));
   }
   async function stashPush() {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Stashed", () => gitStash(workspaceRoot, "push", "WIP"));
-      await refreshStashes();
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    await runGitAction(stashPushOutcome(), () => gitStash(workspaceRoot, "push", "WIP"));
   }
   async function stashPop() {
     if (!workspaceRoot) return;
-    try {
-      await withAction("Stash popped", () => gitStash(workspaceRoot, "pop"));
-      await refreshStashes();
-      await refreshStatus();
-    } catch { /* message already shown */ }
+    await runGitAction(stashPopOutcome(), () => gitStash(workspaceRoot, "pop"));
   }
 
   async function selectPr(n: number) {
@@ -1533,7 +1511,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
       const detail = await gitPrView(workspaceRoot, n);
       setSelectedPr(detail);
     } catch (e) {
-      setActionMessage({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+      setActionMessage({ kind: "err", text: errMessage(e) });
       setExpandedPr(null);
     } finally {
       setPrDetailLoading(false);
@@ -1541,31 +1519,16 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   }
   async function openPrInBrowser(n: number) {
     if (!workspaceRoot) return;
-    try {
-      const url = await withAction("Opened in browser", () => gitPrOpen(workspaceRoot, n));
-      void url;
-    } catch { /* message already shown */ }
+    await runGitAction(openPrInBrowserOutcome(), () => gitPrOpen(workspaceRoot, n));
   }
   async function checkoutPr(n: number) {
     if (!workspaceRoot) return;
-    try {
-      await withAction(`Checked out #${n}`, () => gitPrCheckout(workspaceRoot, n));
-      await refreshLog();
-      await refreshStatus();
-      await refreshPrs();
-      if (expandedPr === n) { setExpandedPr(null); setSelectedPr(null); }
-    } catch { /* message already shown */ }
+    await runGitAction(checkoutPrOutcome(n, expandedPr), () => gitPrCheckout(workspaceRoot, n));
   }
   async function mergePr(n: number) {
     if (!workspaceRoot) return;
     if (!confirm(`Merge PR #${n}?`)) return;
-    try {
-      await withAction(`Merged #${n}`, () => gitPrMerge(workspaceRoot, n));
-      await refreshPrs();
-      await refreshLog();
-      await refreshStatus();
-      if (expandedPr === n) { setExpandedPr(null); setSelectedPr(null); }
-    } catch { /* message already shown */ }
+    await runGitAction(mergePrOutcome(n, expandedPr), () => gitPrMerge(workspaceRoot, n));
   }
   // Inline composer instead of window.prompt() — Tauri's macOS webview returns
   // null from prompt(), so the old flow silently did nothing.
@@ -1577,18 +1540,9 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   }
   async function submitPr() {
     if (!workspaceRoot || !prComposer || !prComposer.title.trim()) return;
-    try {
-      const url = await withAction("Pull request created", () =>
-        invoke<string>("create_pr", {
-          workspaceRoot,
-          title: prComposer.title.trim(),
-          body: prComposer.body.trim() || null,
-        })
-      );
-      void url;
-      setPrComposer(null);
-      await refreshPrs();
-    } catch { /* message already shown */ }
+    await runGitAction(submitPrOutcome(), () =>
+      createPrRequest(workspaceRoot, prComposer.title.trim(), prComposer.body.trim() || null)
+    );
   }
 
   // Keyboard shortcuts when the view is open.

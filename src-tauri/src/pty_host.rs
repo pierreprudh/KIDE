@@ -355,9 +355,14 @@ pub fn is_user_input(data: &str) -> bool {
 
 /// Everything the host needs to launch one delegate CLI in a fresh PTY. The
 /// caller (Tauri command or daemon request handler) owns all provider
-/// knowledge: it builds the shell command from the delegate adapter and
-/// decides the extra env (e.g. the status-hook callback URL). The host only
-/// runs what it is given.
+/// knowledge: it builds the shell command from the delegate adapter (see
+/// `crate::pty_spawn::spawn_spec_for`) and decides the extra env (e.g. the
+/// status-hook callback URL). The host only runs what it is given.
+///
+/// Plain data on purpose — one spec serves the in-process host, the daemon
+/// request, and the pure assembly function, instead of three hand-kept field
+/// lists. It mirrors the wire's `Request::Spawn` field for field.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SpawnSpec {
     pub session_id: String,
     pub provider: String,
@@ -370,9 +375,12 @@ pub struct SpawnSpec {
     pub model: Option<String>,
     pub resume_session_id: Option<String>,
     pub mission_link: Option<DelegateMissionLink>,
-    /// Provider-specific detector for the CLI announcing its own session id
-    /// in its startup output (only OpenCode does today).
-    pub extract_session_id: Option<Box<dyn Fn(&str) -> Option<String> + Send>>,
+    /// Watch the CLI's startup output for it announcing its own session id
+    /// (only OpenCode does today). True exactly when a built-in Delegate
+    /// adapter matched `provider`; the host resolves the detector from the
+    /// same registry (`delegate::lookup`) at spawn — a bool travels the
+    /// daemon wire, a closure cannot.
+    pub detect_session_id: bool,
 }
 
 struct HostedSession {
@@ -579,7 +587,12 @@ impl SessionHost {
 
         let sessions = self.sessions.clone();
         let session_id = spec.session_id;
-        let extract = spec.extract_session_id;
+        // Resolve the session-id detector from the Delegate registry — both
+        // hosts link the same crate, so the daemon runs it in-process too.
+        let extract = spec
+            .detect_session_id
+            .then(|| crate::delegate::lookup(&spec.provider))
+            .flatten();
         std::thread::spawn(move || {
             // Rate-limit output events: TUI agents (claude's spinner
             // especially) redraw constantly, and every chunk crosses an IPC
@@ -598,7 +611,7 @@ impl SessionHost {
                 // Try to detect the CLI's own session ID from startup output
                 // (only OpenCode announces one today).
                 if !matched_external_id {
-                    if let Some(capt) = extract.as_ref().and_then(|f| f(&chunk)) {
+                    if let Some(capt) = extract.and_then(|d| d.extract_session_id(&chunk)) {
                         // Remember it in the persisted meta, so reopening this
                         // session after an app restart can `--resume` the CLI;
                         // the sink forwards it to app-side run mappings.

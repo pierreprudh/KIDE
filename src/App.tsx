@@ -66,6 +66,13 @@ import { CommandPalette } from "./components/CommandPalette";
 import { SearchPanel } from "./components/SearchPanel";
 import { useEditorTabs } from "./hooks/useEditorTabs";
 import { usePanelLayout, type AiPanelInstance } from "./hooks/usePanelLayout";
+import {
+  useSurface,
+  resolveSurface,
+  ownsTitlebar,
+  showsRail,
+  showsStatusBar,
+} from "./hooks/useSurface";
 import { useAiPanelFleet } from "./hooks/useAiPanelFleet";
 import { useArtifactInspector } from "./hooks/useArtifactInspector";
 import { listCheckpoints, readAgentRunEvents } from "./agent/client";
@@ -76,7 +83,6 @@ import {
   panelWorkspace,
   resumeConversationFor,
   type AiPanelRenderOptions,
-  type PendingAiPanel,
 } from "./components/ai/panelHost";
 import { readWorkspaceTextFile } from "./workspaceFs";
 import { modelLabel } from "./components/ai/ModelPicker";
@@ -112,7 +118,36 @@ export type { HarnessSettings } from "./settingsStore";
 
 function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
-  const [view, setView] = useState<"workbench" | "runs" | "orchestrator" | "settings" | "git-review">("workbench");
+  // The Surface — which screen the app is on. One owner for what used to be
+  // four unrelated atoms (view / focusMode / activeGridId / the derived
+  // Welcome condition): a base (Focus, a grid, or the anchored/free panels
+  // workbench) plus at most one full-window overlay (Mission Control,
+  // Orchestrator, Settings, Git Review) over it. `enterWorkbench`'s
+  // anchored/free half belongs to the panel-layout store below; the two hooks
+  // reference each other in opposite directions (surface → hostKey → layout;
+  // layout → anchored setter → surface), so the setter arrives through a ref.
+  const applyPanelsModeRef = useRef<(anchored: boolean) => void>(() => {});
+  const {
+    core: surfaceCore,
+    hostKey: surfaceKey,
+    enterFocus,
+    exitFocus,
+    enterWorkbench,
+    applyGrid,
+    exitGrid,
+    openOverlay,
+    toggleOverlay,
+    back,
+  } = useSurface({
+    applyPanelsMode: useCallback((anchored: boolean) => {
+      applyPanelsModeRef.current(anchored);
+    }, []),
+  });
+  // The two shorthands most guards need: is an overlay covering the base,
+  // and is the base the Focus screen (regardless of overlay — the status
+  // bar keeps its Focus styling while Settings covers Focus).
+  const overlay = surfaceCore.overlay;
+  const focusBase = surfaceCore.base.kind === "focus";
   const [explorerVisible, setExplorerVisible] = useState(
     () => localStorage.getItem("klide-explorer-visible") !== "false"
   );
@@ -122,20 +157,10 @@ function App() {
   const [autoSaveMode] = useSetting(SETTINGS.autoSaveMode);
   const [showHiddenFiles] = useSetting(SETTINGS.showHiddenFiles);
   const [confirmCloseDirty] = useSetting(SETTINGS.confirmCloseDirty);
-  // Third main screen next to Anchored and Free: a single centered AI
-  // conversation (the Claude Code / Codex desktop pattern). The editor,
-  // explorer, and terminal step back; the chat column is the workbench.
-  const [focusMode, setFocusMode] = useState(
-    () => localStorage.getItem("klide-focus-mode") === "true"
-  );
   // Focus screen state: home (hero composer) vs the live conversation, and
   // the hero composer's text on its way into the AI panel.
   const [focusChatActive, setFocusChatActive] = useState(false);
   const [focusInitialMessage, setFocusInitialMessage] = useState<string | null>(null);
-  const [isolatedRunStarts, setIsolatedRunStarts] = useState<Record<string, {
-    text: string;
-    attachments: AgentAttachment[];
-  }>>({});
   // The shell docked under Focus's canvas. Not persisted: Focus should open on
   // its home (or the conversation you left), never on a terminal you forgot.
   const [focusTerminalOpen, setFocusTerminalOpen] = useState(false);
@@ -189,28 +214,6 @@ function App() {
   const [sidebarSlot2, setSidebarSlot2] = useState<Panel | null>(
     () => localStorage.getItem("klide-sidebar-slot2") as Panel | null
   );
-  // Multi-panel lifecycle state is one reducer-owned fleet: handoffs, targeted
-  // resumes, race tabs, and follow-up queues settle atomically when a panel is
-  // consumed or closed. Geometry remains in usePanelLayout.
-  const {
-    resumeTarget,
-    raceWatchTabs,
-    focusActiveTabId,
-    followUpsByPanel,
-    pendingForPanel,
-    queueHandoffs,
-    consumeHandoff,
-    targetResume,
-    consumeResume,
-    registerResumedRun,
-    panelForResumedRun,
-    startRaceWatch,
-    selectRaceTab,
-    queueRaceFollowUp,
-    consumeFollowUp,
-    closeFleetPanel,
-    clearRaceWatch,
-  } = useAiPanelFleet();
   const [apiKeyVersion, setApiKeyVersion] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -279,7 +282,63 @@ function App() {
     setAiPanelModel,
     setAiPanelCwd,
     closeAiPanel,
-  } = usePanelLayout({ workspaceRoot, view, focusMode });
+  } = usePanelLayout({ workspaceRoot, hostKey: surfaceKey });
+  // Close the surface↔layout loop: enterWorkbench("anchored" | "free")
+  // lands its anchored bit here, in the per-workspace layout store.
+  useEffect(() => {
+    applyPanelsModeRef.current = setAnchoredLayout;
+  });
+  // Fleet membership + lifecycle: which Conversation sessions are live, and
+  // every queue keyed by panel id (handoffs, targeted resumes, race tabs,
+  // follow-ups, per-panel settings). `admit` is the one way a session enters
+  // the fleet, `release` the one way it leaves — geometry (rect seeding,
+  // persistence) stays in usePanelLayout behind the injected callbacks.
+  const {
+    resumeTarget,
+    raceWatchTabs,
+    focusActiveTabId,
+    followUpsByPanel,
+    modelsByPanel,
+    reviewOverrideByPanel,
+    isolatedStartByPanel,
+    admit,
+    release,
+    endRaceWatch,
+    pendingForPanel,
+    consumeHandoff,
+    targetResume,
+    consumeResume,
+    selectRaceTab,
+    queueRaceFollowUp,
+    consumeFollowUp,
+    clearRaceWatch,
+    reportPanelModels,
+    setPanelReviewOverride,
+    queueIsolatedStart,
+    consumeIsolatedStart,
+  } = useAiPanelFleet({
+    createPanel: appendAiPanel,
+    removePanel: closeAiPanel,
+    focusPanel,
+    // The reveal ritual every admission shared: return to the base surface
+    // (AI panels render there — Focus or the workbench) and show the AI
+    // surface without toggling it off when it's already up. A race split
+    // manages its own visibility instead — Focus swaps to tabs, free mode
+    // unanchors (see watchRace).
+    revealSurface: (kind) => {
+      back();
+      if (kind === "race-watch") return;
+      if (!aiVisible) togglePanel("ai");
+    },
+    openPanelIds: () => aiPanels.map((panel) => panel.id),
+    // The panel already bound to a conversation (the one that spawned its PTY,
+    // or an earlier reattach) — reattach focuses it instead of opening a
+    // second terminal onto the same live session.
+    panelBoundToConversation: (conversationId) =>
+      aiPanels.find((p) => loadPanelSession(p.id)?.convoId === conversationId)?.id ?? null,
+  });
+  // "The" AI panel when a surface addresses the default slot.
+  const primaryPanelId = aiPanels[0]?.id ?? DEFAULT_AI_PANEL_ID;
   const [skills, setSkills] = useState<Skill[]>(() => loadSkills());
 
   const reloadFilesystemSkills = useCallback(async () => {
@@ -319,9 +378,6 @@ function App() {
     loadGridLayouts()
   );
   const [settingsInitial, setSettingsInitial] = useState<string | null>(null);
-  const [activeGridId, setActiveGridId] = useState<string | null>(
-    () => localStorage.getItem("klide-active-grid") || null
-  );
   const [theme, setTheme] = useSetting(SETTINGS.theme);
   const [autoTheme] = useSetting(SETTINGS.autoTheme);
   const [lightTheme] = useSetting(SETTINGS.lightTheme);
@@ -343,19 +399,15 @@ function App() {
   const [editorWordWrap, setEditorWordWrap] = useSetting(SETTINGS.editorWordWrap);
   const [editorMinimap, setEditorMinimap] = useSetting(SETTINGS.editorMinimap);
   const [aiModel, setAiModel] = useSetting(SETTINGS.aiModel);
-  const [panelModels, setPanelModels] = useState<Record<string, string[]>>({});
   // Global default for "require diff review" (auto-accept off). Settings edits
-  // this. Each AI panel keeps its own override below — toggling auto-accept in
-  // one conversation must NOT leak into the others.
+  // this. Each AI panel keeps its own override in the fleet — toggling
+  // auto-accept in one conversation must NOT leak into the others. A panel
+  // with no entry falls back to the global default; in-memory only, so on
+  // reload every panel reverts to the safe global default.
   const [requireDiffReview] = useSetting(SETTINGS.requireDiffReview);
-  // Per-panel overrides, keyed by panelId (same pattern as `panelModels`).
-  // A panel with no entry falls back to the global default. In-memory only:
-  // on reload every panel reverts to the safe global default.
-  const [panelReviewOverrides, setPanelReviewOverrides] = useState<Record<string, boolean>>({});
   const reviewForPanel = (id: string) =>
-    id in panelReviewOverrides ? panelReviewOverrides[id] : requireDiffReview;
-  const setPanelReview = (id: string, value: boolean) =>
-    setPanelReviewOverrides((prev) => ({ ...prev, [id]: value }));
+    id in reviewOverrideByPanel ? reviewOverrideByPanel[id] : requireDiffReview;
+  const setPanelReview = setPanelReviewOverride;
   const [stopAfterRejection] = useSetting(SETTINGS.stopAfterRejection);
   const [harnessSettings, setHarnessSettings] = useSetting(SETTINGS.harnessSettings);
   // Free-mode floating panels fall back to a default rect when the persisted
@@ -369,36 +421,46 @@ function App() {
   const freeFallbackLayout = defaultPanelLayout(workbenchSize.w, workbenchSize.h);
   const explorerRect = panelLayout.explorer ?? freeFallbackLayout.explorer!;
   const terminalRect = panelLayout.terminal ?? freeFallbackLayout.terminal!;
+  // The resolved Surface: the union render branches on. Grid existence and
+  // the anchored bit come from the world (a stored grid id may be dangling
+  // after the grid was deleted in Settings — it resolves to anchored/free,
+  // same as the old `find(...) ?? null` fallback).
+  const activeGridId = surfaceCore.base.kind === "grid" ? surfaceCore.base.gridId : null;
+  const surface = resolveSurface(surfaceCore, {
+    workspaceOpen: workspaceRoot !== null,
+    panelsAnchored: panelLayout.anchored !== false,
+    gridExists: (id) => gridLayouts.some((g) => g.id === id),
+  });
   const activeGrid =
     activeGridId != null
       ? gridLayouts.find((g) => g.id === activeGridId) ?? null
       : null;
   const effectiveGitReviewRoot = workspaceRoot;
   const activityState: Record<ActivityPanel, boolean> = {
-    home: view === "workbench",
-    explorer: view === "workbench" && (explorerVisible || sidebarSlot2 === "explorer"),
-    git: view === "git-review",
-    memory: view === "workbench" && memoryVisible,
-    skills: view === "workbench" && (skillsVisible || sidebarSlot2 === "skills"),
-    ai: view === "workbench" && aiVisible,
-    runs: view === "runs",
-    orchestrator: view === "orchestrator",
-    settings: view === "settings",
+    home: overlay === null,
+    explorer: overlay === null && (explorerVisible || sidebarSlot2 === "explorer"),
+    git: overlay === "git-review",
+    memory: overlay === null && memoryVisible,
+    skills: overlay === null && (skillsVisible || sidebarSlot2 === "skills"),
+    ai: overlay === null && aiVisible,
+    runs: overlay === "runs",
+    orchestrator: overlay === "orchestrator",
+    settings: overlay === "settings",
     profile: profileVisible,
   };
 
   function togglePanel(panel: ActivityPanel, meta?: boolean) {
     if (panel === "home") {
-      // Home = back to the main workbench from wherever you are (Mission
+      // Home = back to the base surface from wherever you are (Mission
       // Control, Git, Settings, …). Leaving a project entirely is the
       // native Projects menu's job ("Welcome Screen" item), not this
       // button's — it never clears the workspace.
-      setView("workbench");
+      back();
       return;
     }
     if (panel === "settings") {
       setSettingsInitial(null);
-      setView("settings");
+      openOverlay("settings");
       return;
     }
     if (panel === "profile") {
@@ -406,23 +468,23 @@ function App() {
       return;
     }
     if (panel === "runs") {
-      setView("runs");
+      openOverlay("runs");
       return;
     }
     if (panel === "orchestrator") {
-      setView("orchestrator");
+      openOverlay("orchestrator");
       return;
     }
-    setView("workbench");
+    back();
     if (panel === "ai") {
-      // From a non-workbench view (Mission Control, Settings) the AI icon
+      // From an overlay view (Mission Control, Settings) the AI icon
       // should always *show* the panel — toggling would hide it (the
       // closure still sees aiVisible=true from when the user left) and
       // the user has to click twice to make it reappear.
-      if (view !== "workbench") {
+      if (overlay !== null) {
         setAiVisible(true);
         if (!panelLayout.ai || panelLayout.ai.length === 0) ensureAiRect();
-        focusPanel(aiPanels[0]?.id ?? "ai-main");
+        focusPanel(primaryPanelId);
       } else {
         // Always ensure the in-memory list is populated, even if the
         // persisted layout has it empty. The render path gates on both
@@ -432,7 +494,7 @@ function App() {
         if (aiPanels.length === 0) ensureAiRect();
         const willShow = !aiVisible;
         setAiVisible(willShow);
-        if (willShow) focusPanel(aiPanels[0]?.id ?? "ai-main");
+        if (willShow) focusPanel(primaryPanelId);
       }
       return;
     }
@@ -446,12 +508,12 @@ function App() {
         if (sidebarSlot2 === panel) setSidebarSlot2(null);
         if (panel !== "explorer" && explorerVisible) setExplorerVisible(false);
         if (panel !== "skills" && skillsVisible) setSkillsVisible(false);
-        // Coming back from a non-workbench view (Mission Control,
+        // Coming back from an overlay view (Mission Control,
         // Orchestrator, Git Review) the icon should always *show* the
         // panel — its visibility state still reads `true` from before the
         // user left, so a plain toggle would hide it and they'd have to
         // click twice to get back. Mirrors the AI-panel behaviour above.
-        const cameFromOtherView = view !== "workbench";
+        const cameFromOtherView = overlay !== null;
         if (panel === "explorer") {
           const willShow = cameFromOtherView ? true : !explorerVisible;
           setExplorerVisible(willShow);
@@ -466,15 +528,17 @@ function App() {
       }
       return;
     }
-    // Git is a dedicated full-window view, not a sidebar panel.
+    // Git is a dedicated full-window view, not a sidebar panel. (The `back()`
+    // above already cleared the overlay, so from the rail this always opens
+    // Git Review — it never toggles it off. Same net effect as the old
+    // batched setView pair.)
     if (panel === "git") {
-      setView((v) => (v === "git-review" ? "workbench" : "git-review"));
+      toggleOverlay("git-review");
       return;
     }
     // Memory opens as a centered modal (like Skills) rather than a
     // sidebar — its list+detail layout needs the room.
     if (panel === "memory") {
-      setView("workbench");
       setMemoryVisible((cur) => !cur);
       return;
     }
@@ -485,7 +549,7 @@ function App() {
     terminal: boolean;
     ai: boolean;
   }) {
-    setView("workbench");
+    back();
     setExplorerVisible(layout.explorer);
     setTerminalVisible(layout.terminal);
     if (layout.ai) ensureAiRect();
@@ -499,16 +563,7 @@ function App() {
 
   function openGridSettings() {
     setSettingsInitial("layout");
-    setView("settings");
-  }
-
-  function applyGrid(id: string) {
-    setView("workbench");
-    setActiveGridId(id);
-  }
-
-  function exitGrid() {
-    setActiveGridId(null);
+    openOverlay("settings");
   }
 
   // ── Workbench Artifact Inspector ────────────────────────────────────
@@ -791,7 +846,7 @@ function App() {
       workspaceRoot,
       opts?.respectWorktree ?? true
     );
-    const isolatedStart = isolatedRunStarts[panelId];
+    const isolatedStart = isolatedStartByPanel[panelId];
     return (
       <AiPanel
         key={conversationSessionKey(panelId, root, opts?.key)}
@@ -826,10 +881,10 @@ function App() {
         onProviderChange={(provider) => setAiPanelProvider(panelId, provider)}
         onOpenSettingsSection={(section) => {
           setSettingsInitial(section);
-          setView("settings");
+          openOverlay("settings");
         }}
-        availableModels={panelModels[panelId] ?? [model]}
-        onAvailableModelsChange={(models) => updatePanelModels(panelId, models)}
+        availableModels={modelsByPanel[panelId] ?? [model]}
+        onAvailableModelsChange={(models) => reportPanelModels(panelId, models)}
         apiKeyVersion={apiKeyVersion}
         requireDiffReview={reviewForPanel(panelId)}
         onRequireDiffReviewChange={(v) => setPanelReview(panelId, v)}
@@ -837,19 +892,16 @@ function App() {
         stopAfterRejection={stopAfterRejection}
         skills={skills}
         harnessSettings={harnessSettings}
-        onDuplicate={opts?.duplicatable ? appendAiPanel : undefined}
+        onDuplicate={
+          opts?.duplicatable
+            ? (snapshot) => admit({ kind: "fresh", ...snapshot })
+            : undefined
+        }
         onForkConversationInWorktree={forkConversationInWorktree}
         onRequestIsolatedRun={workspaceRoot ? (request) =>
           startPanelRunInWorktree(panelId, request)
         : undefined}
-        onClose={
-          opts?.closable
-            ? () => {
-                closeAiPanel(panelId);
-                closeFleetPanel(panelId);
-              }
-            : undefined
-        }
+        onClose={opts?.closable ? () => release(panelId) : undefined}
         resumeConversation={resumeConversationFor(panelId, resumeTarget)}
         onResumeConsumed={() => consumeResume(panelId)}
         variant={opts?.variant}
@@ -857,12 +909,7 @@ function App() {
         initialAttachments={isolatedStart?.attachments}
         onInitialMessageConsumed={() => {
           setFocusInitialMessage(null);
-          setIsolatedRunStarts((starts) => {
-            if (!(panelId in starts)) return starts;
-            const next = { ...starts };
-            delete next[panelId];
-            return next;
-          });
+          consumeIsolatedStart(panelId);
         }}
         followUpMessage={followUpsByPanel[panelId] ?? null}
         onFollowUpConsumed={() => consumeFollowUp(panelId)}
@@ -1002,10 +1049,11 @@ function App() {
 
   // Return to the welcome screen so a different project can be opened. Clears
   // open tabs so no stale paths from the old workspace linger, and drops any
-  // full-screen view (settings/git/etc.) back to the workbench so the welcome
-  // condition (`view !== "settings" && !workspaceRoot`) actually fires.
+  // full-screen overlay (settings/git/etc.) so the Welcome derivation in
+  // resolveSurface actually fires (Settings is the one overlay that would
+  // keep showing without a workspace).
   function closeFolder() {
-    setView("workbench");
+    back();
     setWorkspaceRoot(null);
   }
 
@@ -1117,23 +1165,10 @@ function App() {
       const events = await readAgentRunEvents(runId);
       const convo = eventsToConversation(events, runId, eventsToTitle(events));
       // Open one fresh panel and land the resumed run in it — never broadcast
-      // to existing panels. Resume is triggered from the Mission Control view,
-      // so switch back to the workbench (where AI panels render) and ensure the
-      // AI surface is visible without toggling it off when it already is —
-      // matches the CLI handoff path (`openRunInAiPanel`).
-      setView("workbench");
-      if (!aiVisible) togglePanel("ai");
-      // Don't stack duplicates: if this run is already open in a panel that's
-      // still around, just focus it. Re-clicking Resume on the same run would
-      // otherwise pile up identical panels (each offset by appendAiPanel).
-      const existing = panelForResumedRun(runId, aiPanels.map((panel) => panel.id));
-      if (existing) {
-        focusPanel(existing);
-        return;
-      }
-      const panelId = appendAiPanel({ cwd: convo.cwd ?? undefined });
-      registerResumedRun(runId, panelId);
-      targetResume(panelId, convo);
+      // to existing panels. The fleet reveals the workbench AI surface and
+      // de-dupes by run id: re-clicking Resume focuses the existing panel
+      // instead of piling up identical ones.
+      admit({ kind: "resume-run", runId, convo });
     } catch (e) {
       setFileNotice(e instanceof Error ? e.message : String(e));
     }
@@ -1163,16 +1198,10 @@ function App() {
     };
   }
 
-  function openForkedConversation(run: Run, convo: Conversation) {
-    const provider = convo.provider;
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    const panelId = appendAiPanel({
-      provider,
-      model: run.model ?? undefined,
-      cwd: convo.cwd ?? undefined,
-    });
-    targetResume(panelId, convo);
+  function openForkedConversation(convo: Conversation) {
+    // The forked conversation carries its own provider, model, and worktree
+    // pin — the fleet seeds the fresh panel from it.
+    admit({ kind: "fork", convo });
   }
 
   async function forkRun(run: Run, preloadedMessages?: MissionRunMessage[]) {
@@ -1182,7 +1211,7 @@ function App() {
         setFileNotice("Run has no readable messages to fork.");
         return;
       }
-      openForkedConversation(run, forkConversationFromRun(run, messages, run.cwd, {
+      openForkedConversation(forkConversationFromRun(run, messages, run.cwd, {
         branch: run.branch,
         worktree: run.worktree,
       }));
@@ -1206,7 +1235,7 @@ function App() {
       }
       const branch = `klide/fork-${Date.now().toString(36)}`;
       const wt = await gitWorktreeAdd(baseRoot, branch);
-      openForkedConversation(run, forkConversationFromRun(run, messages, wt.path, {
+      openForkedConversation(forkConversationFromRun(run, messages, wt.path, {
         branch: wt.branch,
         worktree: worktreeName(wt),
       }));
@@ -1232,14 +1261,7 @@ function App() {
         worktree: worktreeName(wt),
         updatedAt: Date.now(),
       };
-      setView("workbench");
-      if (!aiVisible) togglePanel("ai");
-      const panelId = appendAiPanel({
-        provider: forked.provider,
-        model: forked.model ?? undefined,
-        cwd: wt.path,
-      });
-      targetResume(panelId, forked);
+      admit({ kind: "fork", convo: forked });
       setFileNotice(`Branched turn into worktree ${wt.branch}${worktreeSetupSummary(wt)}.`);
     } catch (e) {
       setFileNotice(`Turn worktree branch failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1323,16 +1345,13 @@ function App() {
     initialTask?: string;
     cwd?: string;
   }) {
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    const id = appendAiPanel({ provider: opts.provider, cwd: opts.cwd });
-    queueHandoffs([{
-      panelId: id,
+    admit({
+      kind: "handoff",
       provider: opts.provider,
       resumeSessionId: opts.resumeSessionId ?? null,
       initialTask: opts.initialTask ?? null,
-      conversationId: null,
-    }]);
+      cwd: opts.cwd,
+    });
   }
 
   // "Reattach" from Mission Control's live-sessions strip — reconnect to a
@@ -1350,27 +1369,17 @@ function App() {
     workspaceRoot: string | null;
     resumeSessionId?: string | null;
   }) {
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    // Don't open a second terminal onto the same live PTY: if a panel is
-    // already bound to this conversation (the one that spawned it, or an
-    // earlier reattach), just focus it. Two surfaces sharing the sessionId
-    // would mirror each other — the "two synchronized terminals" bug.
-    const already = aiPanels.find(
-      (p) => loadPanelSession(p.id)?.convoId === opts.conversationId
-    );
-    if (already) {
-      focusPanel(already.id);
-      return;
-    }
-    const id = appendAiPanel({ provider: opts.provider, cwd: opts.workspaceRoot ?? undefined });
-    queueHandoffs([{
-      panelId: id,
+    // The fleet de-dupes by conversation id: a panel already bound to this
+    // live PTY (the one that spawned it, or an earlier reattach) is focused
+    // instead of opening a second terminal that would mirror it — the "two
+    // synchronized terminals" bug.
+    admit({
+      kind: "reattach",
       provider: opts.provider,
-      resumeSessionId: opts.resumeSessionId ?? null,
-      initialTask: null,
       conversationId: opts.conversationId,
-    }]);
+      resumeSessionId: opts.resumeSessionId ?? null,
+      cwd: opts.workspaceRoot ?? undefined,
+    });
   }
 
   // "Watch live" from the race composer — open every racer in its own AI
@@ -1383,45 +1392,33 @@ function App() {
   function watchRace(group: RaceGroup) {
     const members = group.members.slice(0, 4);
     if (members.length === 0) return;
-    setView("workbench");
     const margin = 12;
     const gap = 12;
     const splitW = Math.max(320, Math.floor((workbenchSize.w - margin * 2 - gap) / 2));
     const splitH = Math.max(320, workbenchSize.h - margin * 2);
-    const pending: PendingAiPanel[] = [];
-    const tabs: { panelId: string; label: string }[] = [];
-    members.forEach((m, i) => {
-      // Two racers split the workbench half/half; a partial race (one
-      // survivor) or >2 members fall back to the cascade placement.
-      const rect =
-        !focusMode && members.length === 2
-          ? { x: margin + i * (splitW + gap), y: margin, w: splitW, h: splitH }
-          : undefined;
-      const panelId = appendAiPanel({
+    admit({
+      kind: "race-watch",
+      focusActive: focusBase,
+      racers: members.map((m, i) => ({
+        runId: m.runId,
         provider: m.provider as ProviderId,
         model: m.model,
         cwd: m.worktreePath,
-        rect,
-      });
-      registerResumedRun(m.runId, panelId);
-      pending.push({
-        panelId,
-        provider: m.provider as ProviderId,
-        resumeSessionId: null,
-        initialTask: null,
-        conversationId: m.runId,
-      });
-      tabs.push({
-        panelId,
         label: `${String.fromCharCode(65 + i)} · ${modelLabel(m.model)}`,
-      });
+        // Two racers split the workbench half/half; a partial race (one
+        // survivor) or >2 members fall back to the cascade placement.
+        rect:
+          !focusBase && members.length === 2
+            ? { x: margin + i * (splitW + gap), y: margin, w: splitW, h: splitH }
+            : undefined,
+      })),
     });
-    startRaceWatch(pending, tabs, focusMode ? tabs[0].panelId : null);
-    if (focusMode) {
+    if (focusBase) {
       setFocusChatActive(true);
     } else {
       // Two side-by-side panels need the free (floating) layout — the
-      // anchored column has one AI slot.
+      // anchored column has one AI slot. This is a panel-geometry move, not
+      // a surface change (a grid base deliberately stays a grid, as before).
       setAnchoredLayout(false);
       if (!aiVisible) togglePanel("ai");
     }
@@ -1434,21 +1431,19 @@ function App() {
     queueRaceFollowUp(text);
   }
 
-  // Leave the Focus race-tab view: close the racers' panels (the runs keep
+  // Leave the Focus race-tab view: release the racers' panels (the runs keep
   // going headless in Rust and stay visible on the Mission Control board)
-  // and return the canvas to the normal single-conversation chat.
+  // and return the canvas to the normal single-conversation chat. `release`
+  // clears every queue keyed by each panel id — including its unconsumed
+  // handoff, which the old close-per-tab path leaked.
   function endFocusRaceWatch() {
-    if (raceWatchTabs.length === 0) return;
-    for (const t of raceWatchTabs) closeAiPanel(t.panelId);
-    clearRaceWatch();
+    endRaceWatch();
   }
 
   // Open an existing worktree (from the Worktrees modal) in a fresh AI panel
   // pinned to its path — same pin mechanism as newWorktreeRun, no new branch.
   function openExistingWorktree(path: string) {
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    appendAiPanel({ cwd: path });
+    admit({ kind: "fresh", cwd: path });
   }
 
   // Default launch path for a fresh Conversation. AiPanel hands its first
@@ -1480,10 +1475,7 @@ function App() {
       setAiPanelProvider(panelId, request.provider);
       setAiPanelModel(panelId, request.model);
       setAiPanelCwd(panelId, isolated.cwd);
-      setIsolatedRunStarts((starts) => ({
-        ...starts,
-        [panelId]: { text: request.text, attachments: request.attachments },
-      }));
+      queueIsolatedStart(panelId, { text: request.text, attachments: request.attachments });
       setFileNotice(
         `Isolated run ready on ${isolated.branch}${worktreeSetupSummary(isolated.setup)}.`,
       );
@@ -1515,9 +1507,7 @@ function App() {
     const name = branch?.trim() || `klide/wt-${Date.now().toString(36)}`;
     try {
       const wt = await gitWorktreeAdd(workspaceRoot, name);
-      setView("workbench");
-      if (!aiVisible) togglePanel("ai");
-      appendAiPanel({ cwd: wt.path });
+      admit({ kind: "fresh", cwd: wt.path });
       setFileNotice(`Worktree ready on ${wt.branch} — this panel runs there${worktreeSetupSummary(wt)}.`);
     } catch (err) {
       setFileNotice(`Worktree failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1576,17 +1566,7 @@ function App() {
 
   function updateAiPanelModel(id: string, model: string) {
     setAiPanelModel(id, model);
-    if (id === "ai-main") setAiModel(model);
-  }
-
-  function updatePanelModels(id: string, models: string[]) {
-    setPanelModels((prev) => {
-      const current = prev[id] ?? [];
-      if (current.length === models.length && current.every((name, idx) => name === models[idx])) {
-        return prev;
-      }
-      return { ...prev, [id]: models };
-    });
+    if (id === DEFAULT_AI_PANEL_ID) setAiModel(model);
   }
 
   useEffect(() => {
@@ -1594,15 +1574,10 @@ function App() {
   }, [theme]);
 
   // Grids are edited in Settings; refresh App's copy when returning to the
-  // workbench so the status-bar Layout picker shows the latest.
+  // base surface so the status-bar Layout picker shows the latest.
   useEffect(() => {
-    if (view === "workbench") setGridLayouts(loadGridLayouts());
-  }, [view]);
-
-  useEffect(() => {
-    if (activeGridId) localStorage.setItem("klide-active-grid", activeGridId);
-    else localStorage.removeItem("klide-active-grid");
-  }, [activeGridId]);
+    if (overlay === null) setGridLayouts(loadGridLayouts());
+  }, [overlay]);
 
   // Remember the last open project so "Reopen last project on launch"
   // (Settings → General) has something to restore. Closing the folder on
@@ -1632,10 +1607,6 @@ function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    localStorage.setItem("klide-focus-mode", String(focusMode));
-  }, [focusMode]);
 
   useEffect(() => {
     localStorage.setItem("klide-explorer-visible", String(explorerVisible));
@@ -1840,7 +1811,7 @@ function App() {
       // so this gates ⌃Tab to macOS; F6 covers region cycling there.
       const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
       if (
-        view === "workbench" &&
+        overlay === null &&
         (e.key === "F6" || (isMac && e.key === "Tab" && e.ctrlKey && !e.metaKey))
       ) {
         e.preventDefault();
@@ -1895,7 +1866,7 @@ function App() {
       }
       if (mod && !e.shiftKey && e.key === ",") {
         e.preventDefault();
-        setView("settings");
+        openOverlay("settings");
         return;
       }
       if (mod && !e.shiftKey && e.key === ".") {
@@ -1905,12 +1876,12 @@ function App() {
       }
       if (mod && !e.shiftKey && e.key === "n") {
         e.preventDefault();
-        setView("workbench");
+        back();
         return;
       }
       if (mod && e.shiftKey && e.key === "G") {
         e.preventDefault();
-        setView((v) => (v === "git-review" ? "workbench" : "git-review"));
+        toggleOverlay("git-review");
         return;
       }
       // Tab navigation
@@ -1924,21 +1895,21 @@ function App() {
         setActiveIdx((i) => (i - 1 + tabs.length) % tabs.length);
         return;
       }
-      // Escape — close palette, search, or return to workbench from a top-level view
+      // Escape — close palette, search, or return to the base surface from an overlay
       if (e.key === "Escape") {
         if (shortcutsOpen) { setShortcutsOpen(false); return; }
         if (paletteOpen) { setPaletteOpen(false); return; }
         if (searchVisible) { setSearchVisible(false); return; }
-        if (view === "runs" || view === "orchestrator" || view === "git-review" || view === "settings") {
+        if (overlay !== null) {
           e.preventDefault();
-          setView("workbench");
+          back();
           return;
         }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, activeIdx, tabs, saveActive, paletteOpen, searchVisible, view, explorerVisible, terminalVisible, aiVisible, shortcutsOpen]);
+  }, [active, activeIdx, tabs, saveActive, paletteOpen, searchVisible, overlay, explorerVisible, terminalVisible, aiVisible, shortcutsOpen]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -1957,7 +1928,7 @@ function App() {
       setSearchVisible((v) => !v);
     }));
     listeners.add(listen("menu:open-settings", () => {
-      setView("settings");
+      openOverlay("settings");
     }));
     listeners.add(listen("menu:close-tab", () => {
       if (activeIdx >= 0 && activeIdx < tabs.length) closeTab(activeIdx);
@@ -1999,24 +1970,24 @@ function App() {
     { id: "close-tab", label: "View: Close Tab", shortcut: "⌘W", action: () => { if (activeIdx >= 0) closeTab(activeIdx); setPaletteOpen(false); } },
     { id: "find", label: "Edit: Find in Files", shortcut: "⌘⇧F", action: () => { setSearchVisible((v) => !v); setPaletteOpen(false); } },
     { id: "terminal-toggle", label: "Terminal: Toggle", shortcut: "⌘`", action: () => { setTerminalVisible((v) => !v); setPaletteOpen(false); } },
-    { id: "settings", label: "Preferences: Open Settings", shortcut: "⌘,", action: () => { setView("settings"); setPaletteOpen(false); } },
+    { id: "settings", label: "Preferences: Open Settings", shortcut: "⌘,", action: () => { openOverlay("settings"); setPaletteOpen(false); } },
     { id: "profile", label: "View: Open Profile", shortcut: "⌘.", action: () => { setProfileVisible(true); setPaletteOpen(false); } },
     { id: "theme", label: "Appearance: Toggle Theme", action: () => { setTheme((t) => getNextThemeId(t)); setPaletteOpen(false); } },
     { id: "word-wrap", label: "Editor: Toggle Word Wrap", action: () => { setEditorWordWrap((v) => !v); setPaletteOpen(false); } },
     { id: "line-numbers", label: "Editor: Toggle Line Numbers", action: () => { setEditorLineNumbers((v) => !v); setPaletteOpen(false); } },
     { id: "minimap", label: "Editor: Toggle Minimap", action: () => { setEditorMinimap((v) => !v); setPaletteOpen(false); } },
-    { id: "layout-anchored", label: "Layout: Anchored (IDE)", action: () => { setFocusMode(false); setAnchoredLayout(true); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
-    { id: "layout-free", label: "Layout: Free (floating panels)", action: () => { setFocusMode(false); setAnchoredLayout(false); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
-    { id: "layout-focus", label: "Layout: Focus (chat)", action: () => { setFocusMode(true); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
-    { id: "terminal-focus", label: "Terminal: Open in Focus", action: () => { setFocusTerminalOpen(true); setTerminalVisible(false); setFocusMode(true); exitGrid(); setView("workbench"); setPaletteOpen(false); } },
-    { id: "runs", label: "View: Mission Control", action: () => { setView("runs"); setPaletteOpen(false); } },
-    { id: "orchestrator", label: "View: Orchestrator", action: () => { setView("orchestrator"); setPaletteOpen(false); } },
-    { id: "back-to-workbench", label: "View: Back to Workbench", shortcut: "Esc", action: () => { setView("workbench"); setPaletteOpen(false); } },
-    { id: "git-review", label: "View: Git Review", shortcut: "⌘⇧G", action: () => { setView((v) => v === "git-review" ? "workbench" : "git-review"); setPaletteOpen(false); } },
+    { id: "layout-anchored", label: "Layout: Anchored (IDE)", action: () => { enterWorkbench("anchored"); setPaletteOpen(false); } },
+    { id: "layout-free", label: "Layout: Free (floating panels)", action: () => { enterWorkbench("free"); setPaletteOpen(false); } },
+    { id: "layout-focus", label: "Layout: Focus (chat)", action: () => { enterFocus(); setPaletteOpen(false); } },
+    { id: "terminal-focus", label: "Terminal: Open in Focus", action: () => { setFocusTerminalOpen(true); setTerminalVisible(false); enterFocus(); setPaletteOpen(false); } },
+    { id: "runs", label: "View: Mission Control", action: () => { openOverlay("runs"); setPaletteOpen(false); } },
+    { id: "orchestrator", label: "View: Orchestrator", action: () => { openOverlay("orchestrator"); setPaletteOpen(false); } },
+    { id: "back-to-workbench", label: "View: Back to Workbench", shortcut: "Esc", action: () => { back(); setPaletteOpen(false); } },
+    { id: "git-review", label: "View: Git Review", shortcut: "⌘⇧G", action: () => { toggleOverlay("git-review"); setPaletteOpen(false); } },
     { id: "create-pr", label: "Git: Create Pull Request…", action: () => { setPaletteOpen(false); void (async () => { try { const pr = await createPr(workspaceRoot, "Klide changes", null); setFileNotice(`PR: ${pr}`); } catch(e) { setFileNotice(`PR failed: ${e}`); } })(); } },
     { id: "worktree", label: "Agent: New Run in Worktree", action: () => { setPaletteOpen(false); void newWorktreeRun(); } },
     { id: "worktrees-view", label: "View: Worktrees", action: () => { setPaletteOpen(false); setWorktreesVisible(true); } },
-    { id: "rollback", label: "Git: View Checkpoints", action: () => { setView("runs"); setPaletteOpen(false); } },
+    { id: "rollback", label: "Git: View Checkpoints", action: () => { openOverlay("runs"); setPaletteOpen(false); } },
     { id: "reload", label: "Developer: Reload Window", action: () => { window.location.reload(); } },
     { id: "shortcuts", label: "Help: Keyboard Shortcuts", shortcut: "?", action: () => { setShortcutsOpen(true); setPaletteOpen(false); } },
   ];
@@ -2028,8 +1999,9 @@ function App() {
       : theme;
 
   // Nothing open → a full-screen welcome page (no chrome at all). Settings stays
-  // reachable so API keys can be set up before a folder is ever opened.
-  if (view !== "settings" && !workspaceRoot) {
+  // reachable so API keys can be set up before a folder is ever opened —
+  // resolveSurface only derives Welcome when the overlay is not Settings.
+  if (surface.kind === "welcome") {
     return (
       <div
         // No rail here, so the welcome page keeps the traffic-light band clear
@@ -2050,7 +2022,7 @@ function App() {
           onCloneRepo={cloneRepo}
           onOpenRecent={setWorkspaceRoot}
           onRemoveRecent={forgetFolder}
-          onOpenSettings={() => setView("settings")}
+          onOpenSettings={() => openOverlay("settings")}
         />
       </div>
     );
@@ -2059,8 +2031,9 @@ function App() {
   // The bar belongs to the content column, not to the window: it starts at the
   // rail's inner edge so the rail reads as one full-height surface, from the
   // traffic lights down to the identity card. Focus is chrome-free: no status
-  // bar. Overlay views opened from Focus bring the bar back.
-  const statusBar = (focusMode && view === "workbench") ? null : (
+  // bar. Overlay views opened from Focus bring the bar back (the bar keeps
+  // its Focus styling then — `focusBase`, not the resolved surface).
+  const statusBar = !showsStatusBar(surface) ? null : (
     <StatusBar
       path={active?.path ?? null}
       language={language}
@@ -2072,8 +2045,8 @@ function App() {
       gridLayouts={gridLayouts}
       activeGridId={activeGridId}
       anchoredLayout={panelLayout.anchored !== false}
-      focusMode={focusMode}
-      onSetFocusMode={setFocusMode}
+      focusMode={focusBase}
+      onSetFocusMode={(on) => (on ? enterFocus() : exitFocus())}
       onApplyGrid={applyGrid}
       onExitGrid={exitGrid}
       onSetAnchored={setAnchoredLayout}
@@ -2082,12 +2055,10 @@ function App() {
       autoTheme={autoTheme}
       onToggleTheme={() => setTheme((t) => getNextThemeId(t))}
       onResetLayout={resetPanelLayout}
-      showLayoutControls={view === "workbench"}
+      showLayoutControls={overlay === null}
       foldedEditor={
-        view === "workbench" &&
-        !focusMode &&
-        !activeGrid &&
-        panelLayout.anchored === false &&
+        surface.kind === "workbench" &&
+        surface.layout.kind === "free" &&
         editorDockFolded &&
         tabs.length > 0
           ? {
@@ -2110,10 +2081,10 @@ function App() {
     >
       <div
         className="klide-app-row"
-        data-titlebar-owner={focusMode && view === "workbench" ? "focus" : "row"}
+        data-titlebar-owner={ownsTitlebar(surface) ? "focus" : "row"}
         style={{ flex: 1, display: "flex", minHeight: 0 }}
       >
-        {view === "settings" ? (
+        {overlay === "settings" ? (
           <div className="klide-shell-col">
           <Suspense fallback={null}>
             <SettingsPanel
@@ -2136,7 +2107,7 @@ function App() {
                   updatePanelRect("terminal", { ...panelLayout.terminal, h });
                 }
               }}
-              availableAiModels={panelModels["ai-main"] ?? [aiModel]}
+              availableAiModels={modelsByPanel[DEFAULT_AI_PANEL_ID] ?? [aiModel]}
               explorerVisible={explorerVisible}
               onExplorerVisibleChange={setExplorerVisible}
               explorerFloating={explorerFloating}
@@ -2145,7 +2116,7 @@ function App() {
               onCustomLayoutsChange={updateCustomLayouts}
               onApplyLayout={applyLayout}
               onProviderKeyChange={() => setApiKeyVersion((version) => version + 1)}
-              onBack={() => setView("workbench")}
+              onBack={back}
             />
           </Suspense>
           {statusBar}
@@ -2156,16 +2127,12 @@ function App() {
                 screen itself is showing (its own rail carries navigation —
                 projects, Mission Control, profile). Overlay views opened from
                 it (Mission Control, Git) bring the rail back. */}
-            {!(focusMode && view === "workbench") && (
+            {showsRail(surface) && (
             <ActivityBar
               active={activityState}
               onToggle={togglePanel}
               onSearch={() => setPaletteOpen(true)}
-              onEnterFocus={() => {
-                setFocusMode(true);
-                exitGrid();
-                setView("workbench");
-              }}
+              onEnterFocus={enterFocus}
               homeLabel={workspaceRoot?.split("/").filter(Boolean).pop()}
               submenus={{
                 // Home is the project-level entry — switching lives there.
@@ -2196,7 +2163,7 @@ function App() {
                     label,
                     onSelect: () => {
                       setSettingsInitial(section);
-                      setView("settings");
+                      openOverlay("settings");
                     },
                   })),
                 },
@@ -2206,7 +2173,7 @@ function App() {
             {/* Everything right of the rail — the views and the status bar —
                 is one column, so the bar stops at the rail's inner edge. */}
             <div className="klide-shell-col">
-            {view === "git-review" ? (
+            {overlay === "git-review" ? (
               <Suspense fallback={null}>
                 <GitReview
                   workspaceRoot={effectiveGitReviewRoot}
@@ -2219,7 +2186,7 @@ function App() {
                   theme={theme}
                 />
               </Suspense>
-            ) : view === "runs" ? (
+            ) : overlay === "runs" ? (
               <Suspense fallback={<MissionControlSkeleton />}>
                 <MissionControl
                   workspaceRoot={workspaceRoot}
@@ -2235,24 +2202,26 @@ function App() {
                   summarizingFromRunId={summarizingFromRun}
                 />
               </Suspense>
-            ) : view === "orchestrator" ? (
+            ) : overlay === "orchestrator" ? (
               // The tier-board console. Rust's Mission supervisor owns which
               // task runs next (ADR-0002); this surface authors the plan,
               // approves it, and reattaches to the resulting Harness Runs.
               <Suspense fallback={null}>
                 <OrchestratorConsole workspaceRoot={workspaceRoot} />
               </Suspense>
-            ) : activeGrid && !focusMode ? (
+            ) : activeGrid ? (
+              // A grid base and Focus are mutually exclusive by construction
+              // (one `base` in the Surface), so no `!focusMode` guard.
               <GridWorkbench layout={activeGrid} renderPanel={renderPanel} />
             ) : null}
-            {/* The workbench stays mounted across view switches so an in-flight
-                agent run keeps streaming into the AI panel. Switching to Mission
-                Control / Git / Settings used to UNMOUNT it, dropping the live
-                event subscription — the answer then only "respawned" on return
-                via the transcript. Here it's hidden (display:none), not
-                unmounted, whenever an overlay view is showing. Grid mode owns
-                its own layout, so it's excluded. */}
-            {(!activeGrid || focusMode) && (
+            {/* The workbench stays mounted across overlay switches so an
+                in-flight agent run keeps streaming into the AI panel.
+                Switching to Mission Control / Git / Settings used to UNMOUNT
+                it, dropping the live event subscription — the answer then only
+                "respawned" on return via the transcript. Here it's hidden
+                (display:none), not unmounted, whenever an overlay view is
+                showing. Grid mode owns its own layout, so it's excluded. */}
+            {!activeGrid && (
               <div
                 // Its top inset is the title-bar band (`.klide-app-row` rule),
                 // and in free/anchored mode that band is the widest thing the
@@ -2260,13 +2229,13 @@ function App() {
                 // are their own event targets and keep their clicks.
                 data-tauri-drag-region
                 style={{
-                  display: view === "workbench" ? "flex" : "none",
+                  display: overlay === null ? "flex" : "none",
                   flex: 1,
                   minWidth: 0,
                   minHeight: 0,
                 }}
               >
-                {focusMode ? (
+                {focusBase ? (
               /* Focus — the chat-first main screen: rail + hero home, and
                  for the live conversation the same fully-wired AiPanel in
                  its fullscreen "focus" design variant (centered reading
@@ -2299,7 +2268,7 @@ function App() {
                     endFocusRaceWatch();
                     markFolderWorked(convo.cwd);
                     if (convo.cwd && convo.cwd !== workspaceRoot) changeRoot(convo.cwd);
-                    targetResume(aiPanels[0]?.id ?? "ai-main", convo);
+                    targetResume(primaryPanelId, convo);
                     setFocusChatActive(true);
                   }}
                   onSubmit={(text) => {
@@ -2307,7 +2276,7 @@ function App() {
                     setFocusInitialMessage(text);
                     setFocusChatActive(true);
                   }}
-                  onOpenMissionControl={() => setView("runs")}
+                  onOpenMissionControl={() => openOverlay("runs")}
                   /* Focus's rail reaches the shared destinations through the
                      very same handler the activity bar uses — one Git view,
                      one Memory modal, one Settings. */
@@ -2324,13 +2293,11 @@ function App() {
                   }}
                   onOpenSettingsSection={(section) => {
                     setSettingsInitial(section);
-                    setView("settings");
+                    openOverlay("settings");
                   }}
-                  onExitFocus={() => {
-                    setFocusMode(false);
-                    setAnchoredLayout(false);
-                    exitGrid();
-                  }}
+                  /* Leaving Focus lands on the free (floating) workbench —
+                     a deliberate taste call, now one verb. */
+                  onExitFocus={() => enterWorkbench("free")}
                   /* Terminal on the full canvas. There is one native shell, so
                      this is the same PTY the workbench drawer shows — and
                      because the drawer is unmounted while Focus is up, exactly
@@ -2441,7 +2408,7 @@ function App() {
                     ((localStorage.getItem("klide.provider") as ProviderId) || "ollama")
                   }
                   onProviderChange={(p) => {
-                    const panelId = aiPanels[0]?.id ?? "ai-main";
+                    const panelId = primaryPanelId;
                     setAiPanelProvider(panelId, p);
                     // The panel keeps its model across provider switches, but a
                     // hero pick means "start on this provider" — reset to its
@@ -2451,7 +2418,7 @@ function App() {
                     updateAiPanelModel(panelId, defaultModelForProvider(p));
                   }}
                   model={aiPanels[0]?.model ?? aiModel}
-                  onModelChange={(m) => updateAiPanelModel(aiPanels[0]?.id ?? "ai-main", m)}
+                  onModelChange={(m) => updateAiPanelModel(primaryPanelId, m)}
                   effort={harnessSettings?.reflectionLevels?.[aiPanels[0]?.model ?? aiModel]}
                   onEffortChange={(v) => {
                     const m = aiPanels[0]?.model ?? aiModel;
@@ -2462,7 +2429,7 @@ function App() {
                     // The AI panel prefers its own per-panel override when one
                     // was set from its composer — drop it so the value picked
                     // here is what the next run actually uses.
-                    const panelId = aiPanels[0]?.id ?? "ai-main";
+                    const panelId = primaryPanelId;
                     const prov =
                       aiPanels[0]?.provider ?? localStorage.getItem("klide.provider") ?? "ollama";
                     try {
@@ -2479,9 +2446,9 @@ function App() {
                     else next[m] = w;
                     setHarnessSettings({ ...harnessSettings, contextWindows: next });
                   }}
-                  requireDiffReview={reviewForPanel(aiPanels[0]?.id ?? "ai-main")}
+                  requireDiffReview={reviewForPanel(primaryPanelId)}
                   onRequireDiffReviewChange={(required) =>
-                    setPanelReview(aiPanels[0]?.id ?? "ai-main", required)
+                    setPanelReview(primaryPanelId, required)
                   }
                 />
               </Suspense>
@@ -2583,7 +2550,7 @@ function App() {
                       onClick={() => {
                         if (aiPanels.length === 0) ensureAiRect();
                         setAiVisible(true);
-                        focusPanel(aiPanels[0]?.id ?? "ai-main");
+                        focusPanel(primaryPanelId);
                       }}
                     >
                       <span>New chat</span>
@@ -2927,9 +2894,7 @@ function App() {
                       onOpenInFocus={() => {
                         setFocusTerminalOpen(true);
                         setTerminalVisible(false);
-                        setFocusMode(true);
-                        exitGrid();
-                        setView("workbench");
+                        enterFocus();
                       }}
                     />
                   )}
@@ -2941,8 +2906,8 @@ function App() {
             {/* Docked Artifact Inspector — the same slide-in review surface as
                 Mission Control, at the right edge of the workbench. Opened
                 from the AI panel's "N files changed" row; MC keeps its own
-                instance, so this one only shows on the workbench view. */}
-            {view === "workbench" && (
+                instance, so this one only shows on the base surface. */}
+            {overlay === null && (
               <div
                 className="artifact-inspector-shell"
                 data-open={artifactOpen ? "true" : "false"}
