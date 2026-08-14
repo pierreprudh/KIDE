@@ -1,7 +1,9 @@
 use super::todo;
 use super::glob_match::wildcard_match;
 use super::types::{AgentMode, DiffProposal, ToolResult};
-use crate::workspace::Workspace;
+use crate::workspace::{
+    is_sensitive_path, Access, Workspace, AGENT_MAX_READ_BYTES, AGENT_MAX_WRITE_BYTES,
+};
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
@@ -47,11 +49,9 @@ fn last_seen_hash(run_id: &str, rel_path: &str) -> Option<String> {
     store.get(run_id)?.get(rel_path).cloned()
 }
 
-const MAX_FILE_BYTES: u64 = 220_000;
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_SEARCH_RESULTS: usize = 200;
 const MAX_WALK_FILES: usize = 6_000;
-const MAX_WRITE_BYTES: u64 = 220_000;
 const MAX_WEB_RESPONSE_BYTES: u64 = 1_000_000;
 const MAX_WEB_REDIRECTS: usize = 5;
 
@@ -1599,25 +1599,7 @@ fn read_file(ws: &Workspace, path: &str) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
-    if is_sensitive_agent_path(ws.root(), &full) {
-        return sensitive_path_error(ws.display(&full));
-    }
-    let metadata = match std::fs::metadata(&full) {
-        Ok(m) => m,
-        Err(e) => return err(format!("Unable to read metadata: {e}")),
-    };
-    if !metadata.is_file() {
-        return err(format!("{} is not a file", ws.display(&full)));
-    }
-    if metadata.len() > MAX_FILE_BYTES {
-        return err(format!(
-            "{} is too large to read safely ({} bytes, max {})",
-            ws.display(&full),
-            metadata.len(),
-            MAX_FILE_BYTES
-        ));
-    }
-    match std::fs::read_to_string(&full) {
+    match ws.read_text(&full, Access::Agent) {
         Ok(content) => {
             // Number the lines (1-indexed) the way omp's "hashline" read does:
             // `N: content`. Numbers help the model reason about *where* code is
@@ -1646,7 +1628,9 @@ automatically.\n```\n{}\n```",
                 })),
             }
         }
-        Err(e) => err(format!("Unable to read {} as text: {e}", ws.display(&full))),
+        // read_text's errors are already complete sentences (guard, cap,
+        // not-a-file, read failure).
+        Err(e) => err(e),
     }
 }
 
@@ -1739,56 +1723,6 @@ fn ignored_dir(name: &str) -> bool {
     )
 }
 
-fn is_sensitive_agent_path(root: &Path, path: &Path) -> bool {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    let components: Vec<String> = relative
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .map(|component| component.to_ascii_lowercase())
-        .collect();
-    if components.iter().any(|component| {
-        matches!(
-            component.as_str(),
-            ".ssh" | ".aws" | ".gnupg" | ".azure" | ".kube"
-        )
-    }) {
-        return true;
-    }
-    if components
-        .windows(2)
-        .any(|pair| pair[0] == ".config" && pair[1] == "gcloud")
-    {
-        return true;
-    }
-    let Some(name) = components.last() else {
-        return false;
-    };
-    name == ".env"
-        || name.starts_with(".env.")
-        || matches!(
-            name.as_str(),
-            ".npmrc"
-                | ".pypirc"
-                | ".netrc"
-                | ".git-credentials"
-                | "credentials"
-                | "credentials.json"
-                | "secrets.json"
-                | "secrets.yaml"
-                | "secrets.yml"
-        )
-        || [".pem", ".key", ".p12", ".pfx", ".jks"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-}
-
-fn sensitive_path_error(path: String) -> ToolResult {
-    err(format!(
-        "Access to {path} is blocked because it may contain credentials or private keys. \
-Open it locally yourself if needed; do not send its contents to a model."
-    ))
-}
-
 fn walk_files(root: &Path, start: &Path, out: &mut Vec<PathBuf>) {
     if out.len() >= MAX_WALK_FILES {
         return;
@@ -1804,7 +1738,7 @@ fn walk_files(root: &Path, start: &Path, out: &mut Vec<PathBuf>) {
         let Ok(ft) = entry.file_type() else {
             continue;
         };
-        if is_sensitive_agent_path(root, &path) {
+        if is_sensitive_path(root, &path) {
             continue;
         }
         if ft.is_dir() {
@@ -1829,8 +1763,8 @@ fn glob(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
-    if is_sensitive_agent_path(ws.root(), &start) {
-        return sensitive_path_error(ws.display(&start));
+    if let Err(e) = ws.guard(&start, Access::Agent) {
+        return err(e);
     }
     let mut files = Vec::new();
     walk_files(ws.root(), &start, &mut files);
@@ -1870,8 +1804,8 @@ fn grep(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
         Ok(p) => p,
         Err(e) => return err(e),
     };
-    if is_sensitive_agent_path(ws.root(), &start) {
-        return sensitive_path_error(ws.display(&start));
+    if let Err(e) = ws.guard(&start, Access::Agent) {
+        return err(e);
     }
     let mut files = Vec::new();
     if start.is_file() {
@@ -1885,7 +1819,7 @@ fn grep(ws: &Workspace, input: &serde_json::Value) -> ToolResult {
             break;
         }
         if std::fs::metadata(&file)
-            .map(|m| m.len() > MAX_FILE_BYTES)
+            .map(|m| m.len() > AGENT_MAX_READ_BYTES)
             .unwrap_or(true)
         {
             continue;
@@ -1949,8 +1883,11 @@ fn get_git_diff(root: &Path, input: &serde_json::Value) -> ToolResult {
         {
             return err("Git diff path must be a plain workspace-relative path.".to_string());
         }
-        if is_sensitive_agent_path(root, &root.join(p)) {
-            return sensitive_path_error(p.to_string());
+        if is_sensitive_path(root, &root.join(p)) {
+            return err(format!(
+                "Access to {p} is blocked because it may contain credentials or private keys. \
+Open it locally yourself if needed; do not send its contents to a model."
+            ));
         }
         args.push("--");
         args.push(p);
@@ -2654,8 +2591,9 @@ fn preview_write_file(
     let new_str = string_arg(input, "new_str").unwrap_or_default();
     let full = ws.resolve_existing(&path).map_err(err)?;
     let rel = ws.display(&full);
-    let current =
-        std::fs::read_to_string(&full).map_err(|e| err(format!("Cannot read {rel}: {e}")))?;
+    // Agent-tier read: an edit to a credential-shaped file is refused here,
+    // before a diff is ever proposed — the diff gate is review, not the guard.
+    let current = ws.read_text(&full, Access::Agent).map_err(err)?;
     // Staleness guard (omp's `#tag`, lite): if the live file no longer hashes
     // to what the model last read, the edit still targets the *current* text
     // (so it's safe to apply), but flag it so the diff reviewer — and the model
@@ -2686,7 +2624,7 @@ fn preview_write_file(
     } else {
         None
     };
-    if new_content.len() as u64 > MAX_WRITE_BYTES {
+    if new_content.len() as u64 > AGENT_MAX_WRITE_BYTES {
         return Err(err("Resulting file would be too large".to_string()));
     }
     Ok(DiffProposal {
@@ -2719,13 +2657,14 @@ fn preview_create_file(
     let contents = string_arg(input, "contents")
         .ok_or_else(|| err("create_file requires string contents".to_string()))?;
     let candidate = ws.resolve_new(&path).map_err(err)?;
+    ws.guard(&candidate, Access::Agent).map_err(err)?;
     let rel = ws.display(&candidate);
     if candidate.exists() {
         return Err(err(format!(
             "{rel} already exists. Use write_file to modify an existing file."
         )));
     }
-    if contents.len() as u64 > MAX_WRITE_BYTES {
+    if contents.len() as u64 > AGENT_MAX_WRITE_BYTES {
         return Err(err("Contents too large".to_string()));
     }
     Ok(DiffProposal {
@@ -2773,6 +2712,7 @@ fn preview_create_skill(
         .to_string();
     let rel = format!(".agents/skills/{safe_name}/SKILL.md");
     let full = ws.resolve_new(&rel).map_err(err)?;
+    ws.guard(&full, Access::Agent).map_err(err)?;
     if full.exists() {
         return Err(err(format!(
             "{rel} already exists. Use write_file to edit it."
@@ -2849,14 +2789,12 @@ fn verify_syntax(path: &str, content: &str) -> Option<String> {
 
 pub fn apply_write(root: &str, diff: &DiffProposal) -> Result<ToolResult, ToolResult> {
     let ws = Workspace::new(root).map_err(err)?;
-    // Re-validate at apply time: never trust a proposal path blindly.
+    // Re-validate at apply time: never trust a proposal path blindly. The
+    // agent-tier write also re-applies the sensitive-path refusal, so a
+    // proposal that skipped preview can't land on a credential file.
     let full = ws.resolve_new(&diff.path).map_err(err)?;
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| err(format!("Cannot create directory: {e}")))?;
-    }
-    std::fs::write(&full, &diff.new_content)
-        .map_err(|e| err(format!("Cannot write {}: {e}", diff.path)))?;
+    ws.write_text(&full, &diff.new_content, Access::Agent)
+        .map_err(err)?;
     // The model just wrote this file, so its current hash is the new one — keep
     // the snapshot fresh so a follow-up edit isn't falsely flagged as stale.
     record_snapshot(&diff.run_id, &diff.path, &diff.new_hash);
@@ -2979,6 +2917,59 @@ mod tests {
         let glob_result = glob(&ws, &serde_json::json!({ "pattern": "**/*" }));
         assert!(glob_result.ok);
         assert!(!glob_result.content.contains(".env"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_write_paths_block_common_secret_paths() {
+        let dir =
+            std::env::temp_dir().join(format!("klide-sensitive-writes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "TOKEN=old").unwrap();
+        let ws = Workspace::new(dir.to_str().unwrap()).unwrap();
+
+        // Editing an existing credential file is refused at preview.
+        let edit = preview_write_file(
+            &ws,
+            &serde_json::json!({ "path": ".env", "old_str": "TOKEN=old", "new_str": "TOKEN=new" }),
+            "run1",
+        );
+        let refused = edit.expect_err("editing .env must be refused");
+        assert!(refused.content.contains("blocked"), "{}", refused.content);
+
+        // Creating a new credential file is refused at preview.
+        let create = preview_create_file(
+            &ws,
+            &serde_json::json!({ "path": ".env.production", "contents": "TOKEN=new" }),
+            "run1",
+        );
+        let refused = create.expect_err("creating .env.production must be refused");
+        assert!(refused.content.contains("blocked"), "{}", refused.content);
+
+        // Apply re-checks: a proposal that skipped preview still can't land
+        // on a credential file.
+        let diff = DiffProposal {
+            id: "diff_run1_env".to_string(),
+            run_id: "run1".to_string(),
+            tool_call_id: "write_.env".to_string(),
+            path: ".env".to_string(),
+            old_content: "TOKEN=old".to_string(),
+            new_content: "TOKEN=leaked".to_string(),
+            old_hash: hash_content("TOKEN=old"),
+            new_hash: hash_content("TOKEN=leaked"),
+            unified_diff: String::new(),
+            is_create: false,
+            reason: None,
+        };
+        let applied = apply_write(dir.to_str().unwrap(), &diff);
+        let refused = applied.expect_err("applying a write to .env must be refused");
+        assert!(refused.content.contains("blocked"), "{}", refused.content);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".env")).unwrap(),
+            "TOKEN=old",
+            "the credential file must be untouched"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

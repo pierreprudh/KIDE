@@ -75,6 +75,24 @@ export const COMPACT_KEEP_RECENT = 4;
 export const COMPACT_PROMPT_RATIO = 0.8;
 
 /**
+ * Automatic compaction is a send-time operation, never a browsing side effect.
+ * A restored transcript may already be over its window, but opening it must be
+ * passive; the next submitted message is the activation boundary.
+ */
+export function shouldAutoCompact({
+  trigger,
+  canCompact,
+  ratioAfterSend,
+}: {
+  trigger: "view" | "send";
+  canCompact: boolean;
+  /** Unclamped fullness including the message that is being submitted. */
+  ratioAfterSend: number;
+}): boolean {
+  return trigger === "send" && canCompact && ratioAfterSend >= 1;
+}
+
+/**
  * Index of the newest compaction marker, or -1.
  *
  * Messages above it stay on screen for reference but no longer reach the model —

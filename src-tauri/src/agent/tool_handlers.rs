@@ -492,6 +492,37 @@ pub(super) struct NetworkInvocation {
     pub(super) input: serde_json::Value,
 }
 
+const NETWORK_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Web Tools use reqwest's blocking client because the registry's read seam is
+/// synchronous. Keep that work off the async Harness thread: reqwest panics if
+/// its blocking runtime is dropped from an async context. Join failures and a
+/// DNS/request that outlives the bound become ordinary Tool errors, allowing
+/// the Harness to emit ToolCallFinished and continue the Run.
+async fn execute_network_tool(root: &str, call: &NormalizedToolCall, run_id: &str) -> ToolResult {
+    let root = root.to_string();
+    let call = call.clone();
+    let run_id = run_id.to_string();
+    let task = tokio::task::spawn_blocking(move || execute_read_only_tool(&root, &call, &run_id));
+
+    match tokio::time::timeout(NETWORK_TOOL_TIMEOUT, task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => ToolResult {
+            ok: false,
+            content: format!("Network tool failed unexpectedly: {error}"),
+            metadata: None,
+        },
+        Err(_) => ToolResult {
+            ok: false,
+            content: format!(
+                "Network tool timed out after {} seconds.",
+                NETWORK_TOOL_TIMEOUT.as_secs()
+            ),
+            metadata: None,
+        },
+    }
+}
+
 pub(super) fn network_invocation(call: &NormalizedToolCall) -> Result<NetworkInvocation, ToolResult> {
     match call.name.as_str() {
         "web_search" => {
@@ -583,9 +614,9 @@ where
 
     match permission::precheck(ctx, permission::Capability::Network, &target, project_ok) {
         permission::Precheck::Execute => {
-            return Ok(ToolOutcome::Produced(execute_read_only_tool(
-                root_value, call, ctx.id,
-            )));
+            return Ok(ToolOutcome::Produced(
+                execute_network_tool(root_value, call, ctx.id).await,
+            ));
         }
         permission::Precheck::AutoReject(msg) => {
             return Ok(ToolOutcome::Produced(ToolResult {
@@ -625,7 +656,7 @@ where
 
     let result = match decision {
         permission::GateDecision::Approved { .. } => {
-            execute_read_only_tool(root_value, call, ctx.id)
+            execute_network_tool(root_value, call, ctx.id).await
         }
         _ => ToolResult {
             ok: false,

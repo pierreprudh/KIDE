@@ -697,7 +697,9 @@ fn list_dir(workspace_root: String, path: String) -> Result<Vec<FsEntry>, String
 fn read_text_file(workspace_root: String, path: String) -> Result<String, String> {
     let ws = workspace::Workspace::new(&workspace_root)?;
     let path = ws.resolve_abs_read(&path)?;
-    std::fs::read_to_string(&path).map_err(|e| format!("Unable to read file: {e}"))
+    // User tier: the human may open their own .env; the 20 MB cap only stops
+    // a file Monaco couldn't render from freezing the webview.
+    ws.read_text(&path, workspace::Access::User)
 }
 
 fn mime_for_path(path: &str) -> &'static str {
@@ -731,7 +733,7 @@ fn read_file_data_uri(workspace_root: String, path: String) -> Result<String, St
     let ws = workspace::Workspace::new(&workspace_root)?;
     let abs = ws.resolve_abs_read(&path)?;
     let meta = std::fs::metadata(&abs).map_err(|e| format!("Unable to read file: {e}"))?;
-    if meta.len() > 20_000_000 {
+    if meta.len() > workspace::USER_MAX_READ_BYTES {
         return Err("File is too large to preview (max 20 MB).".to_string());
     }
     let bytes = std::fs::read(&abs).map_err(|e| format!("Unable to read file: {e}"))?;
@@ -749,10 +751,7 @@ fn path_exists(workspace_root: String, path: String) -> Result<bool, String> {
 fn write_text_file(workspace_root: String, path: String, content: String) -> Result<(), String> {
     let ws = workspace::Workspace::new(&workspace_root)?;
     let target = ws.resolve_abs_readwrite(&path)?;
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Unable to create folder: {e}"))?;
-    }
-    std::fs::write(&target, content).map_err(|e| format!("Unable to write file: {e}"))
+    ws.write_text(&target, &content, workspace::Access::User)
 }
 
 #[tauri::command]
@@ -784,14 +783,7 @@ fn rename_entry(workspace_root: String, from: String, to: String) -> Result<(), 
 fn delete_entry(workspace_root: String, path: String) -> Result<(), String> {
     let ws = workspace::Workspace::new(&workspace_root)?;
     let target = ws.resolve_abs_entry(&path)?;
-    // symlink_metadata: delete a symlink itself, never follow it.
-    let meta =
-        std::fs::symlink_metadata(&target).map_err(|e| format!("Unable to read entry: {e}"))?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(&target).map_err(|e| format!("Unable to delete folder: {e}"))
-    } else {
-        std::fs::remove_file(&target).map_err(|e| format!("Unable to delete file: {e}"))
-    }
+    ws.remove(&target, workspace::Access::User)
 }
 
 #[tauri::command]

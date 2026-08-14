@@ -31,7 +31,7 @@ use self::run_core::{
     TurnStep,
 };
 use self::tools::{
-    apply_write, clear_run_snapshots, dynamic_tool_command, execute_read_only_tool,
+    apply_write, clear_run_snapshots, execute_read_only_tool,
     execute_write_tool_preview, find_tool_kind_for_workspace, preflight_command,
     run_command_capture, run_command_capture_in, schemas_for_mode, tool_summary_for_workspace,
     NormalizedToolCall, ToolKind,
@@ -4148,7 +4148,9 @@ mod diff_gate_tests {
 
 #[cfg(test)]
 mod network_permission_tests {
+    use super::test_support::*;
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn web_fetch_permission_targets_the_host() {
@@ -4172,6 +4174,70 @@ mod network_permission_tests {
         let invocation = network_invocation(&call).expect("valid search");
         assert_eq!(invocation.target, "web_search");
         assert_eq!(invocation.input["target"], "web_search");
+    }
+
+    #[tokio::test]
+    async fn approved_network_tool_returns_without_panicking_the_async_harness() {
+        let root = std::env::temp_dir().join(format!(
+            "klide-network-tool-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let runs_dir = root.join("runs");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let sup = FakeSupervisor::with_run("network-run");
+        let cancel = CancellationToken::new();
+        let request = test_request(workspace.to_str().unwrap(), &[]);
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "network-run",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: runs_dir.as_path(),
+        };
+        let call = NormalizedToolCall {
+            id: "call_fetch".to_string(),
+            name: "web_fetch".to_string(),
+            // Public but deliberately closed: the result should be a normal
+            // Tool error, never a reqwest blocking-runtime panic.
+            input: serde_json::json!({ "url": "https://1.1.1.1:1/" }),
+        };
+        let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let sink = events.clone();
+        let mut emit = move |event: AgentEvent| -> Result<(), String> {
+            sink.lock().unwrap().push(event);
+            Ok(())
+        };
+
+        let (outcome, _) = tokio::join!(
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                process_network_tool(&ctx, &call, &mut emit),
+            ),
+            answer_permission(
+                &sup,
+                "network-run",
+                r#"{"behavior":"allow","scope":"once"}"#,
+            ),
+        );
+        let result = match outcome
+            .expect("approved network Tool must settle")
+            .expect("network gate must return normally")
+        {
+            ToolOutcome::Produced(result) => result,
+            ToolOutcome::Cancelled => panic!("network Tool was unexpectedly cancelled"),
+        };
+        assert!(!result.ok, "closed endpoint should return a Tool error");
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::PermissionResolved { .. })));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
