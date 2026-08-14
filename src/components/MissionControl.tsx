@@ -74,17 +74,16 @@ import {
   buildRaceRowIndex,
   buildRunLedger,
   filterLedgerEntries,
+  getRunLedgerMetadata,
   groupLedgerBySection,
   handoffTargetsFor,
+  patchRunLedgerMetadata,
   presentProjects,
   presentRunSources,
   projectName,
-  readRunLedgerMetadata,
-  runLedgerKey,
-  writeRunLedgerMetadata,
+  subscribeRunLedgerMetadata,
   type ProjectFilter,
   type RunLedgerEntry,
-  type RunLedgerMetadataStore,
   type RunSourceFilter,
 } from "../runLedger";
 import { resolveRunInspection } from "../runInspection";
@@ -4209,7 +4208,7 @@ export function MissionControl({
       .filter((s) => !liveConvoIds.has(s.convoId))
       .slice(0, RECENT_SESSION_MAX_ROWS);
   }, [recentSessions, liveConvoIds]);
-  const [ledgerMetadata, setLedgerMetadata] = useState<RunLedgerMetadataStore>(() => readRunLedgerMetadata());
+  const ledgerMetadata = useSyncExternalStore(subscribeRunLedgerMetadata, getRunLedgerMetadata);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [expandedSubagentParents, setExpandedSubagentParents] = useState<Set<string>>(new Set());
   const [dismissedBoardRuns, setDismissedBoardRuns] = useState<Set<string>>(() => readDismissedBoardRuns());
@@ -4545,21 +4544,6 @@ export function MissionControl({
     });
   }
 
-  function patchLedgerMetadata(
-    run: RunLedgerEntry,
-    patch: (current: NonNullable<RunLedgerMetadataStore[string]>) => NonNullable<RunLedgerMetadataStore[string]>
-  ) {
-    setLedgerMetadata((prev) => {
-      const key = runLedgerKey(run);
-      const next = {
-        ...prev,
-        [key]: patch(prev[key] ?? {}),
-      };
-      writeRunLedgerMetadata(next);
-      return next;
-    });
-  }
-
   function renameLedgerRun(run: RunLedgerEntry, title: string) {
     const nextTitle = title.trim();
     if (!nextTitle) return;
@@ -4568,7 +4552,7 @@ export function MissionControl({
     } else if (run.origin === "klide-convo" || run.source === "klide") {
       renameKlideConvo(run.id, nextTitle);
     }
-    patchLedgerMetadata(run, (current) => ({
+    patchRunLedgerMetadata(run, (current) => ({
       ...current,
       title: nextTitle,
       updatedMs: Date.now(),
@@ -4576,7 +4560,7 @@ export function MissionControl({
   }
 
   function archiveLedgerRun(run: RunLedgerEntry, archived: boolean) {
-    patchLedgerMetadata(run, (current) => ({
+    patchRunLedgerMetadata(run, (current) => ({
       ...current,
       archived,
       updatedMs: Date.now(),

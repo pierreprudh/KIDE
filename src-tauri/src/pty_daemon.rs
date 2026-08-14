@@ -434,14 +434,6 @@ fn handle_request(request: Request, state: &Arc<DaemonState>) -> Response {
             detect_session_id,
         } => {
             state.log(&format!("spawn {session_id} ({provider})"));
-            let extract = if detect_session_id {
-                crate::delegate::lookup(&provider).map(|d| {
-                    Box::new(move |output: &str| d.extract_session_id(output))
-                        as Box<dyn Fn(&str) -> Option<String> + Send>
-                })
-            } else {
-                None
-            };
             let result = state.host.spawn(
                 SpawnSpec {
                     session_id,
@@ -453,7 +445,7 @@ fn handle_request(request: Request, state: &Arc<DaemonState>) -> Response {
                     model,
                     resume_session_id,
                     mission_link,
-                    extract_session_id: extract,
+                    detect_session_id,
                 },
                 Some(state.scroll_dir()),
                 Arc::new(BroadcastSink {

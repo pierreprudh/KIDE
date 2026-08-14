@@ -7,10 +7,10 @@
 // `Channel`) so the parsers stay unit-testable without a webview — the
 // fixture tests at the bottom of this file pin each wire contract.
 
-use crate::{
+use crate::providers::{
     provider_key, response_error, text_from_message, AiChatResponse, AiUsage, StreamChunk,
+    ANTHROPIC_VERSION, OLLAMA_URL,
 };
-use crate::{ANTHROPIC_VERSION, OLLAMA_URL};
 use std::time::Duration;
 use tauri::ipc::Channel;
 

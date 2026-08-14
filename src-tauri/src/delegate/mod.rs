@@ -135,7 +135,7 @@ pub trait Delegate: Sync {
     /// first so a missing CLI reports "not installed" rather than the
     /// PTY-only error.
     fn chat_invocation(&self, cwd: &str, model: &str) -> Result<tokio::process::Command, String> {
-        let cli = crate::resolve_command(self.binary())?;
+        let cli = crate::cli::resolve_command(self.binary())?;
         let args = self.chat_args(cwd, model)?;
         let mut command = tokio::process::Command::new(cli);
         command.current_dir(cwd).args(args);

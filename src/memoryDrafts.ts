@@ -14,6 +14,7 @@
 // produced them.
 
 import type { MemoryInput } from "./memory";
+import { createPersistedStore } from "./persistedStore";
 
 export type MemoryDraft = MemoryInput & {
   /** Local draft id — distinct from the durable memory entry id. */
@@ -25,48 +26,24 @@ export type MemoryDraft = MemoryInput & {
 
 const STORAGE_KEY = "klide.memoryDrafts";
 
-let drafts: MemoryDraft[] = load();
-const subscribers = new Set<() => void>();
-
-function load(): MemoryDraft[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as MemoryDraft[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function persist() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts));
-  } catch {
-    /* storage full or unavailable — drafts stay in-memory for this session */
-  }
-}
-
-function emitChange() {
-  for (const fn of subscribers) fn();
-}
+const store = createPersistedStore<MemoryDraft[]>({
+  key: STORAGE_KEY,
+  validate: (parsed) => (Array.isArray(parsed) ? (parsed as MemoryDraft[]) : []),
+});
 
 function genId(): string {
   return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function subscribeMemoryDrafts(fn: () => void): () => void {
-  subscribers.add(fn);
-  return () => {
-    subscribers.delete(fn);
-  };
+  return store.subscribe(fn);
 }
 
 // Stable snapshot for useSyncExternalStore — the reference only changes when
 // the list actually changes (every mutation replaces the array). Consumers
 // filter by workspace in a useMemo to avoid breaking snapshot stability.
 export function getMemoryDrafts(): MemoryDraft[] {
-  return drafts;
+  return store.get();
 }
 
 export function addMemoryDraft(
@@ -79,20 +56,14 @@ export function addMemoryDraft(
     createdAtMs: Date.now(),
     workspaceRoot,
   };
-  drafts = [draft, ...drafts];
-  persist();
-  emitChange();
+  store.mutate((drafts) => [draft, ...drafts]);
   return draft;
 }
 
 export function updateMemoryDraft(draftId: string, patch: Partial<MemoryInput>) {
-  drafts = drafts.map((d) => (d.draftId === draftId ? { ...d, ...patch } : d));
-  persist();
-  emitChange();
+  store.mutate((drafts) => drafts.map((d) => (d.draftId === draftId ? { ...d, ...patch } : d)));
 }
 
 export function removeMemoryDraft(draftId: string) {
-  drafts = drafts.filter((d) => d.draftId !== draftId);
-  persist();
-  emitChange();
+  store.mutate((drafts) => drafts.filter((d) => d.draftId !== draftId));
 }

@@ -3,12 +3,14 @@ import { isDelegateProvider } from "../../agent/providers";
 import type { Conversation, Msg } from "./types";
 import {
   deriveTitle,
-  genId,
   latestRestorableConversationId,
   loadConversations,
   loadPanelSession,
   messagesForPersist,
-} from "./utils";
+  savePanelSession,
+  type PanelSession,
+} from "./storedConversations";
+import { genId } from "./utils";
 
 export type ConversationRunActivity = "thinking" | "waiting" | null;
 
@@ -16,7 +18,10 @@ export type ConversationRunActivity = "thinking" | "waiting" | null;
  * The complete live state of one AI-panel Conversation. Keeping these fields
  * together makes identity changes atomic: a resume or branch cannot adopt new
  * messages while accidentally retaining the previous Conversation's lineage
- * or Git metadata.
+ * or Git metadata. The durable panel↔Conversation binding is part of that
+ * atomicity: apply transitions through `applyConversationSessionTransition`,
+ * which writes the binding for every identity-carrying transition — a caller
+ * cannot adopt a new identity and forget to persist it.
  */
 export type ConversationSession = {
   conversationId: string;
@@ -203,6 +208,71 @@ export function conversationSessionReducer(
     case "run-settled":
       return { ...session, run: { active: false, activity: null } };
   }
+}
+
+/** Injectable durable write, so tests can prove the binding lands without a
+ *  real localStorage. Production uses `savePanelSession`. */
+export type PanelBindingWrite = (panelId: string, binding: PanelSession) => void;
+
+/** The durable panel↔Conversation binding this session state implies. */
+export function sessionPanelBinding(session: ConversationSession): PanelSession {
+  return {
+    convoId: session.conversationId,
+    provider: session.provider,
+    workspaceRoot: session.workspaceRoot,
+  };
+}
+
+/** The single place the durable panel binding is written. AiPanel's delegate
+ *  panels call this directly (their binding must be durable the moment the
+ *  provider/convo pair binds, not on a transition); everything else goes
+ *  through `applyConversationSessionTransition` below. */
+export function persistConversationSessionBinding(
+  panelId: string,
+  session: ConversationSession,
+  write: PanelBindingWrite = savePanelSession,
+): void {
+  write(panelId, sessionPanelBinding(session));
+}
+
+/** Which transitions must land in the durable panel binding. Identity changes
+ *  (fresh, resume, branch) and Provider changes rebind the panel; a Run start
+ *  re-asserts the binding so a mid-run view switch reattaches to this
+ *  Conversation even when it was restored without ever transitioning.
+ *  Message streaming and Run settle change no binding field. */
+function transitionRebindsPanel(action: ConversationSessionAction): boolean {
+  switch (action.type) {
+    case "fresh-started":
+    case "resumed":
+    case "branched":
+    case "run-started":
+      return true;
+    case "configured":
+      return action.provider !== undefined || action.workspaceRoot !== undefined;
+    case "messages-replaced":
+    case "run-settled":
+      return false;
+  }
+}
+
+/**
+ * Apply one transition *and* its durable persist. The reducer above stays
+ * pure (React mirrors state through it), but an identity transition is not
+ * complete until the panel binding is durable — previously each call site had
+ * to remember its own `savePanelSession`, and ~8 scattered writes kept that
+ * promise by hand. Returns the next session; the binding write happens here.
+ */
+export function applyConversationSessionTransition(
+  session: ConversationSession,
+  action: ConversationSessionAction,
+  panelId: string | null | undefined,
+  write?: PanelBindingWrite,
+): ConversationSession {
+  const next = conversationSessionReducer(session, action);
+  if (panelId && transitionRebindsPanel(action)) {
+    persistConversationSessionBinding(panelId, next, write);
+  }
+  return next;
 }
 
 /** Build the durable Conversation snapshot. Empty sessions are intentionally

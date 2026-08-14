@@ -4,10 +4,10 @@ import {
   createMissionTask,
   EMPTY_MISSION_STATE,
   missionReducer,
-  type MissionAttemptValidation,
   type MissionState,
 } from "./missionHarness";
 import type { PlannedTask } from "./planner";
+import { parseValidationSummary } from "./validationContracts";
 
 export type DurableMissionMode = "plan" | "goal";
 export type DurableMissionRisk = "low" | "medium" | "high";
@@ -142,7 +142,10 @@ export type DurableMissionEvent =
       taskId: string;
       runId: string;
       accepted: boolean;
-      validation: MissionAttemptValidation;
+      /** Raw `AgentValidationSummary` wire value, straight off the durable
+       *  log. Typed `unknown` so nothing can read it without going through
+       *  `parseValidationSummary` in the fold below. */
+      validation: unknown;
     }
   | { type: "mission_completed" }
   | { type: "mission_parked"; reason: string };
@@ -292,7 +295,7 @@ export function compileDurableMissionBundle(bundle: DurableMissionBundle): Missi
           taskId: event.taskId,
           runId: event.runId,
           accepted: event.accepted,
-          validation: event.validation,
+          validation: parseValidationSummary(event.validation),
           ts: line.ts,
         });
         break;

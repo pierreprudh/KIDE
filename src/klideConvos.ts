@@ -9,8 +9,8 @@ import {
   deriveTitle,
   loadConversations,
   persistConversation,
-} from "./components/ai/utils";
-import { readValidatedArray } from "./persistedStore";
+} from "./components/ai/storedConversations";
+import { createPersistedStore, validatedArray } from "./persistedStore";
 import type { RunMessage, RunStatus } from "./runs";
 
 export type KlideConvo = {
@@ -66,7 +66,10 @@ function msgToRunMessage(m: Msg): RunMessage | null {
   return text ? { role: m.role, text } : null;
 }
 
-function conversationToConvo(c: Conversation): KlideConvo | null {
+/** One Stored conversation → one Mission Control row. The board's idle
+ *  status is "done"; a live publisher (AiPanel) overrides `status` for a
+ *  streaming run. Null when nothing in it is renderable on the board. */
+export function conversationToConvo(c: Conversation): KlideConvo | null {
   const messages = c.msgs.map(msgToRunMessage).filter((m): m is RunMessage => !!m);
   if (messages.length === 0) return null;
   return {
@@ -85,9 +88,9 @@ function conversationToConvo(c: Conversation): KlideConvo | null {
   };
 }
 
-function readStoredConvos(): KlideConvo[] {
-  return readValidatedArray(
-    STORAGE_KEY,
+function decodeStoredConvos(parsed: unknown): KlideConvo[] {
+  return validatedArray(
+    parsed,
     (c): c is KlideConvo =>
       !!c &&
       typeof c === "object" &&
@@ -105,88 +108,68 @@ function readStoredConvos(): KlideConvo[] {
   }));
 }
 
-function initialConvos(): KlideConvo[] {
-  const byId = new Map<string, KlideConvo>();
-  for (const c of readStoredConvos()) byId.set(c.id, c);
-  for (const c of loadConversations<Conversation>()) {
-    const convo = conversationToConvo(c);
-    if (convo) byId.set(convo.id, convo);
-  }
-  return Array.from(byId.values())
-    .sort((a, b) => b.updatedMs - a.updatedMs)
-    .slice(0, MAX_CONVOS);
-}
-
-function persistConvos() {
-  try {
-    const durable = convos
-      .map((c) => ({ ...c, status: safeStatus(c.status) }))
+const store = createPersistedStore<KlideConvo[]>({
+  key: STORAGE_KEY,
+  // Merge-and-bound on first read: stored board snapshots, overlaid with the
+  // full AI-panel conversations (the richer record wins), newest first.
+  validate: (parsed) => {
+    const byId = new Map<string, KlideConvo>();
+    for (const c of decodeStoredConvos(parsed)) byId.set(c.id, c);
+    for (const c of loadConversations<Conversation>()) {
+      const convo = conversationToConvo(c);
+      if (convo) byId.set(convo.id, convo);
+    }
+    return Array.from(byId.values())
+      .sort((a, b) => b.updatedMs - a.updatedMs)
       .slice(0, MAX_CONVOS);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(durable));
-  } catch {
-    /* storage full or unavailable */
-  }
-}
-
-let convos: KlideConvo[] = initialConvos();
-const subscribers = new Set<() => void>();
-
-function emitChange() {
-  for (const fn of subscribers) fn();
-}
+  },
+  bound: (convos) => convos.slice(0, MAX_CONVOS),
+  // A live status must not survive a restart — the durable form settles it.
+  persist: (convos) => convos.map((c) => ({ ...c, status: safeStatus(c.status) })),
+});
 
 export function subscribeKlideConvos(fn: () => void): () => void {
-  subscribers.add(fn);
-  return () => {
-    subscribers.delete(fn);
-  };
+  return store.subscribe(fn);
 }
 
 export function getKlideConvos(): KlideConvo[] {
-  return convos;
+  return store.get();
 }
 
 // Upsert a convo snapshot (newest first). Called by AiPanel on every message
 // change — cheap, since snapshots are small and the board only re-renders
 // when the array identity changes.
 export function publishKlideConvo(convo: KlideConvo): void {
-  // Snapshots replace the whole record, so the start has to be carried across
-  // or a live conversation would restart its clock on every message.
-  const previous = convos.find((c) => c.id === convo.id);
-  const next = {
-    ...convo,
-    createdMs: previous?.createdMs ?? convo.createdMs ?? convo.updatedMs,
-  };
-  convos = [next, ...convos.filter((c) => c.id !== convo.id)].slice(0, MAX_CONVOS);
-  persistConvos();
-  emitChange();
+  store.mutate((convos) => {
+    // Snapshots replace the whole record, so the start has to be carried across
+    // or a live conversation would restart its clock on every message.
+    const previous = convos.find((c) => c.id === convo.id);
+    const next = {
+      ...convo,
+      createdMs: previous?.createdMs ?? convo.createdMs ?? convo.updatedMs,
+    };
+    return [next, ...convos.filter((c) => c.id !== convo.id)];
+  });
 }
 
 // The panel closed or started a fresh chat — the convo is no longer live.
 export function settleKlideConvo(id: string): void {
-  if (!convos.some((c) => c.id === id && c.status !== "done")) return;
-  convos = convos.map((c) => (c.id === id ? { ...c, status: "done" } : c));
-  persistConvos();
-  emitChange();
+  if (!store.get().some((c) => c.id === id && c.status !== "done")) return;
+  store.mutate((convos) => convos.map((c) => (c.id === id ? { ...c, status: "done" } : c)));
 }
 
 export function deleteKlideConvo(id: string): void {
-  if (!convos.some((c) => c.id === id)) return;
-  convos = convos.filter((c) => c.id !== id);
-  persistConvos();
-  emitChange();
+  if (!store.get().some((c) => c.id === id)) return;
+  store.mutate((convos) => convos.filter((c) => c.id !== id));
 }
 
 export function renameKlideConvo(id: string, title: string): void {
   const nextTitle = title.trim();
   if (!nextTitle) return;
-  const current = convos.find((c) => c.id === id);
-  if (current) {
-    convos = convos.map((c) =>
-      c.id === id ? { ...c, title: nextTitle, updatedMs: Date.now() } : c
+  if (store.get().some((c) => c.id === id)) {
+    store.mutate((convos) =>
+      convos.map((c) => (c.id === id ? { ...c, title: nextTitle, updatedMs: Date.now() } : c))
     );
-    persistConvos();
-    emitChange();
   }
   const conversation = loadConversations<Conversation>().find((c) => c.id === id);
   if (conversation) {

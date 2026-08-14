@@ -17,6 +17,72 @@
 
 use std::path::{Component, Path, PathBuf};
 
+/// Who is asking for the operation. The sensitive-path refusal is an *agent*
+/// policy: a model must never read or write credential-shaped files, but the
+/// human's own editor may — refusing the user their own `.env` would break
+/// legitimate editing. Every Workspace operation takes the tier explicitly so
+/// the policy difference is visible at the interface, never accidental.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Access {
+    User,
+    Agent,
+}
+
+/// Byte caps per access tier. The agent caps exist so a model can't pull a
+/// huge file into its context or spray one onto disk; the user caps only
+/// bound what the webview can survive rendering.
+pub const AGENT_MAX_READ_BYTES: u64 = 220_000;
+pub const AGENT_MAX_WRITE_BYTES: u64 = 220_000;
+pub const USER_MAX_READ_BYTES: u64 = 20_000_000;
+pub const USER_MAX_WRITE_BYTES: u64 = 20_000_000;
+
+/// Paths whose *shape* says "credentials": dotted secret dirs (`.ssh`, `.aws`…),
+/// env files, key/cert extensions, well-known credential filenames. Checked
+/// against the workspace-relative form so a nested `configs/.env.local` is
+/// caught the same as a top-level one.
+pub fn is_sensitive_path(root: &Path, path: &Path) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let components: Vec<String> = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(|component| component.to_ascii_lowercase())
+        .collect();
+    if components.iter().any(|component| {
+        matches!(
+            component.as_str(),
+            ".ssh" | ".aws" | ".gnupg" | ".azure" | ".kube"
+        )
+    }) {
+        return true;
+    }
+    if components
+        .windows(2)
+        .any(|pair| pair[0] == ".config" && pair[1] == "gcloud")
+    {
+        return true;
+    }
+    let Some(name) = components.last() else {
+        return false;
+    };
+    name == ".env"
+        || name.starts_with(".env.")
+        || matches!(
+            name.as_str(),
+            ".npmrc"
+                | ".pypirc"
+                | ".netrc"
+                | ".git-credentials"
+                | "credentials"
+                | "credentials.json"
+                | "secrets.json"
+                | "secrets.yaml"
+                | "secrets.yml"
+        )
+        || [".pem", ".key", ".p12", ".pfx", ".jks"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
 pub struct Workspace {
     /// Canonicalized at construction — `..` segments and symlinks in the
     /// root itself are resolved exactly once.
@@ -206,6 +272,95 @@ impl Workspace {
         }
     }
 
+    pub fn is_sensitive(&self, path: &Path) -> bool {
+        is_sensitive_path(&self.root, path)
+    }
+
+    /// The one place the sensitive-path policy is enforced. Agent access to a
+    /// credential-shaped path is refused with the standard guidance; User
+    /// access always passes.
+    pub fn guard(&self, path: &Path, access: Access) -> Result<(), String> {
+        if access == Access::Agent && self.is_sensitive(path) {
+            return Err(format!(
+                "Access to {} is blocked because it may contain credentials or private keys. \
+Open it locally yourself if needed; do not send its contents to a model.",
+                self.display(path)
+            ));
+        }
+        Ok(())
+    }
+
+    fn max_read_bytes(access: Access) -> u64 {
+        match access {
+            Access::User => USER_MAX_READ_BYTES,
+            Access::Agent => AGENT_MAX_READ_BYTES,
+        }
+    }
+
+    fn max_write_bytes(access: Access) -> u64 {
+        match access {
+            Access::User => USER_MAX_WRITE_BYTES,
+            Access::Agent => AGENT_MAX_WRITE_BYTES,
+        }
+    }
+
+    /// Read a resolved path as text with the tier's guard and byte cap applied.
+    /// Callers resolve first (`resolve_existing` / `resolve_abs_read`) — the
+    /// two path dialects stay at the seam; the policy lives here.
+    pub fn read_text(&self, path: &Path, access: Access) -> Result<String, String> {
+        self.guard(path, access)?;
+        let metadata =
+            std::fs::metadata(path).map_err(|e| format!("Unable to read metadata: {e}"))?;
+        if !metadata.is_file() {
+            return Err(format!("{} is not a file", self.display(path)));
+        }
+        let max = Self::max_read_bytes(access);
+        if metadata.len() > max {
+            return Err(format!(
+                "{} is too large to read safely ({} bytes, max {})",
+                self.display(path),
+                metadata.len(),
+                max
+            ));
+        }
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("Unable to read {} as text: {e}", self.display(path)))
+    }
+
+    /// Write text to a resolved path with the tier's guard and byte cap
+    /// applied, creating parent folders as needed.
+    pub fn write_text(&self, path: &Path, contents: &str, access: Access) -> Result<(), String> {
+        self.guard(path, access)?;
+        let max = Self::max_write_bytes(access);
+        if contents.len() as u64 > max {
+            return Err(format!(
+                "Refusing to write {}: contents too large ({} bytes, max {})",
+                self.display(path),
+                contents.len(),
+                max
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Unable to create folder: {e}"))?;
+        }
+        std::fs::write(path, contents)
+            .map_err(|e| format!("Unable to write {}: {e}", self.display(path)))
+    }
+
+    /// Delete a resolved entry with the tier's guard applied. Uses
+    /// symlink_metadata so deleting a symlink removes the link, never what it
+    /// points to.
+    pub fn remove(&self, path: &Path, access: Access) -> Result<(), String> {
+        self.guard(path, access)?;
+        let meta =
+            std::fs::symlink_metadata(path).map_err(|e| format!("Unable to read entry: {e}"))?;
+        if meta.is_dir() {
+            std::fs::remove_dir_all(path).map_err(|e| format!("Unable to delete folder: {e}"))
+        } else {
+            std::fs::remove_file(path).map_err(|e| format!("Unable to delete file: {e}"))
+        }
+    }
+
     /// Render a resolved path back as workspace-relative for messages shown
     /// to the model and the user. The root itself displays as ".".
     pub fn display(&self, path: &Path) -> String {
@@ -348,6 +503,86 @@ mod tests {
         assert!(ws
             .resolve_abs_new(ws.root().join("../escape.txt").to_str().unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn agent_read_refuses_sensitive_paths_but_user_read_allows_them() {
+        let (dir, ws) = temp_workspace("sensitive-read");
+        std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
+        let env = ws.resolve_existing(".env").unwrap();
+        let refused = ws.read_text(&env, Access::Agent).unwrap_err();
+        assert!(refused.contains("blocked"), "got: {refused}");
+        assert_eq!(ws.read_text(&env, Access::User).unwrap(), "SECRET=1");
+    }
+
+    #[test]
+    fn agent_write_refuses_sensitive_paths_but_user_write_allows_them() {
+        let (dir, ws) = temp_workspace("sensitive-write");
+        let env = dir.canonicalize().unwrap().join(".env");
+        let refused = ws.write_text(&env, "SECRET=1", Access::Agent).unwrap_err();
+        assert!(refused.contains("blocked"), "got: {refused}");
+        assert!(!env.exists(), "refused write must not create the file");
+        ws.write_text(&env, "SECRET=1", Access::User).unwrap();
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), "SECRET=1");
+    }
+
+    #[test]
+    fn sensitive_shapes_are_caught_in_nested_folders() {
+        let (dir, ws) = temp_workspace("sensitive-shapes");
+        let root = dir.canonicalize().unwrap();
+        for rel in [
+            "configs/.env.local",
+            ".ssh/id_rsa",
+            "certs/server.pem",
+            ".config/gcloud/credentials.json",
+        ] {
+            assert!(ws.is_sensitive(&root.join(rel)), "{rel} should be sensitive");
+        }
+        assert!(!ws.is_sensitive(&root.join("src/env.rs")));
+        assert!(!ws.is_sensitive(&root.join("docs/environment.md")));
+    }
+
+    #[test]
+    fn read_text_applies_the_agent_byte_cap() {
+        let (dir, ws) = temp_workspace("read-cap");
+        let big = "x".repeat(AGENT_MAX_READ_BYTES as usize + 1);
+        std::fs::write(dir.join("big.txt"), &big).unwrap();
+        let full = ws.resolve_existing("big.txt").unwrap();
+        let refused = ws.read_text(&full, Access::Agent).unwrap_err();
+        assert!(refused.contains("too large"), "got: {refused}");
+        // The user tier's cap is far higher — the same file reads fine.
+        assert_eq!(ws.read_text(&full, Access::User).unwrap().len(), big.len());
+    }
+
+    #[test]
+    fn write_text_applies_the_agent_byte_cap() {
+        let (dir, ws) = temp_workspace("write-cap");
+        let target = dir.canonicalize().unwrap().join("big.txt");
+        let big = "x".repeat(AGENT_MAX_WRITE_BYTES as usize + 1);
+        let refused = ws.write_text(&target, &big, Access::Agent).unwrap_err();
+        assert!(refused.contains("too large"), "got: {refused}");
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn write_text_creates_missing_parent_folders() {
+        let (dir, ws) = temp_workspace("write-parents");
+        let target = dir.canonicalize().unwrap().join("a/b/c.txt");
+        ws.write_text(&target, "hi", Access::User).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hi");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_deletes_a_symlink_not_its_target() {
+        let (dir, ws) = temp_workspace("remove-symlink");
+        let root = dir.canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::write(root.join("real/keep.txt"), "keep").unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+        ws.remove(&root.join("link"), Access::User).unwrap();
+        assert!(!root.join("link").exists());
+        assert!(root.join("real/keep.txt").exists());
     }
 
     #[test]

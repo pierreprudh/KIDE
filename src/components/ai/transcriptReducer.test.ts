@@ -1,186 +1,157 @@
 import { describe, expect, it } from "vitest";
-import {
-  locateAssistant,
-  appendDelta,
-  startToolCall,
-  finishToolCall,
-  finalizeAssistantMessage,
-} from "./transcriptReducer";
+import { createRunTranscript, type RunTranscript } from "./transcriptReducer";
 import type { Msg } from "./types";
-import type { AgentContentBlock, AgentUsage, AgentEvent } from "../../agent/types";
+import type { AgentContentBlock, AgentEvent, AgentUsage } from "../../agent/types";
 
-const delegate = {};
+// The run transcript is the live Msg[] view of one run's fold: it owns the
+// run's region of the panel array, re-projects only the rows an event
+// touched, and detaches rather than clobber a region it no longer owns. The
+// event → row logic itself is foldEvents.ts's — tested there.
+//
+// No `as AgentEvent` anywhere below: the union is the contract, and an
+// unchecked cast is how a fixture ends up describing a wire shape Rust never
+// emits.
 
-function assistantMessage(
-  content: AgentContentBlock[],
-  usage?: AgentUsage
-): Extract<AgentEvent, { type: "assistant_message" }> {
-  return { type: "assistant_message", runId: "r", messageId: "m", content, usage, ts: 0 } as Extract<
-    AgentEvent,
-    { type: "assistant_message" }
-  >;
+let ts = 0;
+const at = () => (ts += 10);
+
+function delta(text: string, thinking?: string): AgentEvent {
+  return { type: "assistant_delta", runId: "r", messageId: `d-${ts}`, text, thinking, ts: at() };
 }
 
-describe("locateAssistant", () => {
-  it("finds an existing assistant bubble at the cursor", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "hi" }];
-    const { msgs: out, index } = locateAssistant(msgs, 0, delegate);
-    expect(index).toBe(0);
-    expect(out).toBe(msgs); // same ref — no insertion
-  });
+function message(content: AgentContentBlock[], usage?: AgentUsage): AgentEvent {
+  return { type: "assistant_message", runId: "r", messageId: `m-${ts}`, content, usage, ts: at() };
+}
 
-  it("walks past tool rows to a later assistant bubble (multi-turn tool run)", () => {
-    // After a tool_call_started splice, the cursor points at a tool card. The
-    // old guard dropped every assistant update from here; walk past it instead.
-    const msgs: Msg[] = [
-      { role: "assistant", content: "" },
-      { role: "tool", content: "Running grep...", toolName: "grep" },
-      { role: "assistant", content: "final" },
-    ];
-    const { index } = locateAssistant(msgs, 1, delegate);
-    expect(index).toBe(2);
-  });
+function text(t: string): AgentContentBlock[] {
+  return [{ type: "text", text: t }];
+}
 
-  it("inserts a fresh assistant bubble when the slot after tools isn't one", () => {
-    const msgs: Msg[] = [
-      { role: "assistant", content: "" },
-      { role: "tool", content: "done", toolName: "grep" },
-    ];
-    const { msgs: out, index } = locateAssistant(msgs, 1, delegate);
-    expect(index).toBe(2);
-    expect(out).not.toBe(msgs); // cloned
-    expect(out[2]).toMatchObject({ role: "assistant", content: "" });
-  });
-});
+function toolStarted(toolCallId: string, name: string): AgentEvent {
+  return { type: "tool_call_started", runId: "r", toolCallId, name, input: {}, summary: name, ts: at() };
+}
 
-describe("appendDelta", () => {
-  it("accumulates content and thinking onto the assistant bubble", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "Hel" }];
-    const step1 = appendDelta(msgs, 0, "lo", "", delegate);
-    const step2 = appendDelta(step1.msgs, step1.index, " world", "reasoning", delegate);
-    const a = step2.msgs[step2.index];
-    expect(a).toMatchObject({ role: "assistant", content: "Hello world", thinking: "reasoning" });
-  });
+function toolFinished(toolCallId: string, content: string): AgentEvent {
+  return { type: "tool_call_finished", runId: "r", toolCallId, result: { ok: true, content }, ts: at() };
+}
 
-  it("does not mutate the input array", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "a" }];
-    appendDelta(msgs, 0, "b", "", delegate);
-    expect((msgs[0] as { content: string }).content).toBe("a");
-  });
-});
+function steered(reason: string): AgentEvent {
+  return { type: "steering_injected", runId: "r", reason, ts: at() };
+}
 
-describe("tool call rows", () => {
-  it("startToolCall inserts a Running row after the assistant and advances the cursor", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const { msgs: out, index } = startToolCall(msgs, 0, "read_file", "call-1");
-    expect(index).toBe(1);
-    expect(out[1]).toMatchObject({ role: "tool", content: "Running read_file...", toolCallId: "call-1" });
+/** A tiny stand-in for the panel: an array cell plus apply-then-project. */
+function panel(initial: Msg[], regionStart = initial.length - 1) {
+  const seedCandidate = initial[regionStart];
+  const transcript: RunTranscript = createRunTranscript({
+    regionStart,
+    seed: seedCandidate?.role === "assistant" ? seedCandidate : null,
+    delegate: {},
+    pricing: null,
   });
-
-  it("finishToolCall matches by id anywhere in the list", () => {
-    const msgs: Msg[] = [
-      { role: "tool", content: "Running a...", toolName: "a", toolCallId: "x", tool_call_id: "x" },
-      { role: "tool", content: "Running b...", toolName: "b", toolCallId: "y", tool_call_id: "y" },
-    ];
-    const out = finishToolCall(msgs, "y", "b result");
-    expect(out[1]).toMatchObject({ content: "b result", toolName: "b" });
-    expect(out[0]).toMatchObject({ content: "Running a..." }); // untouched
-  });
-});
-
-describe("finalizeAssistantMessage", () => {
-  const base = {
-    nextAssistantIdx: 0,
-    timing: { turnStartedAt: 1000, firstTokenAt: 1200 },
-    now: 2000,
-    delegate,
+  const state = { msgs: initial };
+  const feed = (...events: AgentEvent[]) => {
+    for (const event of events) transcript.apply(event);
+    const next = transcript.project(state.msgs);
+    if (next) state.msgs = next;
+    return next;
   };
+  return { transcript, state, feed };
+}
+
+const placeholder = (): Msg => ({ role: "assistant", content: "" });
+
+describe("createRunTranscript", () => {
+  it("adopts the placeholder bubble: nothing to project until the stream writes", () => {
+    const seed = placeholder();
+    const p = panel([{ role: "user", content: "q" }, seed]);
+    expect(p.transcript.project(p.state.msgs)).toBeNull();
+    expect(p.state.msgs[1]).toBe(seed); // same reference, untouched
+  });
 
   it("keeps streamed content when the final message text is empty", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "streamed so far" }];
-    const r = finalizeAssistantMessage({ ...base, msgs, pricing: null, event: assistantMessage([{ type: "text", text: "" }]) });
-    expect((r.msgs[r.index] as { content: string }).content).toBe("streamed so far");
+    const p = panel([placeholder()]);
+    p.feed(delta("streamed so far"), message(text("")));
+    expect(p.state.msgs[0]).toMatchObject({ role: "assistant", content: "streamed so far" });
   });
 
-  it("computes duration and TTFT from injected timing", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const r = finalizeAssistantMessage({ ...base, msgs, pricing: null, event: assistantMessage([{ type: "text", text: "hello" }]) });
-    expect(r.meta.ms).toBe(1000); // now - turnStartedAt
-    expect(r.meta.ttftMs).toBe(200); // firstTokenAt - turnStartedAt
+  it("does not mutate the array it projects from", () => {
+    const before: Msg[] = [placeholder()];
+    const p = panel(before);
+    p.feed(delta("b"));
+    expect(before).toHaveLength(1);
+    expect(before[0]).toEqual({ role: "assistant", content: "" });
   });
 
-  it("prefers the harness's measured timing over the panel's wall clock", () => {
-    // The panel's own window is 1000ms wide, but the harness measured the
-    // provider call itself: 250ms, first token at 60ms. The panel's numbers
-    // include whatever the run did between the turn boundary and the reply.
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const event = {
-      ...assistantMessage([{ type: "text", text: "hello" }]),
-      timing: { modelMs: 250, ttftMs: 60 },
-      ts: 1_700_000_000_000,
-    };
-    const r = finalizeAssistantMessage({ ...base, msgs, pricing: null, event });
-    expect(r.meta.modelMs).toBe(250);
-    expect(r.meta.ttftMs).toBe(60);
-    expect(r.meta.ms).toBe(1000); // wall clock is still reported alongside
-    expect(r.msgs[r.index]).toMatchObject({ ts: 1_700_000_000_000 });
+  it("inserts a Running row per started call and replaces the right one on finish", () => {
+    const p = panel([placeholder()]);
+    p.feed(message(text("calling")), toolStarted("x", "a"), toolStarted("y", "b"));
+    expect(p.state.msgs[1]).toMatchObject({ role: "tool", content: "Running a...", toolCallId: "x" });
+    expect(p.state.msgs[2]).toMatchObject({ role: "tool", content: "Running b...", toolCallId: "y" });
+    p.feed(toolFinished("y", "b result"));
+    expect(p.state.msgs[2]).toMatchObject({ role: "tool", content: "b result", toolName: "b" });
+    expect(p.state.msgs[1]).toMatchObject({ content: "Running a..." }); // untouched
   });
 
-  it("prefers provider usage over estimates and surfaces measured prompt tokens", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const r = finalizeAssistantMessage({
-      ...base,
-      msgs,
-      pricing: null,
-      event: assistantMessage([{ type: "text", text: "reply" }], { promptTokens: 500, completionTokens: 42 }),
-    });
-    expect(r.meta.tokens).toBe(42);
-    expect(r.meta.exact).toBe(true);
-    expect(r.measuredPromptTokens).toBe(542);
-    expect(r.measuredUsage).toEqual({ prompt: 500, completion: 42 });
+  it("lands the next turn's answer in a fresh bubble under the tool card", () => {
+    // The regression the old cursor walk pinned: after a tool card, the
+    // follow-up text must not be dropped or merged into the finished turn.
+    const p = panel([{ role: "user", content: "q" }, placeholder()]);
+    p.feed(message(text("calling tools")), toolStarted("c1", "grep"), toolFinished("c1", "3 matches"));
+    p.feed(delta("final answer"));
+    expect(p.state.msgs[2]).toMatchObject({ role: "tool", content: "3 matches" });
+    expect(p.state.msgs[3]).toMatchObject({ role: "assistant", content: "final answer" });
   });
 
-  it("uses the provider's evalDuration for tok/s when present", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const r = finalizeAssistantMessage({
-      ...base,
-      msgs,
-      pricing: null,
-      event: assistantMessage([{ type: "text", text: "x" }], { completionTokens: 100, evalDurationMs: 2000 }),
-    });
-    expect(r.meta.tps).toBe(50); // 100 tokens / 2s
+  it("splices a steering marker into the flow, next bubble below it", () => {
+    const p = panel([placeholder()]);
+    p.feed(message(text("looping")), steered("try a different tool"), delta("recovered"));
+    expect(p.state.msgs.map((m) => m.role)).toEqual(["assistant", "system", "assistant"]);
+    expect(p.state.msgs[1]).toMatchObject({ role: "system", steering: { reason: "try a different tool" } });
+    expect(p.state.msgs[2]).toMatchObject({ role: "assistant", content: "recovered" });
   });
 
-  it("estimates cost from pricing when the provider reports no cost", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const r = finalizeAssistantMessage({
-      ...base,
-      msgs,
-      pricing: { inputPerMillion: 3, outputPerMillion: 15 },
-      event: assistantMessage([{ type: "text", text: "x" }], { promptTokens: 1_000_000, completionTokens: 1_000_000 }),
-    });
-    expect(r.meta.costUsd).toBeCloseTo(18); // 1M*3 + 1M*15 per million
+  it("keeps untouched rows' Msg references stable across projections", () => {
+    const p = panel([{ role: "user", content: "q" }, placeholder()]);
+    p.feed(message(text("turn one")), toolStarted("c1", "grep"), toolFinished("c1", "ok"));
+    const [user, turnOne, toolRow] = p.state.msgs;
+    p.feed(delta("turn "), delta("two streaming"));
+    // Only the new bubble is a new object; everything already rendered keeps
+    // its identity, so React re-renders one row per flush, not the list.
+    expect(p.state.msgs[0]).toBe(user);
+    expect(p.state.msgs[1]).toBe(turnOne);
+    expect(p.state.msgs[2]).toBe(toolRow);
+    expect(p.state.msgs[3]).toMatchObject({ role: "assistant", content: "turn two streaming" });
   });
 
-  it("leaves cost undefined for local/subscription turns", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const r = finalizeAssistantMessage({ ...base, msgs, pricing: null, event: assistantMessage([{ type: "text", text: "x" }]) });
-    expect(r.meta.costUsd).toBeUndefined();
+  it("preserves the prefix and panel-appended suffix around the region", () => {
+    const p = panel([{ role: "user", content: "q" }, placeholder()]);
+    p.feed(message(text("working")));
+    // The panel appends rows it owns while the run streams (queued turns,
+    // compaction markers). They live after the region and must stay there.
+    const queued: Msg = { role: "user", content: "follow-up", queueState: "queued" };
+    p.state.msgs = [...p.state.msgs, queued];
+    p.feed(toolStarted("c1", "bash"), delta("more"));
+    const roles = p.state.msgs.map((m) => m.role);
+    expect(roles).toEqual(["user", "assistant", "tool", "assistant", "user"]);
+    expect(p.state.msgs[p.state.msgs.length - 1]).toBe(queued);
   });
 
-  it("hoists tool_call blocks into the assistant message", () => {
-    const msgs: Msg[] = [{ role: "assistant", content: "" }];
-    const r = finalizeAssistantMessage({
-      ...base,
-      msgs,
-      pricing: null,
-      event: assistantMessage([
-        { type: "text", text: "calling" },
-        { type: "tool_call", toolCallId: "c1", name: "read_file", input: { path: "a.ts" } },
-      ]),
-    });
-    const a = r.msgs[r.index] as { toolCalls?: { id: string; name: string }[] };
-    expect(a.toolCalls).toHaveLength(1);
-    expect(a.toolCalls?.[0]).toMatchObject({ id: "c1", name: "read_file" });
+  it("detaches instead of clobbering a region someone else rewrote", () => {
+    // The panel's error path replaces the bubble with a failure message; a
+    // late flush must not resurrect the partial stream over it.
+    const p = panel([placeholder()]);
+    p.feed(delta("partial"));
+    p.state.msgs = [{ role: "assistant", content: "⚠ provider unavailable" }];
+    p.transcript.apply(delta(" more"));
+    expect(p.transcript.project(p.state.msgs)).toBeNull();
+    expect(p.state.msgs[0]).toMatchObject({ content: "⚠ provider unavailable" });
+  });
+
+  it("assistantIndex points at the current turn's bubble", () => {
+    const p = panel([{ role: "user", content: "q" }, placeholder()]);
+    expect(p.transcript.assistantIndex()).toBe(1); // the placeholder
+    p.feed(message(text("one")), toolStarted("c1", "grep"), delta("two"));
+    expect(p.transcript.assistantIndex()).toBe(3); // past bubble one + its tool card
+    expect(p.state.msgs[3]).toMatchObject({ role: "assistant", content: "two" });
   });
 });

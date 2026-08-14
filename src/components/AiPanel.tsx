@@ -25,7 +25,7 @@ import { Kbd } from "./Kbd";
 import { keysFor } from "../shortcuts";
 import { InlineDiffReview } from "./InlineDiffReview";
 import { InlineCommandReview } from "./InlineCommandReview";
-import { deleteKlideConvo, publishKlideConvo, settleKlideConvo } from "../klideConvos";
+import { conversationToConvo, deleteKlideConvo, publishKlideConvo, settleKlideConvo } from "../klideConvos";
 import {
   lensItemsForPrompt,
   type ProjectContextMode,
@@ -81,8 +81,11 @@ import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
 import { eventsToMsgs, isSilentRunError } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
+import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
 import {
+  applyConversationSessionTransition,
   conversationSessionReducer,
+  persistConversationSessionBinding,
   restoreConversationSession,
   snapshotConversationSession,
   type ConversationSessionAction,
@@ -91,15 +94,16 @@ import {
 import { buildRunHandoff, type HandoffSummary } from "../agentHandoff";
 import {
   CONVERSATIONS_CHANGED_EVENT,
-  genId,
   deriveTitle,
-  estimateTokens,
-  countMessageTokens,
-  fuzzyFiles,
   loadConversations,
   persistConversation,
   saveConversations,
-  savePanelSession,
+} from "./ai/storedConversations";
+import {
+  genId,
+  estimateTokens,
+  countMessageTokens,
+  fuzzyFiles,
 } from "./ai/utils";
 
 import type { Msg, QueuedTurn, Conversation } from "./ai/types";
@@ -586,7 +590,14 @@ export function AiPanel({
   const conversationSessionRef = useRef(conversationSession);
   const msgsRef = useRef<Msg[]>(conversationSession.messages);
   function transitionConversation(action: ConversationSessionAction) {
-    const next = conversationSessionReducer(conversationSessionRef.current, action);
+    // The apply carries the durable panel-binding write for identity-changing
+    // transitions; the pure reducer below only mirrors the same action into
+    // React state. Never persist the binding by hand next to a call site.
+    const next = applyConversationSessionTransition(
+      conversationSessionRef.current,
+      action,
+      panelId,
+    );
     conversationSessionRef.current = next;
     msgsRef.current = next.messages;
     dispatchConversationSession(action);
@@ -659,10 +670,7 @@ export function AiPanel({
         : switchModelForProvider(hostProvider);
     transitionConversation({ type: "configured", provider: hostProvider, model: pairedModel });
     if (pairedModel !== hostModel) onModelChange(pairedModel);
-    if (panelId) {
-      localStorage.setItem(`klide.provider.${panelId}`, hostProvider);
-      savePanelSession(panelId, { convoId: conversationSessionRef.current.conversationId, provider: hostProvider, workspaceRoot });
-    }
+    if (panelId) localStorage.setItem(`klide.provider.${panelId}`, hostProvider);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostProvider]);
   useEffect(() => {
@@ -720,33 +728,19 @@ export function AiPanel({
     });
     if (streaming && last.streaming && last.count === msgs.length && last.meta === metaKey) return;
     lastPublishRef.current = { count: msgs.length, streaming, meta: metaKey };
-    const firstUser = msgs.find((m) => m.role === "user");
-    const firstStamped = msgs.find((m) => typeof (m as { ts?: number }).ts === "number") as
-      | { ts: number }
-      | undefined;
+    // The Mission Control row derives from the same Stored conversation
+    // snapshot the history index persists (`conversationToConvo`) — one shape,
+    // one title rule, not a third inline copy of either.
+    const snapshot = snapshotConversationSession(conversationSessionRef.current);
+    const convo = snapshot ? conversationToConvo(snapshot) : null;
+    if (!convo) return;
     publishKlideConvo({
-      id: currentId,
+      ...convo,
       // An idle convo that finished its turn is "done", not "waiting" — a
       // genuine pause (diff approval) keeps `streaming` true, so non-streaming
       // always means the turn completed. Marking it "waiting" wrongly filed
       // every answered chat under Mission Control's "Blocked / Needs you".
-      title: (firstUser?.content.trim() || "Untitled chat").slice(0, 120),
       status: streaming ? "running" : "done",
-      provider,
-      model: model ?? null,
-      cwd: workspaceRoot,
-      branch: conversationGitMeta.branch,
-      worktree: conversationGitMeta.worktree,
-      forkedFrom: currentForkedFrom ?? null,
-      messages: msgs.flatMap((m) =>
-        (m.role === "user" || (m.role === "assistant" && !m.delegateConsole)) && m.content.trim()
-          ? [{ role: m.role, text: m.content }]
-          : []
-      ),
-      updatedMs: Date.now(),
-      // The board's row spans first message → last activity; without this the
-      // start defaulted to "now" and every Klide run looked instantaneous.
-      createdMs: firstStamped?.ts,
     });
   }, [msgs, streaming, provider, model, workspaceRoot, currentId, currentForkedFrom, conversationGitMeta]);
 
@@ -914,8 +908,9 @@ export function AiPanel({
   // still alive and waiting.
   useEffect(() => {
     if (panelId && providerDelegatesWork) {
-      savePanelSession(panelId, { convoId: currentId, provider, workspaceRoot });
+      persistConversationSessionBinding(panelId, conversationSessionRef.current);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panelId, providerDelegatesWork, currentId]);
   // Portalled to <body> like the composer popovers: the menu is taller than
   // the panel's clip region (`.floating-panel` is overflow: hidden), so an
@@ -1017,10 +1012,7 @@ export function AiPanel({
     const nextModel = switchModelForProvider(id);
     transitionConversation({ type: "configured", provider: id, model: nextModel });
     onProviderChange?.(id);
-    if (panelId) {
-      localStorage.setItem(`klide.provider.${panelId}`, id);
-      savePanelSession(panelId, { convoId: currentId, provider: id, workspaceRoot });
-    }
+    if (panelId) localStorage.setItem(`klide.provider.${panelId}`, id);
     localStorage.setItem("klide.provider", id);
     onModelChange(nextModel);
     closeProviderMenu();
@@ -1844,10 +1836,9 @@ This user request requires workspace inspection. Before answering, you MUST call
     // agent harness's replay path, so "new conversation" silently
     // inherited the old one's memory. The first conversation in a
     // panel is restored through Conversation Session, while every subsequent
-    // chat gets its own transcript identity.
-    // Persist the fresh identity immediately so a view switch does not rotate
+    // chat gets its own transcript identity. The fresh identity was persisted
+    // by the `fresh-started` transition above, so a view switch cannot rotate
     // it again before the first Run starts.
-    if (panelId) savePanelSession(panelId, { convoId: nid, provider, workspaceRoot });
   }
 
   // Focus-home handoff: the hero composer's text arrives as `initialMessage`.
@@ -2008,15 +1999,8 @@ This user request requires workspace inspection. Before answering, you MUST call
       onProviderChange?.(c.provider);
     }
     if (c.model && c.model !== model) onModelChange(c.model);
-    // Explicit resume is intent to continue this Conversation, so keep it
-    // bound across a remount until the user starts a new one.
-    if (panelId) {
-      savePanelSession(panelId, {
-        convoId: c.id,
-        provider: c.provider ?? provider,
-        workspaceRoot,
-      });
-    }
+    // Explicit resume is intent to continue this Conversation across a
+    // remount; the `resumed` transition above persisted that binding.
     // No usage stored with history → estimate until this chat's next turn.
     setMeasuredPromptTokens(null);
     setMeasuredUsageTokens(null);
@@ -2056,7 +2040,6 @@ This user request requires workspace inspection. Before answering, you MUST call
     if (id === currentId) {
       const nid = genId();
       transitionConversation({ type: "fresh-started", conversationId: nid });
-      if (panelId) savePanelSession(panelId, { convoId: nid, provider, workspaceRoot });
       setMeasuredPromptTokens(null);
       setMeasuredUsageTokens(null);
     }
@@ -2382,7 +2365,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           maxTurns: harnessSettings?.maxTurns && harnessSettings.maxTurns > 0 ? harnessSettings.maxTurns : undefined,
         }, (ev) => {
           if (ev.type === "assistant_message") {
-            const text = ev.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+            const text = extractAssistantText(ev.content);
             if (text.trim()) report = text;
           } else if (ev.type === "run_error") {
             report = `Subagent error: ${ev.error.message}`;
@@ -2418,14 +2401,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           // this the conversation just silently loses its early context and the
           // marker only appears after a reload (via foldEvents).
           const priorMsgs = msgsRef.current;
-          commit([
-            ...priorMsgs,
-            {
-              role: "system",
-              content: `Compacted ${priorMsgs.length} earlier message${priorMsgs.length === 1 ? "" : "s"} to free context.`,
-              compaction: { count: priorMsgs.length, summary: event.summary, source: "agent" },
-            },
-          ]);
+          commit([...priorMsgs, compactionMsg(priorMsgs.length, event.summary)]);
           break;
         }
         case "diff_proposed": {
@@ -2585,11 +2561,9 @@ This user request requires workspace inspection. Before answering, you MUST call
       const maxTurns = harnessSettings?.maxTurns;
       const commandTimeoutSecs = harnessSettings?.commandTimeoutSecs;
       const testAfterEditCommand = harnessSettings?.testAfterEditCommand?.trim();
-      // Ensure the binding is durable before the Run starts so a mid-run view
+      // The binding is durable before the Run starts — the `run-started`
+      // transition at the top of this turn persisted it — so a mid-run view
       // switch reattaches to this Conversation.
-      if (panelId) {
-        savePanelSession(panelId, { convoId: currentId, provider, workspaceRoot });
-      }
       // A subagent turn runs as its OWN child run (parentId = the conversation
       // run), so Mission Control nests it under the convo. Events still stream
       // through `handleEvent`, so the delegation + any diffs render inline here.
@@ -2809,7 +2783,6 @@ This user request requires workspace inspection. Before answering, you MUST call
       mode: "chat",
       createdAt: Date.now(),
     });
-    if (panelId) savePanelSession(panelId, { convoId: nid, provider, workspaceRoot });
     setMeasuredPromptTokens(null);
     setMeasuredUsageTokens(null);
     // The msgs/currentId persist effect will write the branched chat; the
@@ -2976,7 +2949,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         maxTurns: harnessSettings?.maxTurns && harnessSettings.maxTurns > 0 ? harnessSettings.maxTurns : undefined,
       }, (ev) => {
         if (ev.type === "assistant_message") {
-          const t = ev.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+          const t = extractAssistantText(ev.content);
           if (t.trim()) report = t;
         } else if (ev.type === "run_error") {
           report = `Subagent error: ${ev.error.message}`;

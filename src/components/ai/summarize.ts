@@ -25,6 +25,7 @@ import {
   serializeConversation,
   splitIntoChunks,
 } from "./summarizePrompts";
+import { deriveTitle } from "./storedConversations";
 
 // StreamChunk is the wire shape `ai_chat` emits via Channel: incremental
 // `content`/`thinking` fragments (camelCase from Rust's StreamChunk). The
@@ -53,14 +54,6 @@ type SummarizeInput = {
   runId?: string | null;
   status?: string | null;
 };
-
-function deriveTitle(msgs: Msg[]): string {
-  const first = msgs.find((m) => m.role === "user");
-  const text = first ? first.content ?? "" : "";
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  if (!trimmed) return "Untitled session";
-  return trimmed.length > 80 ? trimmed.slice(0, 77) + "…" : trimmed;
-}
 
 // Run a 1-shot ai_chat and return the reply text. The authoritative source is
 // ai_chat's RETURN value (AiChatResponse.content); the stream is only a

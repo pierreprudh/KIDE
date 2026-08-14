@@ -38,6 +38,8 @@
 
 import type { RunStatus, RunLifecycleStatus, RunBoardSection, RunBoardReasonTone } from "./runs";
 import type { LiveDelegateSession } from "./ipc/delegatePty";
+import type { MissionTaskStatus } from "./agent/missionHarness";
+import type { ValidationStatus } from "./agent/validationContracts";
 
 /** The eight words. Nothing outside this module invents a ninth. */
 export type StateWord =
@@ -150,10 +152,13 @@ export function presentReasonTone(tone: RunBoardReasonTone): string {
   return tone === "danger" ? toneColor("bad") : toneColor("quiet");
 }
 
-/** Validation status, as recorded by the Rust Harness
- *  (`"passed" | "failed" | "skipped" | "unverified"`). Unknown values stay
- *  quiet rather than asserting a verdict. */
-export function presentValidation(status: string | null | undefined): StateTone {
+/** Validation status, as recorded by the Rust Harness and parsed at the IPC
+ *  edge (`parseValidationSummary` in `agent/validationContracts.ts` — the
+ *  union, not a bare string, so a new wire word is a tsc error here).
+ *  `"unknown"` is a durable log carrying a word this build doesn't know: it
+ *  stays quiet rather than asserting a verdict. */
+export function presentValidation(status: ValidationStatus | null | undefined): StateTone {
+  if (status == null) return "quiet";
   switch (status) {
     case "passed":
       return "settled";
@@ -161,28 +166,29 @@ export function presentValidation(status: string | null | undefined): StateTone 
       return "bad";
     case "unverified":
       return "attention";
-    default:
+    case "skipped":
+    case "unknown":
       return "quiet";
   }
 }
 
-/** The Orchestrator board's card states. Its words stay lowercase mono — a
+/** The Orchestrator board's card states — the MissionTaskStatus vocabulary,
+ *  as arbitrated by `agent/missionBoard.ts`. Its words stay lowercase mono — a
  *  deliberately quieter register than the run board's — but the tones come from
  *  here so a colour decision is made once. */
-export function presentMissionCardTone(
-  status: "idle" | "running" | "review" | "done" | "error" | "interrupted"
-): StateTone {
+export function presentMissionCardTone(status: MissionTaskStatus): StateTone {
   switch (status) {
     case "running":
+    case "validating":
       return "active";
     case "review":
     case "interrupted":
       return "attention";
-    case "error":
+    case "failed":
       return "bad";
-    case "done":
-      return "quiet";
-    case "idle":
+    default:
+      // queued / ready / blocked / assigned / waiting / done / cancelled all
+      // recede — the board's live work carries the colour.
       return "quiet";
   }
 }

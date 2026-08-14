@@ -20,18 +20,22 @@ pub fn list(runs_dir: &Path, workspace_root: &str) -> Result<Vec<String>, String
     else {
         return Ok(Vec::new());
     };
-    let path = location.path;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Unable to read network allowlist: {e}"))?;
-    let parsed: NetworkAllowlist =
-        serde_json::from_str(&text).map_err(|e| format!("Invalid network allowlist JSON: {e}"))?;
-    if parsed.fingerprint != location.fingerprint {
-        return Ok(Vec::new());
-    }
+    let parsed = read_allowlist(&location)?;
     Ok(normalize(parsed.targets))
+}
+
+fn read_allowlist(
+    location: &super::approval_store::ApprovalLocation,
+) -> Result<NetworkAllowlist, String> {
+    super::approval_store::read_scoped(
+        location,
+        "network",
+        |a: &NetworkAllowlist| a.fingerprint.as_str(),
+        |fingerprint| NetworkAllowlist {
+            fingerprint,
+            targets: Vec::new(),
+        },
+    )
 }
 
 pub fn add(runs_dir: &Path, workspace_root: &str, target: &str) -> Result<(), String> {
@@ -43,22 +47,12 @@ pub fn add(runs_dir: &Path, workspace_root: &str, target: &str) -> Result<(), St
         .ok_or_else(|| {
             "Project approvals require a Git repository with a manageable working tree".to_string()
         })?;
-    let path = location.path;
-    let mut targets = if path.exists() {
-        list(runs_dir, workspace_root)?
-    } else {
-        Vec::new()
-    };
-    if !targets.iter().any(|t| t == &target) {
-        targets.push(target);
-        targets.sort();
+    let mut parsed = read_allowlist(&location)?;
+    if !parsed.targets.iter().any(|t| t == &target) {
+        parsed.targets.push(target);
     }
-    let text = serde_json::to_string_pretty(&NetworkAllowlist {
-        fingerprint: location.fingerprint,
-        targets,
-    })
-    .map_err(|e| format!("Unable to serialize network allowlist: {e}"))?;
-    super::approval_store::write_private(&path, format!("{text}\n").as_bytes())
+    parsed.targets = normalize(parsed.targets);
+    super::approval_store::write_scoped(&location.path, &parsed, "network")
 }
 
 pub fn is_allowed(runs_dir: &Path, workspace_root: &str, target: &str) -> Result<bool, String> {

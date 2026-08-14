@@ -61,7 +61,7 @@ Klide/
 │   ├── zLayers.ts               Z scale for root-level overlay stacking
 │   ├── shortcuts.ts             Keyboard shortcut registry (names + displayed keycaps)
 │   ├── settingsStore.ts         Declarative persisted-settings catalog + useSetting
-│   ├── persistedStore.ts        Corruption-safe localStorage reads with per-element validation
+│   ├── persistedStore.ts        The one persisted-store contract (get/subscribe/mutate) under the run-data stores
 │   ├── toast.ts                 Global notification bus (surface: components/ToastHost.tsx)
 │   ├── errors.ts                errMessage — readable text from any thrown value
 │   ├── time.ts                  Shared elapsed-span + relative-time formatters
@@ -168,7 +168,7 @@ Klide/
 │   │       ├── MessageActions.tsx Hover per-message actions (copy, retry, branch, edit)
 │   │       ├── ModelPicker.tsx    Portaled model selector (filter, favorites, keyboard)
 │   │       ├── replayConversation.ts On-disk transcript → resumable panel Conversation
-│   │       ├── transcriptReducer.ts  Pure event → transcript shaping (tool cards, deltas, meta)
+│   │       ├── transcriptReducer.ts  Live Msg[] view of one run's fold (region splice, stable refs)
 │   │       ├── turnDriver.ts      Streaming state machine for one turn
 │   │       ├── conversationSession.ts Atomic live Conversation identity
 │   │       ├── contextBudget.ts   Context-window accounting + auto-compaction threshold
@@ -220,6 +220,7 @@ Klide/
     │   ├── pty_daemon.rs         Detached `klide ptyd` server over a unix socket
     │   ├── pty_client.rs         App-side socket transport to ptyd (stubbed off-unix)
     │   ├── pty_wire.rs           Portable ptyd wire vocabulary — Request/Response/Event
+    │   ├── pty_spawn.rs          Pure Delegate spawn-spec assembly — adapter vs custom CLI, one-shot, Mission link, cwd rules
     │   ├── delegate/             Adapter per CLI (claude_code/codex/opencode/omp) + runs.rs shared types + chat.rs one-shot turns + status.rs hook server
     │   └── agent/
     │       ├── mod.rs             Agent supervisor + run loop

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addRace, listRaces, raceForRun, removeRace, subscribeRaces, type RaceGroup } from "./races";
+import type { RaceGroup } from "./races";
 import { memoryStorage } from "./testStorage";
 
 function race(overrides: Partial<RaceGroup> = {}): RaceGroup {
@@ -23,6 +23,9 @@ function race(overrides: Partial<RaceGroup> = {}): RaceGroup {
 }
 
 beforeEach(() => {
+  // The store caches at module level (persistedStore.ts), so each test
+  // imports a fresh copy — same isolation recipe as tasks.test.ts.
+  vi.resetModules();
   vi.stubGlobal("localStorage", memoryStorage());
 });
 
@@ -31,7 +34,8 @@ afterEach(() => {
 });
 
 describe("race persistence", () => {
-  it("scopes, finds, removes, and notifies for valid race groups", () => {
+  it("scopes, finds, removes, and notifies for valid race groups", async () => {
+    const { addRace, listRaces, raceForRun, removeRace, subscribeRaces } = await import("./races");
     const snapshots: string[][] = [];
     const unsubscribe = subscribeRaces((groups) => snapshots.push(groups.map((group) => group.id)));
 
@@ -52,7 +56,8 @@ describe("race persistence", () => {
     unsubscribe();
   });
 
-  it("drops malformed persisted groups and members", () => {
+  it("drops malformed persisted groups and members", async () => {
+    const { listRaces } = await import("./races");
     localStorage.setItem(
       "klide.races",
       JSON.stringify([
@@ -65,7 +70,8 @@ describe("race persistence", () => {
     expect(listRaces().map((group) => group.id)).toEqual(["race_one"]);
   });
 
-  it("keeps only the newest forty groups", () => {
+  it("keeps only the newest forty groups", async () => {
+    const { addRace, listRaces } = await import("./races");
     for (let i = 0; i < 45; i += 1) {
       addRace(race({ id: `race_${i}`, createdMs: i }));
     }

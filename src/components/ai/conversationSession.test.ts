@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Conversation, Msg } from "./types";
 import { memoryStorage } from "../../testStorage";
 import {
+  applyConversationSessionTransition,
   conversationSessionReducer,
   restoreConversationSession,
   snapshotConversationSession,
   type ConversationSession,
 } from "./conversationSession";
+import type { PanelSession } from "./storedConversations";
 
 const userMessage: Msg = { role: "user", content: "Inspect the workspace" };
 
@@ -286,6 +288,155 @@ describe("conversationSessionReducer", () => {
 
     expect(running.run).toEqual({ active: true, activity: "thinking" });
     expect(settled.run).toEqual({ active: false, activity: null });
+  });
+});
+
+describe("applyConversationSessionTransition — transitions carry their persist", () => {
+  function fakeStore() {
+    const writes: Array<{ panelId: string; binding: PanelSession }> = [];
+    return {
+      writes,
+      write: (panelId: string, binding: PanelSession) => writes.push({ panelId, binding }),
+    };
+  }
+
+  it("persists the fresh identity in the same transition that adopts it", () => {
+    const store = fakeStore();
+
+    const next = applyConversationSessionTransition(
+      session(),
+      { type: "fresh-started", conversationId: "fresh-b" },
+      "ai-main",
+      store.write,
+    );
+
+    expect(next.conversationId).toBe("fresh-b");
+    expect(store.writes).toEqual([
+      {
+        panelId: "ai-main",
+        binding: { convoId: "fresh-b", provider: "ollama", workspaceRoot: "/workspace" },
+      },
+    ]);
+  });
+
+  it("persists a resume with the resumed Conversation's own Provider", () => {
+    const store = fakeStore();
+    const saved: Conversation = {
+      id: "saved-run",
+      title: "Saved",
+      msgs: [userMessage],
+      updatedAt: 42,
+      provider: "openai",
+      model: "gpt-5.4",
+      cwd: "/workspace",
+    };
+
+    applyConversationSessionTransition(
+      session(),
+      { type: "resumed", conversation: saved },
+      "ai-main",
+      store.write,
+    );
+
+    expect(store.writes).toEqual([
+      {
+        panelId: "ai-main",
+        binding: { convoId: "saved-run", provider: "openai", workspaceRoot: "/workspace" },
+      },
+    ]);
+  });
+
+  it("persists a branch under its new identity", () => {
+    const store = fakeStore();
+
+    applyConversationSessionTransition(
+      session(),
+      { type: "branched", conversationId: "branch-b", messageIndex: 0, mode: "chat", createdAt: 9 },
+      "ai-main",
+      store.write,
+    );
+
+    expect(store.writes.map((w) => w.binding.convoId)).toEqual(["branch-b"]);
+  });
+
+  it("re-asserts the binding when a Run starts, so a mid-run view switch reattaches", () => {
+    const store = fakeStore();
+
+    applyConversationSessionTransition(
+      session(),
+      { type: "run-started", activity: "thinking" },
+      "ai-main",
+      store.write,
+    );
+
+    expect(store.writes.map((w) => w.binding.convoId)).toEqual(["conversation-a"]);
+  });
+
+  it("does not write for message streaming, Run settle, or a model-only configure", () => {
+    const store = fakeStore();
+    const current = session();
+
+    applyConversationSessionTransition(
+      current,
+      { type: "messages-replaced", messages: [userMessage] },
+      "ai-main",
+      store.write,
+    );
+    applyConversationSessionTransition(current, { type: "run-settled" }, "ai-main", store.write);
+    applyConversationSessionTransition(
+      current,
+      { type: "configured", model: "qwen3.5" },
+      "ai-main",
+      store.write,
+    );
+
+    expect(store.writes).toEqual([]);
+  });
+
+  it("persists a Provider change under the same Conversation identity", () => {
+    const store = fakeStore();
+
+    applyConversationSessionTransition(
+      session(),
+      { type: "configured", provider: "openai", model: "gpt-5.4" },
+      "ai-main",
+      store.write,
+    );
+
+    expect(store.writes).toEqual([
+      {
+        panelId: "ai-main",
+        binding: { convoId: "conversation-a", provider: "openai", workspaceRoot: "/workspace" },
+      },
+    ]);
+  });
+
+  it("skips the durable write for a panel without an identity, but still transitions", () => {
+    const store = fakeStore();
+
+    const next = applyConversationSessionTransition(
+      session(),
+      { type: "fresh-started", conversationId: "fresh-b" },
+      undefined,
+      store.write,
+    );
+
+    expect(next.conversationId).toBe("fresh-b");
+    expect(store.writes).toEqual([]);
+  });
+
+  it("writes the real panel binding when no store is injected", () => {
+    applyConversationSessionTransition(
+      session(),
+      { type: "fresh-started", conversationId: "fresh-durable" },
+      "ai-main",
+    );
+
+    expect(JSON.parse(localStorage.getItem("klide.panelSession.ai-main") ?? "null")).toEqual({
+      convoId: "fresh-durable",
+      provider: "ollama",
+      workspaceRoot: "/workspace",
+    });
   });
 });
 

@@ -99,6 +99,9 @@ describe("the one status vocabulary", () => {
     expect(presentValidation("failed")).toBe("bad");
     expect(presentValidation("unverified")).toBe("attention");
     expect(presentValidation("skipped")).toBe("quiet");
+    // The parser's tolerance member: a durable log carried a word this build
+    // doesn't know. Rendered, but never asserted as a verdict.
+    expect(presentValidation("unknown")).toBe("quiet");
     expect(presentValidation(null)).toBe("quiet");
     expect(presentValidation(undefined)).toBe("quiet");
   });
