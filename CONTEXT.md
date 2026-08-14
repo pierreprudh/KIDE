@@ -81,11 +81,13 @@ _Avoid_: log, history, chat history
 
 **Conversation**:
 The reader-facing shape of a Transcript. There is one owner of the wire format,
-`src/agent/foldEvents.ts`: `foldAgentEvents` folds an Agent event stream into
-`FoldedRow[]`, and two mappers project that into the two shapes surfaces
-actually render — `Msg[]` for the AI panel, `RunMessage[]` for Mission Control.
-Everything downstream is a projection of that fold, never a second parse of the
-events.
+`src/agent/foldEvents.ts`: `createFold` folds an Agent event stream into
+`FoldedRow[]`, at two paces over the same code — replay drains a whole
+transcript (`foldAgentEvents`), and the live run feeds it one event at a time
+through the AI panel's turn driver. Two mappers project the rows into the two
+shapes surfaces actually render — `Msg[]` for the AI panel, `RunMessage[]` for
+Mission Control. Everything downstream is a projection of that fold, never a
+second parse of the events.
 
 Two further folds sit *on top* of it, and are views rather than parsers:
 `src/transcripts.ts` compacts `RunMessage[]` into `ConversationItem[]` for the

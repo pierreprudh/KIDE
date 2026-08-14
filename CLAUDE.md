@@ -168,7 +168,7 @@ Klide/
 │   │       ├── MessageActions.tsx Hover per-message actions (copy, retry, branch, edit)
 │   │       ├── ModelPicker.tsx    Portaled model selector (filter, favorites, keyboard)
 │   │       ├── replayConversation.ts On-disk transcript → resumable panel Conversation
-│   │       ├── transcriptReducer.ts  Pure event → transcript shaping (tool cards, deltas, meta)
+│   │       ├── transcriptReducer.ts  Live Msg[] view of one run's fold (region splice, stable refs)
 │   │       ├── turnDriver.ts      Streaming state machine for one turn
 │   │       ├── conversationSession.ts Atomic live Conversation identity
 │   │       ├── contextBudget.ts   Context-window accounting + auto-compaction threshold

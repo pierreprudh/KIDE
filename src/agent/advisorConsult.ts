@@ -12,6 +12,7 @@
 // answer resolves the parent's paused tool call.
 
 import type { AgentEvent, ProviderId } from "./types";
+import { extractAssistantText } from "./foldEvents";
 import { startAgentRun, resolveUserQuestion } from "./client";
 import { buildAdvisorSystemPrompt, ADVISOR_ERROR_PREFIX, type AdvisorConfig } from "./advisor";
 
@@ -40,7 +41,7 @@ export async function serviceAdvisorConsult(opts: {
       },
       (ev) => {
         if (ev.type === "assistant_message") {
-          const text = ev.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+          const text = extractAssistantText(ev.content);
           if (text.trim()) advice = text;
         } else if (ev.type === "run_error") {
           advice = `${ADVISOR_ERROR_PREFIX}Advisor unavailable (${advisor.provider}/${advisor.model}): ${ev.error.message}`;
