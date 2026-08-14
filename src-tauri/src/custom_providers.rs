@@ -64,7 +64,7 @@ impl CustomProvider {
 /// `~/.klide/custom_providers.json`. Same `~/.klide` home the skills
 /// loader uses for global (non-workspace) Klide config.
 fn store_path() -> Option<PathBuf> {
-    crate::home_dir_path().map(|home| home.join(".klide").join("custom_providers.json"))
+    crate::cli::home_dir_path().map(|home| home.join(".klide").join("custom_providers.json"))
 }
 
 /// Read the store. A missing or unreadable file is "no custom providers",

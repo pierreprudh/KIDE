@@ -99,7 +99,7 @@ pub(crate) struct GitHubUser {
 fn gh_bin() -> String {
     use std::sync::OnceLock;
     static GH: OnceLock<String> = OnceLock::new();
-    GH.get_or_init(|| crate::resolve_command("gh").unwrap_or_else(|_| "gh".to_string()))
+    GH.get_or_init(|| crate::cli::resolve_command("gh").unwrap_or_else(|_| "gh".to_string()))
         .clone()
 }
 
@@ -233,7 +233,7 @@ fn is_plausible_login(login: &str) -> bool {
 fn gh_config_root() -> Option<std::path::PathBuf> {
     std::env::var_os("GH_CONFIG_DIR")
         .map(std::path::PathBuf::from)
-        .or_else(|| crate::home_dir_path().map(|home| home.join(".config").join("gh")))
+        .or_else(|| crate::cli::home_dir_path().map(|home| home.join(".config").join("gh")))
 }
 
 fn gh_hosts_yml() -> Option<String> {
@@ -256,7 +256,7 @@ fn configured_github_login() -> Option<String> {
 // gh's active account.
 
 fn pinned_account_path() -> Option<std::path::PathBuf> {
-    crate::home_dir_path().map(|home| home.join(".klide").join("github_account.json"))
+    crate::cli::home_dir_path().map(|home| home.join(".klide").join("github_account.json"))
 }
 
 fn parse_pinned_account(json: &str) -> Option<String> {

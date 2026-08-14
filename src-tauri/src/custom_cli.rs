@@ -110,7 +110,7 @@ fn first_shell_word(input: &str) -> Option<String> {
 }
 
 fn store_path() -> Option<PathBuf> {
-    crate::home_dir_path().map(|home| home.join(".klide").join("custom_cli_agents.json"))
+    crate::cli::home_dir_path().map(|home| home.join(".klide").join("custom_cli_agents.json"))
 }
 
 pub fn list() -> Vec<CustomCli> {

@@ -5,11 +5,10 @@
 // MLX serves its presets. All read-only metadata, no chat traffic.
 
 use crate::providers;
-use crate::{
-    ensure_command_available, is_subscription_provider, provider_key, resolve_command,
-    response_error,
+use crate::cli::{ensure_command_available, resolve_command};
+use crate::providers::{
+    is_subscription_provider, provider_key, response_error, ANTHROPIC_VERSION, OLLAMA_URL,
 };
-use crate::{ANTHROPIC_VERSION, OLLAMA_URL};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -1481,6 +1480,6 @@ mod tests {
         // Asserts against the live preset constant rather than a hardcoded
         // copy, so adding an MLX preset doesn't silently rot this test.
         let models = ai_provider_models("mlx".to_string()).await.unwrap();
-        assert_eq!(models, crate::MLX_MODEL_PRESETS.to_vec());
+        assert_eq!(models, crate::providers::MLX_MODEL_PRESETS.to_vec());
     }
 }
