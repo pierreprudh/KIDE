@@ -18,6 +18,7 @@ mod pty_client;
 mod pty_wire;
 pub mod pty_daemon;
 mod pty_host;
+mod pty_spawn;
 mod search;
 mod skills;
 mod workspace;

@@ -4,8 +4,10 @@
 //! [`crate::pty_host`], which is Tauri-free so the same code can run inside
 //! the detached `klide ptyd` daemon (Slice 3 of
 //! docs/delegate-session-replay.md). This file owns what is genuinely
-//! app-side: provider/adapter knowledge, status hooks, webview event emits,
-//! and the parent-run mapping.
+//! app-side: status hooks, webview event emits, the parent-run mapping, and
+//! the two-host choice rules. The provider knowledge a spawn needs — adapter
+//! vs custom-CLI command, Mission linkage, cwd rules — is assembled into a
+//! [`SpawnSpec`] by the Tauri-free [`crate::pty_spawn`] module.
 
 use crate::delegate::{self, shell_quote};
 use crate::pty_client;
@@ -15,7 +17,7 @@ use crate::pty_client;
 // delegate layer's compilation with them.
 use crate::pty_wire::{Event as DaemonEvent, Request as DaemonRequest, Response as DaemonResponse};
 use crate::pty_host::{
-    self, DelegateMissionLink, LiveSessionRow, PtyEventSink, PtyExitOutcome, SessionHost, SpawnSpec,
+    self, LiveSessionRow, PtyEventSink, PtyExitOutcome, SessionHost, SpawnSpec,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::{HashMap, HashSet};
@@ -317,15 +319,20 @@ pub struct PtyState {
 // command picked a host by hand. That is how `Recent` ended up served but never
 // sent, and how the toggle rule drifted onto `Write` and `Snapshot`.
 //
-// Only the genuinely uniform operations are here. `Spawn` deliberately is not:
-// it is the one operation that consults the toggle, and its daemon route falls
-// back in-process on any error, so it reads better written out.
+// Spawn is here too, but it walks differently: it is the ONE operation that
+// consults the persistence toggle (see `spawn_order`), and a host refusing to
+// spawn falls through to the next instead of ending the walk.
 
 /// What both session hosts can answer for a session id.
 ///
 /// Every method must no-op (or report "not mine") for an id the host doesn't
 /// hold — that is what makes the ordered walks below safe.
 trait SessionHosting {
+    /// Launch the CLI described by `spec` in this host. Unlike the id-keyed
+    /// operations there is no "not mine": a host either starts the session or
+    /// errors. Which hosts are even offered — and in what order — is
+    /// [`spawn_order`]'s decision, not this method's.
+    fn spawn(&self, spec: &SpawnSpec) -> Result<(), String>;
     /// Reuse a live session, `cd`-ing it if the workspace moved. `Ok(false)`
     /// means "not mine".
     fn reuse_or_cd(&self, id: &str, cwd: Option<&str>) -> Result<bool, String>;
@@ -341,10 +348,20 @@ trait SessionHosting {
 }
 
 struct LocalHost<'a> {
+    app: &'a tauri::AppHandle,
     host: &'a SessionHost,
 }
 
 impl SessionHosting for LocalHost<'_> {
+    fn spawn(&self, spec: &SpawnSpec) -> Result<(), String> {
+        self.host.spawn(
+            spec.clone(),
+            scrollback_dir(self.app),
+            Arc::new(TauriSink {
+                app: self.app.clone(),
+            }),
+        )
+    }
     fn reuse_or_cd(&self, id: &str, cwd: Option<&str>) -> Result<bool, String> {
         self.host.reuse_or_cd(id, cwd)
     }
@@ -375,6 +392,37 @@ struct DaemonHost<'a> {
 }
 
 impl SessionHosting for DaemonHost<'_> {
+    fn spawn(&self, spec: &SpawnSpec) -> Result<(), String> {
+        // A daemon-hosted CLI survives an app restart. `ensure_daemon` rather
+        // than `ask_daemon`: spawn is the operation that brings the daemon up
+        // on demand — every other operation only asks whoever is already
+        // there.
+        let dir = app_data_dir(self.app).ok_or_else(|| "no app data dir".to_string())?;
+        pty_client::ensure_daemon(&dir)?;
+        match pty_client::request(
+            &dir,
+            &DaemonRequest::Spawn {
+                session_id: spec.session_id.clone(),
+                provider: spec.provider.clone(),
+                cwd: spec.cwd.clone(),
+                command: spec.command.clone(),
+                env: spec.env.clone(),
+                task: spec.task.clone(),
+                model: spec.model.clone(),
+                resume_session_id: spec.resume_session_id.clone(),
+                mission_link: spec.mission_link.clone(),
+                detect_session_id: spec.detect_session_id,
+            },
+        )? {
+            DaemonResponse::Ok => {
+                // Its events must reach the webview like a local session's do.
+                start_daemon_subscriber(self.app.clone());
+                Ok(())
+            }
+            DaemonResponse::Err { message } => Err(message),
+            _ => Err("unexpected daemon response to spawn".to_string()),
+        }
+    }
     fn reuse_or_cd(&self, id: &str, cwd: Option<&str>) -> Result<bool, String> {
         match ask_daemon(
             self.app,
@@ -444,9 +492,47 @@ fn both_hosts<'a>(
     local: &'a SessionHost,
 ) -> [Box<dyn SessionHosting + 'a>; 2] {
     [
-        Box::new(LocalHost { host: local }),
+        Box::new(LocalHost { app, host: local }),
         Box::new(DaemonHost { app }),
     ]
+}
+
+/// Which hosts a FRESH spawn may use, in order. **Spawn is the one
+/// toggle-gated operation** (see `ask_daemon` for why everything else must
+/// keep asking): with persistent sessions on, the daemon comes first so the
+/// CLI survives an app restart; with it off, the daemon is never offered a
+/// new session — what it already hosts stays reachable through the ungated
+/// operations above.
+///
+/// Generic so the rule is testable with fakes; production passes the two
+/// boxed hosts.
+fn spawn_order<H>(daemon_on: bool, local: H, daemon: H) -> Vec<H> {
+    if daemon_on {
+        vec![daemon, local]
+    } else {
+        vec![local]
+    }
+}
+
+/// Spawn on the first host that accepts. A refusal from any host but the last
+/// falls through with a note — the user's task always starts; only persistence
+/// is lost. Mirrors `first_host_that_claims`, except spawn has no "not mine":
+/// only success, or an error worth falling back on.
+fn first_host_that_spawns(
+    hosts: &[Box<dyn SessionHosting + '_>],
+    spec: &SpawnSpec,
+) -> Result<(), String> {
+    let last = hosts.len().saturating_sub(1);
+    for (i, host) in hosts.iter().enumerate() {
+        match host.spawn(spec) {
+            Ok(()) => return Ok(()),
+            Err(e) if i < last => {
+                eprintln!("delegate spawn failed, falling back to the next host: {e}")
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err("no session host available to spawn".to_string())
 }
 
 /// Hand the operation to each host in order and stop at the first that claims
@@ -836,17 +922,7 @@ pub fn delegate_pty_spawn(
     mission_task_id: Option<String>,
     one_shot: Option<bool>,
 ) -> Result<(), String> {
-    let cwd = workspace_root
-        .filter(|path| !path.trim().is_empty())
-        .map(|path| {
-            let dir = std::path::Path::new(&path);
-            if dir.is_dir() {
-                Ok(path)
-            } else {
-                Err(format!("Delegate cwd is not a directory: {path}"))
-            }
-        })
-        .transpose()?;
+    let cwd = crate::pty_spawn::validated_cwd(workspace_root)?;
 
     // Record parent → child mapping so Mission Control can build the tree
     if let Some(parent_id) = parent_run_id.as_ref() {
@@ -861,123 +937,50 @@ pub fn delegate_pty_spawn(
         return Ok(());
     }
 
-    // All per-CLI knowledge (spawn syntax, resume flags, model flags) lives
-    // behind the Delegate seam. Runtime custom CLIs use the same PTY plumbing
-    // with a user-authored shell template.
-    let adapter = delegate::lookup(&provider);
-    let one_shot = one_shot.unwrap_or(false);
-    let command = if let Some(adapter) = adapter {
-        if one_shot {
-            adapter.mission_command(task.as_deref(), model.as_deref())?
-        } else {
-            adapter.spawn_command(
-                task.as_deref(),
-                model.as_deref(),
-                resume_session_id.as_deref(),
-            )
-        }
-    } else if let Some(custom) = crate::custom_cli::get(&provider) {
-        if one_shot {
-            return Err("Custom Delegate CLIs are not yet supported for durable Missions.".into());
-        }
-        custom.spawn_command(
-            task.as_deref(),
-            model.as_deref(),
-            resume_session_id.as_deref(),
-        )
-    } else {
-        return Err(format!("No delegate PTY command for provider: {provider}"));
-    };
-    let mission_link = match (mission_id, mission_task_id) {
-        (Some(mission_id), Some(task_id)) => {
-            let workspace_root = cwd.clone().ok_or_else(|| {
-                "A durable Delegate Mission attempt requires a workspace.".to_string()
-            })?;
-            Some(DelegateMissionLink {
-                workspace_root,
-                mission_id,
-                task_id,
-            })
-        }
-        (None, None) => None,
-        _ => {
-            return Err(
-                "Delegate Mission linkage requires both missionId and missionTaskId.".to_string(),
-            )
-        }
-    };
     // Status hooks (see delegate/status.rs): refresh the CLI's env-guarded
     // lifecycle hooks and hand this session its private callback URL through
-    // the PTY env. Both warn-only — a delegate without status hooks still
+    // the spec's env. Both warn-only — a delegate without status hooks still
     // runs, its status just falls back to the idle-timer heuristic. Custom
     // CLIs (no adapter) have no hook installer but still get the URL, so a
     // user-authored wrapper can post its own status.
+    let adapter = delegate::lookup(&provider);
     if let (Some(adapter), Ok(home)) = (adapter, std::env::var("HOME")) {
         if let Err(e) = adapter.ensure_status_hooks(&home) {
             eprintln!("status hooks for {provider}: {e}");
         }
     }
-    let mut env = Vec::new();
-    if let Some(url) = status_state.hook_url_for(&app, &session_id) {
-        env.push(("KLIDE_HOOK_URL".to_string(), url));
-    }
+    let hook_url = status_state.hook_url_for(&app, &session_id);
 
-    // Daemon route: the CLI runs inside `klide ptyd` and survives an app
-    // restart. Any failure here falls back to a plain in-process session —
-    // the user's task always starts; only persistence is lost.
-    if daemon_enabled(&app) {
-        let daemon_spawn = app_data_dir(&app)
-            .ok_or_else(|| "no app data dir".to_string())
-            .and_then(|dir| {
-                pty_client::ensure_daemon(&dir)?;
-                match pty_client::request(
-                    &dir,
-                    &DaemonRequest::Spawn {
-                        session_id: session_id.clone(),
-                        provider: provider.clone(),
-                        cwd: cwd.clone(),
-                        command: command.clone(),
-                        env: env.clone(),
-                        task: task.clone(),
-                        model: model.clone(),
-                        resume_session_id: resume_session_id.clone(),
-                        mission_link: mission_link.clone(),
-                        detect_session_id: adapter.is_some(),
-                    },
-                )? {
-                    DaemonResponse::Ok => Ok(()),
-                    DaemonResponse::Err { message } => Err(message),
-                    _ => Err("unexpected daemon response to spawn".to_string()),
-                }
-            });
-        match daemon_spawn {
-            Ok(()) => {
-                start_daemon_subscriber(app.clone());
-                return Ok(());
-            }
-            Err(e) => eprintln!("ptyd spawn failed, falling back in-process: {e}"),
-        }
-    }
-
-    host.spawn(
-        SpawnSpec {
-            session_id,
-            provider,
-            cwd,
-            command,
-            env,
-            task,
-            model,
-            resume_session_id,
-            mission_link,
-            extract_session_id: adapter.map(|d| {
-                Box::new(move |output: &str| d.extract_session_id(output))
-                    as Box<dyn Fn(&str) -> Option<String> + Send>
-            }),
+    // Everything decidable without an AppHandle — the adapter-vs-custom-CLI
+    // command, the one-shot Mission branch, and the Mission-link validation —
+    // is `spawn_spec_for`'s job (and tested there, not here).
+    let spec = crate::pty_spawn::spawn_spec_for(crate::pty_spawn::SpawnRequest {
+        session_id,
+        provider: provider.clone(),
+        cwd,
+        task,
+        model,
+        resume_session_id,
+        mission_id,
+        mission_task_id,
+        one_shot: one_shot.unwrap_or(false),
+        hook_url,
+        custom_cli: if adapter.is_none() {
+            crate::custom_cli::get(&provider)
+        } else {
+            None
         },
-        scrollback_dir(&app),
-        Arc::new(TauriSink { app: app.clone() }),
-    )
+    })?;
+
+    let hosts = spawn_order(
+        daemon_enabled(&app),
+        Box::new(LocalHost {
+            app: &app,
+            host: &host,
+        }) as Box<dyn SessionHosting + '_>,
+        Box::new(DaemonHost { app: &app }) as _,
+    );
+    first_host_that_spawns(&hosts, &spec)
 }
 
 #[tauri::command]
@@ -1386,6 +1389,13 @@ mod tests {
     }
 
     impl SessionHosting for FakeHost {
+        fn spawn(&self, spec: &SpawnSpec) -> Result<(), String> {
+            self.record("spawn", &spec.session_id);
+            if self.fail {
+                return Err(format!("{} exploded", self.name));
+            }
+            Ok(())
+        }
         fn reuse_or_cd(&self, id: &str, _cwd: Option<&str>) -> Result<bool, String> {
             self.record("reuse", id);
             self.claim(id)
@@ -1561,6 +1571,77 @@ mod tests {
                 "daemon:stop:a:codex",
             ]
         );
+    }
+
+    // ── Spawn routing ────────────────────────────────────────────────────
+    // Spawn walks the REAL helpers (`spawn_order` + `first_host_that_spawns`),
+    // driven with fakes — unlike the id-keyed walks above, no re-statement of
+    // the rule is needed, because the helpers take any `SessionHosting`.
+
+    fn spawn_spec(id: &str) -> SpawnSpec {
+        SpawnSpec {
+            session_id: id.to_string(),
+            provider: "codex".to_string(),
+            cwd: None,
+            command: "codex".to_string(),
+            env: Vec::new(),
+            task: None,
+            model: None,
+            resume_session_id: None,
+            mission_link: None,
+            detect_session_id: true,
+        }
+    }
+
+    fn boxed(name: &'static str, fail: bool, log: &Arc<Mutex<Vec<String>>>) -> Box<dyn SessionHosting> {
+        Box::new(FakeHost {
+            name,
+            holds: None,
+            log: log.clone(),
+            fail,
+        })
+    }
+
+    #[test]
+    fn spawn_is_the_one_operation_that_consults_the_toggle() {
+        // Toggle off: the daemon is never even offered a new session. Every
+        // other operation keeps asking it regardless (`ask_daemon`, and the
+        // walks above) — `ask_daemon_gate_is_not_toggled` pins that half.
+        assert_eq!(spawn_order(false, "local", "daemon"), ["local"]);
+        // Toggle on: the daemon comes FIRST, so the CLI survives an app
+        // restart; in-process is the fallback, not a peer.
+        assert_eq!(spawn_order(true, "local", "daemon"), ["daemon", "local"]);
+    }
+
+    #[test]
+    fn a_daemon_spawn_failure_falls_back_in_process() {
+        // The user's task always starts; only persistence is lost.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let hosts = spawn_order(true, boxed("local", false, &log), boxed("daemon", true, &log));
+        first_host_that_spawns(&hosts, &spawn_spec("a:codex")).unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["daemon:spawn:a:codex", "local:spawn:a:codex"]
+        );
+    }
+
+    #[test]
+    fn a_successful_daemon_spawn_never_troubles_the_local_host() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let hosts = spawn_order(true, boxed("local", false, &log), boxed("daemon", false, &log));
+        first_host_that_spawns(&hosts, &spawn_spec("a:codex")).unwrap();
+        assert_eq!(*log.lock().unwrap(), ["daemon:spawn:a:codex"]);
+    }
+
+    #[test]
+    fn with_the_toggle_off_a_local_failure_is_the_callers_error() {
+        // No silent fallback INTO the daemon: routing a new session there
+        // against the toggle would strand it in a host the user turned off.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let hosts = spawn_order(false, boxed("local", true, &log), boxed("daemon", false, &log));
+        let err = first_host_that_spawns(&hosts, &spawn_spec("a:codex")).unwrap_err();
+        assert_eq!(err, "local exploded");
+        assert_eq!(*log.lock().unwrap(), ["local:spawn:a:codex"]);
     }
 
     #[test]
