@@ -35,7 +35,7 @@ import {
   createPr,
 } from "./ipc/git";
 import { eventsToConversation } from "./components/ai/replayConversation";
-import { loadPanelSession } from "./components/ai/utils";
+import { loadPanelSession } from "./components/ai/storedConversations";
 import type { AgentAttachment, AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider } from "./agent/providers";
 import type { Conversation, Msg } from "./components/ai/types";

@@ -8,6 +8,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { writeMemory, type MemoryEntry, type MemoryInput } from "../../memory";
 import { writeWorkspaceTextFile } from "../../workspaceFs";
 import type { Msg } from "./types";
+import { deriveTitle } from "./storedConversations";
 
 // StreamChunk is the wire shape `ai_chat` emits via Channel: incremental
 // `content`/`thinking` fragments (camelCase from Rust's StreamChunk). The
@@ -151,14 +152,6 @@ function extractFilePaths(msgs: Msg[]): string[] {
     }
   }
   return Array.from(seen).slice(0, 24);
-}
-
-function deriveTitle(msgs: Msg[]): string {
-  const first = msgs.find((m) => m.role === "user");
-  const text = first ? first.content ?? "" : "";
-  const trimmed = text.replace(/\s+/g, " ").trim();
-  if (!trimmed) return "Untitled session";
-  return trimmed.length > 80 ? trimmed.slice(0, 77) + "…" : trimmed;
 }
 
 // Run a 1-shot ai_chat and return the reply text. The authoritative source is

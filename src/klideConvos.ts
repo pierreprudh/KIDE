@@ -9,7 +9,7 @@ import {
   deriveTitle,
   loadConversations,
   persistConversation,
-} from "./components/ai/utils";
+} from "./components/ai/storedConversations";
 import { createPersistedStore, validatedArray } from "./persistedStore";
 import type { RunMessage, RunStatus } from "./runs";
 
@@ -66,7 +66,10 @@ function msgToRunMessage(m: Msg): RunMessage | null {
   return text ? { role: m.role, text } : null;
 }
 
-function conversationToConvo(c: Conversation): KlideConvo | null {
+/** One Stored conversation → one Mission Control row. The board's idle
+ *  status is "done"; a live publisher (AiPanel) overrides `status` for a
+ *  streaming run. Null when nothing in it is renderable on the board. */
+export function conversationToConvo(c: Conversation): KlideConvo | null {
   const messages = c.msgs.map(msgToRunMessage).filter((m): m is RunMessage => !!m);
   if (messages.length === 0) return null;
   return {
