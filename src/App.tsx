@@ -76,7 +76,6 @@ import {
   panelWorkspace,
   resumeConversationFor,
   type AiPanelRenderOptions,
-  type PendingAiPanel,
 } from "./components/ai/panelHost";
 import { readWorkspaceTextFile } from "./workspaceFs";
 import { modelLabel } from "./components/ai/ModelPicker";
@@ -132,10 +131,6 @@ function App() {
   // the hero composer's text on its way into the AI panel.
   const [focusChatActive, setFocusChatActive] = useState(false);
   const [focusInitialMessage, setFocusInitialMessage] = useState<string | null>(null);
-  const [isolatedRunStarts, setIsolatedRunStarts] = useState<Record<string, {
-    text: string;
-    attachments: AgentAttachment[];
-  }>>({});
   // The shell docked under Focus's canvas. Not persisted: Focus should open on
   // its home (or the conversation you left), never on a terminal you forgot.
   const [focusTerminalOpen, setFocusTerminalOpen] = useState(false);
@@ -189,28 +184,6 @@ function App() {
   const [sidebarSlot2, setSidebarSlot2] = useState<Panel | null>(
     () => localStorage.getItem("klide-sidebar-slot2") as Panel | null
   );
-  // Multi-panel lifecycle state is one reducer-owned fleet: handoffs, targeted
-  // resumes, race tabs, and follow-up queues settle atomically when a panel is
-  // consumed or closed. Geometry remains in usePanelLayout.
-  const {
-    resumeTarget,
-    raceWatchTabs,
-    focusActiveTabId,
-    followUpsByPanel,
-    pendingForPanel,
-    queueHandoffs,
-    consumeHandoff,
-    targetResume,
-    consumeResume,
-    registerResumedRun,
-    panelForResumedRun,
-    startRaceWatch,
-    selectRaceTab,
-    queueRaceFollowUp,
-    consumeFollowUp,
-    closeFleetPanel,
-    clearRaceWatch,
-  } = useAiPanelFleet();
   const [apiKeyVersion, setApiKeyVersion] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -280,6 +253,56 @@ function App() {
     setAiPanelCwd,
     closeAiPanel,
   } = usePanelLayout({ workspaceRoot, view, focusMode });
+  // Fleet membership + lifecycle: which Conversation sessions are live, and
+  // every queue keyed by panel id (handoffs, targeted resumes, race tabs,
+  // follow-ups, per-panel settings). `admit` is the one way a session enters
+  // the fleet, `release` the one way it leaves — geometry (rect seeding,
+  // persistence) stays in usePanelLayout behind the injected callbacks.
+  const {
+    resumeTarget,
+    raceWatchTabs,
+    focusActiveTabId,
+    followUpsByPanel,
+    modelsByPanel,
+    reviewOverrideByPanel,
+    isolatedStartByPanel,
+    admit,
+    release,
+    endRaceWatch,
+    pendingForPanel,
+    consumeHandoff,
+    targetResume,
+    consumeResume,
+    selectRaceTab,
+    queueRaceFollowUp,
+    consumeFollowUp,
+    clearRaceWatch,
+    reportPanelModels,
+    setPanelReviewOverride,
+    queueIsolatedStart,
+    consumeIsolatedStart,
+  } = useAiPanelFleet({
+    createPanel: appendAiPanel,
+    removePanel: closeAiPanel,
+    focusPanel,
+    // The reveal ritual every admission shared: land on the workbench (AI
+    // panels render there) and show the AI surface without toggling it off
+    // when it's already up. A race split manages its own visibility instead —
+    // Focus swaps to tabs, free mode unanchors (see watchRace).
+    revealSurface: (kind) => {
+      setView("workbench");
+      if (kind === "race-watch") return;
+      if (!aiVisible) togglePanel("ai");
+    },
+    openPanelIds: () => aiPanels.map((panel) => panel.id),
+    // The panel already bound to a conversation (the one that spawned its PTY,
+    // or an earlier reattach) — reattach focuses it instead of opening a
+    // second terminal onto the same live session.
+    panelBoundToConversation: (conversationId) =>
+      aiPanels.find((p) => loadPanelSession(p.id)?.convoId === conversationId)?.id ?? null,
+  });
+  // "The" AI panel when a surface addresses the default slot.
+  const primaryPanelId = aiPanels[0]?.id ?? DEFAULT_AI_PANEL_ID;
   const [skills, setSkills] = useState<Skill[]>(() => loadSkills());
 
   const reloadFilesystemSkills = useCallback(async () => {
@@ -343,19 +366,15 @@ function App() {
   const [editorWordWrap, setEditorWordWrap] = useSetting(SETTINGS.editorWordWrap);
   const [editorMinimap, setEditorMinimap] = useSetting(SETTINGS.editorMinimap);
   const [aiModel, setAiModel] = useSetting(SETTINGS.aiModel);
-  const [panelModels, setPanelModels] = useState<Record<string, string[]>>({});
   // Global default for "require diff review" (auto-accept off). Settings edits
-  // this. Each AI panel keeps its own override below — toggling auto-accept in
-  // one conversation must NOT leak into the others.
+  // this. Each AI panel keeps its own override in the fleet — toggling
+  // auto-accept in one conversation must NOT leak into the others. A panel
+  // with no entry falls back to the global default; in-memory only, so on
+  // reload every panel reverts to the safe global default.
   const [requireDiffReview] = useSetting(SETTINGS.requireDiffReview);
-  // Per-panel overrides, keyed by panelId (same pattern as `panelModels`).
-  // A panel with no entry falls back to the global default. In-memory only:
-  // on reload every panel reverts to the safe global default.
-  const [panelReviewOverrides, setPanelReviewOverrides] = useState<Record<string, boolean>>({});
   const reviewForPanel = (id: string) =>
-    id in panelReviewOverrides ? panelReviewOverrides[id] : requireDiffReview;
-  const setPanelReview = (id: string, value: boolean) =>
-    setPanelReviewOverrides((prev) => ({ ...prev, [id]: value }));
+    id in reviewOverrideByPanel ? reviewOverrideByPanel[id] : requireDiffReview;
+  const setPanelReview = setPanelReviewOverride;
   const [stopAfterRejection] = useSetting(SETTINGS.stopAfterRejection);
   const [harnessSettings, setHarnessSettings] = useSetting(SETTINGS.harnessSettings);
   // Free-mode floating panels fall back to a default rect when the persisted
@@ -422,7 +441,7 @@ function App() {
       if (view !== "workbench") {
         setAiVisible(true);
         if (!panelLayout.ai || panelLayout.ai.length === 0) ensureAiRect();
-        focusPanel(aiPanels[0]?.id ?? "ai-main");
+        focusPanel(primaryPanelId);
       } else {
         // Always ensure the in-memory list is populated, even if the
         // persisted layout has it empty. The render path gates on both
@@ -432,7 +451,7 @@ function App() {
         if (aiPanels.length === 0) ensureAiRect();
         const willShow = !aiVisible;
         setAiVisible(willShow);
-        if (willShow) focusPanel(aiPanels[0]?.id ?? "ai-main");
+        if (willShow) focusPanel(primaryPanelId);
       }
       return;
     }
@@ -791,7 +810,7 @@ function App() {
       workspaceRoot,
       opts?.respectWorktree ?? true
     );
-    const isolatedStart = isolatedRunStarts[panelId];
+    const isolatedStart = isolatedStartByPanel[panelId];
     return (
       <AiPanel
         key={conversationSessionKey(panelId, root, opts?.key)}
@@ -828,8 +847,8 @@ function App() {
           setSettingsInitial(section);
           setView("settings");
         }}
-        availableModels={panelModels[panelId] ?? [model]}
-        onAvailableModelsChange={(models) => updatePanelModels(panelId, models)}
+        availableModels={modelsByPanel[panelId] ?? [model]}
+        onAvailableModelsChange={(models) => reportPanelModels(panelId, models)}
         apiKeyVersion={apiKeyVersion}
         requireDiffReview={reviewForPanel(panelId)}
         onRequireDiffReviewChange={(v) => setPanelReview(panelId, v)}
@@ -837,19 +856,16 @@ function App() {
         stopAfterRejection={stopAfterRejection}
         skills={skills}
         harnessSettings={harnessSettings}
-        onDuplicate={opts?.duplicatable ? appendAiPanel : undefined}
+        onDuplicate={
+          opts?.duplicatable
+            ? (snapshot) => admit({ kind: "fresh", ...snapshot })
+            : undefined
+        }
         onForkConversationInWorktree={forkConversationInWorktree}
         onRequestIsolatedRun={workspaceRoot ? (request) =>
           startPanelRunInWorktree(panelId, request)
         : undefined}
-        onClose={
-          opts?.closable
-            ? () => {
-                closeAiPanel(panelId);
-                closeFleetPanel(panelId);
-              }
-            : undefined
-        }
+        onClose={opts?.closable ? () => release(panelId) : undefined}
         resumeConversation={resumeConversationFor(panelId, resumeTarget)}
         onResumeConsumed={() => consumeResume(panelId)}
         variant={opts?.variant}
@@ -857,12 +873,7 @@ function App() {
         initialAttachments={isolatedStart?.attachments}
         onInitialMessageConsumed={() => {
           setFocusInitialMessage(null);
-          setIsolatedRunStarts((starts) => {
-            if (!(panelId in starts)) return starts;
-            const next = { ...starts };
-            delete next[panelId];
-            return next;
-          });
+          consumeIsolatedStart(panelId);
         }}
         followUpMessage={followUpsByPanel[panelId] ?? null}
         onFollowUpConsumed={() => consumeFollowUp(panelId)}
@@ -1117,23 +1128,10 @@ function App() {
       const events = await readAgentRunEvents(runId);
       const convo = eventsToConversation(events, runId, eventsToTitle(events));
       // Open one fresh panel and land the resumed run in it — never broadcast
-      // to existing panels. Resume is triggered from the Mission Control view,
-      // so switch back to the workbench (where AI panels render) and ensure the
-      // AI surface is visible without toggling it off when it already is —
-      // matches the CLI handoff path (`openRunInAiPanel`).
-      setView("workbench");
-      if (!aiVisible) togglePanel("ai");
-      // Don't stack duplicates: if this run is already open in a panel that's
-      // still around, just focus it. Re-clicking Resume on the same run would
-      // otherwise pile up identical panels (each offset by appendAiPanel).
-      const existing = panelForResumedRun(runId, aiPanels.map((panel) => panel.id));
-      if (existing) {
-        focusPanel(existing);
-        return;
-      }
-      const panelId = appendAiPanel({ cwd: convo.cwd ?? undefined });
-      registerResumedRun(runId, panelId);
-      targetResume(panelId, convo);
+      // to existing panels. The fleet reveals the workbench AI surface and
+      // de-dupes by run id: re-clicking Resume focuses the existing panel
+      // instead of piling up identical ones.
+      admit({ kind: "resume-run", runId, convo });
     } catch (e) {
       setFileNotice(e instanceof Error ? e.message : String(e));
     }
@@ -1163,16 +1161,10 @@ function App() {
     };
   }
 
-  function openForkedConversation(run: Run, convo: Conversation) {
-    const provider = convo.provider;
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    const panelId = appendAiPanel({
-      provider,
-      model: run.model ?? undefined,
-      cwd: convo.cwd ?? undefined,
-    });
-    targetResume(panelId, convo);
+  function openForkedConversation(convo: Conversation) {
+    // The forked conversation carries its own provider, model, and worktree
+    // pin — the fleet seeds the fresh panel from it.
+    admit({ kind: "fork", convo });
   }
 
   async function forkRun(run: Run, preloadedMessages?: MissionRunMessage[]) {
@@ -1182,7 +1174,7 @@ function App() {
         setFileNotice("Run has no readable messages to fork.");
         return;
       }
-      openForkedConversation(run, forkConversationFromRun(run, messages, run.cwd, {
+      openForkedConversation(forkConversationFromRun(run, messages, run.cwd, {
         branch: run.branch,
         worktree: run.worktree,
       }));
@@ -1206,7 +1198,7 @@ function App() {
       }
       const branch = `klide/fork-${Date.now().toString(36)}`;
       const wt = await gitWorktreeAdd(baseRoot, branch);
-      openForkedConversation(run, forkConversationFromRun(run, messages, wt.path, {
+      openForkedConversation(forkConversationFromRun(run, messages, wt.path, {
         branch: wt.branch,
         worktree: worktreeName(wt),
       }));
@@ -1232,14 +1224,7 @@ function App() {
         worktree: worktreeName(wt),
         updatedAt: Date.now(),
       };
-      setView("workbench");
-      if (!aiVisible) togglePanel("ai");
-      const panelId = appendAiPanel({
-        provider: forked.provider,
-        model: forked.model ?? undefined,
-        cwd: wt.path,
-      });
-      targetResume(panelId, forked);
+      admit({ kind: "fork", convo: forked });
       setFileNotice(`Branched turn into worktree ${wt.branch}${worktreeSetupSummary(wt)}.`);
     } catch (e) {
       setFileNotice(`Turn worktree branch failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1323,16 +1308,13 @@ function App() {
     initialTask?: string;
     cwd?: string;
   }) {
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    const id = appendAiPanel({ provider: opts.provider, cwd: opts.cwd });
-    queueHandoffs([{
-      panelId: id,
+    admit({
+      kind: "handoff",
       provider: opts.provider,
       resumeSessionId: opts.resumeSessionId ?? null,
       initialTask: opts.initialTask ?? null,
-      conversationId: null,
-    }]);
+      cwd: opts.cwd,
+    });
   }
 
   // "Reattach" from Mission Control's live-sessions strip — reconnect to a
@@ -1350,27 +1332,17 @@ function App() {
     workspaceRoot: string | null;
     resumeSessionId?: string | null;
   }) {
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    // Don't open a second terminal onto the same live PTY: if a panel is
-    // already bound to this conversation (the one that spawned it, or an
-    // earlier reattach), just focus it. Two surfaces sharing the sessionId
-    // would mirror each other — the "two synchronized terminals" bug.
-    const already = aiPanels.find(
-      (p) => loadPanelSession(p.id)?.convoId === opts.conversationId
-    );
-    if (already) {
-      focusPanel(already.id);
-      return;
-    }
-    const id = appendAiPanel({ provider: opts.provider, cwd: opts.workspaceRoot ?? undefined });
-    queueHandoffs([{
-      panelId: id,
+    // The fleet de-dupes by conversation id: a panel already bound to this
+    // live PTY (the one that spawned it, or an earlier reattach) is focused
+    // instead of opening a second terminal that would mirror it — the "two
+    // synchronized terminals" bug.
+    admit({
+      kind: "reattach",
       provider: opts.provider,
-      resumeSessionId: opts.resumeSessionId ?? null,
-      initialTask: null,
       conversationId: opts.conversationId,
-    }]);
+      resumeSessionId: opts.resumeSessionId ?? null,
+      cwd: opts.workspaceRoot ?? undefined,
+    });
   }
 
   // "Watch live" from the race composer — open every racer in its own AI
@@ -1383,40 +1355,27 @@ function App() {
   function watchRace(group: RaceGroup) {
     const members = group.members.slice(0, 4);
     if (members.length === 0) return;
-    setView("workbench");
     const margin = 12;
     const gap = 12;
     const splitW = Math.max(320, Math.floor((workbenchSize.w - margin * 2 - gap) / 2));
     const splitH = Math.max(320, workbenchSize.h - margin * 2);
-    const pending: PendingAiPanel[] = [];
-    const tabs: { panelId: string; label: string }[] = [];
-    members.forEach((m, i) => {
-      // Two racers split the workbench half/half; a partial race (one
-      // survivor) or >2 members fall back to the cascade placement.
-      const rect =
-        !focusMode && members.length === 2
-          ? { x: margin + i * (splitW + gap), y: margin, w: splitW, h: splitH }
-          : undefined;
-      const panelId = appendAiPanel({
+    admit({
+      kind: "race-watch",
+      focusActive: focusMode,
+      racers: members.map((m, i) => ({
+        runId: m.runId,
         provider: m.provider as ProviderId,
         model: m.model,
         cwd: m.worktreePath,
-        rect,
-      });
-      registerResumedRun(m.runId, panelId);
-      pending.push({
-        panelId,
-        provider: m.provider as ProviderId,
-        resumeSessionId: null,
-        initialTask: null,
-        conversationId: m.runId,
-      });
-      tabs.push({
-        panelId,
         label: `${String.fromCharCode(65 + i)} · ${modelLabel(m.model)}`,
-      });
+        // Two racers split the workbench half/half; a partial race (one
+        // survivor) or >2 members fall back to the cascade placement.
+        rect:
+          !focusMode && members.length === 2
+            ? { x: margin + i * (splitW + gap), y: margin, w: splitW, h: splitH }
+            : undefined,
+      })),
     });
-    startRaceWatch(pending, tabs, focusMode ? tabs[0].panelId : null);
     if (focusMode) {
       setFocusChatActive(true);
     } else {
@@ -1434,21 +1393,19 @@ function App() {
     queueRaceFollowUp(text);
   }
 
-  // Leave the Focus race-tab view: close the racers' panels (the runs keep
+  // Leave the Focus race-tab view: release the racers' panels (the runs keep
   // going headless in Rust and stay visible on the Mission Control board)
-  // and return the canvas to the normal single-conversation chat.
+  // and return the canvas to the normal single-conversation chat. `release`
+  // clears every queue keyed by each panel id — including its unconsumed
+  // handoff, which the old close-per-tab path leaked.
   function endFocusRaceWatch() {
-    if (raceWatchTabs.length === 0) return;
-    for (const t of raceWatchTabs) closeAiPanel(t.panelId);
-    clearRaceWatch();
+    endRaceWatch();
   }
 
   // Open an existing worktree (from the Worktrees modal) in a fresh AI panel
   // pinned to its path — same pin mechanism as newWorktreeRun, no new branch.
   function openExistingWorktree(path: string) {
-    setView("workbench");
-    if (!aiVisible) togglePanel("ai");
-    appendAiPanel({ cwd: path });
+    admit({ kind: "fresh", cwd: path });
   }
 
   // Default launch path for a fresh Conversation. AiPanel hands its first
@@ -1480,10 +1437,7 @@ function App() {
       setAiPanelProvider(panelId, request.provider);
       setAiPanelModel(panelId, request.model);
       setAiPanelCwd(panelId, isolated.cwd);
-      setIsolatedRunStarts((starts) => ({
-        ...starts,
-        [panelId]: { text: request.text, attachments: request.attachments },
-      }));
+      queueIsolatedStart(panelId, { text: request.text, attachments: request.attachments });
       setFileNotice(
         `Isolated run ready on ${isolated.branch}${worktreeSetupSummary(isolated.setup)}.`,
       );
@@ -1515,9 +1469,7 @@ function App() {
     const name = branch?.trim() || `klide/wt-${Date.now().toString(36)}`;
     try {
       const wt = await gitWorktreeAdd(workspaceRoot, name);
-      setView("workbench");
-      if (!aiVisible) togglePanel("ai");
-      appendAiPanel({ cwd: wt.path });
+      admit({ kind: "fresh", cwd: wt.path });
       setFileNotice(`Worktree ready on ${wt.branch} — this panel runs there${worktreeSetupSummary(wt)}.`);
     } catch (err) {
       setFileNotice(`Worktree failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1576,17 +1528,7 @@ function App() {
 
   function updateAiPanelModel(id: string, model: string) {
     setAiPanelModel(id, model);
-    if (id === "ai-main") setAiModel(model);
-  }
-
-  function updatePanelModels(id: string, models: string[]) {
-    setPanelModels((prev) => {
-      const current = prev[id] ?? [];
-      if (current.length === models.length && current.every((name, idx) => name === models[idx])) {
-        return prev;
-      }
-      return { ...prev, [id]: models };
-    });
+    if (id === DEFAULT_AI_PANEL_ID) setAiModel(model);
   }
 
   useEffect(() => {
@@ -2136,7 +2078,7 @@ function App() {
                   updatePanelRect("terminal", { ...panelLayout.terminal, h });
                 }
               }}
-              availableAiModels={panelModels["ai-main"] ?? [aiModel]}
+              availableAiModels={modelsByPanel[DEFAULT_AI_PANEL_ID] ?? [aiModel]}
               explorerVisible={explorerVisible}
               onExplorerVisibleChange={setExplorerVisible}
               explorerFloating={explorerFloating}
@@ -2299,7 +2241,7 @@ function App() {
                     endFocusRaceWatch();
                     markFolderWorked(convo.cwd);
                     if (convo.cwd && convo.cwd !== workspaceRoot) changeRoot(convo.cwd);
-                    targetResume(aiPanels[0]?.id ?? "ai-main", convo);
+                    targetResume(primaryPanelId, convo);
                     setFocusChatActive(true);
                   }}
                   onSubmit={(text) => {
@@ -2441,7 +2383,7 @@ function App() {
                     ((localStorage.getItem("klide.provider") as ProviderId) || "ollama")
                   }
                   onProviderChange={(p) => {
-                    const panelId = aiPanels[0]?.id ?? "ai-main";
+                    const panelId = primaryPanelId;
                     setAiPanelProvider(panelId, p);
                     // The panel keeps its model across provider switches, but a
                     // hero pick means "start on this provider" — reset to its
@@ -2451,7 +2393,7 @@ function App() {
                     updateAiPanelModel(panelId, defaultModelForProvider(p));
                   }}
                   model={aiPanels[0]?.model ?? aiModel}
-                  onModelChange={(m) => updateAiPanelModel(aiPanels[0]?.id ?? "ai-main", m)}
+                  onModelChange={(m) => updateAiPanelModel(primaryPanelId, m)}
                   effort={harnessSettings?.reflectionLevels?.[aiPanels[0]?.model ?? aiModel]}
                   onEffortChange={(v) => {
                     const m = aiPanels[0]?.model ?? aiModel;
@@ -2462,7 +2404,7 @@ function App() {
                     // The AI panel prefers its own per-panel override when one
                     // was set from its composer — drop it so the value picked
                     // here is what the next run actually uses.
-                    const panelId = aiPanels[0]?.id ?? "ai-main";
+                    const panelId = primaryPanelId;
                     const prov =
                       aiPanels[0]?.provider ?? localStorage.getItem("klide.provider") ?? "ollama";
                     try {
@@ -2479,9 +2421,9 @@ function App() {
                     else next[m] = w;
                     setHarnessSettings({ ...harnessSettings, contextWindows: next });
                   }}
-                  requireDiffReview={reviewForPanel(aiPanels[0]?.id ?? "ai-main")}
+                  requireDiffReview={reviewForPanel(primaryPanelId)}
                   onRequireDiffReviewChange={(required) =>
-                    setPanelReview(aiPanels[0]?.id ?? "ai-main", required)
+                    setPanelReview(primaryPanelId, required)
                   }
                 />
               </Suspense>
@@ -2583,7 +2525,7 @@ function App() {
                       onClick={() => {
                         if (aiPanels.length === 0) ensureAiRect();
                         setAiVisible(true);
-                        focusPanel(aiPanels[0]?.id ?? "ai-main");
+                        focusPanel(primaryPanelId);
                       }}
                     >
                       <span>New chat</span>
