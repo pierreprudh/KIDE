@@ -36,17 +36,7 @@ pub fn list(runs_dir: &Path, workspace_root: &str) -> Result<Vec<String>, String
     else {
         return Ok(Vec::new());
     };
-    let path = location.path;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Unable to read command allowlist: {e}"))?;
-    let parsed: CommandAllowlist =
-        serde_json::from_str(&text).map_err(|e| format!("Invalid command allowlist JSON: {e}"))?;
-    if parsed.fingerprint != location.fingerprint {
-        return Ok(Vec::new());
-    }
+    let parsed = read_allowlist(&location)?;
     Ok(normalize(
         parsed
             .commands
@@ -132,32 +122,18 @@ fn metachars_covered(pattern: &str, command: &str) -> bool {
 fn read_allowlist(
     location: &super::approval_store::ApprovalLocation,
 ) -> Result<CommandAllowlist, String> {
-    if !location.path.exists() {
-        return Ok(CommandAllowlist {
-            fingerprint: location.fingerprint.clone(),
-            ..CommandAllowlist::default()
-        });
-    }
-    let text = std::fs::read_to_string(&location.path)
-        .map_err(|e| format!("Unable to read command allowlist: {e}"))?;
-    let parsed: CommandAllowlist =
-        serde_json::from_str(&text).map_err(|e| format!("Invalid command allowlist JSON: {e}"))?;
-    if parsed.fingerprint == location.fingerprint {
-        Ok(parsed)
-    } else {
-        Ok(CommandAllowlist {
-            fingerprint: location.fingerprint.clone(),
-            ..CommandAllowlist::default()
-        })
-    }
+    super::approval_store::read_scoped(location, "command", |a: &CommandAllowlist| {
+        a.fingerprint.as_str()
+    }, |fingerprint| CommandAllowlist {
+        fingerprint,
+        ..CommandAllowlist::default()
+    })
 }
 
 fn write_allowlist(path: &Path, mut allowlist: CommandAllowlist) -> Result<(), String> {
     allowlist.commands = normalize(allowlist.commands);
     allowlist.rules = normalize_rules(allowlist.rules);
-    let text = serde_json::to_string_pretty(&allowlist)
-        .map_err(|e| format!("Unable to serialize command allowlist: {e}"))?;
-    super::approval_store::write_private(path, format!("{text}\n").as_bytes())
+    super::approval_store::write_scoped(path, &allowlist, "command")
 }
 
 fn normalize(commands: Vec<String>) -> Vec<String> {

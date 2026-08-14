@@ -31,7 +31,7 @@ use self::run_core::{
     TurnStep,
 };
 use self::tools::{
-    apply_write, clear_run_snapshots, dynamic_tool_command, execute_read_only_tool,
+    apply_write, clear_run_snapshots, execute_read_only_tool,
     execute_write_tool_preview, find_tool_kind_for_workspace, preflight_command,
     run_command_capture, run_command_capture_in, schemas_for_mode, tool_summary_for_workspace,
     NormalizedToolCall, ToolKind,
@@ -77,26 +77,10 @@ pub struct AgentRunHandle {
     /// channel, which the run loop awaits before running (or skipping) the
     /// command.
     pub pending_permission: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
-    /// Commands the user approved with scope "run"/"project" earlier in this
-    /// run — re-running an identical command skips the prompt, so the agent
-    /// can `cargo check` repeatedly without re-asking each time.
-    pub approved_commands: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Edit proposals the user already rejected this run, keyed by
-    /// `<path>::<new_hash>`. If the model proposes the byte-identical change
-    /// again, the loop auto-declines it instead of re-prompting — so a single
-    /// "Reject" sticks and the agent is told to try something different rather
-    /// than re-surfacing the same diff.
-    pub rejected_edits: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Shell commands the user rejected this run. Same idea as `rejected_edits`:
-    /// proposing the exact same command again is auto-declined, not re-asked.
-    pub rejected_commands: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Network targets approved for this run, such as `web_search` or
-    /// `host:docs.rs`. Kept separate from command approvals so trust scopes
-    /// don't bleed across capability kinds.
-    pub approved_network: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Network targets rejected this run. Re-proposing the same target is
-    /// auto-declined instead of re-prompting.
-    pub rejected_network: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Everything the Permission engine remembers about this run — approved /
+    /// rejected commands and network targets, rejected edits. The engine owns
+    /// the type; the handle just carries it for the run's lifetime.
+    pub trust: permission::TrustMemory,
 }
 
 pub struct AgentSupervisorState {
@@ -997,11 +981,7 @@ async fn start_run(
                 pending_diff: std::sync::Mutex::new(None),
                 pending_question: std::sync::Mutex::new(None),
                 pending_permission: std::sync::Mutex::new(None),
-                approved_commands: std::sync::Mutex::new(std::collections::HashSet::new()),
-                rejected_edits: std::sync::Mutex::new(std::collections::HashSet::new()),
-                rejected_commands: std::sync::Mutex::new(std::collections::HashSet::new()),
-                approved_network: std::sync::Mutex::new(std::collections::HashSet::new()),
-                rejected_network: std::sync::Mutex::new(std::collections::HashSet::new()),
+                trust: permission::TrustMemory::default(),
             },
         );
     }
@@ -3095,11 +3075,7 @@ mod test_support {
             pending_diff: Mutex::new(None),
             pending_question: Mutex::new(None),
             pending_permission: Mutex::new(None),
-            approved_commands: Mutex::new(std::collections::HashSet::new()),
-            rejected_edits: Mutex::new(std::collections::HashSet::new()),
-            rejected_commands: Mutex::new(std::collections::HashSet::new()),
-            approved_network: Mutex::new(std::collections::HashSet::new()),
-            rejected_network: Mutex::new(std::collections::HashSet::new()),
+            trust: permission::TrustMemory::default(),
         }
     }
 
