@@ -4563,6 +4563,17 @@ button:focus-visible .menu-leadout {
   font-variant-numeric: tabular-nums;
 }
 
+/* The running slot takes the timestamp's place at the row's trailing edge. It
+   is a fixed box rather than shrink-to-fit so the animation cannot nudge the
+   row as its dots swell and settle. */
+.klide-focus-convo-live {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+}
+
 /* Rail section break — the same gradient hairline the free-mode rail uses
    between its zones, so no extra written label is needed. */
 .klide-focus-rail-divider {
