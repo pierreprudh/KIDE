@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Conversation, Msg } from "./types";
 import { memoryStorage } from "../../testStorage";
 import {
+  displayedConversationBranch,
   conversationSessionReducer,
   restoreConversationSession,
   snapshotConversationSession,
@@ -65,6 +66,7 @@ describe("restoreConversationSession", () => {
         provider: "ollama",
         model: "qwen3",
         workspaceRoot: "/workspace",
+        workspaceBranch: "main",
       }),
     ).toEqual({
       conversationId: saved.id,
@@ -109,6 +111,43 @@ describe("restoreConversationSession", () => {
 
     expect(restored.conversationId).toBe("fresh");
     expect(restored.messages).toEqual([]);
+  });
+
+  it("captures the Workspace branch for a brand-new conversation", () => {
+    const restored = restoreConversationSession({
+      panelId: "ai-main",
+      provider: "openai",
+      model: "gpt-5.4",
+      workspaceRoot: "/workspace",
+      workspaceBranch: "feature/current",
+      startFresh: true,
+      createId: () => "fresh",
+    });
+
+    expect(restored.branch).toBe("feature/current");
+  });
+
+  it("does not assign the current Workspace branch to an older conversation without branch metadata", () => {
+    const saved: Conversation = {
+      id: "older-conversation",
+      title: "Older conversation",
+      msgs: [userMessage],
+      updatedAt: 42,
+      provider: "openai",
+      model: "gpt-5.4",
+      cwd: "/workspace",
+    };
+    localStorage.setItem("klide-conversations", JSON.stringify([saved]));
+
+    const restored = restoreConversationSession({
+      initialConversationId: saved.id,
+      provider: "openai",
+      model: "gpt-5.4",
+      workspaceRoot: "/workspace",
+      workspaceBranch: "feature/current",
+    });
+
+    expect(restored.branch).toBeNull();
   });
 
   it("restores a scoped empty hosted Conversation before its first Run", () => {
@@ -210,6 +249,16 @@ describe("restoreConversationSession", () => {
     });
 
     expect(restored.conversationId).toBe("fresh");
+  });
+});
+
+describe("displayedConversationBranch", () => {
+  it("prefers the branch recorded by the conversation", () => {
+    expect(displayedConversationBranch("feature/conversation")).toBe("feature/conversation");
+  });
+
+  it("does not display the current Workspace branch when the conversation has none", () => {
+    expect(displayedConversationBranch(null)).toBeNull();
   });
 });
 

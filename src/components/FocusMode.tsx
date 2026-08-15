@@ -62,8 +62,8 @@ import { ProviderLogo } from "./ai/icons";
 import { modelIdentity } from "../modelIdentity";
 import { providerHistoryExpanded } from "../focusHistory";
 import {
+  canonicalWorkspaceRoot,
   linkedProjectForPath,
-  normalizeProjectPath,
 } from "../projectPaths";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
 import { FocusGitIsland } from "./FocusGitIsland";
@@ -131,6 +131,24 @@ type Props = {
 
 function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+/** Build the workspace roots shown in the Focus rail. */
+export function focusProjectRoots(
+  projects: readonly string[],
+  activeWorkspaceRoot: string | null | undefined,
+): string[] {
+  const activeProjectRoot = canonicalWorkspaceRoot(activeWorkspaceRoot);
+  const seen = new Set<string>();
+  const roots: string[] = [];
+  for (const project of projects) {
+    const normalized = canonicalWorkspaceRoot(project);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    roots.push(normalized);
+  }
+  if (activeProjectRoot && !seen.has(activeProjectRoot)) roots.push(activeProjectRoot);
+  return roots;
 }
 
 /* ------------------------------------------------------------------ icons */
@@ -596,19 +614,11 @@ export function FocusMode({
   // Conversation groups + the hero footer name self-hosted endpoints through
   // providerName(); subscribing keeps those labels live across a rename.
   useCustomProviders();
-  const activeProjectRoot = normalizeProjectPath(workspaceRoot);
-  const focusProjects = useMemo(() => {
-    const seen = new Set<string>();
-    const roots: string[] = [];
-    for (const project of projects) {
-      const normalized = normalizeProjectPath(project);
-      if (!normalized || seen.has(normalized)) continue;
-      seen.add(normalized);
-      roots.push(normalized);
-    }
-    if (activeProjectRoot && !seen.has(activeProjectRoot)) roots.push(activeProjectRoot);
-    return roots;
-  }, [activeProjectRoot, projects]);
+  const activeProjectRoot = canonicalWorkspaceRoot(workspaceRoot);
+  const focusProjects = useMemo(
+    () => focusProjectRoots(projects, activeProjectRoot),
+    [activeProjectRoot, projects],
+  );
   // The rail lists only the few projects you are actually moving between — a
   // long recents list buries the history it is meant to introduce. "More"
   // unfolds the rest; opening a project that is not among them is the macOS

@@ -8,6 +8,45 @@ export function normalizeProjectPath(path: string | null | undefined): string | 
   return slashed.replace(/\/+$/u, "");
 }
 
+/**
+ * Klide stores managed worktrees beside their checkout as
+ * `<workspace>-worktrees/<run>`. For workspace-level navigation that path is
+ * an implementation detail: the owning workspace remains the checkout before
+ * `-worktrees`.
+ */
+export function canonicalWorkspaceRoot(
+  path: string | null | undefined,
+): string | null {
+  const normalized = normalizeProjectPath(path);
+  if (!normalized) return null;
+  const managedWorktree = /^(.*)-worktrees\/[^/]+$/u.exec(normalized);
+  return managedWorktree?.[1] || normalized;
+}
+
+/**
+ * Conversations created while ordinary first sends were automatically moved
+ * into a `klide/run-*` worktree should now reopen on their owning Workspace.
+ * Deliberate worktree flows use distinct branch families (`turn`, `wt`,
+ * `task`, `race`, …) and must stay pinned.
+ */
+export function legacyAutoRunWorkspace(location: {
+  cwd?: string | null;
+  branch?: string | null;
+  worktree?: string | null;
+}): string | null {
+  const cwd = normalizeProjectPath(location.cwd);
+  const owner = canonicalWorkspaceRoot(cwd);
+  if (!cwd || !owner || owner === cwd) return null;
+
+  const branch = location.branch?.trim() ?? "";
+  const pathName = cwd.split("/").filter(Boolean).pop() ?? "";
+  const worktree = location.worktree?.trim() || pathName;
+  const legacyBranch = /^klide\/run-/u.test(branch);
+  const legacyWorktree = /^klide-run-/u.test(worktree);
+
+  return legacyBranch || (!branch && legacyWorktree) ? owner : null;
+}
+
 function isSameOrDescendant(path: string, root: string): boolean {
   const prefix = root.endsWith("/") ? root : `${root}/`;
   return path === root || path.startsWith(prefix);
