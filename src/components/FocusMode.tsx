@@ -316,13 +316,25 @@ export function FocusMode({
   // The rows above the tree. Focus opens surfaces; it has no floating panels of
   // its own, so it lists no panel tools — that is the one place the two shells'
   // rails legitimately differ, and it is a difference in this array, not in two
-  // components.
+  // components. Everything both shells *can* reach sits in the same slot in
+  // both, so the rail does not rearrange itself when you switch layouts.
   const nav: RailNavItem[] = [
     {
       id: "new-task",
       label: "New task",
       icon: <NewTaskIcon size={15} />,
       onClick: () => onNewChat(),
+    },
+    {
+      // Git Review is a full-window surface, not a panel, so Focus reaches the
+      // very same one the workbench does. It needs its own row here: the git
+      // island carries the branch on the home screen, but it is gone the moment
+      // a conversation is up — which in Focus is nearly always — and there was
+      // then no way to Git at all without leaving the layout.
+      id: "git",
+      label: "Git",
+      icon: <GitIcon size={15} />,
+      onClick: () => onOpenPanel("git"),
     },
     {
       id: "runs",
