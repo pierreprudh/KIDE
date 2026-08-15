@@ -11,7 +11,18 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { ActivityBar } from "./components/ActivityBar";
+import { WorkspaceRail, type RailNavItem } from "./components/WorkspaceRail";
+import {
+  AiIcon,
+  FocusLayoutIcon,
+  FolderIcon,
+  GitIcon,
+  MemoryIcon,
+  MissionIcon,
+  NewTaskIcon,
+  OrchestratorIcon,
+  SkillsIcon,
+} from "./icons";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import { EditorArea, type EditorEmptyAction } from "./components/EditorArea";
@@ -35,7 +46,11 @@ import {
   createPr,
 } from "./ipc/git";
 import { eventsToConversation } from "./components/ai/replayConversation";
-import { loadPanelSession } from "./components/ai/storedConversations";
+import {
+  CONVERSATIONS_CHANGED_EVENT,
+  loadConversations,
+  loadPanelSession,
+} from "./components/ai/storedConversations";
 import type { AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider } from "./agent/providers";
 import type { Conversation, Msg } from "./components/ai/types";
@@ -344,6 +359,37 @@ function App() {
   });
   // "The" AI panel when a surface addresses the default slot.
   const primaryPanelId = aiPanels[0]?.id ?? DEFAULT_AI_PANEL_ID;
+
+  // What each open AI panel currently holds. The rail lists these under its AI
+  // row — in a floating-panel workspace the conversation you are in is
+  // otherwise only visible by reading the panels themselves — and marks the
+  // matching row in its history tree. A panel's bound conversation lives in
+  // localStorage, which is not reactive, so this re-reads on the same index
+  // event AiPanel publishes when a conversation is created, renamed or
+  // switched.
+  const [openConversations, setOpenConversations] = useState<
+    { panelId: string; convoId: string; title: string }[]
+  >([]);
+  useEffect(() => {
+    const read = () => {
+      const stored = loadConversations<Conversation>();
+      setOpenConversations(
+        aiPanels.flatMap((panel) => {
+          const convoId = loadPanelSession(panel.id)?.convoId;
+          if (!convoId) return [];
+          const convo = stored.find((c) => c.id === convoId);
+          // A session pointing at a pruned conversation is not something to
+          // show — the panel is showing an empty chat, and so should the rail.
+          if (!convo) return [];
+          return [{ panelId: panel.id, convoId, title: convo.title || "Untitled" }];
+        }),
+      );
+    };
+    read();
+    window.addEventListener(CONVERSATIONS_CHANGED_EVENT, read);
+    return () => window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, read);
+  }, [aiPanels]);
+
   const [skills, setSkills] = useState<Skill[]>(() => loadSkills());
 
   const reloadFilesystemSkills = useCallback(async () => {
@@ -548,6 +594,123 @@ function App() {
       return;
     }
   }
+
+  // ── The rail ─────────────────────────────────────────────────────────
+  // The workbench's half of the one sidebar. Focus assembles the same shapes
+  // in FocusMode; between them, `nav` and where a conversation lands are the
+  // only things the two shells' rails still differ in.
+
+  /** Reveal the AI surface and put the focus on one panel. */
+  function revealAiPanel(panelId: string) {
+    back();
+    if (aiPanels.length === 0) ensureAiRect();
+    setAiVisible(true);
+    focusPanel(panelId);
+  }
+
+  /** "New task". A panel holding no conversation is already a blank one, so
+   *  reuse it; otherwise the task gets its own panel rather than displacing a
+   *  conversation that may still be running. Over a canvas of floating panels
+   *  a second panel *is* the new task. */
+  function startWorkbenchTask() {
+    if (!openConversations.some((c) => c.panelId === primaryPanelId)) {
+      revealAiPanel(primaryPanelId);
+      return;
+    }
+    back();
+    setAiVisible(true);
+    appendAiPanel();
+  }
+
+  /** Resume a conversation the rail's tree points at, into an AI panel. Focus
+   *  does the same work against its own canvas (see `onOpenConversation` on
+   *  <FocusMode>) — one set of rules, one surface each. */
+  function openConversationInAiPanel(convo: Conversation) {
+    // A conversation from another project's history brings its project along —
+    // resuming it against the wrong workspace would point every tool at the
+    // wrong tree.
+    const legacyWorkspace = legacyAutoRunWorkspace(convo);
+    // Legacy ordinary conversations were auto-isolated before that policy was
+    // removed. Reopen those on the Workspace; intentional worktree
+    // conversations stay pinned.
+    const resumed = legacyWorkspace
+      ? { ...convo, cwd: legacyWorkspace, branch: null, worktree: null }
+      : convo;
+    markFolderWorked(resumed.cwd);
+    const owningWorkspace =
+      linkedProjectForPath(resumed.cwd, recentFolders) ??
+      canonicalWorkspaceRoot(resumed.cwd);
+    if (owningWorkspace && owningWorkspace !== workspaceRoot) changeRoot(owningWorkspace);
+    // Already open in a panel? Raise that one instead of loading a second copy
+    // of the same conversation into another.
+    const bound = openConversations.find((c) => c.convoId === convo.id);
+    const panelId = bound?.panelId ?? primaryPanelId;
+    setAiPanelCwd(panelId, legacyWorkspace ? undefined : convo.cwd ?? undefined);
+    if (!bound) targetResume(panelId, resumed);
+    revealAiPanel(panelId);
+  }
+
+  const railNav: RailNavItem[] = [
+    {
+      id: "new-task",
+      label: "New task",
+      icon: <NewTaskIcon size={15} />,
+      onClick: () => startWorkbenchTask(),
+    },
+    {
+      id: "explorer",
+      label: "Explorer",
+      icon: <FolderIcon size={15} />,
+      active: activityState.explorer,
+      onClick: (meta) => togglePanel("explorer", meta),
+    },
+    {
+      id: "git",
+      label: "Git",
+      icon: <GitIcon size={15} />,
+      active: activityState.git,
+      onClick: () => togglePanel("git"),
+    },
+    {
+      id: "ai",
+      label: "AI",
+      icon: <AiIcon size={15} />,
+      active: activityState.ai,
+      // A plain row: show or hide the AI surface. What it is *holding* is
+      // answered by the tree below, which marks every open conversation — this
+      // used to unfold a second list of the same rows, which read as the same
+      // thing twice with one panel open.
+      onClick: (meta) => togglePanel("ai", meta),
+    },
+    {
+      id: "runs",
+      label: "Mission Control",
+      icon: <MissionIcon size={15} />,
+      active: activityState.runs,
+      onClick: () => togglePanel("runs"),
+    },
+    {
+      id: "orchestrator",
+      label: "Orchestrator",
+      icon: <OrchestratorIcon size={15} />,
+      active: activityState.orchestrator,
+      onClick: () => togglePanel("orchestrator"),
+    },
+    {
+      id: "memory",
+      label: "Memory",
+      icon: <MemoryIcon size={15} />,
+      active: activityState.memory,
+      onClick: () => togglePanel("memory"),
+    },
+    {
+      id: "skills",
+      label: "Skills",
+      icon: <SkillsIcon size={15} />,
+      active: activityState.skills,
+      onClick: (meta) => togglePanel("skills", meta),
+    },
+  ];
 
   function applyLayout(layout: {
     explorer: boolean;
@@ -2077,53 +2240,52 @@ function App() {
           </div>
         ) : (
           <>
-            {/* Focus is chat-first: the icon rail steps back while the focus
-                screen itself is showing (its own rail carries navigation —
-                projects, Mission Control, profile). Overlay views opened from
-                it (Mission Control, Git) bring the rail back. */}
+            {/* The one rail. Focus renders the very same component with its own
+                `nav` — the two sidebars used to be separate components and had
+                drifted into two different apps. What the workbench adds here is
+                the panel tools only it can open (Explorer, Git, AI); what it
+                gains is the conversation history that used to exist in Focus
+                alone. Focus hides the rail because it draws its own copy. */}
             {showsRail(surface) && (
-            <ActivityBar
-              active={activityState}
-              onToggle={togglePanel}
-              onSearch={() => setPaletteOpen(true)}
-              onEnterFocus={enterFocus}
-              homeLabel={workspaceRoot?.split("/").filter(Boolean).pop()}
-              submenus={{
-                // Home is the project-level entry — switching lives there.
-                // Explorer stays purely "open the file tree".
-                home: {
-                  title: "Recent projects",
-                  items: recentFolders.slice(0, 6).map((folder) => ({
-                    key: folder,
-                    label: folder.split("/").filter(Boolean).pop() ?? folder,
-                    active: folder === workspaceRoot,
-                    onSelect: () => changeRoot(folder),
-                  })),
-                },
-                settings: {
-                  title: "Settings",
-                  items: (
-                    [
-                      ["general", "General"],
-                      ["appearance", "Appearance"],
-                      ["editor", "Editor"],
-                      ["ai", "AI & Harness"],
-                      ["api", "API Keys"],
-                      ["layout", "Layout"],
-                      ["stats", "Stats"],
-                    ] as const
-                  ).map(([section, label]) => ({
-                    key: section,
-                    label,
-                    onSelect: () => {
-                      setSettingsInitial(section);
-                      openOverlay("settings");
-                    },
-                  })),
-                },
-              }}
+            <WorkspaceRail
+              workspaceRoot={workspaceRoot}
+              projects={recentFolders}
+              nav={railNav}
+              activeProvider={aiPanels[0]?.provider ?? "ollama"}
+              /* The focused panel's conversation is the one you are looking
+                 at, so it takes the tree's active route; the rest are marked
+                 as merely open. */
+              selectedConversationId={
+                openConversations.find((c) => c.panelId === focusedPanel)?.convoId ??
+                openConversations.find((c) => c.panelId === primaryPanelId)?.convoId ??
+                openConversations[0]?.convoId ??
+                null
+              }
+              openConversationIds={openConversations.map((c) => c.convoId)}
+              onSwitchProject={changeRoot}
+              onOpenConversation={openConversationInAiPanel}
+              onConversationUnavailable={(convo) =>
+                notify(
+                  `"${convo.title || "That conversation"}" is no longer in local history.`,
+                  { tone: "warn" },
+                )
+              }
+              onOpenSettings={() => togglePanel("settings")}
+              onOpenProfile={() => togglePanel("profile")}
+              footActions={
+                <button
+                  type="button"
+                  className="klide-rail-view-switch"
+                  aria-label="Focus layout"
+                  title="Focus layout"
+                  onClick={enterFocus}
+                >
+                  <FocusLayoutIcon size={14} />
+                </button>
+              }
             />
             )}
+
             {/* Everything right of the rail — the views and the status bar —
                 is one column, so the bar stops at the rail's inner edge. */}
             <div className="klide-shell-col">

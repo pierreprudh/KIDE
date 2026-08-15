@@ -1,0 +1,1320 @@
+// WorkspaceRail — the app's one sidebar.
+//
+// There used to be two. Focus drew a full-height rail (actions over a project
+// tree of conversations, identity at the foot); the free/anchored workbench drew
+// a separate ActivityBar (icon tools, a collapse pebble, hover flyouts). They
+// shared a destinations module and a set of `.klide-rail-*` classes and drifted
+// apart anyway — the same workspace looked like two different apps depending on
+// which layout you were in, and the conversation history simply did not exist
+// outside Focus.
+//
+// This is Focus's rail, generalised. Both shells render it and differ only in
+// what they hand it:
+//
+//   nav        the rows above the tree. Focus: New task, Mission Control,
+//              Orchestrator, Memory, Skills. The workbench adds the panel
+//              tools it alone can open — Explorer, Git, AI.
+//   footActions the icon buttons on the identity row's ragged right edge —
+//              each shell's way out to the other one, plus Focus's terminal.
+//   onOpenConversation  where a click in the tree lands. Focus resumes it on
+//              its own canvas; the workbench resumes it into an AI panel.
+//
+// Everything else — the search row, the project list, the provider groups, the
+// reveal choreography, the destinations at the foot — is defined once, here.
+//
+// The `klide-focus-*` class names are historical: this markup was Focus's, and
+// renaming ~300 CSS rules would have been the risky half of a change whose
+// point was to stop the two rails drifting. Read them as "the rail's".
+
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import { CloseIcon, FolderIcon, SearchIcon } from "../icons";
+import { Z } from "../zLayers";
+import { railDestination } from "../railDestinations";
+import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
+import {
+  CONVERSATIONS_CHANGED_EVENT,
+  loadConversations,
+  type ConversationChangedDetail,
+} from "./ai/storedConversations";
+import { relativeTime, isSubsequence } from "./ai/utils";
+import type { Conversation } from "./ai/types";
+import type { ProviderId } from "../agent/types";
+import { isDelegateProvider, providerName } from "../agent/providers";
+import { DotGridLoader, ProviderLogo } from "./ai/icons";
+import { modelIdentity } from "../modelIdentity";
+import { useIsConversationRunning } from "../runningConversations";
+import { keepOrder, providerHistoryExpanded } from "../focusHistory";
+import { canonicalWorkspaceRoot, linkedProjectForPath } from "../projectPaths";
+
+/** A row above the tree. `onClick` receives the meta/ctrl modifier so the
+ *  workbench can keep ⌘+click stacking on its sidebar tools. */
+export type RailNavItem = {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  active?: boolean;
+  onClick: (meta: boolean) => void;
+};
+
+type Props = {
+  workspaceRoot: string | null;
+  /** Recent project roots (the same list the Projects menu shows). */
+  projects: string[];
+  nav: RailNavItem[];
+  /** The provider whose group opens by default when the user has expressed no
+   *  preference — the one the host is actually dispatching to. */
+  activeProvider: ProviderId;
+  /** The conversation the host is actually showing — one, always. It wears the
+   *  active route through the tree: the branch that leads to it, drawn in the
+   *  accent. That route is what says "you are here". */
+  selectedConversationId?: string | null;
+  /** Every conversation loaded somewhere right now. In Focus that is the
+   *  selected one and nothing else; over the workbench's floating panels it is
+   *  one per open AI panel, and the rail is the only surface that can say so.
+   *  These read as strong text — present, but not where you are looking. */
+  openConversationIds?: readonly string[];
+  onSwitchProject: (root: string) => void;
+  /** A tree row was opened. The conversation has already been re-resolved
+   *  against durable history, so this is a record that exists. */
+  onOpenConversation: (convo: Conversation) => void;
+  /** The row pointed at a conversation local history no longer holds. */
+  onConversationUnavailable?: (convo: Conversation) => void;
+  /** Fired before any rail navigation, so a host can drop transient canvas
+   *  state (Focus clears its "conversation unavailable" screen). */
+  onNavigateAway?: () => void;
+  onOpenSettings: () => void;
+  onOpenProfile: () => void;
+  /** Icon buttons on the identity row's ragged right edge. */
+  footActions?: ReactNode;
+  /** Bump to re-read local history — for host events the rail cannot see
+   *  (Focus leaving its live chat). The changed-conversations event covers
+   *  the rest. */
+  reloadKey?: string | number | boolean;
+};
+
+function basename(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+/** Build the workspace roots the rail lists. */
+export function railProjectRoots(
+  projects: readonly string[],
+  activeWorkspaceRoot: string | null | undefined,
+): string[] {
+  const activeProjectRoot = canonicalWorkspaceRoot(activeWorkspaceRoot);
+  const seen = new Set<string>();
+  const roots: string[] = [];
+  for (const project of projects) {
+    const normalized = canonicalWorkspaceRoot(project);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    roots.push(normalized);
+  }
+  if (activeProjectRoot && !seen.has(activeProjectRoot)) roots.push(activeProjectRoot);
+  return roots;
+}
+
+/* Glyphs come from ../icons — one vocabulary for the whole app. This file only
+   decides density: rail rows at 15px. */
+const RAIL_GLYPH = 15;
+
+/* Settings + Profile come from ../railDestinations — one definition of what
+   the app's destinations are. */
+const settingsDest = railDestination("settings");
+const profileDest = railDestination("profile");
+
+/** The curve turning off a spine into its row.
+ *
+ *  It draws only the turn — the vertical is the spine's own `::before` in
+ *  tokens.css. The path starts at x=0.5 (the spine's pixel) with a vertical
+ *  tangent and ends with a horizontal one, so the two strokes read as a single
+ *  continuous line rather than a border meeting an SVG.
+ *
+ *  It also starts *below* the spine's top, at the same y the spine's own
+ *  segment stops for a last child (`--rail-branch-depart`) — so the two never
+ *  paint the same pixel twice. That matters: the line is semi-transparent, and
+ *  a doubled stroke would darken exactly the stretch meant to look seamless.
+ *
+ *  The viewBox is 1:1 with the box CSS gives it, so these numbers are pixels: a
+ *  quarter-circle of radius 8 from (.5, 7) down to (8.5, 15) — the row's
+ *  junction — then a short run that stops `--rail-branch-gap` short of the
+ *  row's icon. Note the arc is exactly a quarter: dx and dy both equal the
+ *  radius, which is what makes it tangent-vertical where it leaves the trunk
+ *  and tangent-horizontal where it reaches the row. An arc rather than a
+ *  hand-tuned bezier because its curvature is constant; in a 1px hairline the
+ *  eye reads any variation as a kink. So trunk, turn and run are one stroke.
+ *
+ *  The 13 is the box width CSS computes (spine → icon, less the clearance); the
+ *  radius and start match `--rail-branch-radius` / `--rail-branch-depart`, which
+ *  is exactly where the trunk's own segment stops. All four move together — if
+ *  you retune one, retune the others. */
+function TreeElbow() {
+  return (
+    <span className="klide-focus-tree-elbow" aria-hidden="true">
+      <svg viewBox="0 0 13 16" fill="none" shapeRendering="geometricPrecision">
+        <path
+          className="klide-focus-tree-elbow-base"
+          d="M.5 7 A8 8 0 0 0 8.5 15 H13"
+          stroke="currentColor"
+          vectorEffect="non-scaling-stroke"
+          /* Normalises the path to 100 units so the reveal's dash animation in
+             tokens.css is independent of the radius. */
+          pathLength={100}
+        />
+        {/* Selection is a second stroke over the resting tree. Keeping the
+            neutral path underneath lets the active colour sweep around the
+            turn without making the branch disappear while it draws. */}
+        <path
+          className="klide-focus-tree-elbow-active"
+          d="M.5 7 A8 8 0 0 0 8.5 15 H13"
+          vectorEffect="non-scaling-stroke"
+          pathLength={100}
+        />
+      </svg>
+    </span>
+  );
+}
+
+/* The rail runs on one indentation grid defined in tokens.css: a row's icon
+   box sits at `--rail-row-pad`, so its centre line is `--rail-spine`, and a
+   nested group hangs a hairline spine there and steps its content by
+   `--rail-step`. Nesting is structural CSS — no hard-coded pixel indents. */
+
+// One shared rail row for navigation and workspace disclosure. Hover/focus
+// styling lives in CSS so pointer movement does not trigger React renders.
+function NavRow({
+  icon,
+  label,
+  onClick,
+  active = false,
+  expanded,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: (meta: boolean) => void;
+  active?: boolean;
+  /** When defined, the row is a disclosure — a small chevron turns with it. */
+  expanded?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => onClick(e.metaKey || e.ctrlKey)}
+      aria-current={active ? "page" : undefined}
+      aria-expanded={expanded}
+      className="klide-focus-nav-row"
+      data-active={active || undefined}
+    >
+      <span className="klide-focus-nav-icon">{icon}</span>
+      <span className="klide-focus-nav-label">{label}</span>
+      {expanded !== undefined && (
+        <span className="klide-focus-nav-chevron" data-expanded={expanded || undefined} aria-hidden>
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** The sticky project name. Wraps the row rather than being it, so its opaque
+ *  background paints *beneath* the row's own hover/active fill — a pseudo-element
+ *  on the row itself could not, since negative z-index children paint above
+ *  their parent's background, not below it.
+ *
+ *  CSS cannot tell a sticky element that it has stuck, so the pinned hairline
+ *  needs an observer — and it has to watch a zero-size sentinel at the block's
+ *  top rather than the header itself. Observing the header directly (ratio < 1
+ *  against a 1px-shrunk root) reports "stuck" for any header that is merely
+ *  clipped at the *bottom* of the scroller too, so every project below the fold
+ *  wears the pinned hairline while sitting still.
+ *
+ *  The sentinel has one job: it scrolls away. Un-intersecting *and* above the
+ *  scroller's top edge means the header has taken its place; un-intersecting
+ *  below means the block simply has not been reached. */
+function ProjectHead({
+  scrollRoot,
+  children,
+}: {
+  scrollRoot: React.RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}) {
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const [pinned, setPinned] = useState(false);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const root = scrollRoot.current;
+    if (!sentinel || !root) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const rootTop = root.getBoundingClientRect().top;
+        setPinned(!entry.isIntersecting && entry.boundingClientRect.top <= rootTop);
+      },
+      { root, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [scrollRoot]);
+
+  return (
+    <>
+      <div ref={sentinelRef} className="klide-focus-project-sentinel" aria-hidden />
+      <div className="klide-focus-project-head" data-pinned={pinned || undefined}>
+        {children}
+      </div>
+    </>
+  );
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return <h2 className="klide-focus-section-label">{children}</h2>;
+}
+
+function ConvoRow({
+  convo,
+  onOpen,
+  indent = false,
+  selected = false,
+  open = false,
+  onSelectedPath = false,
+  revealDelay,
+}: {
+  convo: Conversation;
+  onOpen: () => void;
+  indent?: boolean;
+  selected?: boolean;
+  /** Loaded in a panel, but not the one being shown. Strong text, no route —
+   *  the step below `selected`, per the rule in tokens.css that the active
+   *  route is what carries "you are here" while the row stays calm. */
+  open?: boolean;
+  /** Marks the vertical history segment leading to the selected conversation. */
+  onSelectedPath?: boolean;
+  /** Set only for rows in a tree — a flat search result appears at once. */
+  revealDelay?: string;
+}) {
+  const identity = modelIdentity(convo.model);
+  const ModelLogo = identity?.Logo;
+  const running = useIsConversationRunning(convo.id);
+  // Captured once: see `useEntranceValue`. Recomputing this from the row's
+  // current index is what made the tree replay on every list update.
+  const entranceDelay = useEntranceValue(revealDelay);
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      /* One line, most urgent fact first — the tooltip is where a screen
+         reader and a hovering pointer get what the route and the text weight
+         say silently. */
+      title={
+        running
+          ? `${convo.title} — running`
+          : open && !selected
+            ? `${convo.title} — open in a panel`
+            : convo.title
+      }
+      className="klide-focus-convo-row"
+      data-nested={indent || undefined}
+      data-selected={selected || undefined}
+      data-open={(open && !selected) || undefined}
+      data-selected-path={onSelectedPath || undefined}
+      /* How the slide finds this row again after the list re-sorts. */
+      data-convo-id={convo.id}
+      aria-current={selected ? "page" : undefined}
+      style={
+        entranceDelay ? ({ "--rail-reveal-delay": entranceDelay } as CSSProperties) : undefined
+      }
+    >
+      {indent ? <TreeElbow /> : null}
+      <span className="klide-focus-convo-content">
+        {ModelLogo ? (
+          <span className="klide-focus-convo-model" title={identity.name} aria-hidden="true">
+            <ModelLogo size={15} />
+          </span>
+        ) : null}
+        <span className="klide-focus-convo-title">{convo.title || "Untitled"}</span>
+        {/* The trailing slot says one thing at a time. While a run is going,
+            "4m ago" is the least interesting fact about the row — the panel's
+            own working animation takes the slot instead, so the same motion
+            means the same thing in the rail as it does inside the chat. It
+            replaces the timestamp rather than sitting next to it: the row keeps
+            one trailing mark, and no badge is added to a rail that deliberately
+            has none. */}
+        {running ? (
+          <span className="klide-focus-convo-live">
+            <DotGridLoader size={11} color="var(--accent)" label="Running" />
+          </span>
+        ) : (
+          <span className="klide-focus-convo-time">{relativeTime(convo.updatedAt)}</span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+type ProviderHistory = {
+  provider: ProviderId;
+  conversations: Conversation[];
+  updatedAt: number;
+};
+
+function groupHistoryByProvider(conversations: Conversation[]): ProviderHistory[] {
+  const groups = new Map<ProviderId, Conversation[]>();
+
+  for (const conversation of conversations) {
+    const conversationProvider = conversation.provider ?? "ollama";
+    const existing = groups.get(conversationProvider);
+    if (existing) existing.push(conversation);
+    else groups.set(conversationProvider, [conversation]);
+  }
+
+  return Array.from(groups, ([groupProvider, groupedConversations]) => {
+    groupedConversations.sort((a, b) => b.updatedAt - a.updatedAt);
+    return {
+      provider: groupProvider,
+      conversations: groupedConversations,
+      updatedAt: groupedConversations[0]?.updatedAt ?? 0,
+    };
+  }).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** Composite map key. The separator is a NUL escape rather than a literal
+ *  control character in the source — a raw one makes every grep over this file
+ *  report it as binary and go silent. */
+function providerHistoryKey(project: string, historyProvider: ProviderId): string {
+  return `${project}\u0000${historyProvider}`;
+}
+
+/* ── Expand choreography ───────────────────────────────────────────────────
+   Opening a project reveals its tree in two beats: the providers cascade top to
+   bottom, then the conversations beneath them follow. Each row carries its own
+   `--rail-reveal-delay`, computed from its index here and consumed by the
+   keyframes in tokens.css — DOM order drives the cascade, so there is no stack
+   of nth-child rules to keep in sync with the data.
+
+   The steps are much shorter than each row's own animation (see the envelope in
+   tokens.css), so a row starts while the row above it is still settling. That
+   overlap is the whole point: it reads as one wave travelling down the tree.
+   Widen these and the cascade degrades into a queue of separate animations —
+   the choppiness is in the gaps, not in the durations.
+
+   The cap matters: a project with forty conversations must not turn a half-
+   second reveal into a four-second one. Past the cap rows share the last delay
+   and land together. */
+const PROVIDER_REVEAL_STEP_MS = 30;
+const CONVO_REVEAL_STEP_MS = 20;
+/** Beat between the provider wave and the conversation wave. Small on purpose:
+ *  the two should overlap enough to feel continuous while still reading in
+ *  order. */
+const REVEAL_PHASE_GAP_MS = 40;
+const REVEAL_STAGGER_CAP = 12;
+
+/** How many projects the rail lists. The rest are reached through "More", which
+ *  runs the same Open Folder… the macOS File menu does — the rail stays a short
+ *  list of what you are working on rather than a full recents browser. */
+const PROJECT_ROW_LIMIT = 3;
+const CONVERSATION_ROW_LIMIT = 5;
+
+/** The rows a collapsed provider group shows.
+ *
+ *  The newest few, plus any conversation that is loaded in a panel right now:
+ *  the rail is what tells you what is open, so an open conversation must never
+ *  be the thing hiding behind "More". Pinned rows take the tail slots and keep
+ *  their place in the newest-first order, and the window never grows past the
+ *  limit — a collapsed group is a fixed height by design. */
+export function visibleProviderConversations(
+  conversations: Conversation[],
+  showAll: boolean,
+  pinnedConversationIds: ReadonlySet<string> = new Set(),
+): Conversation[] {
+  if (showAll || conversations.length <= CONVERSATION_ROW_LIMIT) return conversations;
+  // Pinned rows claim their slots first, wherever they sit in the history —
+  // taking the newest five and then patching the pinned ones into the tail
+  // drops any pinned row that happened to be recent enough to already be there.
+  const pinned = conversations
+    .filter((conversation) => pinnedConversationIds.has(conversation.id))
+    .slice(0, CONVERSATION_ROW_LIMIT);
+  const newestFill = conversations
+    .filter((conversation) => !pinnedConversationIds.has(conversation.id))
+    .slice(0, CONVERSATION_ROW_LIMIT - pinned.length);
+  const keep = new Set([...pinned, ...newestFill].map((conversation) => conversation.id));
+  // Filtered from the source, so the window keeps newest-first order rather
+  // than the order the two groups happened to be assembled in.
+  return conversations.filter((conversation) => keep.has(conversation.id));
+}
+
+/** Re-resolve a rail snapshot at click time; rendered history can be stale if
+ * another panel pruned or rewrote the local index between render and click. */
+export function retrievableConversation(
+  conversationId: string,
+  conversations: Conversation[],
+): Conversation | null {
+  return conversations.find(
+    (conversation) =>
+      conversation.id === conversationId && Array.isArray(conversation.msgs),
+  ) ?? null;
+}
+
+function revealDelay(index: number, stepMs: number, baseMs = 0): string {
+  return `${baseMs + Math.min(index, REVEAL_STAGGER_CAP) * stepMs}ms`;
+}
+
+/** A value captured when its element enters, and kept for that element's life.
+ *
+ *  The cascade is an entrance, not a state. Its delays end up as real
+ *  `animation-delay` values on live elements, and mutating one re-phases an
+ *  animation that has already played — the row hides and replays. Since a
+ *  row's delay was computed from its *current index*, any re-sort rewrote
+ *  every delay below the row that moved, and the whole tree replayed its
+ *  entrance. The list re-sorts by `updatedAt`, which a running conversation
+ *  bumps on every message, so the rail re-displayed itself continuously while
+ *  an agent worked.
+ *
+ *  Freezing it means a row animates once, when it arrives. A row that arrives
+ *  later is a new element and captures its own delay; a collapsed group
+ *  unmounts, so re-opening it still cascades. Movement afterwards is the
+ *  slide's business (`useRowSlide`), not the entrance's. */
+function useEntranceValue<T>(value: T): T {
+  const [entrance] = useState(value);
+  return entrance;
+}
+
+/** Slide rows to their new positions instead of teleporting them.
+ *
+ *  Standard FLIP: remember where each row was, and after the DOM moves it,
+ *  start it from the offset it just left and let it travel to zero. Only rows
+ *  that actually moved animate — a row arriving for the first time has no
+ *  previous position and keeps its entrance instead.
+ *
+ *  It reads geometry in a layout effect, before paint, so the row is never
+ *  seen in the wrong place. `translateY` only: transform and opacity are the
+ *  two properties that don't touch layout, and the tree's trunks and curves
+ *  are laid out around these rows. */
+function useRowSlide(
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  order: string,
+): void {
+  const previousTops = useRef<Map<string, number>>(new Map());
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-convo-id]"),
+    );
+    const containerTop = container.getBoundingClientRect().top;
+    const previous = previousTops.current;
+    const next = new Map<string, number>();
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    for (const row of rows) {
+      const id = row.dataset.convoId;
+      if (!id) continue;
+      const top = row.getBoundingClientRect().top - containerTop;
+      next.set(id, top);
+      const was = previous.get(id);
+      if (still || was === undefined || Math.abs(was - top) < 0.5) continue;
+      row.animate(
+        [{ transform: `translateY(${was - top}px)` }, { transform: "translateY(0)" }],
+        // The rail's own easing token, spelled out: the Web Animations API
+        // resolves no custom properties. Keep it equal to `--ease-soft`.
+        { duration: 260, easing: "cubic-bezier(0.32, 0.72, 0, 1)" },
+      );
+    }
+    previousTops.current = next;
+  }, [containerRef, order]);
+}
+
+function ProviderHistoryGroup({
+  group,
+  expanded,
+  selectedConversationId,
+  openConversationIds,
+  revealIndex,
+  conversationRevealBase,
+  onToggle,
+  onOpen,
+}: {
+  group: ProviderHistory;
+  expanded: boolean;
+  selectedConversationId?: string;
+  /** Loaded in some panel — marked a step below the selected one. */
+  openConversationIds: ReadonlySet<string>;
+  /** Position in the provider cascade — 0 is the first to appear. */
+  revealIndex: number;
+  /** Delay this group's conversations wait out before their own cascade. Zero
+   *  when only this provider was toggled: nothing else is animating, so the
+   *  click must be answered immediately rather than after a dead pause. */
+  conversationRevealBase: number;
+  onToggle: () => void;
+  onOpen: (conversation: Conversation) => void;
+}) {
+  const [showAllConversations, setShowAllConversations] = useState(false);
+  const conversationListRef = useRef<HTMLDivElement>(null);
+  const groupEntranceDelay = useEntranceValue(
+    revealDelay(revealIndex, PROVIDER_REVEAL_STEP_MS),
+  );
+  const listEntranceBase = useEntranceValue(conversationRevealBase);
+  // A re-sort moves rows; this carries them there. The order string is the
+  // whole point — the effect must run when the sequence changes, not when a
+  // title or a timestamp does.
+  useRowSlide(conversationListRef, group.conversations.map((c) => c.id).join());
+  const disclosureStartHeightRef = useRef<number | null>(null);
+  const disclosureAnimationRef = useRef<Animation | null>(null);
+  const readOnly = isDelegateProvider(group.provider);
+  const selectedConversationIndex = selectedConversationId === undefined
+    ? -1
+    : group.conversations.findIndex((conversation) => conversation.id === selectedConversationId);
+  const containsSelectedConversation = selectedConversationIndex >= 0;
+  const countLabel = `${group.conversations.length} ${group.conversations.length === 1 ? "conversation" : "conversations"}`;
+  // Everything loaded in a panel is pinned into the collapsed window — the
+  // selected one included, since the host always reports it as open too.
+  const visibleConversations = visibleProviderConversations(
+    group.conversations,
+    showAllConversations,
+    openConversationIds,
+  );
+  const visibleSelectedConversationIndex = selectedConversationId === undefined
+    ? -1
+    : visibleConversations.findIndex((conversation) => conversation.id === selectedConversationId);
+  const hasMoreConversations = group.conversations.length > CONVERSATION_ROW_LIMIT;
+
+  /* `height: auto` cannot transition cleanly. Capture the old intrinsic height
+     at click time, then let the browser interpolate to the newly rendered
+     height while the existing row/branch choreography plays inside it. */
+  useLayoutEffect(() => {
+    const conversationList = conversationListRef.current;
+    const startHeight = disclosureStartHeightRef.current;
+    disclosureStartHeightRef.current = null;
+
+    if (conversationList === null || startHeight === null) return;
+
+    const targetHeight = conversationList.getBoundingClientRect().height;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reducedMotion || Math.abs(targetHeight - startHeight) < 1) return;
+
+    conversationList.style.overflow = "hidden";
+    const animation = conversationList.animate(
+      [
+        { height: `${startHeight}px` },
+        { height: `${targetHeight}px` },
+      ],
+      {
+        duration: showAllConversations ? 460 : 360,
+        easing: "cubic-bezier(0.32, 0.72, 0, 1)",
+      },
+    );
+    disclosureAnimationRef.current = animation;
+
+    const releaseList = () => {
+      if (disclosureAnimationRef.current !== animation) return;
+      conversationList.style.removeProperty("overflow");
+      disclosureAnimationRef.current = null;
+    };
+    animation.addEventListener("finish", releaseList, { once: true });
+    animation.addEventListener("cancel", releaseList, { once: true });
+
+    return () => {
+      animation.cancel();
+      releaseList();
+    };
+  }, [expanded, showAllConversations]);
+
+  function toggleConversationDisclosure() {
+    disclosureStartHeightRef.current =
+      conversationListRef.current?.getBoundingClientRect().height ?? null;
+    setShowAllConversations((shown) => !shown);
+  }
+
+  return (
+    <div
+      className="klide-focus-provider-history"
+      data-readonly={readOnly || undefined}
+      data-contains-selected={containsSelectedConversation || undefined}
+      /* The wrapper carries the delay so its row, its trunk segment and its
+         curve all read the same value — captured on entry, like the rows'. */
+      style={{
+        "--rail-reveal-delay": groupEntranceDelay,
+      } as CSSProperties}
+    >
+      <button
+        type="button"
+        className="klide-focus-provider-history-row"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        /* Read-only is carried by the row's dimmer colour; the reason belongs
+           in the tooltip, not in a badge beside the name. */
+        title={`${providerName(group.provider)} · ${countLabel}${readOnly ? " · read only in Focus" : ""}`}
+      >
+        <TreeElbow />
+        <span className="klide-focus-provider-history-logo" aria-hidden="true">
+          <ProviderLogo id={group.provider} size={16} />
+        </span>
+        <span className="klide-focus-provider-history-name">
+          {providerName(group.provider)}
+        </span>
+        <span className="klide-focus-provider-history-count" aria-label={countLabel}>
+          {group.conversations.length}
+        </span>
+        <span className="klide-focus-provider-history-chevron" aria-hidden="true">
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        </span>
+      </button>
+
+      {expanded ? (
+        <>
+          {/* The container's own delay drives the segment climbing back up to
+              the provider's junction, so the trunk reaches down before the
+              first conversation fades in. Rows then override it with their
+              own. */}
+          <div
+            ref={conversationListRef}
+            className="klide-focus-provider-conversations"
+            data-contains-selected={containsSelectedConversation || undefined}
+            style={{ "--rail-reveal-delay": `${listEntranceBase}ms` } as CSSProperties}
+          >
+            {visibleConversations.map((conversation, index) => {
+              const disclosureIndex = showAllConversations
+                ? Math.max(0, index - CONVERSATION_ROW_LIMIT)
+                : index;
+              const disclosureBase = showAllConversations ? 0 : conversationRevealBase;
+
+              return (
+                <ConvoRow
+                  key={conversation.id}
+                  convo={conversation}
+                  indent
+                  revealDelay={revealDelay(disclosureIndex, CONVO_REVEAL_STEP_MS, disclosureBase)}
+                  selected={selectedConversationId === conversation.id}
+                  open={openConversationIds.has(conversation.id)}
+                  onSelectedPath={visibleSelectedConversationIndex >= index}
+                  onOpen={() => onOpen(conversation)}
+                />
+              );
+            })}
+          </div>
+          {hasMoreConversations ? (
+            <button
+              type="button"
+              className="klide-focus-more-conversations"
+              aria-expanded={showAllConversations}
+              aria-label={`${showAllConversations ? "Show fewer" : "Show all"} ${providerName(group.provider)} conversations`}
+              onClick={toggleConversationDisclosure}
+            >
+              {showAllConversations ? "Less" : "More"}
+            </button>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------- rail */
+
+export function WorkspaceRail({
+  workspaceRoot,
+  projects,
+  nav,
+  activeProvider,
+  selectedConversationId = null,
+  openConversationIds,
+  onSwitchProject,
+  onOpenConversation,
+  onConversationUnavailable,
+  onNavigateAway,
+  onOpenSettings,
+  onOpenProfile,
+  footActions,
+  reloadKey,
+}: Props) {
+  const activeProjectRoot = canonicalWorkspaceRoot(workspaceRoot);
+  // One Set for the render: every row in the tree asks it, and a host that only
+  // ever has one conversation loaded (Focus) can leave the prop off.
+  const openIds = useMemo(
+    () => new Set(openConversationIds ?? (selectedConversationId ? [selectedConversationId] : [])),
+    [openConversationIds, selectedConversationId],
+  );
+  const railProjects = useMemo(
+    () => railProjectRoots(projects, activeProjectRoot),
+    [activeProjectRoot, projects],
+  );
+  // The rail lists only the few projects you are actually moving between — a
+  // long recents list buries the history it is meant to introduce. "More"
+  // unfolds the rest; opening a project that is not among them is the macOS
+  // menu bar's job (File ▸ Open Folder…), not a second picker in here.
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const { username, hostname, avatarUrl } = useUserInfo();
+  const searchRef = useRef<HTMLInputElement>(null);
+  // The rail's scroller — the sticky project names observe it to know when they
+  // have pinned.
+  const railBodyRef = useRef<HTMLDivElement>(null);
+  // Several projects can hold their history open at once. The active project
+  // opens itself; the rest remember their state for the session.
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
+    () => new Set(activeProjectRoot ? [activeProjectRoot] : [])
+  );
+  // Absence means "follow the active provider". Explicit booleans preserve
+  // the user's disclosure choice independently for every project/provider.
+  const [expandedProviderGroups, setExpandedProviderGroups] = useState<Map<string, boolean>>(
+    () => new Map()
+  );
+  // Projects whose whole tree is being revealed, so their conversations wait out
+  // the provider cascade. A project drops out once a provider inside it is
+  // toggled on its own — from then on that click is the only thing animating and
+  // must be answered at once.
+  const [cascadingProjects, setCascadingProjects] = useState<Set<string>>(
+    () => new Set(activeProjectRoot ? [activeProjectRoot] : [])
+  );
+
+  useEffect(() => {
+    if (!activeProjectRoot) return;
+    setExpandedProjects((prev) => {
+      if (prev.has(activeProjectRoot)) return prev;
+      const next = new Set(prev);
+      next.add(activeProjectRoot);
+      return next;
+    });
+    // Switching to a project opens its tree, so that reveal is a full cascade.
+    setCascadingProjects((prev) => {
+      if (prev.has(activeProjectRoot)) return prev;
+      const next = new Set(prev);
+      next.add(activeProjectRoot);
+      return next;
+    });
+  }, [activeProjectRoot]);
+
+  function toggleProject(p: string) {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p);
+      else next.add(p);
+      return next;
+    });
+    setCascadingProjects((prev) => {
+      const next = new Set(prev);
+      next.add(p);
+      return next;
+    });
+  }
+
+  // `currentlyExpanded` is the state the row is actually rendering, resolved by
+  // providerHistoryExpanded at the call site. Taking it from there rather than
+  // recomputing a default here is the whole point: this used to fall back to
+  // `historyProvider === provider`, which disagrees with the renderer's
+  // "active OR newest" rule. On the newest group of a non-active provider the
+  // two answers differed, so the first click wrote the value the row already
+  // had and nothing moved — it took two clicks to collapse.
+  function toggleProviderHistory(
+    project: string,
+    historyProvider: ProviderId,
+    currentlyExpanded: boolean,
+  ) {
+    const key = providerHistoryKey(project, historyProvider);
+    setExpandedProviderGroups((prev) => {
+      const next = new Map(prev);
+      next.set(key, !currentlyExpanded);
+      return next;
+    });
+    // This click is now the only thing animating in that project.
+    setCascadingProjects((prev) => {
+      if (!prev.has(project)) return prev;
+      const next = new Set(prev);
+      next.delete(project);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (searchOpen) searchRef.current?.focus();
+  }, [searchOpen]);
+
+  const [convos, setConvos] = useState<Conversation[]>(
+    () => loadConversations<Conversation>(),
+  );
+
+  // Same-window localStorage writes do not emit the browser's `storage`
+  // event. AiPanel publishes this focused index event after the first durable
+  // snapshot, so a brand-new conversation arrives with its model logo while
+  // the rail stays mounted. `reloadKey` still reloads as a defensive fallback.
+  useEffect(() => {
+    const reload = (event: Event) => {
+      setConvos(loadConversations<Conversation>());
+      const detail = (event as CustomEvent<ConversationChangedDetail | undefined>).detail;
+      if (!detail) return;
+      const project = linkedProjectForPath(detail.cwd, railProjects);
+      if (!project) return;
+
+      // Work in a secondary AI panel still belongs in the rail. Reveal the
+      // owning project/provider rather than leaving the new row hidden
+      // because the primary panel happens to use another provider.
+      setExpandedProjects((previous) => {
+        if (previous.has(project)) return previous;
+        const next = new Set(previous);
+        next.add(project);
+        return next;
+      });
+      setExpandedProviderGroups((previous) => {
+        const key = providerHistoryKey(project, detail.provider);
+        if (previous.get(key) === true) return previous;
+        const next = new Map(previous);
+        next.set(key, true);
+        return next;
+      });
+    };
+    window.addEventListener(CONVERSATIONS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, reload);
+  }, [railProjects]);
+
+  useEffect(() => {
+    setConvos(loadConversations<Conversation>());
+  }, [reloadKey, searchOpen]);
+
+  const folderedHistory = useMemo(() => {
+    const byProject = new Map<string, Conversation[]>();
+    const projectByConversationId = new Map<string, string>();
+    for (const c of convos) {
+      const linkedProject = linkedProjectForPath(c.cwd, railProjects);
+      if (!linkedProject) continue;
+      projectByConversationId.set(c.id, linkedProject);
+      const list = byProject.get(linkedProject);
+      if (list) list.push(c);
+      else byProject.set(linkedProject, [c]);
+    }
+    return { byProject, projectByConversationId };
+  }, [convos, railProjects]);
+  const convosByProject = folderedHistory.byProject;
+  const linkedProjectByConversationId = folderedHistory.projectByConversationId;
+  // Recency picks the order; `keepOrder` decides when it is allowed to change.
+  // Without it the tree re-sorts on every message of every live run — see the
+  // note on `keepOrder` for what that looked like with two providers running.
+  const orderMemory = useRef<Map<string, string[]>>(new Map());
+  const providerHistoriesByProject = useMemo(() => {
+    const byProject = new Map<string, ProviderHistory[]>();
+    for (const [project, projectHistory] of convosByProject) {
+      const groups = groupHistoryByProvider(projectHistory).map((group) => ({
+        ...group,
+        conversations: keepOrder(
+          group.conversations,
+          (conversation) => conversation.id,
+          orderMemory.current,
+          providerHistoryKey(project, group.provider),
+        ),
+      }));
+      byProject.set(
+        project,
+        keepOrder(groups, (group) => group.provider, orderMemory.current, project),
+      );
+    }
+    return byProject;
+  }, [convosByProject]);
+
+  /* The rail lists only the few projects you are actually moving between — a
+     long recents list buries the history it is meant to introduce. "More"
+     unfolds the rest; opening a project that is not among them is the macOS
+     menu bar's job (File ▸ Open Folder…), not a second picker in here.
+
+     Two projects are never allowed into the hidden tail, whatever their
+     recency: the one that is open, or the rail stops describing where you
+     are — and any project holding a conversation that is loaded in a panel,
+     because the tree is what tells you what is open and it cannot do that from
+     behind a "More". */
+  const projectsOwningOpenConversations = useMemo(() => {
+    const owners = new Set<string>();
+    for (const conversationId of openIds) {
+      const owner = linkedProjectByConversationId.get(conversationId);
+      if (owner) owners.add(owner);
+    }
+    return owners;
+  }, [openIds, linkedProjectByConversationId]);
+
+  const visibleProjects = useMemo(() => {
+    if (showAllProjects || railProjects.length <= PROJECT_ROW_LIMIT) return railProjects;
+    const pinned = railProjects.filter(
+      (project) => project === activeProjectRoot || projectsOwningOpenConversations.has(project),
+    );
+    // Pinned first, in recency order, then fill the remaining slots from the
+    // top of the list. A workspace with more live panels than slots shows the
+    // panels — that is the more urgent fact — and "More" holds the rest.
+    const rest = railProjects.filter((project) => !pinned.includes(project));
+    return [...pinned, ...rest].slice(0, Math.max(PROJECT_ROW_LIMIT, pinned.length));
+  }, [
+    activeProjectRoot,
+    projectsOwningOpenConversations,
+    railProjects,
+    showAllProjects,
+  ]);
+  const hiddenProjectCount = railProjects.length - visibleProjects.length;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return convos
+      .filter(
+        (c) =>
+          (c.title || "").toLowerCase().includes(q) ||
+          isSubsequence(q, (c.title || "").toLowerCase())
+      )
+      .slice(0, 20);
+  }, [convos, query]);
+
+  function openHistoryConversation(conversation: Conversation) {
+    // The row is a rendered snapshot. Resolve it against durable local history
+    // once more before handing it to the host so a pruned/corrupt entry gets a
+    // deliberate empty state instead of reopening whichever chat was active.
+    const resolved = retrievableConversation(
+      conversation.id,
+      loadConversations<Conversation>(),
+    );
+    if (!resolved) {
+      onConversationUnavailable?.(conversation);
+      setSearchOpen(false);
+      setQuery("");
+      return;
+    }
+    const conversationProject = linkedProjectByConversationId.get(resolved.id);
+    if (conversationProject) {
+      const historyProvider = resolved.provider ?? "ollama";
+      setExpandedProjects((prev) => {
+        if (prev.has(conversationProject)) return prev;
+        const next = new Set(prev);
+        next.add(conversationProject);
+        return next;
+      });
+      setExpandedProviderGroups((prev) => {
+        const key = providerHistoryKey(conversationProject, historyProvider);
+        if (prev.get(key) === true) return prev;
+        const next = new Map(prev);
+        next.set(key, true);
+        return next;
+      });
+    }
+    // History is navigation, not a second reader mode. Resume the saved
+    // conversation into the fully wired AiPanel the host owns.
+    onOpenConversation(resolved);
+  }
+
+  /* A conversation that has just been loaded into a panel has to become
+     visible in the tree — pinning it into the collapsed row window is no use
+     if its provider group or its project is folded shut.
+
+     Only *newly* open ids do this. Re-running for the whole set on every
+     render would refuse to let you collapse a group while its conversation is
+     still loaded, which is a legitimate thing to want; this expands once, on
+     the transition, and then leaves the disclosure alone. */
+  /* Starts empty rather than at the current set, so a session that comes back
+     up with panels already restored reveals them on the first pass — the
+     default "active provider or newest" disclosure has no idea which
+     conversations a panel is holding. */
+  const revealedOpenIds = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const previouslyOpen = revealedOpenIds.current;
+    revealedOpenIds.current = openIds;
+    const arrived = [...openIds].filter((id) => !previouslyOpen.has(id));
+    if (arrived.length === 0) return;
+
+    const projectsToOpen: string[] = [];
+    const groupsToOpen: string[] = [];
+    for (const conversationId of arrived) {
+      const project = linkedProjectByConversationId.get(conversationId);
+      if (!project) continue;
+      projectsToOpen.push(project);
+      const conversationProvider =
+        convos.find((c) => c.id === conversationId)?.provider ?? "ollama";
+      groupsToOpen.push(providerHistoryKey(project, conversationProvider));
+    }
+    if (projectsToOpen.length === 0) return;
+
+    setExpandedProjects((prev) => {
+      if (projectsToOpen.every((project) => prev.has(project))) return prev;
+      const next = new Set(prev);
+      for (const project of projectsToOpen) next.add(project);
+      return next;
+    });
+    setExpandedProviderGroups((prev) => {
+      if (groupsToOpen.every((key) => prev.get(key) === true)) return prev;
+      const next = new Map(prev);
+      for (const key of groupsToOpen) next.set(key, true);
+      return next;
+    });
+  }, [openIds, linkedProjectByConversationId, convos]);
+
+  const searching = searchOpen && query.trim().length > 0;
+
+  return (
+    // The rail runs to the window's top edge and carries the traffic lights,
+    // so it doubles as the window's drag handle — its blank areas move the
+    // window the way a Mac sidebar does. Rows and buttons are their own event
+    // targets, so they still click through.
+    <aside
+      className="klide-focus-rail"
+      aria-label="Workspace navigation"
+      data-tauri-drag-region
+      /* Above the docks and above the free layout's floating panels — that band
+         climbs by one with every focus event, so the rail cannot hold a small
+         local z the way it could when only Focus rendered it. */
+      style={{ zIndex: Z.rail }}
+    >
+      {/* Brand row doubles as the search row: the field takes the brand slot
+          rather than pushing a new row in, so opening search never moves the
+          list it filters. */}
+      <div className="klide-focus-brand">
+        {searchOpen ? (
+          <input
+            ref={searchRef}
+            className="klide-focus-brand-search"
+            type="search"
+            name="conversation-search"
+            aria-label="Search conversations"
+            autoComplete="off"
+            spellCheck={false}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setSearchOpen(false);
+                setQuery("");
+              }
+            }}
+            placeholder="Search conversations…"
+          />
+        ) : (
+          /* Reserved slot — the logo drops in here. */
+          <span className="klide-focus-brand-slot" aria-hidden="true" />
+        )}
+        <button
+          type="button"
+          className="klide-focus-brand-action"
+          aria-label={searchOpen ? "Close conversation search" : "Search conversations"}
+          aria-expanded={searchOpen}
+          onClick={() => {
+            setSearchOpen((v) => !v);
+            setQuery("");
+          }}
+        >
+          {searchOpen ? <CloseIcon size={RAIL_GLYPH} /> : <SearchIcon size={RAIL_GLYPH} />}
+        </button>
+      </div>
+
+      <div className="klide-focus-nav-group">
+        {nav.map((item) => (
+          <NavRow
+            key={item.id}
+            icon={item.icon}
+            label={item.label}
+            active={item.active}
+            onClick={(meta) => {
+              onNavigateAway?.();
+              item.onClick(meta);
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Section break — a gradient hairline, not another written label,
+          separating the actions above from the workspace list below. */}
+      <div aria-hidden="true" className="klide-focus-rail-divider" />
+
+      <div className="klide-focus-rail-body" ref={railBodyRef}>
+        {searching ? (
+          <>
+            <SectionLabel>Results</SectionLabel>
+            {filtered.length === 0 ? (
+              <p className="klide-focus-rail-empty">No conversations match.</p>
+            ) : (
+              <div className="klide-focus-project-list">
+                {filtered.map((c) => (
+                  <ConvoRow
+                    key={c.id}
+                    convo={c}
+                    selected={selectedConversationId === c.id}
+                    open={openIds.has(c.id)}
+                    onOpen={() => openHistoryConversation(c)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {railProjects.length === 0 && (
+              <p className="klide-focus-rail-empty">Open a folder to start.</p>
+            )}
+            <div className="klide-focus-project-list">
+              {visibleProjects.map((p) => {
+                const isActive = p === activeProjectRoot;
+                const isExpanded = expandedProjects.has(p);
+                const history = convosByProject.get(p) ?? [];
+                const providerHistories = providerHistoriesByProject.get(p) ?? [];
+                return (
+                  <div key={p} className="klide-focus-project">
+                    {/* The project's name pins to the top of the rail while you
+                        read down its history, and hands over when the next
+                        project reaches it — so you always know whose
+                        conversations you are looking at. */}
+                    <ProjectHead scrollRoot={railBodyRef}>
+                      <NavRow
+                        icon={<FolderIcon size={14} />}
+                        label={basename(p)}
+                        active={isActive}
+                        expanded={isExpanded}
+                        onClick={() => {
+                          // Switching makes a project current; clicking the
+                          // current one just folds its history open/closed.
+                          if (isActive) toggleProject(p);
+                          else {
+                            onNavigateAway?.();
+                            onSwitchProject(p);
+                          }
+                        }}
+                      />
+                    </ProjectHead>
+                    {isExpanded && history.length > 0 ? (
+                      <div
+                        className="klide-focus-provider-groups"
+                        data-contains-selected={
+                          history.some((c) => c.id === selectedConversationId) || undefined
+                        }
+                      >
+                        {providerHistories.map((providerHistory, providerIndex) => {
+                          const key = providerHistoryKey(p, providerHistory.provider);
+                          const providerExpanded = providerHistoryExpanded(
+                            expandedProviderGroups.get(key),
+                            providerHistory.provider,
+                            activeProvider,
+                            providerHistories[0]?.provider,
+                          );
+                          return (
+                            <ProviderHistoryGroup
+                              key={providerHistory.provider}
+                              group={providerHistory}
+                              expanded={providerExpanded}
+                              selectedConversationId={selectedConversationId ?? undefined}
+                              openConversationIds={openIds}
+                              revealIndex={providerIndex}
+                              conversationRevealBase={
+                                cascadingProjects.has(p)
+                                  ? providerHistories.length * PROVIDER_REVEAL_STEP_MS +
+                                    REVEAL_PHASE_GAP_MS
+                                  : 0
+                              }
+                              onToggle={() =>
+                                toggleProviderHistory(
+                                  p,
+                                  providerHistory.provider,
+                                  providerExpanded,
+                                )
+                              }
+                              onOpen={openHistoryConversation}
+                            />
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {isExpanded && history.length === 0 ? (
+                      <p className="klide-focus-rail-empty" data-nested="true">
+                        No conversations yet.
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {/* Unfolds the rest of the recents. Opening a project that is not
+                  in that list belongs to the macOS menu bar — File ▸ Open
+                  Folder… (⌘O) — so the rail never grows a second picker. */}
+              {hiddenProjectCount > 0 || showAllProjects ? (
+                <button
+                  type="button"
+                  className="klide-focus-more-projects"
+                  aria-expanded={showAllProjects}
+                  onClick={() => setShowAllProjects((shown) => !shown)}
+                >
+                  {showAllProjects ? "Less" : "More"}
+                </button>
+              ) : null}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Destinations — read from one definition (../railDestinations) so
+          adding one never means editing two places. They are labeled rows like
+          every other row here; Profile is the exception, drawn as the identity
+          card because it has a name and a host to show. */}
+      <div className="klide-rail-dest-group">
+        <NavRow
+          icon={<settingsDest.Icon size={15} />}
+          label={settingsDest.label}
+          onClick={() => {
+            onNavigateAway?.();
+            onOpenSettings();
+          }}
+        />
+        {/* Identity row — the profile card takes the space its name and host
+            need, and the shell's own controls hang off the ragged right edge.
+            They sit apart from the destinations above because they change the
+            shell rather than opening a surface. */}
+        <div className="klide-rail-identity-row">
+          <button
+            type="button"
+            className="klide-rail-profile"
+            aria-label={`Open ${profileDest.label.toLowerCase()}`}
+            title={profileDest.label}
+            onClick={() => {
+              onNavigateAway?.();
+              onOpenProfile();
+            }}
+          >
+            <span className="klide-rail-profile-avatar" aria-hidden>
+              {initialsOf(username || "?")}
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  onError={(event) => { event.currentTarget.style.display = "none"; }}
+                />
+              ) : null}
+            </span>
+            <span className="klide-rail-profile-identity">
+              <span className="klide-rail-profile-name">{username || "Local profile"}</span>
+              <span className="klide-rail-profile-host">{hostname}</span>
+            </span>
+          </button>
+          {footActions}
+        </div>
+      </div>
+    </aside>
+  );
+}

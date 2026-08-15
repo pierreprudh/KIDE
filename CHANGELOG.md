@@ -8,6 +8,32 @@ Work on the v0.6 line. The orchestration milestone itself — Missions as
 outcomes, budgets, capacity, capability routing, validation contracts — is still
 open; these are the shell and correctness changes landed so far.
 
+### One sidebar
+
+- Focus and the free/anchored workbench now render **the same rail**
+  (`WorkspaceRail`). There used to be two components — Focus's full-height rail
+  over a project tree, and a separate icon-strip `ActivityBar` — which shared a
+  few classes, drifted anyway, and made one workspace look like two different
+  apps depending on the layout. The workbench keeps the panel tools only it can
+  open (Explorer, Git, AI) by passing them in `nav`; that array and where a
+  conversation lands are the only things the shells still differ in.
+- The workbench therefore gains the **conversation history** that existed in
+  Focus alone: projects, provider groups, search. Opening a row resumes it into
+  an AI panel — into the panel already holding it, if one is.
+- The tree marks **every conversation currently loaded**, not just one. Free
+  mode can hold several at once across panels, and the rail is the only surface
+  that can say which — so it says it the way this rail says everything, in the
+  text: open rows go strong, and the one you are actually looking at keeps the
+  accent route through the branch, because the route is what means "here" and
+  there is only ever one here. No dot, no badge, no pill.
+- Marking them is not enough, so the tree also **keeps them reachable**: an open
+  conversation pins itself into its group's collapsed row window, its provider
+  group and project unfold when it is loaded (once, on the transition — you can
+  still fold it away), and a project holding one never drops into the "More"
+  tail on recency. A conversation the rail claims is open can always be found.
+- Gone with the ActivityBar: its collapse-to-56px pebble, the hover flyouts, and
+  the Settings-section submenu. The rail is one width in every layout.
+
 ### Focus rail
 
 - The rail is a flat surface again: one hairline on its inner edge instead of a

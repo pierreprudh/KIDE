@@ -1,11 +1,11 @@
 // railDestinations — the app-level destinations that sit at the foot of
 // whichever sidebar is on screen.
 //
-// Two rails render them: the free-mode ActivityBar's bottom zone and the
-// Focus rail's foot. They render differently (a dock-dot row vs a labeled
-// row beside the identity card), but the *set* — what a destination is, its
-// id, label, and icon — is defined once, here. Adding a destination should
-// never mean remembering to edit a second rail.
+// One rail renders them now (WorkspaceRail's foot, in every shell), but the
+// set — what a destination is, its id, label, and icon — stays defined here
+// rather than inside the component that draws it: a destination is an
+// app-level fact, and this module is what the shells agreed on back when there
+// were two rails to keep in step.
 
 import { ProfileIcon, SettingsIcon, type GlyphProps } from "./icons";
 
@@ -13,10 +13,9 @@ import { ProfileIcon, SettingsIcon, type GlyphProps } from "./icons";
  *  speak; kept as a narrow literal set so a typo can't slip through. */
 export type RailDestinationId = "settings" | "profile";
 
-/** Each rail draws these at its own density — the free-mode rail's rows are
- *  18px, the Focus rail's 15px — so the icons take a size. Weight is not a
- *  parameter: ./icons owns it for the whole app, which is what stopped the
- *  two rails drifting apart. */
+/** The icons take a size, so a surface can draw them at its own density.
+ *  Weight is not a parameter: ./icons owns it for the whole app, which is what
+ *  stopped the rails drifting apart while there were two of them. */
 export type RailIconProps = GlyphProps;
 
 export type RailDestination = {

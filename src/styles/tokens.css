@@ -1667,16 +1667,17 @@ textarea.klide-diff-comment-input:focus-visible {
    (Deliberately no blanket `user-select: none` on the attribute — it would
    inherit into the conversation and make chat text unselectable.) */
 
-/* The app's main row: icon rail on the left, one full-height surface beside
-   it (workbench, Mission Control, Git, Orchestrator, Settings). The rails run
-   to the window's top edge — their surface is what the traffic lights sit on —
-   so everything *else* in the row keeps that band clear instead. */
-.klide-app-row > *:not(.klide-rail) {
+/* The app's main row: the rail on the left, one full-height surface beside it
+   (workbench, Mission Control, Git, Orchestrator, Settings). The rail runs to
+   the window's top edge — its surface is what the traffic lights sit on, and
+   it pays for that band itself in `.klide-focus-rail`'s padding — so
+   everything *else* in the row keeps the band clear instead. */
+.klide-app-row > *:not(.klide-focus-rail) {
   padding-top: var(--titlebar-h);
 }
 
-/* Focus mode: its own rail is the left-most surface and owns the inset
-   (.klide-focus-rail), so the row must not add a second one. */
+/* Focus mode: the rail is the left-most surface and owns the inset, so the row
+   must not add a second one to anything. */
 .klide-app-row[data-titlebar-owner="focus"] > * {
   padding-top: 0;
 }
@@ -2732,196 +2733,6 @@ button:focus-visible .menu-leadout {
   transition: none;
 }
 
-/* Activity bar item — sits on top of the FLIP indicator, with a hover
-   lift and an active state that uses the indicator for its glow
-   instead of an in-button background tint. */
-.klide-activity-bar-item {
-  transition:
-    color var(--motion-fast) var(--ease-out),
-    background var(--motion-fast) var(--ease-out),
-    transform var(--motion-fast) var(--ease-out);
-}
-
-/* Hover previews the active fill at half strength — the same recipe as the
-   soft-segment tabs. The active tool's full fill is the FLIP indicator
-   sliding underneath, so active buttons skip their own background. */
-.klide-activity-bar-item:hover {
-  color: var(--fg-strong);
-}
-
-.klide-activity-bar-item:hover:not([data-active="true"]) {
-  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
-}
-
-.klide-activity-bar-item[data-active="true"] {
-  color: var(--fg-strong);
-}
-
-.klide-activity-bar-item:active {
-  transform: scale(0.94);
-}
-
-/* Rail edge toggle — the chevron pebble straddling the rail's right edge
-   (the reference's ‹/›). Hidden until the rail is hovered so the edge stays
-   clean. */
-.klide-rail-toggle {
-  position: absolute;
-  /* The rail runs under the traffic lights, and this pebble sits on its right
-     edge — right where the lights end. Start below them. */
-  top: calc(var(--titlebar-h) + 16px);
-  right: -11px;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 1px solid var(--panel-border);
-  background: var(--bg-elevated);
-  color: var(--fg-dim);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  z-index: 40;
-  box-shadow: var(--shadow-raised);
-  opacity: 0;
-  transition:
-    opacity var(--motion-fast) var(--ease-out),
-    color var(--motion-fast) var(--ease-out),
-    transform var(--motion-fast) var(--ease-out);
-}
-
-.klide-rail:hover .klide-rail-toggle,
-.klide-rail-toggle:focus-visible {
-  opacity: 1;
-}
-
-.klide-rail-toggle:hover {
-  color: var(--fg-strong);
-  transform: scale(1.08);
-}
-
-/* Rail flyout — the hover submenu beside an activity-bar item: a soft
-   rounded card that unfolds from the rail (same origin motion as the
-   explorer drawer), quiet mono title, rows in the app-wide soft-fill
-   recipe. */
-.klide-rail-flyout {
-  position: fixed;
-  min-width: 188px;
-  max-width: 300px;
-  max-height: 330px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px;
-  border-radius: 12px;
-  border: 1px solid var(--panel-border);
-  background: var(--bg-elevated);
-  box-shadow: var(--panel-shadow);
-  transform-origin: left top;
-  animation: klide-rail-flyout-in 200ms var(--ease-soft) both;
-  /* z-index comes inline from zLayers.ts (Z.popover) */
-}
-
-@keyframes klide-rail-flyout-in {
-  from {
-    opacity: 0;
-    transform: translateX(-6px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.klide-rail-flyout-title {
-  padding: 6px 10px 4px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-}
-
-.klide-rail-flyout-row {
-  height: 30px;
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--fg-subtle);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  transition:
-    color var(--motion-fast) var(--ease-out),
-    background var(--motion-fast) var(--ease-out);
-}
-
-.klide-rail-flyout-row:hover {
-  color: var(--fg-strong);
-  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
-}
-
-.klide-rail-flyout-row[data-active="true"] {
-  color: var(--fg-strong);
-  background: var(--bg-hover);
-}
-
-/* Dock-style dot indicator for bottom-zone destinations. A 3px disc
-   in --accent, sitting just below the icon. Opacity + scale
-   transition gives a quiet pop when a destination becomes active. */
-.klide-activity-bar-dock-dot {
-  position: absolute;
-  left: 50%;
-  bottom: 2px;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--accent);
-  transform: translateX(-50%) scale(0.5);
-  opacity: 0;
-  transition:
-    opacity var(--motion-fast) var(--ease-out),
-    transform var(--motion-med) var(--ease-soft);
-  pointer-events: none;
-}
-
-.klide-activity-bar-dock-dot[data-visible="true"] {
-  transform: translateX(-50%) scale(1);
-  opacity: 1;
-}
-
-/* The activity bar's FLIP indicator — a soft rounded-square fill that
-   slides between tools (the reference-rail treatment, same quiet-fill
-   language as the soft-segment tabs). This resolves the old TBD: the
-   active tool is marked by the fill + the icon going strong. */
-.klide-activity-bar-indicator {
-  top: 0;
-  /* Rows carry an 8px horizontal margin in both rail modes — the fill must
-     start where the rows start (this was invisible while the indicator was
-     transparent; a visible fill at left:0 sat 8px off the icons). */
-  left: 8px;
-  /* Mirrors rowStyle() in ActivityBar.tsx (height 36, radius 8, 8px side
-     margins) — a mismatch makes the fill overhang the rows. */
-  width: 40px;
-  height: 36px;
-  border-radius: 8px;
-  background: var(--bg-hover);
-  box-shadow: none;
-  transition:
-    transform var(--motion-slow) var(--ease-soft),
-    opacity var(--motion-fast) var(--ease-out);
-}
-
-[data-flip="false"] .klide-activity-bar-indicator {
-  transition: none;
-}
-
 /* Tab bar indicator — a 2px tall accent bar that rides along the
    bottom of the active tab. Width tracks the tab's measured width
    inline; the transform is set by the FLIP hook. */
@@ -3751,7 +3562,9 @@ button:focus-visible .menu-leadout {
   --rail-tree-line: color-mix(in srgb, var(--fg-subtle) 26%, transparent);
   --rail-tree-line-active: color-mix(in srgb, var(--accent) 62%, transparent);
   position: relative;
-  z-index: 2;
+  /* No z-index here: the rail sets `Z.rail` inline (WorkspaceRail.tsx). It has
+     to sit above the free layout's climbing floating-panel band, and that scale
+     lives in zLayers.ts where the panels' own numbers do. */
   width: 252px;
   flex-shrink: 0;
   display: flex;
@@ -3907,6 +3720,25 @@ button:focus-visible .menu-leadout {
 
 .klide-focus-more-projects:hover,
 .klide-focus-more-projects:focus-visible {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+}
+
+.klide-focus-more-conversations {
+  width: 100%;
+  height: calc(var(--rail-row-h) - 4px);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--rail-row-pad) 0 calc(var(--rail-row-pad) + var(--rail-step) + var(--rail-step));
+  border-radius: var(--radius-lg);
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.klide-focus-more-conversations:hover,
+.klide-focus-more-conversations:focus-visible {
   color: var(--fg-strong);
   background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
 }
@@ -4554,6 +4386,16 @@ button:focus-visible .menu-leadout {
   color: var(--fg-strong);
 }
 
+/* Loaded in a panel, but not the one you are looking at. Free mode can hold
+   several conversations at once, and the rail is the only surface that can say
+   which — so it says it the way this rail says everything: in the text. Strong
+   like the selected row, but without the accent route, because the route is
+   what means "here" and there is only ever one here. Nothing is added to the
+   row: no dot, no badge, no pill. */
+.klide-focus-convo-row[data-open="true"] {
+  color: var(--fg-strong);
+}
+
 
 .klide-focus-convo-time {
   flex-shrink: 0;
@@ -4629,24 +4471,12 @@ button:focus-visible .menu-leadout {
   border-top: 1px solid var(--border);
 }
 
-/* Identity + the view switch on one line — the switch keeps the right edge,
-   the card takes whatever's left. Both rails end on this row; the free-mode
-   rail adds [data-collapsed] when it narrows to the icon strip, and the pair
-   stacks so the avatar and the switch each keep the rail's centre line. */
+/* Identity + the shell controls on one line — the buttons keep the right
+   edge, the card takes whatever's left. Every shell's rail ends on this row. */
 .klide-rail-identity-row {
   display: flex;
   align-items: center;
   gap: 2px;
-}
-
-.klide-rail-identity-row[data-collapsed] {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-}
-
-.klide-rail-identity-row[data-collapsed] .klide-rail-view-switch {
-  margin: 0 auto;
 }
 
 .klide-rail-profile {
@@ -4664,30 +4494,6 @@ button:focus-visible .menu-leadout {
   transition: background var(--motion-fast) var(--ease-out);
 }
 
-/* The activity bar borrows this card but not the Focus rail's grid, so
-   `--rail-gap` resolves to nothing there and the name ran straight into the
-   avatar. Its rows are: 8px margin, 11px padding, an 18px icon, a 10px gap —
-   icon centre at 28, label at 47. A 24px avatar centred on 28 spans 16..40, so
-   the padding is 8 and the gap 7 for the name to land on the labels above. */
-.klide-rail .klide-rail-profile {
-  gap: 7px;
-  padding: 4px 8px;
-}
-
-.klide-rail .klide-rail-profile-avatar {
-  margin-left: 0;
-}
-
-/* Collapsed: the identity text clips away and the avatar takes the row
-   icons' centre line (margin 8 + 8 + half of 24 = 28, the 56px rail's axis). */
-.klide-rail-identity-row[data-collapsed] .klide-rail-profile {
-  flex: none;
-  padding-left: 8px;
-}
-
-.klide-rail-identity-row[data-collapsed] .klide-rail-profile-avatar {
-  margin-left: 0;
-}
 
 .klide-rail-profile:hover,
 .klide-rail-profile:focus-visible {
