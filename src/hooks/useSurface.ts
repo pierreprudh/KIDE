@@ -167,11 +167,16 @@ export function showsRail(surface: Surface): boolean {
   );
 }
 
-/** The status bar shows everywhere but Focus (chrome-free) and Welcome
- *  (its own full-screen page). Was `(focusMode && view === "workbench")
- *  ? null : <StatusBar/>`. */
+/** The status bar shows everywhere but Focus (chrome-free), Welcome (its own
+ *  full-screen page), and Settings — which, like Welcome, renders its own full
+ *  shell (its own rail, its own back affordance) and has no file, branch or
+ *  editor state for the bar to report. */
 export function showsStatusBar(surface: Surface): boolean {
-  return surface.kind !== "focus" && surface.kind !== "welcome";
+  return (
+    surface.kind !== "focus" &&
+    surface.kind !== "welcome" &&
+    !(surface.kind === "overlay" && surface.view === "settings")
+  );
 }
 
 /** The base canvas (Focus or workbench) is what's showing — no overlay over
