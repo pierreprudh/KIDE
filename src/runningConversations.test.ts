@@ -133,6 +133,41 @@ describe("running conversations", () => {
     expect([...getRunningConversationIds()]).toEqual(["run-live"]);
   });
 
+  it("holds two concurrent runs at once, each followed on its own stream", async () => {
+    // Two panels, two live runs — both rail rows have to animate. Nothing here
+    // is single-flight across ids: the guards, the watchers and the event
+    // streams are all per conversation.
+    invokeMock.mockResolvedValue("running");
+
+    const { subscribeRunningConversations, getRunningConversationIds } = await load();
+    subscribeRunningConversations(() => {});
+    await publish("run-a", "running");
+    await publish("run-b", "running");
+    await settled();
+
+    expect([...getRunningConversationIds()].sort()).toEqual(["run-a", "run-b"]);
+    expect(emitters.has("agent-run:run-a")).toBe(true);
+    expect(emitters.has("agent-run:run-b")).toBe(true);
+  });
+
+  it("retires one of two concurrent runs without disturbing the other", async () => {
+    invokeMock.mockResolvedValue("running");
+
+    const { subscribeRunningConversations, getRunningConversationIds } = await load();
+    subscribeRunningConversations(() => {});
+    await publish("run-a", "running");
+    await publish("run-b", "running");
+    await settled();
+
+    emitters.get("agent-run:run-a")?.({
+      payload: { seq: 3, event: { type: "run_error" } },
+    });
+    await settled();
+
+    expect([...getRunningConversationIds()]).toEqual(["run-b"]);
+    expect(emitters.has("agent-run:run-b")).toBe(true);
+  });
+
   it("stops following a run whose panel came back and settled it", async () => {
     invokeMock.mockResolvedValue("running");
 

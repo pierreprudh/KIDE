@@ -83,6 +83,7 @@ import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
 import { eventsToMsgs, isSilentRunError } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
+import { decideOnLeavingRun, type RunLeaveDecision } from "./ai/leavingRun";
 import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
 import {
   applyConversationSessionTransition,
@@ -1712,20 +1713,27 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   useEffect(() => { msgsRef.current = msgs; }, [msgs]);
 
-  // Restoration itself is synchronous and atomic in Conversation Session.
-  // This mount-only effect only reconnects the restored identity to a live
-  // Harness Run, if one exists.
-  useEffect(() => {
-    const restored = conversationSessionRef.current;
-    // Reconnect to a run that progressed while the panel was unmounted: the
-    // harness keeps running in Rust and writes the transcript, but the request-
-    // scoped event channel from startAgentRun dies with the old mount. So we (1)
-    // rebuild from the on-disk transcript — which has the (possibly finished)
-    // reply — and (2) if the run is STILL going, follow the global reattach
-    // stream so it keeps updating instead of freezing at a stale snapshot.
-    // Klide runs only (currentId == transcript id); delegates use the PTY.
-    if (!isDelegateProvider(restored.provider)) {
-      const reattachId = restored.conversationId;
+  /**
+   * Reconnect a conversation to the Harness Run still working on it, if there
+   * is one. The harness keeps running in Rust and writing its transcript, but
+   * the request-scoped event channel from `startAgentRun` belongs to the mount
+   * — and the turn generation — that opened it. So we (1) rebuild from the
+   * on-disk transcript, which has the (possibly finished) reply, and (2) if the
+   * run is STILL going, follow the global reattach stream so it keeps updating
+   * instead of freezing at a stale snapshot.
+   *
+   * Called on mount and on every conversation adoption. Leaving a thread no
+   * longer stops its agent (see `detachFromActiveRun`), so coming back to one
+   * has to pick its live stream up again — otherwise the row animates in the
+   * rail while the panel shows a frozen transcript.
+   *
+   * Klide runs only: conversation id == transcript id, and delegates stream
+   * through the PTY instead.
+   */
+  function followConversationRun(conversationId: string, runProvider: ProviderId) {
+    if (isDelegateProvider(runProvider)) return;
+    {
+      const reattachId = conversationId;
       const baseLen = msgsRef.current.length;
       void (async () => {
         // Re-read the transcript and adopt the replay, guarding against a
@@ -1802,8 +1810,48 @@ This user request requires workspace inspection. Before answering, you MUST call
         } catch { /* ignore transient read error */ }
       })();
     }
-    // Intentionally only the *initial* currentId matters — subsequent
-    // edits (loadConversation, newConversation) own the active id.
+  }
+
+  /**
+   * Stop following this panel's run — without stopping the run.
+   *
+   * Leaving a conversation is navigation, not a decision to kill the agent
+   * working in it. The loop lives in Rust, so the panel only has to stop
+   * listening: the live channel from `startAgentRun` can't be closed from
+   * here, so its turn generation is retired instead (`handleEvent` drops
+   * everything from the old turn) and any reattach listener is dropped. The
+   * run keeps going, its rail row keeps animating, and `followConversationRun`
+   * picks it back up when you return.
+   *
+   * When the run is parked on a decision it is aborted instead — see
+   * `ai/leavingRun.ts` for that rule and why it is the one exception. Returns
+   * the decision so the caller can keep the run board in step with it.
+   */
+  function detachFromActiveRun(): RunLeaveDecision {
+    const decision = decideOnLeavingRun({
+      hasActiveRun: activeHarnessRunRef.current !== null,
+      parkedOnDecision: Boolean(pendingDiff || pendingQuestion || pendingPermission),
+    });
+    // Retire the turn generation: the live channel's events now fall out of
+    // `handleEvent` instead of landing in whatever conversation is adopted
+    // next, and any queue drain for the thread we're leaving bails.
+    queueGenerationRef.current += 1;
+    processingQueueRef.current = false;
+    if (decision.abort) abortActiveHarnessRun();
+    else activeHarnessRunRef.current = null;
+    reattachRef.current?.detach();
+    reattachRef.current = null;
+    settleConversationRun();
+    return decision;
+  }
+
+  // Restoration itself is synchronous and atomic in Conversation Session. This
+  // mount-only effect reconnects the restored identity to its run, if it has
+  // one. Intentionally only the *initial* conversation matters — subsequent
+  // edits (loadConversation, newConversation) follow their own.
+  useEffect(() => {
+    const restored = conversationSessionRef.current;
+    followConversationRun(restored.conversationId, restored.provider);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1832,12 +1880,12 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   function newConversation() {
     if (providerDelegatesWork) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
-    // Mark the previous chat as done on Mission Control so a "new chat"
-    // doesn't leave a stale "running" row. View switches no longer hit
-    // this path (the panel just unmounts/remounts).
-    settleKlideConvo(currentId);
     setHistoryOpen(false);
-    abortActiveHarnessRun();
+    // Mark the previous chat as done on the run board so a "new chat" doesn't
+    // leave a stale "running" row — unless it really is still running, which it
+    // now can be: starting a fresh chat leaves the previous agent working.
+    const leaving = detachFromActiveRun();
+    if (leaving.settle) settleKlideConvo(currentId);
     const nid = genId();
     setModelActivationDeferred(false);
     manuallyInspectedModelRef.current = null;
@@ -2016,7 +2064,10 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   function loadConversation(c: Conversation) {
     setHistoryOpen(false);
-    abortActiveHarnessRun();
+    // Opening another thread used to abort whatever this one was running —
+    // clicking a sibling row in the rail silently killed a working agent. The
+    // run is left alone now; only this panel's subscription to it ends.
+    detachFromActiveRun();
     // Adopting history must not become an implicit model request. The saved
     // Provider/model pair is shown immediately, but inspection + warm-up wait
     // for the first real send from this transcript.
@@ -2056,6 +2107,11 @@ This user request requires workspace inspection. Before answering, you MUST call
     // previous chat sticks, and the user has to scroll to find the
     // latest message.
     forceStickToBottom();
+    // The adopted thread may itself have a run still going — one you started
+    // here and walked away from, or one another panel left behind. Pick its
+    // live stream back up rather than showing the transcript as it stood when
+    // you left.
+    followConversationRun(c.id, c.provider ?? provider);
   }
 
   function deleteConversation(id: string, e: ReactMouseEvent) {
