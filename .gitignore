@@ -47,6 +47,8 @@ src-tauri/gen/
 # Mission specs and append-only runtime events are local/private by default.
 # A repo can explicitly unignore or export authored mission Markdown later.
 .klide/missions/
+# Per-conversation agent todo stores — run scratch state, never repo content.
+.agents/todos/
 
 # --- Prompt A/B harness output ---
 scripts/prompt-ab/results.json
