@@ -13,7 +13,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { WorkspaceRail, type RailNavItem } from "./components/WorkspaceRail";
 import {
-  AiIcon,
   FocusLayoutIcon,
   FolderIcon,
   GitIcon,
@@ -671,17 +670,11 @@ function App() {
       active: activityState.git,
       onClick: () => togglePanel("git"),
     },
-    {
-      id: "ai",
-      label: "AI",
-      icon: <AiIcon size={15} />,
-      active: activityState.ai,
-      // A plain row: show or hide the AI surface. What it is *holding* is
-      // answered by the tree below, which marks every open conversation — this
-      // used to unfold a second list of the same rows, which read as the same
-      // thing twice with one panel open.
-      onClick: (meta) => togglePanel("ai", meta),
-    },
+    // No AI row. The rail's tree below is already the AI surface — it lists
+    // every conversation and marks the open ones — so a row that only toggles
+    // the panel holding them was the same idea stated twice. Showing and
+    // hiding the panel lives in the command palette now, and every handoff
+    // (Mission Control, a resumed conversation) reveals it on its own.
     {
       id: "runs",
       label: "Mission Control",
@@ -2087,6 +2080,9 @@ function App() {
     { id: "close-tab", label: "View: Close Tab", shortcut: "⌘W", action: () => { if (activeIdx >= 0) closeTab(activeIdx); setPaletteOpen(false); } },
     { id: "find", label: "Edit: Find in Files", shortcut: "⌘⇧F", action: () => { setSearchVisible((v) => !v); setPaletteOpen(false); } },
     { id: "terminal-toggle", label: "Terminal: Toggle", shortcut: "⌘`", action: () => { setTerminalVisible((v) => !v); setPaletteOpen(false); } },
+    // The rail no longer carries an AI row, so this is the way to put the panel
+    // away and get it back by hand.
+    { id: "ai-toggle", label: "View: Toggle AI Panel", action: () => { togglePanel("ai"); setPaletteOpen(false); } },
     { id: "settings", label: "Preferences: Open Settings", shortcut: "⌘,", action: () => { openOverlay("settings"); setPaletteOpen(false); } },
     { id: "profile", label: "View: Open Profile", shortcut: "⌘.", action: () => { setProfileVisible(true); setPaletteOpen(false); } },
     { id: "theme", label: "Appearance: Toggle Theme", action: () => { setTheme((t) => getNextThemeId(t)); setPaletteOpen(false); } },
