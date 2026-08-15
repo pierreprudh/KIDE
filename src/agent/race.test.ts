@@ -8,8 +8,7 @@ const { invokeMock, startAgentRunMock } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("./client", () => ({ startAgentRun: startAgentRunMock }));
 
-import { dispatchRace, PartialRaceError } from "./race";
-import { listRaces } from "../races";
+import type { PartialRaceError } from "./race";
 import { memoryStorage } from "../testStorage";
 
 const agents = [
@@ -17,7 +16,17 @@ const agents = [
   { provider: "openai" as const, model: "gpt-5" },
 ];
 
+// The race store caches at module level (persistedStore.ts), so each test
+// imports a fresh copy — same isolation recipe as tasks.test.ts.
+async function freshModules() {
+  return {
+    ...(await import("./race")),
+    ...(await import("../races")),
+  };
+}
+
 beforeEach(() => {
+  vi.resetModules();
   vi.stubGlobal("localStorage", memoryStorage());
   vi.spyOn(Date, "now").mockReturnValue(123_456);
   invokeMock.mockReset();
@@ -31,6 +40,7 @@ afterEach(() => {
 
 describe("dispatchRace", () => {
   it("creates isolated worktrees sequentially and persists the run group", async () => {
+    const { dispatchRace, listRaces } = await freshModules();
     const order: string[] = [];
     invokeMock.mockImplementation(async (command: string, args: { branch: string }) => {
       order.push(`${command}:${args.branch}`);
@@ -75,6 +85,7 @@ describe("dispatchRace", () => {
   });
 
   it("removes a new worktree, its recipe copies, and its branch when the run fails to start", async () => {
+    const { dispatchRace, PartialRaceError, listRaces } = await freshModules();
     invokeMock.mockImplementation(async (command: string, args: { branch?: string }) => {
       if (command === "git_worktree_remove") return undefined;
       const segments = args.branch?.split("/") ?? [];
@@ -108,6 +119,7 @@ describe("dispatchRace", () => {
   });
 
   it("reports a refused cleanup instead of hiding it (dirty checkout preserved)", async () => {
+    const { dispatchRace, listRaces } = await freshModules();
     invokeMock.mockImplementation(async (command: string, args: { branch?: string }) => {
       if (command === "git_worktree_remove") {
         throw new Error("contains modified or untracked files");

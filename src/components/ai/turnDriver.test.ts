@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTurnDriver } from "./turnDriver";
 import type { Msg } from "./types";
-import type { AgentContentBlock, AgentEvent } from "../../agent/types";
+import type { AgentContentBlock, AgentEvent, AgentUsage } from "../../agent/types";
 
 // A tiny harness standing in for AiPanel: msgsRef + commit + fake clock/timer.
 function harness(initial: Msg[]) {
@@ -47,11 +47,25 @@ function harness(initial: Msg[]) {
   };
 }
 
-const delta = (text: string, thinking?: string): AgentEvent =>
-  ({ type: "assistant_delta", runId: "r", text, thinking, ts: 0 }) as AgentEvent;
+// No `as AgentEvent`: the union is the contract, and an unchecked cast is how
+// a fixture ends up describing a wire shape Rust never emits.
+const delta = (text: string, thinking?: string): AgentEvent => ({
+  type: "assistant_delta",
+  runId: "r",
+  messageId: "d",
+  text,
+  thinking,
+  ts: 0,
+});
 
-const message = (content: AgentContentBlock[], usage?: unknown): AgentEvent =>
-  ({ type: "assistant_message", runId: "r", messageId: "m", content, usage, ts: 0 }) as AgentEvent;
+const message = (content: AgentContentBlock[], usage?: AgentUsage): AgentEvent => ({
+  type: "assistant_message",
+  runId: "r",
+  messageId: "m",
+  content,
+  usage,
+  ts: 0,
+});
 
 describe("createTurnDriver", () => {
   it("batches deltas: many events, one commit per flush window", () => {
@@ -82,8 +96,8 @@ describe("createTurnDriver", () => {
   it("walks the cursor past tool cards so the next turn's answer lands in a fresh bubble", () => {
     const h = harness([{ role: "user", content: "q" }, { role: "assistant", content: "" }]);
     h.driver.handleEvent(message([{ type: "text", text: "calling tools" }]));
-    h.driver.handleEvent({ type: "tool_call_started", runId: "r", toolCallId: "c1", name: "grep", input: {}, summary: "grep", ts: 0 } as AgentEvent);
-    h.driver.handleEvent({ type: "tool_call_finished", runId: "r", toolCallId: "c1", result: { content: "3 matches" }, ts: 0 } as unknown as AgentEvent);
+    h.driver.handleEvent({ type: "tool_call_started", runId: "r", toolCallId: "c1", name: "grep", input: {}, summary: "grep", ts: 0 });
+    h.driver.handleEvent({ type: "tool_call_finished", runId: "r", toolCallId: "c1", result: { ok: true, content: "3 matches" }, ts: 0 });
     h.driver.handleEvent(delta("final answer"));
     h.tick(50);
     const msgs = h.ref.current;
@@ -115,7 +129,23 @@ describe("createTurnDriver", () => {
 
   it("declines non-transcript events so the panel keeps handling them", () => {
     const h = harness([{ role: "assistant", content: "" }]);
-    const handled = h.driver.handleEvent({ type: "diff_proposed", runId: "r", proposal: {}, ts: 0 } as unknown as AgentEvent);
+    const handled = h.driver.handleEvent({
+      type: "diff_proposed",
+      runId: "r",
+      proposal: {
+        id: "p1",
+        runId: "r",
+        toolCallId: "c1",
+        path: "a.ts",
+        oldContent: "",
+        newContent: "x",
+        oldHash: "0",
+        newHash: "1",
+        unifiedDiff: "",
+        isCreate: false,
+      },
+      ts: 0,
+    });
     expect(handled).toBe(false);
     expect(h.commits).toHaveLength(0);
   });

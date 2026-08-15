@@ -4,9 +4,10 @@ import {
   createMissionTask,
   EMPTY_MISSION_STATE,
   missionReducer,
-  type MissionAttemptValidation,
   type MissionState,
 } from "./missionHarness";
+import type { PlannedTask } from "./planner";
+import { parseValidationSummary } from "./validationContracts";
 
 export type DurableMissionMode = "plan" | "goal";
 export type DurableMissionRisk = "low" | "medium" | "high";
@@ -70,6 +71,58 @@ export type SaveDurableMissionTaskInput = Omit<
   "schemaVersion" | "missionId" | "createdMs" | "updatedMs"
 >;
 
+/**
+ * The one PlannedTask → task-Markdown mapping. The console persists a planned
+ * board through this (plan-time create and per-task save alike); do not
+ * hand-write the field list at call sites — it drifted three ways before.
+ * Acceptance criteria are never persisted empty: an unspecified task falls
+ * back to its description (or a satisfies-the-title criterion) so approval
+ * always freezes something falsifiable into the file.
+ */
+export function plannedTaskToSpecInput(task: PlannedTask): SaveDurableMissionTaskInput {
+  return {
+    id: task.taskId,
+    title: task.title,
+    bodyMarkdown: task.description ?? "",
+    phase: task.phase,
+    mode: task.mode,
+    risk: task.risk,
+    writesFiles: task.writesFiles,
+    dependencies: task.dependsOn ?? [],
+    acceptanceCriteria: task.acceptanceCriteria?.length
+      ? task.acceptanceCriteria
+      : [task.description ?? `The task outcome satisfies: ${task.title}`],
+    needsRepoWideContext: task.needsRepoWideContext === true,
+    needsStrongReasoning: task.needsStrongReasoning === true,
+    needsDelegateCli: task.needsDelegateCli === true,
+    needsVisualReview: task.needsVisualReview === true,
+  };
+}
+
+/**
+ * The inverse: authored task Markdown → the board's PlannedTask shape, used
+ * when the console reopens a persisted Mission. Empty-ish spec fields become
+ * `undefined` (not "" / [] / false) so the planned board matches what the
+ * planner itself would have produced.
+ */
+export function specToPlannedTask(spec: DurableMissionTaskSpec): PlannedTask {
+  return {
+    taskId: spec.id,
+    title: spec.title,
+    description: spec.bodyMarkdown || undefined,
+    acceptanceCriteria: spec.acceptanceCriteria,
+    phase: spec.phase,
+    mode: spec.mode,
+    risk: spec.risk,
+    writesFiles: spec.writesFiles,
+    dependsOn: spec.dependencies.length ? spec.dependencies : undefined,
+    needsRepoWideContext: spec.needsRepoWideContext || undefined,
+    needsStrongReasoning: spec.needsStrongReasoning || undefined,
+    needsDelegateCli: spec.needsDelegateCli || undefined,
+    needsVisualReview: spec.needsVisualReview || undefined,
+  };
+}
+
 export type DurableMissionApprovalInput = {
   tasks: Array<DurableMissionTaskDispatch & { taskId: string }>;
   autoStart: boolean;
@@ -89,7 +142,10 @@ export type DurableMissionEvent =
       taskId: string;
       runId: string;
       accepted: boolean;
-      validation: MissionAttemptValidation;
+      /** Raw `AgentValidationSummary` wire value, straight off the durable
+       *  log. Typed `unknown` so nothing can read it without going through
+       *  `parseValidationSummary` in the fold below. */
+      validation: unknown;
     }
   | { type: "mission_completed" }
   | { type: "mission_parked"; reason: string };
@@ -239,7 +295,7 @@ export function compileDurableMissionBundle(bundle: DurableMissionBundle): Missi
           taskId: event.taskId,
           runId: event.runId,
           accepted: event.accepted,
-          validation: event.validation,
+          validation: parseValidationSummary(event.validation),
           ts: line.ts,
         });
         break;

@@ -122,18 +122,19 @@ export function canPersistLayout(
  * clamped to the workbench, so a panel-rect bug has exactly one home.
  *
  * The host passes the current `workspaceRoot` (which layout to load/persist)
- * and `view` (the workbench host node swaps per view, so the ResizeObserver
- * must re-attach). Everything else about panel geometry lives here.
+ * and `hostKey` — an opaque identity for the DOM node currently hosting the
+ * workbench (the Surface module computes it). When it changes the host node
+ * has been swapped out, so the ResizeObserver must re-attach. This module
+ * doesn't know or care *which* screen the app is on — only that the node it
+ * measures may be a different one now.
  */
 export function usePanelLayout(opts: {
   workspaceRoot: string | null;
-  view: string;
-  /** Focus mode swaps the workbench host node out entirely (the focus screen
-   *  doesn't attach `workbenchRef`), so the ResizeObserver must re-attach when
-   *  it toggles — same reason as `view`. */
-  focusMode: boolean;
+  /** Re-measure signal: changes whenever the workbench host node swaps
+   *  (surface/overlay change). See `surfaceHostKey` in useSurface.ts. */
+  hostKey: string;
 }) {
-  const { workspaceRoot, view, focusMode } = opts;
+  const { workspaceRoot, hostKey } = opts;
 
   const workbenchRef = useRef<HTMLDivElement | null>(null);
   const [workbenchSize, setWorkbenchSize] = useState({ w: 0, h: 0 });
@@ -182,9 +183,10 @@ export function usePanelLayout(opts: {
     // left watching a detached node and `workbenchSize` goes stale — floating
     // panels then mis-clamp on interaction and the explorer won't open.
     // Re-run on every dimension that swaps the host so we always observe
-    // the live node. (A `view` change happened to mask this — that's why a
-    // Mission Control round-trip "fixed" it.)
-  }, [view, workspaceRoot, panelLayout.anchored, focusMode]);
+    // the live node: `hostKey` covers surface/overlay changes, `anchored`
+    // the anchored↔free swap. (A `view` change happened to mask this —
+    // that's why a Mission Control round-trip "fixed" it.)
+  }, [hostKey, workspaceRoot, panelLayout.anchored]);
 
   function fallbackAiRect(): PanelRect {
     const w = Math.min(360, Math.max(1, workbenchSize.w));

@@ -40,10 +40,9 @@ import { useCustomProviders } from "../hooks/useCustomProviders";
 import {
   CONVERSATIONS_CHANGED_EVENT,
   loadConversations,
-  relativeTime,
-  isSubsequence,
   type ConversationChangedDetail,
-} from "./ai/utils";
+} from "./ai/storedConversations";
+import { relativeTime, isSubsequence } from "./ai/utils";
 import type { Conversation } from "./ai/types";
 import type { AgentMode, ProviderId } from "../agent/types";
 import { AUTONOMY_RUNGS, effectiveMode as effectiveModeFor } from "./ai/autonomyLadder";

@@ -176,7 +176,7 @@ pub const PROVIDERS: &[ProviderEntry] = &[
         // mlx_lm.server's /v1/models is expensive/noisy and can interfere
         // with prompt processing. Klide treats MLX model selection as
         // an explicit configured value instead of polling the server.
-        models: ModelsHandler::StaticPresets(crate::MLX_MODEL_PRESETS),
+        models: ModelsHandler::StaticPresets(MLX_MODEL_PRESETS),
         subscription: None,
         context_window: Some(128_000),
     },
@@ -679,7 +679,7 @@ fn dotenv_lookup(name: &str) -> Option<String> {
         .clone()
         .and_then(|root| dotenv_lookup_in(&root.join(".env"), name));
     from_project.or_else(|| {
-        let global = crate::home_dir_path()?.join(".klide").join(".env");
+        let global = crate::cli::home_dir_path()?.join(".klide").join(".env");
         dotenv_lookup_in(&global, name)
     })
 }
@@ -719,7 +719,7 @@ fn custom_token_reference(id: &str) -> Option<String> {
 // stored in plaintext at `~/.klide/provider_refs.json`, keyed by provider id.
 
 fn provider_refs_path() -> Option<std::path::PathBuf> {
-    crate::home_dir_path().map(|home| home.join(".klide").join("provider_refs.json"))
+    crate::cli::home_dir_path().map(|home| home.join(".klide").join("provider_refs.json"))
 }
 
 fn read_provider_refs() -> std::collections::HashMap<String, String> {
@@ -747,7 +747,7 @@ fn builtin_token_reference(id: &str) -> Option<String> {
 // only read at send time, in `provider_key`.
 
 fn keychain_markers_path() -> Option<std::path::PathBuf> {
-    crate::home_dir_path().map(|home| home.join(".klide").join("keychain_providers.json"))
+    crate::cli::home_dir_path().map(|home| home.join(".klide").join("keychain_providers.json"))
 }
 
 fn read_keychain_markers() -> std::collections::HashSet<String> {
@@ -845,6 +845,288 @@ pub fn clear_keychain_key(provider: &str) -> Result<(), String> {
     result
 }
 
+// ── Provider wire vocabulary + dispatch ────────────────────────────────
+// The types every adapter speaks and the one entry point that routes a
+// chat turn: custom (self-hosted) providers first, then subscription CLIs,
+// then the per-wire streaming adapters. Moved out of lib.rs so the crate
+// root stays thin Tauri glue and the routing is a testable plan.
+
+pub(crate) const OLLAMA_URL: &str = "http://localhost:11434";
+pub(crate) const MLX_DEFAULT_MODEL: &str = "mlx-community/Llama-3.1-8B-Instruct-4bit";
+pub(crate) const MLX_MODEL_PRESETS: &[&str] = &[
+    MLX_DEFAULT_MODEL,
+    "Qwen/Qwen3-4B-MLX-4bit",
+    "mlx-community/gemma-2-9b-it-4bit",
+    "mlx-community/gemma-4-E4B-it-qat-4bit",
+    "mlx-community/gemma-4-12B-it-qat-4bit",
+];
+
+// Real token accounting reported by the provider (Ollama eval counts,
+// OpenAI/Anthropic usage blocks). All fields optional — adapters fill what
+// their wire format exposes; the UI falls back to estimates when absent.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prompt_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) completion_tokens: Option<u64>,
+    /// Time spent generating the completion, ms (Ollama eval_duration).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) eval_duration_ms: Option<u64>,
+    /// Time spent processing the prompt, ms (Ollama prompt_eval_duration).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) prompt_eval_duration_ms: Option<u64>,
+    /// Real billed cost in USD, when the provider reports it directly.
+    /// OpenRouter attaches `usage.cost` to every response (the actual
+    /// charged amount, including any markup) — ground truth, not an
+    /// estimate. `None` for providers that don't report cost; those are
+    /// priced from the local table instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_usd: Option<f64>,
+}
+
+impl AiUsage {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.prompt_tokens.is_none()
+            && self.completion_tokens.is_none()
+            && self.eval_duration_ms.is_none()
+            && self.prompt_eval_duration_ms.is_none()
+            && self.cost_usd.is_none()
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiChatResponse {
+    pub(crate) content: String,
+    pub(crate) thinking: Option<String>,
+    pub(crate) tool_calls: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) usage: Option<AiUsage>,
+    /// Why generation stopped, as reported by the provider. Ollama's
+    /// `done_reason`: `"stop"` = the model finished naturally, `"length"` =
+    /// it hit `num_ctx` and was cut off mid-answer. `None` when the provider
+    /// doesn't report it. The harness uses `"length"` to warn the user the
+    /// reply is truncated rather than silently showing a half-answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop_reason: Option<String>,
+}
+
+// One streamed delta pushed to the frontend through the per-request Channel.
+// `content`/`thinking` are incremental fragments — the UI appends them for the
+// live typing effect, then reconciles against ai_chat's authoritative return.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StreamChunk {
+    pub(crate) content: String,
+    pub(crate) thinking: String,
+}
+
+// Anthropic requires this header on every Messages API call; pinning a known
+// version keeps the request/response shape stable as the API evolves.
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+pub(crate) fn is_subscription_provider(provider: &str) -> bool {
+    is_subscription(provider) || crate::custom_cli::get(provider).is_some()
+}
+
+pub(crate) fn response_error(provider: &str, status: reqwest::StatusCode, body: &str) -> String {
+    // Cloudflare edge codes are opaque ("524 <unknown status code>"), and a
+    // self-hosted endpoint behind a tunnel is the common case — translate the
+    // ones we actually hit into an actionable hint instead of the raw code.
+    let hint = match status.as_u16() {
+        524 | 504 => Some(
+            "timed out waiting for the model (~100s proxy limit) — it may be cold or busy. \
+             Try a smaller or pre-warmed model, or a shorter conversation.",
+        ),
+        520..=523 => {
+            Some("the endpoint's edge could not reach its origin server — check the host is up.")
+        }
+        _ => None,
+    };
+    if let Some(hint) = hint {
+        return format!("{provider}: {hint} (HTTP {})", status.as_u16());
+    }
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        format!("{provider} returned {status}")
+    } else {
+        format!("{provider} returned {status}: {trimmed}")
+    }
+}
+
+pub(crate) fn text_from_message(message: &serde_json::Value) -> String {
+    message
+        .get("content")
+        .and_then(|content| {
+            if let Some(text) = content.as_str() {
+                return Some(text.to_string());
+            }
+            content.as_array().map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// One provider chat turn, as the harness and the `ai_chat` command hand it
+/// over. The stream channel rides separately so this stays a plain value.
+pub(crate) struct ProviderTurn {
+    pub provider: String,
+    pub model: String,
+    pub messages: Vec<serde_json::Value>,
+    pub tools: Option<Vec<serde_json::Value>>,
+    pub workspace_root: Option<String>,
+    pub num_ctx: Option<usize>,
+    pub num_predict: Option<usize>,
+    pub reflection_level: Option<String>,
+}
+
+/// Where a turn routes, decided before any network call — the pure half of
+/// `dispatch`, so precedence (custom store fallthrough, subscription CLIs
+/// before the wire match) and per-wire flags are testable.
+#[derive(Debug)]
+pub(crate) enum DispatchPlan {
+    /// Self-hosted OpenAI-wire endpoint from the custom store.
+    CustomProvider { id: String, chat_url: String },
+    /// A delegate CLI on a subscription; never reaches the wire match.
+    SubscriptionCli { provider_id: &'static str, label: &'static str },
+    Ollama,
+    Anthropic,
+    OpenAiWire { provider_id: &'static str, cfg: OpenAiConfig },
+}
+
+pub(crate) fn plan_dispatch(provider: &str) -> Result<DispatchPlan, String> {
+    // Built-in providers resolve through the static registry. A miss falls
+    // through to the custom (self-hosted) store — those ids (prefixed
+    // `custom:`) can't live in the `const` registry because their URLs are
+    // typed in at runtime.
+    let Some(entry) = lookup(provider) else {
+        let cp = crate::custom_providers::get(provider)
+            .ok_or_else(|| format!("Provider \"{provider}\" is not wired yet"))?;
+        return Ok(DispatchPlan::CustomProvider {
+            id: cp.id.clone(),
+            chat_url: cp.chat_url(),
+        });
+    };
+    // Subscription CLIs route first — the `wire` field on subscription rows
+    // is a placeholder that's never reached.
+    if let Some(spec) = entry.subscription {
+        return Ok(DispatchPlan::SubscriptionCli {
+            provider_id: entry.id,
+            label: spec.label,
+        });
+    }
+    Ok(match entry.wire {
+        WireFormat::Ollama => DispatchPlan::Ollama,
+        WireFormat::Anthropic => DispatchPlan::Anthropic,
+        WireFormat::OpenAi(cfg) => DispatchPlan::OpenAiWire {
+            provider_id: entry.id,
+            cfg,
+        },
+    })
+}
+
+/// Route one chat turn to its adapter. The seam the Harness's real
+/// `AgentProviderCaller` calls — no `#[tauri::command]` indirection.
+pub(crate) async fn dispatch(
+    turn: ProviderTurn,
+    on_chunk: &tauri::ipc::Channel<StreamChunk>,
+) -> Result<AiChatResponse, String> {
+    let ProviderTurn {
+        provider,
+        model,
+        messages,
+        tools,
+        workspace_root,
+        num_ctx,
+        num_predict,
+        reflection_level,
+    } = turn;
+    match plan_dispatch(&provider)? {
+        DispatchPlan::CustomProvider { id, chat_url } => {
+            // Custom providers always speak the OpenAI wire. The token is
+            // optional (a no-auth local endpoint has none); tools are sent
+            // and stream usage is left off, matching the safe local-proxy
+            // posture (LM Studio rejects `stream_options`).
+            crate::adapters::openai_compatible_chat(
+                id.clone(),
+                chat_url,
+                true,
+                false,
+                false,
+                false,
+                custom_token(&id),
+                None,
+                model,
+                messages,
+                tools,
+                on_chunk,
+            )
+            .await
+        }
+        DispatchPlan::SubscriptionCli { provider_id, label } => {
+            let adapter = crate::delegate::lookup(provider_id)
+                .ok_or_else(|| format!("\"{provider_id}\" has no delegate adapter"))?;
+            crate::delegate::run_subscription_chat(
+                adapter,
+                label,
+                model,
+                messages,
+                workspace_root,
+                on_chunk,
+            )
+            .await
+        }
+        DispatchPlan::Ollama => {
+            crate::adapters::ollama_chat(
+                model,
+                messages,
+                tools,
+                num_ctx,
+                num_predict,
+                reflection_level,
+                on_chunk,
+            )
+            .await
+        }
+        DispatchPlan::Anthropic => {
+            crate::adapters::anthropic_chat(model, messages, tools, reflection_level, on_chunk)
+                .await
+        }
+        DispatchPlan::OpenAiWire { provider_id, cfg } => {
+            // Hosted providers require a key (`provider_key` errors when
+            // missing); local OpenAI-wire ones (MLX, LM Studio) return
+            // Ok(None) and send no auth header.
+            let key = provider_key(provider_id)?;
+            crate::adapters::openai_compatible_chat(
+                provider_id.to_string(),
+                cfg.chat_url.to_string(),
+                cfg.include_tools,
+                cfg.include_usage_in_stream,
+                cfg.include_cost_accounting,
+                cfg.send_attribution,
+                key,
+                if cfg.supports_reasoning_effort {
+                    crate::adapters::reflection_level_to_openai_effort(reflection_level.as_deref())
+                } else {
+                    None
+                },
+                model,
+                messages,
+                tools,
+                on_chunk,
+            )
+            .await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Pin the registry contract. These are the regressions that would
@@ -857,6 +1139,51 @@ mod tests {
     //! - Subscription CLIs are a closed set.
 
     use super::*;
+
+    #[test]
+    fn dispatch_plan_routes_subscription_clis_before_the_wire_match() {
+        // A subscription row's `wire` is a placeholder — the plan must pick
+        // the CLI route first or a placeholder wire would be dialed.
+        match plan_dispatch("claude-code").expect("claude-code is registered") {
+            DispatchPlan::SubscriptionCli { provider_id, .. } => {
+                assert_eq!(provider_id, "claude-code")
+            }
+            other => panic!("expected SubscriptionCli, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_plan_routes_each_wire_to_its_adapter() {
+        assert!(matches!(
+            plan_dispatch("ollama").unwrap(),
+            DispatchPlan::Ollama
+        ));
+        assert!(matches!(
+            plan_dispatch("anthropic").unwrap(),
+            DispatchPlan::Anthropic
+        ));
+        match plan_dispatch("openrouter").unwrap() {
+            DispatchPlan::OpenAiWire { provider_id, cfg } => {
+                assert_eq!(provider_id, "openrouter");
+                // OpenRouter reports real billed cost; the flag rides the plan.
+                assert!(cfg.include_cost_accounting);
+            }
+            other => panic!("expected OpenAiWire, got {other:?}"),
+        }
+        match plan_dispatch("mlx").unwrap() {
+            // MLX is local OpenAI-wire: no stream usage, tools off per its cfg.
+            DispatchPlan::OpenAiWire { cfg, .. } => {
+                assert!(!cfg.include_usage_in_stream);
+            }
+            other => panic!("expected OpenAiWire, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_plan_rejects_unknown_providers() {
+        let err = plan_dispatch("definitely-not-wired").unwrap_err();
+        assert!(err.contains("not wired"), "got: {err}");
+    }
 
     #[test]
     fn lookup_finds_every_provider_we_advertise() {

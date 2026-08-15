@@ -212,6 +212,43 @@ pub fn location(
     }))
 }
 
+/// Read a fingerprint-scoped allowlist document at `location`. A missing file
+/// and a stale fingerprint both read as "no approvals" via `fresh` — a
+/// checkout change silently re-prompts instead of honoring old trust. This is
+/// the one copy of the read → parse → fingerprint-check flow every allowlist
+/// used to hand-roll.
+pub fn read_scoped<T: serde::de::DeserializeOwned>(
+    location: &ApprovalLocation,
+    what: &str,
+    fingerprint_of: impl Fn(&T) -> &str,
+    fresh: impl Fn(String) -> T,
+) -> Result<T, String> {
+    if !location.path.exists() {
+        return Ok(fresh(location.fingerprint.clone()));
+    }
+    let text = std::fs::read_to_string(&location.path)
+        .map_err(|e| format!("Unable to read {what} allowlist: {e}"))?;
+    let parsed: T = serde_json::from_str(&text)
+        .map_err(|e| format!("Invalid {what} allowlist JSON: {e}"))?;
+    if fingerprint_of(&parsed) == location.fingerprint {
+        Ok(parsed)
+    } else {
+        Ok(fresh(location.fingerprint.clone()))
+    }
+}
+
+/// Serialize + write a fingerprint-scoped allowlist document privately. The
+/// twin of `read_scoped`.
+pub fn write_scoped<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+    what: &str,
+) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("Unable to serialize {what} allowlist: {e}"))?;
+    write_private(path, format!("{text}\n").as_bytes())
+}
+
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()

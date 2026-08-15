@@ -1,12 +1,14 @@
 // The turn driver — the streaming state machine for one agent turn.
 //
-// It owns everything the transcript needs while a run streams: the ~20 fps
-// delta batch (one setState per token froze the list), the per-turn timing
-// that feeds TTFT / tok·s meta, the mutable assistant-index cursor that
-// walks past tool cards, and the flush-before-finalize ordering. AiPanel's
-// handleEvent forwards the four transcript events here and keeps everything
-// that is genuinely panel behaviour (diffs, permissions, questions,
-// subagents, run settle) to itself.
+// It owns everything the transcript needs while a run streams that the fold
+// cannot know from the events alone: the ~20 fps delta batch (one setState per
+// token froze the list), the per-turn wall clock that feeds the `ms` / TTFT
+// footer, and the flush-before-finalize ordering. The event → row logic
+// itself is the one fold in `src/agent/foldEvents.ts`, reached through the
+// run-transcript shell in `transcriptReducer.ts`; AiPanel's handleEvent
+// forwards the transcript events here and keeps everything that is genuinely
+// panel behaviour (diffs, permissions, questions, subagents, run settle) to
+// itself.
 //
 // Framework-free on purpose: reads through `read`, writes through `commit`,
 // and takes an injectable clock + timer so fixture tests can drive a whole
@@ -14,18 +16,11 @@
 
 import type { AgentEvent } from "../../agent/types";
 import {
-  appendDelta,
-  finalizeAssistantMessage,
-  finishToolCall,
-  insertSteering,
-  locateAssistant,
-  startToolCall,
+  createRunTranscript,
   type Pricing,
   type TranscriptDelegate,
 } from "./transcriptReducer";
 import type { Msg } from "./types";
-
-type AssistantMessageEvent = Extract<AgentEvent, { type: "assistant_message" }>;
 
 export type TurnDriverOptions = {
   /** Index of the assistant bubble this turn streams into. */
@@ -51,8 +46,8 @@ export type TurnDriver = {
   /** Feed one AgentEvent. Returns true when it was a transcript event the
    *  driver consumed; the caller handles everything else. */
   handleEvent(event: AgentEvent): boolean;
-  /** Locate (or insert) the turn's assistant bubble — the error path uses
-   *  this to replace the bubble with a failure message. */
+  /** Locate the turn's assistant bubble — the error path uses this to
+   *  replace the bubble with a failure message. */
   ensureAssistant(): { msgs: Msg[]; index: number };
   /** Run settled (done or errored): cancel the batch timer and render any
    *  delta that was still pending. Idempotent. */
@@ -65,42 +60,34 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
   const clearTimer = opts.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
   const flushDelayMs = opts.flushDelayMs ?? 50;
 
-  // The mutable turn cursor: where the current assistant bubble lives. Tool
-  // cards splice in above it; locateAssistant walks the cursor past them.
-  let nextAssistantIdx = opts.assistantIndex;
+  // Adopt the placeholder bubble the panel pre-inserted at assistantIndex, so
+  // the stream writes into it instead of duplicating it.
+  const seedCandidate = opts.read()[opts.assistantIndex];
+  const transcript = createRunTranscript({
+    regionStart: opts.assistantIndex,
+    seed: seedCandidate?.role === "assistant" ? seedCandidate : null,
+    delegate: opts.delegate,
+    pricing: opts.pricing,
+  });
+
   // Wall-clock start of the current turn, for the per-message meta footer.
   // Reset after each assistant_message so multi-turn runs time each turn.
   let turnStartedAt = now();
-  // First streamed token of the current turn → TTFT.
+  // First streamed token of the current turn → the TTFT fallback for turns
+  // the harness recorded no timing on.
   let firstTokenAt: number | null = null;
-  // Throttled delta buffer — one commit per interval, not per token.
-  let pendingDelta = { content: "", thinking: "" };
   let flushTimer: unknown = null;
 
-  const ensureAssistant = () => {
-    const located = locateAssistant(opts.read(), nextAssistantIdx, opts.delegate);
-    nextAssistantIdx = located.index;
-    return located;
-  };
-
-  const appendPendingDelta = (c: string, t: string) => {
-    const { msgs: next, index } = appendDelta(opts.read(), nextAssistantIdx, c, t, opts.delegate);
-    nextAssistantIdx = index;
-    opts.commit(next);
-  };
-
-  const flushNow = () => {
-    const c = pendingDelta.content;
-    const t = pendingDelta.thinking;
-    pendingDelta = { content: "", thinking: "" };
-    if (c || t) appendPendingDelta(c, t);
+  const projectCommit = () => {
+    const next = transcript.project(opts.read());
+    if (next) opts.commit(next);
   };
 
   const scheduleFlush = () => {
     if (flushTimer !== null) return;
     flushTimer = setTimer(() => {
       flushTimer = null;
-      flushNow();
+      projectCommit();
     }, flushDelayMs);
   };
 
@@ -115,51 +102,36 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
     switch (event.type) {
       case "assistant_delta": {
         if (firstTokenAt === null) firstTokenAt = now();
-        pendingDelta.content += event.text;
-        pendingDelta.thinking += event.thinking ?? "";
+        // The fold takes deltas per token (a string append on the open row);
+        // only the *projection* is batched behind the flush timer.
+        transcript.apply(event);
         scheduleFlush();
         return true;
       }
       case "assistant_message": {
-        // Flush any pending delta before finalising, in order.
         cancelFlush();
-        flushNow();
         const at = now();
-        const result = finalizeAssistantMessage({
-          msgs: opts.read(),
-          nextAssistantIdx,
-          event: event as AssistantMessageEvent,
-          timing: { turnStartedAt, firstTokenAt },
-          now: at,
-          pricing: opts.pricing,
-          delegate: opts.delegate,
+        const step = transcript.apply(event, {
+          turnMs: at - turnStartedAt,
+          ttftFallbackMs: firstTokenAt !== null ? firstTokenAt - turnStartedAt : undefined,
         });
         // Reset per-turn timing so multi-turn runs time each turn.
         turnStartedAt = at;
         firstTokenAt = null;
-        nextAssistantIdx = result.index;
-        if (result.measuredPromptTokens !== undefined) opts.onMeasuredPromptTokens?.(result.measuredPromptTokens);
-        if (result.measuredUsage !== undefined) opts.onMeasuredUsage?.(result.measuredUsage);
-        opts.commit(result.msgs);
+        const usage = event.usage;
+        if (usage?.promptTokens !== undefined) {
+          const completion = usage.completionTokens ?? step.finalizedMeta?.tokens ?? 0;
+          opts.onMeasuredPromptTokens?.(usage.promptTokens + completion);
+          opts.onMeasuredUsage?.({ prompt: usage.promptTokens, completion });
+        }
+        projectCommit();
         return true;
       }
-      case "tool_call_started": {
-        const { msgs: next, index } = startToolCall(opts.read(), nextAssistantIdx, event.name, event.toolCallId);
-        nextAssistantIdx = index;
-        opts.commit(next);
-        return true;
-      }
-      case "tool_call_finished": {
-        opts.commit(finishToolCall(opts.read(), event.toolCallId, event.result.content));
-        return true;
-      }
+      case "tool_call_started":
+      case "tool_call_finished":
       case "steering_injected": {
-        // The loop monitor nudged the run. Splice a slim marker after this
-        // turn's tool cards and advance the cursor past it so the next
-        // assistant bubble lands below.
-        const { msgs: next, index } = insertSteering(opts.read(), nextAssistantIdx, event.reason);
-        nextAssistantIdx = index;
-        opts.commit(next);
+        transcript.apply(event);
+        projectCommit();
         return true;
       }
       default:
@@ -169,10 +141,16 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
 
   return {
     handleEvent,
-    ensureAssistant,
+    ensureAssistant() {
+      // Render anything pending first, so the returned index points at what
+      // is actually on screen.
+      cancelFlush();
+      projectCommit();
+      return { msgs: opts.read(), index: transcript.assistantIndex() };
+    },
     finish() {
       cancelFlush();
-      flushNow();
+      projectCommit();
     },
   };
 }

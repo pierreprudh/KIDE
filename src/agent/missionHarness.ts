@@ -1,5 +1,6 @@
 import type { AgentMode } from "./types";
 import type { WorkerAssignment } from "./routingPolicy";
+import type { RecordedValidation } from "./validationContracts";
 
 export type MissionStatus =
   | "draft"
@@ -38,23 +39,10 @@ export type MissionTaskAttemptStatus =
   | "accepted"
   | "rejected";
 
-export type MissionAttemptValidation = {
-  status: string;
-  checks: Array<{
-    id: string;
-    label: string;
-    status: string;
-    required: boolean;
-    evidence?: string;
-  }>;
-  filesChanged: number;
-  commandsRun: number;
-  commandsFailed: number;
-  diffReviews: number;
-  permissionsApproved: number;
-  permissionsDenied: number;
-  warnings: string[];
-};
+/** The Rust Harness's evidence snapshot for one attempt, already parsed at
+ *  the IPC edge by `parseValidationSummary` — statuses are the wire union,
+ *  never a bare string. The shape's one owner is `validationContracts.ts`. */
+export type MissionAttemptValidation = RecordedValidation;
 
 /** A Task is the durable unit of intent; Runs are replaceable attempts. */
 export type MissionTaskAttempt = {
@@ -399,14 +387,21 @@ export function taskDependenciesAccepted(
   return task.dependencies.every((dependencyId) => tasksById[dependencyId]?.acceptedRunId != null);
 }
 
+/** Ready to attempt, ignoring the mission-approval gate: not yet accepted, no
+ *  attempt in flight, every dependency accepted. The board projection also uses
+ *  this as its pre-approval preview of what approval would unlock. */
+export function missionTaskReady(task: MissionTask, tasksById: Record<string, MissionTask>): boolean {
+  if (task.acceptedRunId !== null) return false;
+  if (task.attempts.some((attempt) => attempt.status === "running" || attempt.status === "review")) return false;
+  return taskDependenciesAccepted(task, tasksById);
+}
+
 export function readyMissionTaskIds(state: MissionState, missionId: string): string[] {
   const mission = state.missions[missionId];
   if (!mission || mission.approvedAtMs === null) return [];
   return mission.taskIds.filter((taskId) => {
     const task = state.tasks[taskId];
-    if (!task || task.acceptedRunId !== null) return false;
-    if (task.attempts.some((attempt) => attempt.status === "running" || attempt.status === "review")) return false;
-    return taskDependenciesAccepted(task, state.tasks);
+    return task ? missionTaskReady(task, state.tasks) : false;
   });
 }
 

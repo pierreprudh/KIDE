@@ -5,10 +5,13 @@ import {
   CONVERSATIONS_CHANGED_EVENT,
   conversationDuration,
   conversationStartedAt,
+  deriveTitle,
   loadConversations,
+  loadPanelSession,
   persistConversation,
   saveConversations,
-} from "./utils";
+  savePanelSession,
+} from "./storedConversations";
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -236,5 +239,125 @@ describe("reading a conversation is not using it", () => {
 
     expect(saved[0].model).toBe("gpt-5.6-mini");
     expect(saved[0].updatedAt).toBe(2_000);
+  });
+});
+
+describe("stored conversation index round-trip and corruption tolerance", () => {
+  it("round-trips a conversation through the persisted index unchanged", () => {
+    const original = conversation({
+      id: "round-trip",
+      branch: "feature/x",
+      worktree: "x",
+      forkedFrom: {
+        conversationId: "parent",
+        title: "Parent",
+        messageIndex: 1,
+        createdAt: 10,
+        mode: "chat",
+      },
+      createdAt: 1,
+    });
+
+    saveConversations([original]);
+
+    expect(loadConversations<Conversation>()).toEqual([original]);
+  });
+
+  it("returns an empty index for unparseable JSON instead of throwing", () => {
+    localStorage.setItem("klide-conversations", "{not json");
+    expect(loadConversations<Conversation>()).toEqual([]);
+  });
+
+  it("returns an empty index when the stored value is not an array", () => {
+    localStorage.setItem("klide-conversations", JSON.stringify({ msgs: [] }));
+    expect(loadConversations<Conversation>()).toEqual([]);
+  });
+
+  it("heals a torn record on read: drops entries without msgs and strips null message slots", () => {
+    const healthy = conversation({ id: "healthy" });
+    localStorage.setItem(
+      "klide-conversations",
+      JSON.stringify([
+        healthy,
+        { id: "no-msgs", title: "Torn", updatedAt: 2 },
+        {
+          ...conversation({ id: "null-slot" }),
+          msgs: [null, { role: "user", content: "kept" }, 42],
+        },
+      ]),
+    );
+
+    const loaded = loadConversations<Conversation>();
+
+    expect(loaded.map((c) => c.id)).toEqual(["healthy", "null-slot"]);
+    expect(loaded[1].msgs).toEqual([{ role: "user", content: "kept" }]);
+  });
+});
+
+describe("panel session binding", () => {
+  it("round-trips the panel binding", () => {
+    savePanelSession("ai-main", {
+      convoId: "conversation-a",
+      provider: "openai",
+      workspaceRoot: "/workspace",
+    });
+
+    expect(loadPanelSession("ai-main")).toEqual({
+      convoId: "conversation-a",
+      provider: "openai",
+      workspaceRoot: "/workspace",
+    });
+  });
+
+  it("returns null for a missing, unparseable, or convoId-less record", () => {
+    expect(loadPanelSession("missing")).toBeNull();
+
+    localStorage.setItem("klide.panelSession.torn", "{not json");
+    expect(loadPanelSession("torn")).toBeNull();
+
+    localStorage.setItem("klide.panelSession.no-id", JSON.stringify({ provider: "openai" }));
+    expect(loadPanelSession("no-id")).toBeNull();
+  });
+
+  it("drops a corrupt workspaceRoot instead of scoping the binding wrongly", () => {
+    localStorage.setItem(
+      "klide.panelSession.odd",
+      JSON.stringify({ convoId: "c", workspaceRoot: 42, provider: 7, active: true }),
+    );
+
+    expect(loadPanelSession("odd")).toEqual({
+      convoId: "c",
+      workspaceRoot: undefined,
+      provider: undefined,
+    });
+  });
+});
+
+describe("deriveTitle — the one title rule", () => {
+  it("titles from the first user message, whitespace-collapsed", () => {
+    expect(
+      deriveTitle([
+        { role: "assistant", content: "hello" },
+        { role: "user", content: "  Fix the\n  flaky   test  " },
+      ]),
+    ).toBe("Fix the flaky test");
+  });
+
+  it("caps at 80 characters with an ellipsis", () => {
+    const long = "a".repeat(120);
+    const title = deriveTitle([{ role: "user", content: long }]);
+    expect(title).toBe(`${"a".repeat(79)}…`);
+    expect(title.length).toBe(80);
+  });
+
+  it("keeps an exactly-80-character message whole", () => {
+    const exact = "b".repeat(80);
+    expect(deriveTitle([{ role: "user", content: exact }])).toBe(exact);
+  });
+
+  it("falls back to 'Untitled chat' when there is no user text", () => {
+    expect(deriveTitle([])).toBe("Untitled chat");
+    expect(deriveTitle([{ role: "user", content: "   " }])).toBe("Untitled chat");
+    expect(deriveTitle([{ role: "assistant", content: "only me" }])).toBe("Untitled chat");
   });
 });
