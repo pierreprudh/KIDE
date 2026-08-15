@@ -2007,6 +2007,12 @@ pub(crate) struct RevertCheckpointsResult {
     reverted: usize,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AcceptCheckpointsResult {
+    accepted: usize,
+}
+
 pub(crate) fn revert_all_checkpoints_at(
     runs_dir: &Path,
     run_id: &str,
@@ -2018,6 +2024,25 @@ pub(crate) fn revert_all_checkpoints_at(
         reverted += 1;
     }
     Ok(RevertCheckpointsResult { reverted })
+}
+
+/// Accept every checkpoint currently attached to `run_id`: keep the files as
+/// they are and consume only their rollback snapshots. Follow-up turns reuse
+/// the conversation id, so this establishes a real boundary — a later
+/// "revert run" cannot undo edits the user already accepted.
+pub(crate) fn accept_all_checkpoints_at(
+    runs_dir: &Path,
+    run_id: &str,
+) -> Result<AcceptCheckpointsResult, String> {
+    let entries = list_checkpoints_at(runs_dir, run_id)?;
+    let mut accepted = 0usize;
+    for entry in entries {
+        let file = checkpoint_file(runs_dir, run_id, &entry.tool_call_id);
+        std::fs::remove_file(&file)
+            .map_err(|e| format!("Cannot accept checkpoint {}: {e}", entry.tool_call_id))?;
+        accepted += 1;
+    }
+    Ok(AcceptCheckpointsResult { accepted })
 }
 
 #[tauri::command]
@@ -2049,6 +2074,16 @@ pub async fn agent_revert_run_checkpoints(
     validate_run_id(&run_id)?;
     let runs_dir = app_runs_dir(&app)?;
     revert_all_checkpoints_at(&runs_dir, &run_id)
+}
+
+#[tauri::command]
+pub async fn agent_accept_run_checkpoints(
+    app: tauri::AppHandle,
+    run_id: String,
+) -> Result<AcceptCheckpointsResult, String> {
+    validate_run_id(&run_id)?;
+    let runs_dir = app_runs_dir(&app)?;
+    accept_all_checkpoints_at(&runs_dir, &run_id)
 }
 
 #[cfg(test)]
@@ -4415,6 +4450,39 @@ mod checkpoint_tests {
         assert!(
             list_checkpoints_at(&runs, run).unwrap().is_empty(),
             "all checkpoint files should be consumed"
+        );
+    }
+
+    #[test]
+    fn accept_all_keeps_files_and_consumes_every_checkpoint() {
+        let (runs, ws) = make_sandbox("accept-all");
+        let run = "run_accept";
+        let rel = "note.md";
+        let abs = ws.join(rel);
+        std::fs::write(&abs, "accepted content").unwrap();
+
+        for (id, old_content, new_content, ts) in [
+            ("turn1_tool_1", "v1", "v2", 1),
+            ("turn2_tool_1", "v2", "accepted content", 2),
+        ] {
+            let json = checkpoint_json(
+                id,
+                rel,
+                old_content,
+                new_content,
+                false,
+                ws.to_str().unwrap(),
+                ts,
+            );
+            write_checkpoint(&runs, run, id, &json);
+        }
+
+        let result = accept_all_checkpoints_at(&runs, run).expect("accept all");
+        assert_eq!(result.accepted, 2);
+        assert_eq!(std::fs::read_to_string(&abs).unwrap(), "accepted content");
+        assert!(
+            list_checkpoints_at(&runs, run).unwrap().is_empty(),
+            "accepted checkpoint files should be consumed"
         );
     }
 

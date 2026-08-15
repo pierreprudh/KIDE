@@ -3,6 +3,7 @@ import {
   DEFAULT_AI_PANEL_ID,
   conversationSessionKey,
   initialHandoffFor,
+  modificationAcceptanceMode,
   panelWorkspace,
   resumeConversationFor,
   type PendingAiPanel,
@@ -110,5 +111,26 @@ describe("panelWorkspace", () => {
     const ws = panelWorkspace(undefined, "/repo", true);
     expect(ws.root).toBe("/repo");
     expect(ws.worktreeName).toBeUndefined();
+  });
+
+  it("does not label a saved cwd equal to the Workspace root as a worktree", () => {
+    const ws = panelWorkspace({ cwd: "/repo/" }, "/repo", true);
+    expect(ws.root).toBe("/repo");
+    expect(ws.worktreeName).toBeUndefined();
+  });
+});
+
+describe("modificationAcceptanceMode", () => {
+  it("offers acceptance while a reviewed diff is pending", () => {
+    expect(modificationAcceptanceMode(true, 0, true)).toBe("pending-diff");
+  });
+
+  it("offers acceptance for applied changes after the run settles", () => {
+    expect(modificationAcceptanceMode(false, 2, false)).toBe("applied-run");
+  });
+
+  it("stays quiet when no change is actionable", () => {
+    expect(modificationAcceptanceMode(false, 0, false)).toBeNull();
+    expect(modificationAcceptanceMode(false, 2, true)).toBeNull();
   });
 });

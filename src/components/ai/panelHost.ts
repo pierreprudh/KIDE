@@ -10,6 +10,7 @@
 import type { ReactNode } from "react";
 import type { ProviderId } from "../../agent/types";
 import type { AiPanelInstance } from "../../hooks/usePanelLayout";
+import { normalizeProjectPath } from "../../projectPaths";
 
 /** The id of the first/default AI panel slot. Everything that addresses "the"
  *  AI panel when none has been explicitly created keys off this. */
@@ -95,11 +96,28 @@ export function panelWorkspace(
   workspaceRoot: string | null,
   respectWorktree: boolean
 ): { root: string | null; worktreeName: string | undefined } {
-  const cwd = respectWorktree ? panel?.cwd : undefined;
+  const candidate = respectWorktree ? panel?.cwd : undefined;
+  const cwd =
+    candidate && normalizeProjectPath(candidate) !== normalizeProjectPath(workspaceRoot)
+      ? candidate
+      : undefined;
   return {
     root: cwd ?? workspaceRoot,
     worktreeName: cwd ? cwd.split("/").filter(Boolean).pop() : undefined,
   };
+}
+
+/** The single footer action changes meaning with the edit lifecycle: approve a
+ * reviewed proposal while the run is paused, or finalize already-applied edits
+ * once an auto-accept run settles. */
+export function modificationAcceptanceMode(
+  hasPendingDiff: boolean,
+  changedFiles: number,
+  streaming: boolean,
+): "pending-diff" | "applied-run" | null {
+  if (hasPendingDiff) return "pending-diff";
+  if (changedFiles > 0 && !streaming) return "applied-run";
+  return null;
 }
 
 /** Per-surface knobs for `App.renderAiPanel`. Everything else about the panel

@@ -44,6 +44,9 @@ export type RestoreConversationSessionInput = {
   provider: ProviderId;
   model: string;
   workspaceRoot: string | null;
+  /** Branch currently checked out when a new Conversation identity is
+   *  created. Restored Conversations keep their own recorded branch. */
+  workspaceBranch?: string | null;
   /** A composer handoff that semantically starts a new Conversation must not
    *  inherit this panel's durable binding or latest saved Conversation. */
   startFresh?: boolean;
@@ -58,7 +61,8 @@ export type ConversationSessionAction =
       model?: string;
       workspaceRoot?: string | null;
     }
-  | { type: "fresh-started"; conversationId: string }
+  | { type: "fresh-started"; conversationId: string; branch?: string | null }
+  | { type: "branch-captured"; branch: string }
   | { type: "resumed"; conversation: Conversation }
   | {
       type: "branched";
@@ -85,6 +89,7 @@ export function restoreConversationSession({
   provider,
   model,
   workspaceRoot,
+  workspaceBranch = null,
   startFresh = false,
   createId = genId,
 }: RestoreConversationSessionInput): ConversationSession {
@@ -95,7 +100,7 @@ export function restoreConversationSession({
       provider,
       model,
       workspaceRoot,
-      branch: null,
+      branch: workspaceBranch,
       worktree: null,
       forkedFrom: null,
       run: { active: false, activity: null },
@@ -140,7 +145,11 @@ export function restoreConversationSession({
     provider: saved?.provider ?? (canUsePanelBinding ? boundProvider : provider),
     model: saved?.model || model,
     workspaceRoot,
-    branch: saved?.branch ?? null,
+    // A restored Conversation without branch metadata predates branch
+    // capture. Treat that as unknown: assigning today's checked-out branch
+    // would rewrite its history and make navigation look like branch creation.
+    // A genuinely new identity still snapshots the live branch.
+    branch: saved ? saved.branch ?? null : workspaceBranch,
     worktree: saved?.worktree ?? null,
     forkedFrom: saved?.forkedFrom ?? null,
     run: { active: false, activity: null },
@@ -167,11 +176,13 @@ export function conversationSessionReducer(
         ...session,
         conversationId: action.conversationId,
         messages: [],
-        branch: null,
+        branch: action.branch ?? null,
         worktree: null,
         forkedFrom: null,
         run: { active: false, activity: null },
       };
+    case "branch-captured":
+      return { ...session, branch: action.branch };
     case "resumed": {
       const conversation = action.conversation;
       return {
@@ -208,6 +219,14 @@ export function conversationSessionReducer(
     case "run-settled":
       return { ...session, run: { active: false, activity: null } };
   }
+}
+
+/** The Conversation's recorded branch is historical truth. Older snapshots
+ * without branch metadata remain unknown instead of borrowing today's branch. */
+export function displayedConversationBranch(
+  conversationBranch: string | null | undefined,
+): string | null {
+  return conversationBranch ?? null;
 }
 
 /** Injectable durable write, so tests can prove the binding lands without a
@@ -250,6 +269,7 @@ function transitionRebindsPanel(action: ConversationSessionAction): boolean {
     case "configured":
       return action.provider !== undefined || action.workspaceRoot !== undefined;
     case "messages-replaced":
+    case "branch-captured":
     case "run-settled":
       return false;
   }

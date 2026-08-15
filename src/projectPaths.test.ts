@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalWorkspaceRoot,
+  legacyAutoRunWorkspace,
   linkedFolderLabel,
   linkedProjectForPath,
   normalizeProjectPath,
@@ -18,6 +20,27 @@ describe("project path ownership", () => {
     expect(pathBelongsToProject(KIDE, KIDE)).toBe(true);
     expect(pathBelongsToProject(`${KIDE}/packages/ui`, KIDE)).toBe(true);
     expect(pathBelongsToProject(`${KIDE}-worktrees/race-one`, KIDE)).toBe(true);
+  });
+
+  it("maps a managed worktree back to its owning workspace", () => {
+    expect(canonicalWorkspaceRoot(`${KIDE}-worktrees/klide-run-fix-tests-c0ffee12`)).toBe(KIDE);
+    expect(canonicalWorkspaceRoot(KIDE)).toBe(KIDE);
+  });
+
+  it("recognizes conversations created by the removed automatic run isolation", () => {
+    expect(legacyAutoRunWorkspace({
+      cwd: `${KIDE}-worktrees/klide-run-how-to-report-a-bug-a9dc5e94`,
+      branch: "klide/run-how-to-report-a-bug-a9dc5e94",
+      worktree: "klide-run-how-to-report-a-bug-a9dc5e94",
+    })).toBe(KIDE);
+  });
+
+  it("preserves deliberately created worktree conversations", () => {
+    expect(legacyAutoRunWorkspace({
+      cwd: `${KIDE}-worktrees/klide-turn-migrate-auth`,
+      branch: "klide/turn-migrate-auth",
+      worktree: "klide-turn-migrate-auth",
+    })).toBeNull();
   });
 
   it("uses path boundaries instead of matching lookalike folders", () => {

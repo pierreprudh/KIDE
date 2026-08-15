@@ -36,7 +36,7 @@ import {
 } from "./ipc/git";
 import { eventsToConversation } from "./components/ai/replayConversation";
 import { loadPanelSession } from "./components/ai/storedConversations";
-import type { AgentAttachment, AgentEvent, ProviderId } from "./agent/types";
+import type { AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider } from "./agent/providers";
 import type { Conversation, Msg } from "./components/ai/types";
 import { summarizeAndHandoff } from "./components/ai/summarize";
@@ -94,9 +94,12 @@ import {
   type WorktreeSetupDone,
 } from "./worktrees";
 import { createListenerScope } from "./tauriEvents";
-import { linkedProjectForPath } from "./projectPaths";
+import {
+  canonicalWorkspaceRoot,
+  legacyAutoRunWorkspace,
+  linkedProjectForPath,
+} from "./projectPaths";
 import { promoteWorkedFolder, rememberOpenedFolder } from "./recentFolders";
-import { createIsolatedRunWorkspace, isNotGitRepositoryError } from "./runIsolation";
 import "./styles/tokens.css";
 
 const MissionControl = lazy(() => import("./components/MissionControl").then((m) => ({ default: m.MissionControl })));
@@ -250,7 +253,12 @@ function App() {
         localStorage.getItem("klide.recentFolders") || "[]"
       );
       return Array.isArray(parsed)
-        ? parsed.filter((p): p is string => typeof p === "string")
+        ? Array.from(new Set(
+            parsed
+              .filter((p): p is string => typeof p === "string")
+              .map(canonicalWorkspaceRoot)
+              .filter((p): p is string => Boolean(p)),
+          ))
         : [];
     } catch {
       return [];
@@ -300,7 +308,6 @@ function App() {
     followUpsByPanel,
     modelsByPanel,
     reviewOverrideByPanel,
-    isolatedStartByPanel,
     admit,
     release,
     endRaceWatch,
@@ -314,8 +321,6 @@ function App() {
     clearRaceWatch,
     reportPanelModels,
     setPanelReviewOverride,
-    queueIsolatedStart,
-    consumeIsolatedStart,
   } = useAiPanelFleet({
     createPanel: appendAiPanel,
     removePanel: closeAiPanel,
@@ -846,7 +851,6 @@ function App() {
       workspaceRoot,
       opts?.respectWorktree ?? true
     );
-    const isolatedStart = isolatedStartByPanel[panelId];
     return (
       <AiPanel
         key={conversationSessionKey(panelId, root, opts?.key)}
@@ -863,6 +867,7 @@ function App() {
         }
         workspaceRoot={root}
         worktreeName={worktreeName}
+        workspaceBranch={!worktreeName && root === workspaceRoot ? gitStatus?.branch ?? null : null}
         onFileWritten={onAgentWrote}
         onReviewChanges={(info) => void reviewRunChanges(info)}
         onWorkspaceChanged={() => {
@@ -898,18 +903,13 @@ function App() {
             : undefined
         }
         onForkConversationInWorktree={forkConversationInWorktree}
-        onRequestIsolatedRun={workspaceRoot ? (request) =>
-          startPanelRunInWorktree(panelId, request)
-        : undefined}
         onClose={opts?.closable ? () => release(panelId) : undefined}
         resumeConversation={resumeConversationFor(panelId, resumeTarget)}
         onResumeConsumed={() => consumeResume(panelId)}
         variant={opts?.variant}
-        initialMessage={opts?.initialMessage ?? isolatedStart?.text ?? null}
-        initialAttachments={isolatedStart?.attachments}
+        initialMessage={opts?.initialMessage ?? null}
         onInitialMessageConsumed={() => {
           setFocusInitialMessage(null);
-          consumeIsolatedStart(panelId);
         }}
         followUpMessage={followUpsByPanel[panelId] ?? null}
         onFollowUpConsumed={() => consumeFollowUp(panelId)}
@@ -1446,54 +1446,6 @@ function App() {
     admit({ kind: "fresh", cwd: path });
   }
 
-  // Default launch path for a fresh Conversation. AiPanel hands its first
-  // turn here before starting either the Harness or a Delegate TUI; once the
-  // checkout exists, changing the panel cwd remounts the Conversation session
-  // against that workspace and the queued turn is consumed there. A non-Git
-  // folder is the only case allowed to continue in the local checkout.
-  async function startPanelRunInWorktree(
-    panelId: string,
-    request: {
-      text: string;
-      attachments: AgentAttachment[];
-      provider: ProviderId;
-      model: string;
-    },
-  ): Promise<boolean> {
-    if (!workspaceRoot) return false;
-    const identity =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : Date.now().toString(36);
-    try {
-      const isolated = await createIsolatedRunWorkspace({
-        baseRoot: workspaceRoot,
-        kind: "run",
-        title: request.text || "image task",
-        identity,
-      });
-      setAiPanelProvider(panelId, request.provider);
-      setAiPanelModel(panelId, request.model);
-      setAiPanelCwd(panelId, isolated.cwd);
-      queueIsolatedStart(panelId, { text: request.text, attachments: request.attachments });
-      setFileNotice(
-        `Isolated run ready on ${isolated.branch}${worktreeSetupSummary(isolated.setup)}.`,
-      );
-      return true;
-    } catch (err) {
-      if (isNotGitRepositoryError(err)) {
-        setFileNotice("This folder is not a Git repository — running locally.");
-        return false;
-      }
-      setFileNotice(
-        `Run not started — worktree creation failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      // Do not silently fall through to the main checkout after an isolation
-      // failure. The composed turn remains available for the user to retry.
-      throw err;
-    }
-  }
-
   // Fleet: create a fresh git worktree (isolated branch) and open an AI panel
   // pinned to it, so the agent works without touching the main checkout. The
   // run shows up in Mission Control labelled `· in <name>` via the existing
@@ -1636,7 +1588,8 @@ function App() {
   useEffect(() => {
     if (!workspaceRoot) return;
     setRecentFolders((prev) => {
-      const owningProject = linkedProjectForPath(workspaceRoot, prev) ?? workspaceRoot;
+      const owningProject =
+        linkedProjectForPath(workspaceRoot, prev) ?? canonicalWorkspaceRoot(workspaceRoot);
       const next = rememberOpenedFolder(prev, owningProject);
       if (next === prev) return prev;
       try {
@@ -1651,7 +1604,8 @@ function App() {
   function markFolderWorked(path: string | null | undefined) {
     if (!path) return;
     setRecentFolders((prev) => {
-      const owningProject = linkedProjectForPath(path, prev) ?? path;
+      const owningProject = linkedProjectForPath(path, prev) ?? canonicalWorkspaceRoot(path);
+      if (!owningProject) return prev;
       const next = promoteWorkedFolder(prev, owningProject);
       if (next === prev) return prev;
       try {
@@ -2259,6 +2213,7 @@ function App() {
                   }}
                   onNewChat={() => {
                     endFocusRaceWatch();
+                    setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
                     setFocusChatActive(false);
                   }}
                   onOpenConversation={(convo) => {
@@ -2266,13 +2221,38 @@ function App() {
                     // project along — resuming it against the wrong workspace
                     // would point every tool at the wrong tree.
                     endFocusRaceWatch();
-                    markFolderWorked(convo.cwd);
-                    if (convo.cwd && convo.cwd !== workspaceRoot) changeRoot(convo.cwd);
-                    targetResume(primaryPanelId, convo);
+                    const legacyWorkspace = legacyAutoRunWorkspace(convo);
+                    const resumedConvo = legacyWorkspace
+                      ? {
+                          ...convo,
+                          cwd: legacyWorkspace,
+                          branch: null,
+                          worktree: null,
+                        }
+                      : convo;
+                    markFolderWorked(resumedConvo.cwd);
+                    const owningWorkspace =
+                      linkedProjectForPath(resumedConvo.cwd, recentFolders) ??
+                      canonicalWorkspaceRoot(resumedConvo.cwd);
+                    if (owningWorkspace && owningWorkspace !== workspaceRoot) {
+                      changeRoot(owningWorkspace);
+                    }
+                    // Legacy ordinary conversations were auto-isolated before
+                    // that policy was removed. Reopen those on the Workspace;
+                    // intentional worktree conversations stay pinned.
+                    setAiPanelCwd(
+                      primaryPanelId,
+                      legacyWorkspace ? undefined : convo.cwd ?? undefined,
+                    );
+                    targetResume(primaryPanelId, resumedConvo);
                     setFocusChatActive(true);
                   }}
                   onSubmit={(text) => {
                     markFolderWorked(workspaceRoot);
+                    // A normal Focus task runs in the open Workspace. Worktree
+                    // isolation is opt-in through the dedicated action/fork
+                    // flows, never an invisible side effect of pressing Send.
+                    setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
                     setFocusInitialMessage(text);
                     setFocusChatActive(true);
                   }}

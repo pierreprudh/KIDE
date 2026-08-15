@@ -207,3 +207,7 @@ export async function revertCheckpoint(runId: string, toolCallId: string): Promi
 export async function revertRunCheckpoints(runId: string): Promise<{ reverted: number }> {
   return invoke<{ reverted: number }>("agent_revert_run_checkpoints", { runId });
 }
+
+export async function acceptRunCheckpoints(runId: string): Promise<{ accepted: number }> {
+  return invoke<{ accepted: number }>("agent_accept_run_checkpoints", { runId });
+}

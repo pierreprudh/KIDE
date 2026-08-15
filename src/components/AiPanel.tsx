@@ -31,7 +31,7 @@ import {
   type ProjectContextMode,
   type ProjectContextSnapshot,
 } from "../contextTray";
-import { readAgentRunEvents, startAgentRun, stopAgentRun, resolveDiff, resolveUserQuestion, resolvePermission, revertRunCheckpoints, getAgentRunStatus, isActiveRunStatus, reattachAgentRun, type RunReattachment } from "../agent/client";
+import { acceptRunCheckpoints, readAgentRunEvents, startAgentRun, stopAgentRun, resolveDiff, resolveUserQuestion, resolvePermission, revertRunCheckpoints, getAgentRunStatus, isActiveRunStatus, reattachAgentRun, type RunReattachment } from "../agent/client";
 import { parseSubagentDirective, resolveSubagent, buildSubagentSystemPrompt, matchSubagents, extractInlineSubagentCalls, type Subagent } from "../agent/subagents";
 import { resolveAdvisor } from "../agent/advisor";
 import { serviceAdvisorConsult } from "../agent/advisorConsult";
@@ -73,6 +73,7 @@ import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
 import { mayActivateModel } from "./ai/modelActivationPolicy";
+import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
 import { favModelsFor } from "../favModels";
 import { buildSystemPrompt } from "./ai/system-prompt";
@@ -85,6 +86,7 @@ import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
 import {
   applyConversationSessionTransition,
   conversationSessionReducer,
+  displayedConversationBranch,
   persistConversationSessionBinding,
   restoreConversationSession,
   snapshotConversationSession,
@@ -206,6 +208,9 @@ type Props = {
    *  isolated branch, not the main checkout). Shown under the composer so the
    *  user can tell which panel writes where. Undefined → main workspace. */
   worktreeName?: string;
+  /** Current branch of the open Workspace. Hidden for worktree-pinned panels,
+   *  whose more specific location label takes precedence. */
+  workspaceBranch?: string | null;
   onFileWritten?: (path: string, newContent: string) => void;
   onWorkspaceChanged?: () => void;
   /** Open this run's file changes in the workbench's docked Artifact
@@ -239,15 +244,6 @@ type Props = {
   harnessSettings?: AiHarnessSettings;
   onDuplicate?: (snapshot: { provider: ProviderId; model: string }) => void;
   onForkConversationInWorktree?: (conversation: Conversation, baseRoot: string | null) => void;
-  /** Fresh conversations ask the host for an isolated checkout before their
-   *  first turn. `true` means the host moved the turn to a remounted panel;
-   *  `false` is reserved for non-Git folders and continues locally. */
-  onRequestIsolatedRun?: (request: {
-    text: string;
-    attachments: Attachment[];
-    provider: ProviderId;
-    model: string;
-  }) => Promise<boolean>;
   /** The host's Provider for this panel. Live, like `model` — surfaces outside
    *  the panel (the Focus hero) edit the pair, and the two must move together
    *  or a run goes out with a model the Provider doesn't serve. Absent means
@@ -282,7 +278,6 @@ type Props = {
    *  Starts a fresh conversation first if the restored session already has
    *  messages (the hero composer always means "new chat"). */
   initialMessage?: string | null;
-  initialAttachments?: Attachment[];
   onInitialMessageConsumed?: () => void;
   /** A message to send into the CURRENT conversation as a follow-up turn —
    *  the race "ask both" composer fans one text out to every racer's panel
@@ -516,6 +511,7 @@ async function inspectModelForRun(
 export function AiPanel({
   workspaceRoot,
   worktreeName,
+  workspaceBranch,
   onFileWritten,
   onWorkspaceChanged,
   onReviewChanges,
@@ -537,7 +533,6 @@ export function AiPanel({
   harnessSettings,
   onDuplicate,
   onForkConversationInWorktree,
-  onRequestIsolatedRun,
   provider: hostProvider,
   onProviderChange,
   onOpenSettingsSection,
@@ -550,7 +545,6 @@ export function AiPanel({
   initialTask,
   onInitialConsumed,
   initialMessage,
-  initialAttachments,
   onInitialMessageConsumed,
   followUpMessage,
   onFollowUpConsumed,
@@ -578,6 +572,7 @@ export function AiPanel({
         provider: requestedProviderRef.current,
         model: hostModel,
         workspaceRoot,
+        workspaceBranch,
         // The Focus hero is a new-task surface. Its first message must start
         // from the Provider/model displayed in that composer, never from this
         // panel's previous durable binding (which may belong to OpenRouter).
@@ -624,6 +619,7 @@ export function AiPanel({
     }),
     [conversationSession.branch, conversationSession.worktree],
   );
+  const displayedBranch = displayedConversationBranch(conversationGitMeta.branch);
   const streaming = conversationSession.run.active;
   const activity = conversationSession.run.activity;
   void activity;
@@ -744,6 +740,20 @@ export function AiPanel({
     });
   }, [msgs, streaming, provider, model, workspaceRoot, currentId, currentForkedFrom, conversationGitMeta]);
 
+  // Git status can arrive after the panel mounts. Until the first message is
+  // sent, keep the new Conversation's branch snapshot aligned with the branch
+  // it would actually run on; once messages exist, the snapshot is immutable.
+  useEffect(() => {
+    const current = conversationSessionRef.current;
+    if (
+      current.messages.length === 0 &&
+      workspaceBranch &&
+      current.branch !== workspaceBranch
+    ) {
+      transitionConversation({ type: "branch-captured", branch: workspaceBranch });
+    }
+  }, [workspaceBranch]);
+
   const [contextLimit, setContextLimit] = useState(128_000);
   // The provider's own prompt-token count from the latest finished turn — the
   // authoritative "how full is the context" number (it's exactly what the
@@ -770,8 +780,6 @@ export function AiPanel({
   const [connected, setConnected] = useState(false);
   const [serverRunning, setServerRunning] = useState(false);
   const [serverStarting, setServerStarting] = useState(false);
-  const [preparingWorkspace, setPreparingWorkspace] = useState(false);
-  const preparingWorkspaceRef = useRef(false);
   const [serverError, setServerError] = useState<string | null>(null);
   // Distinct files this run has written, so the composer can offer a one-click
   // "undo what this run did" without a round-trip to Mission Control. Reset
@@ -780,17 +788,11 @@ export function AiPanel({
   const runChangedPathsRef = useRef<Set<string>>(new Set());
   const [revertableFiles, setRevertableFiles] = useState(0);
   const [reverting, setReverting] = useState(false);
+  const [acceptingChanges, setAcceptingChanges] = useState(false);
   // Set when the user hits Stop while a local server is still warming up —
   // there is no harness run to abort yet, so we flag the pending send to bail
   // once the server is ready instead of launching a turn they backed out of.
   const cancelledWarmupRef = useRef(false);
-  // A panel mounted on a worktree was deliberately placed there and may send
-  // its first turn immediately. Only an EMPTY main-checkout conversation must
-  // isolate: a restored historical conversation cannot safely change cwd in
-  // the middle of its transcript. New conversation flips this back to true.
-  const needsFreshWorkspaceRef = useRef(
-    !worktreeName && conversationSession.messages.length === 0,
-  );
   const [serverRefresh] = useState(0);
   const [agentMode, setAgentMode] = useState<AgentMode>(
     () => normalizeAgentMode(localStorage.getItem("klide.agentMode"))
@@ -1640,6 +1642,24 @@ This user request requires workspace inspection. Before answering, you MUST call
     }
   }
 
+  // File edits are already on disk by the time the run finishes. Accepting
+  // them consumes the rollback checkpoints without touching those files, so a
+  // later turn's Revert can never reach back across this accepted boundary.
+  async function acceptThisRunChanges() {
+    if (revertableFiles === 0 || streaming || reverting || acceptingChanges) return;
+    setAcceptingChanges(true);
+    try {
+      await acceptRunCheckpoints(currentId);
+      runChangedPathsRef.current = new Set();
+      setRevertableFiles(0);
+    } catch (e) {
+      console.error("Failed to accept run changes:", e);
+      notify(`Couldn't accept the modifications: ${e instanceof Error ? e.message : String(e)}`, { tone: "error" });
+    } finally {
+      setAcceptingChanges(false);
+    }
+  }
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
@@ -1807,10 +1827,9 @@ This user request requires workspace inspection. Before answering, you MUST call
     setHistoryOpen(false);
     abortActiveHarnessRun();
     const nid = genId();
-    needsFreshWorkspaceRef.current = true;
     setModelActivationDeferred(false);
     manuallyInspectedModelRef.current = null;
-    transitionConversation({ type: "fresh-started", conversationId: nid });
+    transitionConversation({ type: "fresh-started", conversationId: nid, branch: workspaceBranch });
     setMeasuredPromptTokens(null);
     setMeasuredUsageTokens(null);
     setCompactError(null);
@@ -1856,7 +1875,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     consumedInitialMessageRef.current = text;
     onInitialMessageConsumed?.();
     if (msgsRef.current.length > 0) newConversation();
-    setPendingHeroSend({ text, attachments: initialAttachments ?? [] });
+    setPendingHeroSend({ text, attachments: [] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialMessage]);
   useEffect(() => {
@@ -2039,7 +2058,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     deleteKlideConvo(id);
     if (id === currentId) {
       const nid = genId();
-      transitionConversation({ type: "fresh-started", conversationId: nid });
+      transitionConversation({ type: "fresh-started", conversationId: nid, branch: workspaceBranch });
       setMeasuredPromptTokens(null);
       setMeasuredUsageTokens(null);
     }
@@ -2826,45 +2845,11 @@ This user request requires workspace inspection. Before answering, you MUST call
   async function send(opts?: { text?: string; mode?: AgentMode; attachments?: Attachment[] }) {
     const text = opts?.text ?? input;
     const stagedImages = opts?.attachments ?? pendingImages;
-    if (serverStarting || preparingWorkspaceRef.current) return;
+    if (serverStarting) return;
     // An image-only turn (no text) is valid; a bare empty turn is not.
     if (!text.trim() && stagedImages.length === 0) return;
-    // Delegate TUIs do not accept image-only turns. Check before creating a
-    // checkout so a no-op send cannot leave an unused worktree behind.
+    // Delegate TUIs do not accept image-only turns.
     if (providerDelegatesWork && !text.trim()) return;
-    if (needsFreshWorkspaceRef.current && onRequestIsolatedRun) {
-      preparingWorkspaceRef.current = true;
-      setPreparingWorkspace(true);
-      try {
-        const handedOff = await onRequestIsolatedRun({
-          text,
-          attachments: stagedImages,
-          provider,
-          model,
-        });
-        if (handedOff) {
-          setInput("");
-          setPendingImages([]);
-          setMention(null);
-          setSlash(null);
-          setNextSendMode(null);
-          return;
-        }
-        // The host returns false only for a non-Git workspace. Do not retry the
-        // same impossible isolation on every turn in this conversation.
-        needsFreshWorkspaceRef.current = false;
-      } catch {
-        // The host owns the user-facing failure notice. Keep the draft and the
-        // isolation requirement intact so retry cannot fall through to main.
-        if (opts?.text !== undefined) setInput(text);
-        if (opts?.attachments !== undefined) setPendingImages(stagedImages);
-        return;
-      } finally {
-        preparingWorkspaceRef.current = false;
-        setPreparingWorkspace(false);
-      }
-    }
-    needsFreshWorkspaceRef.current = false;
     if (providerDelegatesWork) {
       // Delegate TUIs take text only — images aren't wired to their stdin.
       setInput(""); setMention(null); setSlash(null); setNextSendMode(null);
@@ -2969,8 +2954,17 @@ This user request requires workspace inspection. Before answering, you MUST call
   }
 
   async function handleDiffApply() {
-    if (!pendingDiff) return;
-    await resolveDiff({ runId: pendingDiff.runId, proposalId: pendingDiff.id, decision: { behavior: "apply" } });
+    if (!pendingDiff || acceptingChanges) return;
+    const proposal = pendingDiff;
+    setAcceptingChanges(true);
+    try {
+      await resolveDiff({ runId: proposal.runId, proposalId: proposal.id, decision: { behavior: "apply" } });
+    } catch (e) {
+      console.error("Failed to accept proposed modification:", e);
+      notify(`Couldn't accept the modification: ${e instanceof Error ? e.message : String(e)}`, { tone: "error" });
+    } finally {
+      setAcceptingChanges(false);
+    }
   }
 
   async function handleDiffReject() {
@@ -3049,9 +3043,14 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   // ── RENDER ──
 
-  const canSend = !!input.trim() && !serverStarting && !preparingWorkspace && !compacting;
+  const canSend = !!input.trim() && !serverStarting && !compacting;
   // Hover-revealed "Send to both" over the send button (race panels only).
   const [raceSendHover, setRaceSendHover] = useState(false);
+  const acceptanceMode = modificationAcceptanceMode(
+    pendingDiff !== null,
+    revertableFiles,
+    streaming,
+  );
   // One provider selector, placed in the panel header normally and in the
   // composer footer for Focus mode. Keeping a single JSX value ensures the
   // menu state, trigger ref, and provider mutation path never drift.
@@ -3942,7 +3941,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             onPaste={onComposerPaste}
             onDrop={onComposerDrop}
             onDragOver={(e) => { if (canAttachImages && Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === "file")) e.preventDefault(); }}
-            placeholder={preparingWorkspace ? "Preparing isolated worktree…" : serverStarting ? `Starting ${providerName(provider)}...` : streaming ? "Queue another message…" : canAttachImages ? "Ask anything, @ to attach a file, paste an image…" : "Ask anything, @ to attach a file…"}
+            placeholder={serverStarting ? `Starting ${providerName(provider)}...` : streaming ? "Queue another message…" : canAttachImages ? "Ask anything, @ to attach a file, paste an image…" : "Ask anything, @ to attach a file…"}
             rows={1}
             data-ai-composer
             style={{ width: "100%", minHeight: 40, maxHeight: 168, resize: "none", background: "transparent", border: "none", color: "var(--fg-strong)", font: "inherit", fontSize: 13.5, lineHeight: 1.55, padding: "12px 14px 8px", outline: "none", display: "block" }}
@@ -4210,17 +4209,46 @@ This user request requires workspace inspection. Before answering, you MUST call
           </div>
           </div>
         </div>
-        {worktreeName && (
-          <div
-            title={`This panel runs in the git worktree "${worktreeName}" — its edits and commands stay on that branch, not the main checkout.`}
-            style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6, padding: "0 4px", fontSize: 10.5, color: "var(--fg-subtle)", minWidth: 0 }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--accent)" }}><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M6 9v6" /><path d="M18 6a9 9 0 0 1-9 9" /><circle cx="18" cy="6" r="3" /></svg>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              worktree <strong style={{ color: "var(--fg-strong)", fontWeight: 600 }}>{worktreeName}</strong>
+        <div className="klide-ai-conversation-status">
+          {worktreeName ? (
+            <div
+              className="klide-ai-worktree-label"
+              title={`This panel runs in the git worktree "${worktreeName}" — its edits and commands stay on that branch, not the main checkout.`}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M6 9v6" /><path d="M18 6a9 9 0 0 1-9 9" /><circle cx="18" cy="6" r="3" /></svg>
+              <span>worktree {worktreeName}</span>
+            </div>
+          ) : displayedBranch ? (
+            <span
+              className="klide-ai-local-branch"
+              title={`Conversation branch: ${displayedBranch}`}
+            >
+              {displayedBranch}
             </span>
-          </div>
-        )}
+          ) : null}
+          <button
+            type="button"
+            className="klide-ai-accept-modification"
+            onClick={() => {
+              if (!acceptanceMode) return;
+              void (
+                acceptanceMode === "pending-diff"
+                  ? handleDiffApply()
+                  : acceptThisRunChanges()
+              );
+            }}
+            disabled={!acceptanceMode || reverting || acceptingChanges}
+            title={
+              acceptanceMode === "pending-diff"
+                ? `Apply the proposed modification to ${pendingDiff?.path ?? "this file"}`
+                : acceptanceMode === "applied-run"
+                  ? `Keep ${revertableFiles} modified file${revertableFiles === 1 ? "" : "s"} and dismiss the rollback shortcut`
+                  : "No modifications to accept"
+            }
+          >
+            {acceptingChanges ? "Accepting…" : "Accept modification"}
+          </button>
+        </div>
       </div>
       )}
     </aside>
