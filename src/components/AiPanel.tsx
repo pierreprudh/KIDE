@@ -73,6 +73,7 @@ import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
 import { mayActivateModel } from "./ai/modelActivationPolicy";
+import { hostModelAdoption, offlineModelFallback } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
 import { favModelsFor } from "../favModels";
@@ -629,19 +630,30 @@ export function AiPanel({
   }
   // A restored Conversation owns its Provider/model pair. Notify the host on
   // first mount instead of letting the host's stale panel preferences overwrite
-  // that pair; subsequent host model changes are ordinary configuration edits.
+  // that pair; subsequent host model *changes* are ordinary configuration edits.
+  // Only changes: `onModelChange` is a fresh closure on every App render, so
+  // this effect re-runs constantly, and "differs from the session" would make
+  // each of those re-runs an edit — a host stuck on a stale layout model then
+  // rewrites the model of a Conversation that already ran on another one
+  // (`modelSelection.ts` records the thread this cost).
   const modelSyncStartedRef = useRef(false);
+  const lastHostModelRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!modelSyncStartedRef.current) {
-      modelSyncStartedRef.current = true;
+    const adopted = hostModelAdoption({
+      hostModel,
+      lastHostModel: lastHostModelRef.current,
+      sessionModel: conversationSessionRef.current.model,
+    });
+    const firstSync = !modelSyncStartedRef.current;
+    modelSyncStartedRef.current = true;
+    lastHostModelRef.current = hostModel;
+    if (firstSync) {
       if (conversationSessionRef.current.model !== hostModel) {
         onModelChange(conversationSessionRef.current.model);
       }
       return;
     }
-    if (conversationSessionRef.current.model !== hostModel) {
-      transitionConversation({ type: "configured", model: hostModel });
-    }
+    if (adopted) transitionConversation({ type: "configured", model: adopted });
   }, [hostModel, onModelChange]);
   // The Provider follows the same rule as the model above, and for a sharper
   // reason: the Focus hero edits this panel's provider+model pair from outside
@@ -2174,7 +2186,13 @@ This user request requires workspace inspection. Before answering, you MUST call
       } catch {
         if (cancelled) return;
         setConnected(false);
-        const fallback = storedModelForProvider(provider);
+        // A list that failed to load has said nothing about which models this
+        // Provider has, so it cannot retire the one the panel is on. Falling
+        // back to the remembered model here used to turn a network blip into a
+        // model pick — and the remembered value can belong to another Provider
+        // (an Ollama tag under a self-hosted endpoint), which is how a Qwen
+        // conversation ended up saved as an LFM one.
+        const fallback = offlineModelFallback(model, storedModelForProvider(provider));
         onAvailableModelsChange([fallback]);
         if (model !== fallback) changeModel(fallback);
       }
