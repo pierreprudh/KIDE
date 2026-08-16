@@ -1,5 +1,78 @@
+import { useState } from "react";
 import type { ReactElement } from "react";
 import type { ProviderId } from "../../agent/types";
+
+/**
+ * The one `<img>` every brand mark is drawn with.
+ *
+ * A mark is a network resource, and a network resource can fail to arrive:
+ * a dev server that died under a still-open window, a custom protocol that
+ * drops a request in a burst. WebKit answers a failed image with a hollow 1px
+ * box, which is how the Focus rail grew empty squares where model marks
+ * belong — the rows already on screen had their logo, and the ones revealed by
+ * "More" asked for theirs too late and got the placeholder instead.
+ *
+ * A mark that cannot load has nothing to say, so it says nothing: the row
+ * reads as unbranded, exactly like a model with no mark of its own. That is
+ * the same absence the rail already knows how to draw, and it is never a
+ * shape the eye has to decode.
+ */
+export function BrandImage({
+  src,
+  size,
+  className,
+}: {
+  src: string;
+  size: number;
+  /** Theme behaviour for the mark — see the `*-logo-img` rules in tokens.css. */
+  className?: string;
+}) {
+  // Remembered as the failing src rather than a boolean, so a component that
+  // swaps marks starts each new one hopeful instead of inheriting the last
+  // one's failure.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  if (failedSrc === src) return null;
+
+  return (
+    <img
+      className={className}
+      src={src}
+      alt=""
+      aria-hidden="true"
+      width={size}
+      height={size}
+      onError={() => setFailedSrc(src)}
+      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
+    />
+  );
+}
+
+/**
+ * A mark supplied as a light/dark pair. Both variants are stacked in one grid
+ * cell and the theme rules in tokens.css decide which one shows — four
+ * surfaces used to spell that wrapper out by hand, each with its own copy of
+ * the two `<img>`s.
+ */
+export function TwoToneMark({
+  light,
+  dark,
+  size,
+}: {
+  light: string;
+  dark: string;
+  size: number;
+}) {
+  return (
+    <span
+      className="opencode-logo"
+      aria-hidden="true"
+      style={{ width: size, height: size, flexShrink: 0 }}
+    >
+      <BrandImage className="opencode-logo-light" src={light} size={size} />
+      <BrandImage className="opencode-logo-dark" src={dark} size={size} />
+    </span>
+  );
+}
 
 // Official OpenRouter brand mark (Simple Icons, single path).
 const OPENROUTER_PATH =
@@ -70,37 +143,21 @@ const PROVIDER_LOGO_IMAGE_CLASS: Partial<Record<ProviderId, string>> = {
 export function ProviderLogo({ id, size = 14 }: { id: ProviderId; size?: number }) {
   if (id === "opencode") {
     return (
-      <span
-        className="opencode-logo"
-        aria-hidden="true"
-        style={{
-          width: size,
-          height: size,
-          flexShrink: 0,
-        }}
-      >
-        <img className="opencode-logo-light" src="/opencode-logo-light.svg" alt="" />
-        <img className="opencode-logo-dark" src="/opencode-logo-dark.svg" alt="" />
-      </span>
+      <TwoToneMark
+        light="/opencode-logo-light.svg"
+        dark="/opencode-logo-dark.svg"
+        size={size}
+      />
     );
   }
 
   const image = PROVIDER_LOGO_IMAGE[id];
   if (image) {
     return (
-      <img
+      <BrandImage
         className={PROVIDER_LOGO_IMAGE_CLASS[id] ?? "provider-logo-img"}
         src={image}
-        alt=""
-        aria-hidden="true"
-        width={size}
-        height={size}
-        style={{
-          width: size,
-          height: size,
-          objectFit: "contain",
-          flexShrink: 0,
-        }}
+        size={size}
       />
     );
   }
