@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 import { modelBrand } from "./modelBrand";
-import { ProviderLogo } from "./components/ai/icons";
+import { BrandImage, ProviderLogo, TwoToneMark } from "./components/ai/icons";
 
 type LogoProps = { size?: number };
 type LogoComponent = (props: LogoProps) => ReactElement;
@@ -11,43 +11,15 @@ export type ModelIdentity = {
 };
 
 function MiniMaxLogo({ size = 14 }: LogoProps) {
-  return (
-    <img
-      src="/minimax-logo.png"
-      alt=""
-      aria-hidden="true"
-      width={size}
-      height={size}
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
+  return <BrandImage src="/minimax-logo.png" size={size} />;
 }
 
 function KimiLogo({ size = 14 }: LogoProps) {
-  return (
-    <span
-      className="opencode-logo"
-      style={{ width: size, height: size, flexShrink: 0 }}
-      aria-hidden="true"
-    >
-      <img className="opencode-logo-light" src="/kimi-logo-light.svg" alt="" />
-      <img className="opencode-logo-dark" src="/kimi-logo-dark.svg" alt="" />
-    </span>
-  );
+  return <TwoToneMark light="/kimi-logo-light.svg" dark="/kimi-logo-dark.svg" size={size} />;
 }
 
 function ZaiLogo({ size = 14 }: LogoProps) {
-  return (
-    <img
-      className="white-logo-img"
-      src="/zai-logo.png"
-      alt=""
-      aria-hidden="true"
-      width={size}
-      height={size}
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
+  return <BrandImage className="white-logo-img" src="/zai-logo.png" size={size} />;
 }
 
 function AnthropicLogo({ size = 14 }: LogoProps) {

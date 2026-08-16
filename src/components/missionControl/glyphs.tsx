@@ -5,7 +5,7 @@
 // themselves still come from ai/icons, which owns every brand mark.
 
 import React from "react";
-import { BRAND_LOGO_PATHS, ProviderLogo } from "../ai/icons";
+import { BRAND_LOGO_PATHS, BrandImage, ProviderLogo, TwoToneMark } from "../ai/icons";
 import { resolveModelLogo } from "../../modelIdentity";
 import type { ProviderId } from "../../agent/types";
 import type { RunKind, RunSource } from "../../runs";
@@ -16,41 +16,19 @@ import type { RunKind, RunSource } from "../../runs";
 // logo instead of a flat color. Used for model badges in the RunRow subtitle
 // and for source avatars (Claude Code, Codex).
 export function ClaudeCodeLogo({ size = 13 }: { size?: number }) {
-  return (
-    <img
-      src="/claude-code-logo.png"
-      alt=""
-      aria-hidden="true"
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
+  return <BrandImage src="/claude-code-logo.png" size={size} />;
 }
 // Klide's own brand mark (the app icon). Worn by Klide-harness runs that go
 // through a model proxy like OpenRouter, where the model could be anything —
 // the run belongs to Klide's harness, so it carries the Klide mark, not the
 // underlying maker's logo.
 export function KlideLogo({ size = 13 }: { size?: number }) {
-  return (
-    <img
-      src="/klide-logo.png"
-      alt=""
-      aria-hidden="true"
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
+  return <BrandImage src="/klide-logo.png" size={size} />;
 }
 // Codex and Z.AI marks are white-on-transparent — invert them on light themes
 // via the white-logo-img rule in tokens.css so they stay visible everywhere.
 export function CodexLogo({ size = 13 }: { size?: number }) {
-  return (
-    <img
-      className="white-logo-img"
-      src="/codex-logo.png"
-      alt=""
-      aria-hidden="true"
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
+  return <BrandImage className="white-logo-img" src="/codex-logo.png" size={size} />;
 }
 // Oh My Pi mark — uses the same ProviderLogo(id="omp") as the AI panel
 // dropdown, so the run list and the AI panel show the same mark.
@@ -178,14 +156,11 @@ export function SourceLogo({
   // two <img>s at the same grid cell so only the right one shows per theme.
   if (source === "opencode") {
     return (
-      <span
-        className="opencode-logo"
-        style={{ width: size, height: size }}
-        aria-hidden="true"
-      >
-        <img className="opencode-logo-light" src="/opencode-logo-light.svg" alt="" />
-        <img className="opencode-logo-dark" src="/opencode-logo-dark.svg" alt="" />
-      </span>
+      <TwoToneMark
+        light="/opencode-logo-light.svg"
+        dark="/opencode-logo-dark.svg"
+        size={size}
+      />
     );
   }
   // Other Klide runs wear the logo of the model they used — Ollama for local
@@ -243,17 +218,7 @@ export function RunAvatar({
 // would hit ProviderLogo's fallback circle — render the Klide mark instead.
 export function SourceMark({ source, size = 16 }: { source: RunSource; size?: number }) {
   if (source === "klide") {
-    return (
-      <img
-        src="/klide-logo.png"
-        alt=""
-        aria-hidden
-        width={size}
-        height={size}
-        className="provider-logo-img"
-        style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-      />
-    );
+    return <BrandImage className="provider-logo-img" src="/klide-logo.png" size={size} />;
   }
   return <ProviderLogo id={source as ProviderId} size={size} />;
 }

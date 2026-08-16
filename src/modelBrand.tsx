@@ -9,21 +9,12 @@
 // `currentColor` glyph.
 
 import type { ReactElement } from "react";
+import { BrandImage } from "./components/ai/icons";
 
 type LogoProps = { size?: number };
 
 function ImgLogo({ src, themeClass, size }: { src: string; themeClass: string; size: number }) {
-  return (
-    <img
-      className={themeClass}
-      src={src}
-      alt=""
-      aria-hidden="true"
-      width={size}
-      height={size}
-      style={{ width: size, height: size, objectFit: "contain", flexShrink: 0 }}
-    />
-  );
+  return <BrandImage className={themeClass} src={src} size={size} />;
 }
 
 // LiquidAI's mark is solid black on transparent → invert to white on dark.

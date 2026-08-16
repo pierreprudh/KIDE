@@ -131,7 +131,7 @@ import type { ArtifactRequest } from "./ArtifactInspector";
 import { useArtifactInspector } from "../hooks/useArtifactInspector";
 import { useCustomProviders } from "../hooks/useCustomProviders";
 import { customProviderSync, isCustomProvider } from "../customProviders";
-import { ProviderLogo, RaceMark } from "./ai/icons";
+import { ProviderLogo, RaceMark, TwoToneMark } from "./ai/icons";
 import type { ProviderId } from "../agent/types";
 import {
   DEFAULT_MODELS,
@@ -2558,24 +2558,11 @@ function ModelSelect({
                   >
                     {isOpencodeGroup(provider) ? (
                       <>
-                        <span
-                          className="opencode-logo"
-                          style={{ width: 12, height: 12, display: "inline-block" }}
-                          aria-hidden="true"
-                        >
-                          <img
-                            className="opencode-logo-light"
-                            src="/opencode-logo-light.svg"
-                            alt=""
-                            style={{ width: 12, height: 12 }}
-                          />
-                          <img
-                            className="opencode-logo-dark"
-                            src="/opencode-logo-dark.svg"
-                            alt=""
-                            style={{ width: 12, height: 12 }}
-                          />
-                        </span>
+                        <TwoToneMark
+                          light="/opencode-logo-light.svg"
+                          dark="/opencode-logo-dark.svg"
+                          size={12}
+                        />
                         <span>
                           opencode · {provider === "opencode-go" ? "paid" : "free"}
                         </span>
