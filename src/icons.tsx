@@ -1,13 +1,14 @@
 // icons — Klide's icon vocabulary, defined once.
 //
-// Two rails draw the same destinations: the free-mode ActivityBar and Focus's
-// rail. Until now each kept a private copy of every glyph — two Memory icons,
-// two Orchestrators, two Mission Controls, drawn slightly differently and at
-// slightly different stroke widths. Changing one changed one rail, which is
-// exactly the bug that sent us looking for the dev server.
+// The app used to draw two rails, and each kept a private copy of every glyph —
+// two Memory icons, two Orchestrators, two Mission Controls, drawn slightly
+// differently and at slightly different stroke widths. Changing one changed one
+// rail, which is exactly the bug that sent us looking for the dev server. (The
+// rails themselves are one component now — see WorkspaceRail — but the rule
+// outlives them: any surface can ask for a mark, none of them owns one.)
 //
-// So: one name, one drawing, one weight. A rail decides *density* (it passes a
-// size); it never decides what a thing looks like.
+// So: one name, one drawing, one weight. A caller decides *density* (it passes
+// a size); it never decides what a thing looks like.
 //
 // The set underneath is Phosphor, which ships weight as a variant rather than
 // a tunable prop — a "light" glyph is a different set of filled outlines, not

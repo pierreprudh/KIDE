@@ -4,9 +4,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { buildProviderOptions, retrievableConversation } from "./FocusMode";
+import { buildProviderOptions } from "./FocusMode";
 import type { CustomProvider } from "../customProviders";
-import type { Conversation } from "./ai/types";
 
 const gateway: CustomProvider = {
   id: "custom:my-gateway",
@@ -51,23 +50,5 @@ describe("Focus provider stack", () => {
   it("leaves delegate CLIs out of Focus", () => {
     const options = buildProviderOptions([], new Set(), vi.fn());
     expect(rowFor(options, "claude-code")).toBeUndefined();
-  });
-});
-
-describe("Focus conversation resume", () => {
-  const saved: Conversation = {
-    id: "saved-1",
-    title: "Saved task",
-    msgs: [{ role: "user", content: "hello" }],
-    updatedAt: 1,
-  };
-
-  it("re-resolves the durable record instead of trusting the rendered row", () => {
-    const staleRow = { ...saved, title: "Stale title" };
-    expect(retrievableConversation(staleRow.id, [saved])).toBe(saved);
-  });
-
-  it("returns null when the rendered conversation has disappeared", () => {
-    expect(retrievableConversation("missing", [saved])).toBeNull();
   });
 });

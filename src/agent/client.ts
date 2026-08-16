@@ -152,9 +152,12 @@ export function isActiveRunStatus(status: string | null): boolean {
 }
 
 export type RunReattachment = {
-  /** Stop listening to the run's global event stream. */
+  /** Stop listening to the run's global event stream. Settles `done` too. */
   detach: () => void;
-  /** Settles when the run emits run_result / run_error while we're attached. */
+  /** Settles when this attachment ends — the run emitted run_result /
+   *  run_error, or the caller detached. It answers "is this panel still tied to
+   *  that run", not "how did the run turn out": a caller waiting on it (the
+   *  send queue) must not hang because the panel walked away. */
   done: Promise<void>;
 };
 

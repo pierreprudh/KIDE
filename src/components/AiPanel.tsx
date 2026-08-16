@@ -64,6 +64,7 @@ import type {
   AgentMode,
   ProviderId,
   DiffProposal,
+  PermissionRequest,
 } from "../agent/types";
 import { enabledSkillsPrompt, type Skill } from "../skills";
 
@@ -83,7 +84,9 @@ import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
 import { eventsToMsgs, isSilentRunError } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
+import { decideOnLeavingRun, type RunLeaveDecision } from "./ai/leavingRun";
 import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
+import { pendingGatesFromEvents } from "../agent/pendingGates";
 import {
   applyConversationSessionTransition,
   conversationSessionReducer,
@@ -621,6 +624,16 @@ export function AiPanel({
     [conversationSession.branch, conversationSession.worktree],
   );
   const displayedBranch = displayedConversationBranch(conversationGitMeta.branch);
+  /** Index of the last message that is part of the exchange — queued turns are
+   *  parked below it and don't move the tail. */
+  const lastExchangeIndex = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "user" && m.queueState === "queued") continue;
+      return i;
+    }
+    return -1;
+  }, [msgs]);
   const streaming = conversationSession.run.active;
   const activity = conversationSession.run.activity;
   void activity;
@@ -691,7 +704,6 @@ export function AiPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [input, setInput] = useState("");
-  const [queuedTurns, setQueuedTurns] = useState<QueuedTurn[]>([]);
   const [composerFocused, setComposerFocused] = useState(false);
   // Mode / reflection / context popovers live in `usePortalMenu` (declared
   // with the mode + reflection menus below) — same names, so render is unchanged.
@@ -1712,20 +1724,27 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   useEffect(() => { msgsRef.current = msgs; }, [msgs]);
 
-  // Restoration itself is synchronous and atomic in Conversation Session.
-  // This mount-only effect only reconnects the restored identity to a live
-  // Harness Run, if one exists.
-  useEffect(() => {
-    const restored = conversationSessionRef.current;
-    // Reconnect to a run that progressed while the panel was unmounted: the
-    // harness keeps running in Rust and writes the transcript, but the request-
-    // scoped event channel from startAgentRun dies with the old mount. So we (1)
-    // rebuild from the on-disk transcript — which has the (possibly finished)
-    // reply — and (2) if the run is STILL going, follow the global reattach
-    // stream so it keeps updating instead of freezing at a stale snapshot.
-    // Klide runs only (currentId == transcript id); delegates use the PTY.
-    if (!isDelegateProvider(restored.provider)) {
-      const reattachId = restored.conversationId;
+  /**
+   * Reconnect a conversation to the Harness Run still working on it, if there
+   * is one. The harness keeps running in Rust and writing its transcript, but
+   * the request-scoped event channel from `startAgentRun` belongs to the mount
+   * — and the turn generation — that opened it. So we (1) rebuild from the
+   * on-disk transcript, which has the (possibly finished) reply, and (2) if the
+   * run is STILL going, follow the global reattach stream so it keeps updating
+   * instead of freezing at a stale snapshot.
+   *
+   * Called on mount and on every conversation adoption. Leaving a thread no
+   * longer stops its agent (see `detachFromActiveRun`), so coming back to one
+   * has to pick its live stream up again — otherwise the row animates in the
+   * rail while the panel shows a frozen transcript.
+   *
+   * Klide runs only: conversation id == transcript id, and delegates stream
+   * through the PTY instead.
+   */
+  function followConversationRun(conversationId: string, runProvider: ProviderId) {
+    if (isDelegateProvider(runProvider)) return;
+    {
+      const reattachId = conversationId;
       const baseLen = msgsRef.current.length;
       void (async () => {
         // Re-read the transcript and adopt the replay, guarding against a
@@ -1733,7 +1752,9 @@ This user request requires workspace inspection. Before answering, you MUST call
         // the event count and whether the transcript *tail* is terminal — the
         // harness writes RunResult/RunError to disk before it flips the run's
         // status, so the tail is the authoritative "is this turn done" signal.
-        const adopt = async (guardBaseLen?: number): Promise<{ len: number; terminal: boolean }> => {
+        const adopt = async (
+          guardBaseLen?: number,
+        ): Promise<{ len: number; terminal: boolean; events: AgentEvent[] }> => {
           const events = await readAgentRunEvents(reattachId);
           // Turns queued locally (waiting for this external run to settle)
           // aren't in the transcript yet — carry them across the replay or a
@@ -1751,10 +1772,58 @@ This user request requires workspace inspection. Before answering, you MUST call
             msgsRef.current = replayed;
           }
           const tail = events[events.length - 1]?.type;
-          return { len: events.length, terminal: tail === "run_result" || tail === "run_error" };
+          return {
+            len: events.length,
+            terminal: tail === "run_result" || tail === "run_error",
+            events,
+          };
         };
 
-        let snapshot: { len: number; terminal: boolean };
+        /**
+         * Put back whatever the run is parked on. The card is drawn by the
+         * panel and answered by the panel, so a run that asked while nobody was
+         * watching would otherwise wait on a question with no surface — and the
+         * queue waits with it, since a parked run never settles.
+         *
+         * Only ever called for a run Rust still holds. A transcript can end on
+         * an unanswered request with no terminal event — that is exactly what a
+         * run killed with the app looks like — and restoring a card for a run
+         * that no longer exists would offer an approval nothing is listening
+         * for. See agent/pendingGates.ts.
+         */
+        const restoreGates = (events: AgentEvent[]) => {
+          if (conversationSessionRef.current.conversationId !== reattachId) return;
+          const gates = pendingGatesFromEvents(events);
+          setPendingPermission((current) =>
+            gates.permission
+              ? current?.requestId === gates.permission.id
+                ? current
+                : permissionCard(reattachId, gates.permission)
+              : current?.runId === reattachId
+                ? null
+                : current,
+          );
+          setPendingDiff((current) =>
+            gates.diff
+              ? current?.id === gates.diff.id
+                ? current
+                : gates.diff
+              : current?.runId === reattachId
+                ? null
+                : current,
+          );
+          setPendingQuestion((current) =>
+            gates.question
+              ? current?.requestId === gates.question.requestId
+                ? current
+                : gates.question
+              : current?.runId === reattachId
+                ? null
+                : current,
+          );
+        };
+
+        let snapshot: { len: number; terminal: boolean; events: AgentEvent[] };
         try {
           snapshot = await adopt(baseLen);
         } catch {
@@ -1762,7 +1831,9 @@ This user request requires workspace inspection. Before answering, you MUST call
         }
         if (snapshot.terminal) return; // already finished — snapshot is the final word
 
-        // Is the run still live in Rust? If not, the snapshot is the final word.
+        // Is the run still live in Rust? If not, the snapshot is the final word
+        // — including any request it ends on, which belongs to a run that died
+        // with the process and can no longer be answered.
         let status: string | null = null;
         try { status = await getAgentRunStatus(reattachId); } catch { /* ignore */ }
         if (
@@ -1775,6 +1846,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         // reconcile and dedup is implicit in the full replay.
         startConversationRun();
         activeHarnessRunRef.current = reattachId;
+        restoreGates(snapshot.events);
         const settle = () => {
           settleConversationRun();
           if (activeHarnessRunRef.current === reattachId) activeHarnessRunRef.current = null;
@@ -1782,7 +1854,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           reattachRef.current = null;
         };
         const reatt = await reattachAgentRun(reattachId, snapshot.len, (event) => {
-          void adopt().catch(() => {});
+          void adopt().then((next) => restoreGates(next.events)).catch(() => {});
           if (event.type === "run_result" || event.type === "run_error") settle();
         });
         // A conversation switch during the listen await would have moved
@@ -1798,12 +1870,53 @@ This user request requires workspace inspection. Before answering, you MUST call
         // (authoritative) and settle if the run already finished.
         try {
           const post = await adopt();
+          restoreGates(post.events);
           if (post.terminal) settle();
         } catch { /* ignore transient read error */ }
       })();
     }
-    // Intentionally only the *initial* currentId matters — subsequent
-    // edits (loadConversation, newConversation) own the active id.
+  }
+
+  /**
+   * Stop following this panel's run — without stopping the run.
+   *
+   * Leaving a conversation is navigation, not a decision to kill the agent
+   * working in it. The loop lives in Rust, so the panel only has to stop
+   * listening: the live channel from `startAgentRun` can't be closed from
+   * here, so its turn generation is retired instead (`handleEvent` drops
+   * everything from the old turn) and any reattach listener is dropped. The
+   * run keeps going, its rail row keeps animating, and `followConversationRun`
+   * picks it back up when you return.
+   *
+   * A run parked on a diff, a permission or a question survives too: the panel
+   * drops its card here and rebuilds it from the transcript on return (see
+   * `agent/pendingGates.ts`). Returns the decision from `ai/leavingRun.ts` so
+   * the caller can keep the run board in step with it.
+   */
+  function detachFromActiveRun(): RunLeaveDecision {
+    const decision = decideOnLeavingRun({
+      hasActiveRun: activeHarnessRunRef.current !== null,
+    });
+    // Retire the turn generation: the live channel's events now fall out of
+    // `handleEvent` instead of landing in whatever conversation is adopted
+    // next, and any queue drain for the thread we're leaving bails.
+    queueGenerationRef.current += 1;
+    processingQueueRef.current = false;
+    if (decision.abort) abortActiveHarnessRun();
+    else activeHarnessRunRef.current = null;
+    reattachRef.current?.detach();
+    reattachRef.current = null;
+    settleConversationRun();
+    return decision;
+  }
+
+  // Restoration itself is synchronous and atomic in Conversation Session. This
+  // mount-only effect reconnects the restored identity to its run, if it has
+  // one. Intentionally only the *initial* conversation matters — subsequent
+  // edits (loadConversation, newConversation) follow their own.
+  useEffect(() => {
+    const restored = conversationSessionRef.current;
+    followConversationRun(restored.conversationId, restored.provider);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1832,12 +1945,12 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   function newConversation() {
     if (providerDelegatesWork) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
-    // Mark the previous chat as done on Mission Control so a "new chat"
-    // doesn't leave a stale "running" row. View switches no longer hit
-    // this path (the panel just unmounts/remounts).
-    settleKlideConvo(currentId);
     setHistoryOpen(false);
-    abortActiveHarnessRun();
+    // Mark the previous chat as done on the run board so a "new chat" doesn't
+    // leave a stale "running" row — unless it really is still running, which it
+    // now can be: starting a fresh chat leaves the previous agent working.
+    const leaving = detachFromActiveRun();
+    if (leaving.settle) settleKlideConvo(currentId);
     const nid = genId();
     setModelActivationDeferred(false);
     manuallyInspectedModelRef.current = null;
@@ -1847,7 +1960,6 @@ This user request requires workspace inspection. Before answering, you MUST call
     setCompactError(null);
     queueRef.current = [];
     queueGenerationRef.current += 1;
-    setQueuedTurns([]);
     processingQueueRef.current = false;
     setInput("");
     // The auto-save notice belongs to the previous conversation — clear it
@@ -2016,7 +2128,10 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   function loadConversation(c: Conversation) {
     setHistoryOpen(false);
-    abortActiveHarnessRun();
+    // Opening another thread used to abort whatever this one was running —
+    // clicking a sibling row in the rail silently killed a working agent. The
+    // run is left alone now; only this panel's subscription to it ends.
+    detachFromActiveRun();
     // Adopting history must not become an implicit model request. The saved
     // Provider/model pair is shown immediately, but inspection + warm-up wait
     // for the first real send from this transcript.
@@ -2038,7 +2153,6 @@ This user request requires workspace inspection. Before answering, you MUST call
     setCompactError(null);
     queueRef.current = [];
     queueGenerationRef.current += 1;
-    setQueuedTurns([]);
     // Drop the previous chat's auto-save notice so the loaded history
     // doesn't display a stale "Auto-saved" pill.
     if (autoMemoryTimerRef.current !== null) {
@@ -2056,6 +2170,11 @@ This user request requires workspace inspection. Before answering, you MUST call
     // previous chat sticks, and the user has to scroll to find the
     // latest message.
     forceStickToBottom();
+    // The adopted thread may itself have a run still going — one you started
+    // here and walked away from, or one another panel left behind. Pick its
+    // live stream back up rather than showing the transcript as it stood when
+    // you left.
+    followConversationRun(c.id, c.provider ?? provider);
   }
 
   function deleteConversation(id: string, e: ReactMouseEvent) {
@@ -2326,6 +2445,30 @@ This user request requires workspace inspection. Before answering, you MUST call
     return `${head.slice(0, keep).join(" ")} *`;
   }
 
+  /** One permission request → the card the panel draws for it. Shared by the
+   *  live event and by the transcript recovery, so an approval looks the same
+   *  whether it arrived while you were watching or while you were away. */
+  function permissionCard(runId: string, req: PermissionRequest) {
+    // `input` is the one genuinely open field on the wire — the command gate
+    // sends {command, cwd, externalPaths, matchedAllowRule}, a network
+    // capability sends whatever it declared. Everything else is typed, and the
+    // Rust `frontend_mirror_matches_agent_wire` test keeps it that way.
+    const input = (req.input ?? {}) as { command?: string; externalPaths?: string[] };
+    const isCommand = !!input.command;
+    const command = input.command ?? req.summary ?? req.toolName ?? "permission request";
+    return {
+      runId,
+      requestId: req.id,
+      toolName: req.toolName ?? "permission",
+      kind: isCommand ? ("command" as const) : ("network" as const),
+      command,
+      summary: req.summary ?? command,
+      reason: req.reason ?? "",
+      externalPaths: Array.isArray(input.externalPaths) ? input.externalPaths : [],
+      suggestedPattern: isCommand ? suggestCommandPattern(command) : undefined,
+    };
+  }
+
   async function runHarnessTurn(turn: QueuedTurn, generation: number) {
     if (queueGenerationRef.current !== generation) return;
     let userIndex = msgsRef.current.findIndex((m) => m.role === "user" && m.queueId === turn.clientId);
@@ -2445,26 +2588,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           break;
         }
         case "permission_requested": {
-          const req = event.request;
-          // `input` is the one genuinely open field on the wire — the command
-          // gate sends {command, cwd, externalPaths, matchedAllowRule}, a
-          // network capability sends whatever it declared. Everything else is
-          // typed, and the Rust `frontend_mirror_matches_agent_wire` test keeps
-          // it that way.
-          const input = (req.input ?? {}) as { command?: string; externalPaths?: string[] };
-          const isCommand = !!input.command;
-          const command = input.command ?? req.summary ?? req.toolName ?? "permission request";
-          setPendingPermission({
-            runId: event.runId,
-            requestId: req.id,
-            toolName: req.toolName ?? "permission",
-            kind: isCommand ? "command" : "network",
-            command,
-            summary: req.summary ?? command,
-            reason: req.reason ?? "",
-            externalPaths: Array.isArray(input.externalPaths) ? input.externalPaths : [],
-            suggestedPattern: isCommand ? suggestCommandPattern(command) : undefined,
-          });
+          setPendingPermission(permissionCard(event.runId, event.request));
           break;
         }
         case "permission_resolved": {
@@ -2623,7 +2747,6 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   function enqueueTurn(turn: QueuedTurn) {
     queueRef.current = [...queueRef.current, turn];
-    setQueuedTurns(queueRef.current);
     // Stamped at send, not at dispatch: a turn can sit queued behind a running
     // one, and the conversation's start time is when the user actually asked.
     const queuedMessage: Msg = { role: "user", content: turn.text, attachments: turn.attachments.length ? turn.attachments : undefined, projectContext: turn.projectContext, queueState: "queued", queueId: turn.clientId, subagent: turn.subagent, ts: Date.now() };
@@ -2634,20 +2757,6 @@ This user request requires workspace inspection. Before answering, you MUST call
     // bottom so they can watch their message + the reply.
     forceStickToBottom();
     void drainQueue();
-  }
-
-  // Drop a still-queued turn (one that hasn't started running yet). drainQueue
-  // pulls turns out of queueRef the moment they start, so anything still in
-  // queuedTurns state is safe to cancel: remove it from the pending queue and
-  // delete its placeholder user bubble.
-  function clearQueue() {
-    const pending = new Set(queueRef.current.map((t) => t.clientId));
-    queueRef.current = [];
-    setQueuedTurns([]);
-    msgsRef.current = msgsRef.current.filter(
-      (m) => !(m.role === "user" && m.queueState === "queued" && m.queueId && pending.has(m.queueId)),
-    );
-    setMsgs(msgsRef.current);
   }
 
   async function drainQueue() {
@@ -2667,7 +2776,6 @@ This user request requires workspace inspection. Before answering, you MUST call
         }
         const [turn, ...rest] = queueRef.current;
         queueRef.current = rest;
-        setQueuedTurns(rest);
         await runHarnessTurn(turn, generation);
       }
     } finally { processingQueueRef.current = false; }
@@ -3351,7 +3459,12 @@ This user request requires workspace inspection. Before answering, you MUST call
           </div>
         )}
         {msgs.map((m, i) => {
-          const isLast = i === msgs.length - 1;
+          // "Last" means the tail of the *exchange*, not of the array. Turns
+          // typed ahead sit below the answer they're waiting on, and counting
+          // them here would take the caret off a streaming answer, stop a
+          // running tool row from reading as running, and move the revert slot
+          // off the run that owns it — all while the run is still going.
+          const isLast = i === lastExchangeIndex;
           const isAssistantPlaceholder = streaming && m.role === "assistant" && m.content === "" && !m.thinking && !m.toolCalls;
           const activeToolRunning =
             streaming &&
@@ -3484,9 +3597,12 @@ This user request requires workspace inspection. Before answering, you MUST call
           // on intermediate narration turns ("OK, let me look…") that are
           // followed by more tool calls — otherwise the icon row appears in the
           // middle of a multi-turn run. A response ends when the next message is
-          // a user turn (or there is none).
+          // a user turn (or there is none) — but a *queued* turn hasn't been
+          // asked yet. Typing ahead while the agent works would otherwise stamp
+          // the running answer as finished and hand it its copy/retry row
+          // mid-run, which is the one thing this rule exists to prevent.
           const nextMsg = msgs[i + 1];
-          const isResponseEnd = !nextMsg || nextMsg.role === "user";
+          const isResponseEnd = !nextMsg || (nextMsg.role === "user" && nextMsg.queueState !== "queued");
           return (
             <div key={i} className="ai-msg-in" style={{ display: "flex", gap: 10, margin: isResponseStart ? "14px 0 8px" : "3px 0", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
               {isResponseStart ? (
@@ -3556,17 +3672,18 @@ This user request requires workspace inspection. Before answering, you MUST call
             placeholder/caret is already animating, or we're waiting on the user
             (diff / permission / question). */}
         {(() => {
-          const last = msgs[msgs.length - 1];
+          // The exchange's tail, not the array's: turns typed ahead park below
+          // it and say nothing about whether the run is alive.
+          const last = msgs[lastExchangeIndex];
           const tailPendingTool = last?.role === "tool" && /^Running /.test(last.content);
           const tailPlaceholder = last?.role === "assistant" && !last.content && !last.thinking && !last.toolCalls;
           const tailStreamingText = last?.role === "assistant" && !!last.content;
-          // A queued/running user bubble already carries its own activity hint
-          // (and the queue line sits right below), so the heartbeat is just noise.
+          // A running user bubble already carries its own activity hint, so the
+          // heartbeat under it is just noise.
           const tailQueuedUser = last?.role === "user" && !!last.queueState;
           const showWorking =
             streaming && !pendingDiff && !pendingPermission && !pendingQuestion &&
-            !tailPendingTool && !tailPlaceholder && !tailStreamingText && !tailQueuedUser &&
-            queuedTurns.length === 0;
+            !tailPendingTool && !tailPlaceholder && !tailStreamingText && !tailQueuedUser;
           if (!showWorking) return null;
           return (
             <div className="ai-msg-in" style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 6px 32px", color: "var(--fg-dim)" }}>
@@ -3808,21 +3925,6 @@ This user request requires workspace inspection. Before answering, you MUST call
               </svg>
               Compact
               <span style={{ opacity: 0.55 }}>{Math.round(contextRatio * 100)}%</span>
-            </button>
-          </div>
-        )}
-        {queuedTurns.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "0 4px 6px", color: "var(--fg-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
-            <span title={queuedTurns.map((t, i) => `${i + 1}. ${t.text}`).join("\n\n")} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {queuedTurns.length} queued
-            </span>
-            <button type="button" onClick={clearQueue} title="Clear queue" aria-label="Clear queue"
-              style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, padding: 0, border: "none", background: "transparent", color: "currentColor", opacity: 0.55, cursor: "pointer", transition: "opacity var(--motion-fast) var(--ease-out)" }}
-              onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.55"; }}>
-              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
-                <path d="M4 4l8 8M12 4l-8 8" />
-              </svg>
             </button>
           </div>
         )}

@@ -247,7 +247,7 @@ describe("surface predicates", () => {
     ["workbench grid", GRID_S, false, true, true, true],
     ["overlay runs", RUNS_S, false, true, true, false],
     ["overlay orchestrator", ORCH_S, false, true, true, false],
-    ["overlay settings", SETTINGS_S, false, false, true, false],
+    ["overlay settings", SETTINGS_S, false, false, false, false],
     ["overlay git-review", GIT_S, false, true, true, false],
   ];
 
