@@ -38,6 +38,7 @@ import { MagnifyingGlass } from "@phosphor-icons/react/dist/csr/MagnifyingGlass"
 import { Plus } from "@phosphor-icons/react/dist/csr/Plus";
 import { PuzzlePiece } from "@phosphor-icons/react/dist/csr/PuzzlePiece";
 import { Rectangle } from "@phosphor-icons/react/dist/csr/Rectangle";
+import { SidebarSimple } from "@phosphor-icons/react/dist/csr/SidebarSimple";
 import { Terminal } from "@phosphor-icons/react/dist/csr/Terminal";
 import { User } from "@phosphor-icons/react/dist/csr/User";
 import { X } from "@phosphor-icons/react/dist/csr/X";
@@ -169,6 +170,13 @@ export function FocusLayoutIcon(p: GlyphProps) {
 /** Free layout's mark: two offset panels, the mirror of FocusLayoutIcon. */
 export function FreeLayoutIcon(p: GlyphProps) {
   return <Icon as={Cards} {...p} />;
+}
+
+/** The sidebar itself, as a control: the frame with its left column filled.
+ *  One mark for both directions — the button says "the rail", and what it does
+ *  to it is read from the label, not from a second mirrored glyph. */
+export function SidebarIcon(p: GlyphProps) {
+  return <Icon as={SidebarSimple} {...p} />;
 }
 
 /** Disclosure. `open` rotates it rather than swapping in a second glyph, so

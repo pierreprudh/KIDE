@@ -5,6 +5,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  RAIL_MAX_WIDTH,
+  RAIL_MIN_WIDTH,
+  railFromEdge,
   railProjectRoots,
   retrievableConversation,
   visibleProviderConversations,
@@ -21,6 +24,26 @@ describe("rail project list", () => {
 
   it("does not append an active linked run as another workspace", () => {
     expect(railProjectRoots([KIDE], RUN)).toEqual([KIDE]);
+  });
+});
+
+describe("rail edge drag", () => {
+  it("clamps a width to the rail's bounds", () => {
+    expect(railFromEdge(300)).toEqual({ collapsed: false, width: 300 });
+    expect(railFromEdge(9000).width).toBe(RAIL_MAX_WIDTH);
+    expect(railFromEdge(RAIL_MIN_WIDTH - 4).width).toBe(RAIL_MIN_WIDTH);
+  });
+
+  it("folds rather than shrinking once the edge crosses the fold point", () => {
+    expect(railFromEdge(40).collapsed).toBe(true);
+  });
+
+  it("leaves the stored width alone while folded, so it reopens as it was", () => {
+    expect(railFromEdge(0).width).toBeNull();
+  });
+
+  it("reopens when the edge is dragged back out past the fold point", () => {
+    expect(railFromEdge(260)).toEqual({ collapsed: false, width: 260 });
   });
 });
 

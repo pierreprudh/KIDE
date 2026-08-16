@@ -59,7 +59,7 @@ import type { DelegateId } from "./delegates";
 import type { GitStatus } from "./gitTypes";
 import { ProfileModal } from "./components/ProfileModal";
 import { getNextThemeId } from "./theme";
-import { SETTINGS, useSetting } from "./settingsStore";
+import { SETTINGS, getSetting, setSetting, useSetting } from "./settingsStore";
 import { loadSkills, saveSkills, loadFilesystemSkills, type Skill } from "./skills";
 import {
   loadCustomPresets,
@@ -1944,6 +1944,14 @@ function App() {
       if (mod && !e.shiftKey && e.key === "`") {
         e.preventDefault();
         setTerminalVisible((v) => !v);
+        return;
+      }
+      // Fold the sidebar. Written straight to the store rather than through a
+      // `useSetting` binding: the rail (in either shell) subscribes to the same
+      // setting, so this handler needs no state of its own and no new dep here.
+      if (mod && !e.shiftKey && e.key === "b") {
+        e.preventDefault();
+        setSetting(SETTINGS.railCollapsed, !getSetting(SETTINGS.railCollapsed));
         return;
       }
       if (mod && !e.shiftKey && e.key === "o") {
