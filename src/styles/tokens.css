@@ -2003,21 +2003,123 @@ textarea.klide-diff-comment-input:focus-visible {
   transform-origin: 50% 100%;
 }
 
-.klide-todo-row-active::after {
+/* One card, not two: collapsing slides the list shut under a header that never
+   moves, and the same transition covers the agent editing its plan. */
+.klide-todo-list {
+  transition:
+    height var(--motion-slow) var(--ease-soft),
+    opacity var(--motion-med) var(--ease-soft);
+}
+
+/* The thread that links one task to the next: a hairline running through the
+   marks, its completed length drawn in accent. Each row owns the half-segment
+   above and below its own mark, so the fill advances one task at a time. */
+.klide-todo-link {
+  position: absolute;
+  left: 4.5px;
+  width: 1px;
+  background: color-mix(in srgb, var(--fg-dim) 30%, transparent);
+  pointer-events: none;
+}
+
+.klide-todo-link > i {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background: color-mix(in srgb, var(--accent) 68%, transparent);
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 380ms var(--ease-soft);
+}
+
+.klide-todo-link[data-filled="1"] > i {
+  transform: scaleY(1);
+}
+
+.klide-todo-row {
+  animation: klide-todo-row-in var(--motion-slow) var(--ease-soft) both;
+}
+
+.klide-todo-mark {
+  transition:
+    background var(--motion-slow) var(--ease-soft),
+    border-color var(--motion-slow) var(--ease-soft);
+}
+
+/* Completing a task lands with the house spring — a small overshoot, then settle. */
+.klide-todo-mark[data-state="done"] {
+  animation: klide-todo-mark-pop 420ms var(--ease-spring);
+}
+
+/* The task in flight breathes: one slow halo, no blinking dot. */
+.klide-todo-mark[data-state="active"]::after {
   content: "";
   position: absolute;
-  left: 31px;
-  right: 2px;
-  bottom: 1px;
-  height: 1px;
-  border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--accent) 54%, transparent),
-    transparent 72%
-  );
-  opacity: 0.72;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  animation: klide-todo-mark-breathe 2.8s var(--ease-soft) infinite;
   pointer-events: none;
+}
+
+.klide-todo-check path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: klide-todo-check-draw 280ms var(--ease-soft) 80ms forwards;
+}
+
+@keyframes klide-todo-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes klide-todo-mark-pop {
+  from {
+    transform: scale(0.7);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes klide-todo-mark-breathe {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+}
+
+@keyframes klide-todo-check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-todo-row,
+  .klide-todo-mark[data-state="done"],
+  .klide-todo-mark[data-state="active"]::after,
+  .klide-todo-check path {
+    animation: none;
+  }
+  .klide-todo-check path {
+    stroke-dashoffset: 0;
+  }
+  .klide-todo-list,
+  .klide-todo-link > i {
+    transition: none;
+  }
 }
 
 @keyframes klide-todo-open-in {
@@ -2028,17 +2130,6 @@ textarea.klide-diff-comment-input:focus-visible {
   to {
     opacity: 1;
     transform: translateY(0) scaleY(1);
-  }
-}
-
-@keyframes klide-todo-collapse-in {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 
@@ -3577,6 +3668,84 @@ button:focus-visible .menu-leadout {
   border-right: 1px solid var(--border);
   background: var(--bg-elevated);
   animation: klide-focus-rail-in 480ms var(--ease-soft) both;
+}
+
+/* The rail's width is a persisted setting written inline by WorkspaceRail; the
+   252px above is only what it looks like before that lands.
+   ────────────────────────────────────────────────────────────────────────
+   Folded, the box goes to zero and its contents stop taking layout, so the
+   canvas simply gets the space. The element stays mounted — that is what keeps
+   the tree's disclosure state, its scroll position and its history
+   subscriptions alive across a fold — and only two children survive the fold:
+   the edge you drag it back out by, and the button that says where it went. */
+.klide-focus-rail[data-collapsed] {
+  padding-inline: 0;
+  /* Width, not colour: `border-box` can't take the element below its own
+     border, so a hairline left here would sit against the window edge as a
+     stray line. */
+  border-right-width: 0;
+}
+
+.klide-focus-rail[data-collapsed] > *:not(.klide-rail-edge):not(.klide-rail-reveal) {
+  display: none;
+}
+
+/* The rail's inner edge as a control: the hairline you already see, plus a band
+   around it wide enough to actually hit. The line itself is the rail's
+   `border-right`; this only lights it while you are on it. */
+.klide-rail-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 7px;
+  z-index: 1;
+  cursor: col-resize;
+}
+
+.klide-rail-edge::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.klide-rail-edge:hover::after {
+  background: var(--accent-soft);
+}
+
+/* Folded, the edge is the window's own left border — half its band would be
+   off-screen, so it leans inward to stay grabbable. */
+.klide-focus-rail[data-collapsed] .klide-rail-edge {
+  right: -6px;
+  width: 8px;
+}
+
+/* The way back. Quiet at rest (it is chrome, not a destination) and full
+   strength under the pointer. Below the title-bar band, never in it — the
+   traffic lights own that strip. */
+.klide-rail-reveal {
+  position: absolute;
+  top: calc(var(--titlebar-h) + 9px);
+  left: 9px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-dim);
+  opacity: 0.5;
+  border-radius: var(--radius-lg);
+}
+
+.klide-rail-reveal:hover,
+.klide-rail-reveal:focus-visible {
+  opacity: 1;
+  color: var(--fg-strong);
+  background: var(--bg-hover);
 }
 
 /* Brand row — also the search row. Opening search swaps the wordmark for a
@@ -5946,9 +6115,9 @@ button:focus-visible .menu-leadout {
 }
 
 @media (max-width: 1080px) {
-  .klide-focus-rail {
-    width: 232px;
-  }
+  /* No rail width here any more: it is the user's, set by dragging the edge and
+     persisted, and an inline width would win over this rule anyway. A narrow
+     window is answered by folding the rail, not by second-guessing its size. */
   .klide-focus-home {
     padding-inline: 22px;
   }

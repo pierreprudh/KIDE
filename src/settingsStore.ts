@@ -322,6 +322,21 @@ export const SETTINGS = {
       keywords: "editor minimap overview",
     },
   } as SettingDef<boolean>,
+  /** The sidebar's width, in px. Direct manipulation only — you set it by
+   *  dragging the rail's inner edge, so it carries no Settings row and no
+   *  search entry. The bounds are the same ones the drag clamps to. */
+  railWidth: {
+    key: "klide-rail-width",
+    fallback: () => 252,
+    normalize: clamp(200, 460),
+  } as SettingDef<number>,
+  /** Whether the sidebar is folded away. Written by the same drag (past the
+   *  fold threshold) and by ⌘B; persisted so the shell reopens the way you
+   *  left it. */
+  railCollapsed: {
+    key: "klide-rail-collapsed",
+    fallback: () => false,
+  } as SettingDef<boolean>,
   aiModel: {
     key: "klide-ai-model",
     // Legacy fallback chain: the pre-rename Ollama-only key, then the stock default.

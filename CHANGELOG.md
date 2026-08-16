@@ -32,7 +32,16 @@ open; these are the shell and correctness changes landed so far.
   still fold it away), and a project holding one never drops into the "More"
   tail on recency. A conversation the rail claims is open can always be found.
 - Gone with the ActivityBar: its collapse-to-56px pebble, the hover flyouts, and
-  the Settings-section submenu. The rail is one width in every layout.
+  the Settings-section submenu. What replaces the pebble is the rail's own
+  **inner edge**: drag it to set the width (200–460px), drag it past the fold
+  point to put the rail away entirely, and drag it back off the window edge to
+  bring it back at the width you left it. Double-click the edge or press **⌘B**
+  to do the same without aiming; folded, one quiet button under the traffic
+  lights says where it went. Width and fold are persisted and shared by both
+  shells, so the rail is the same rail whichever layout you come back through.
+- Folding keeps the rail mounted at zero width rather than unmounting it, so its
+  disclosure state, scroll position and history subscriptions survive the fold —
+  unfolding is instant, not a reload.
 
 ### Focus rail
 

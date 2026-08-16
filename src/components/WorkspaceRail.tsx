@@ -35,8 +35,10 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { CloseIcon, FolderIcon, SearchIcon } from "../icons";
+import { CloseIcon, FolderIcon, SearchIcon, SidebarIcon } from "../icons";
 import { Z } from "../zLayers";
+import { beginDragSession } from "../dragSession";
+import { SETTINGS, useSetting } from "../settingsStore";
 import { railDestination } from "../railDestinations";
 import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
 import {
@@ -125,6 +127,91 @@ export function railProjectRoots(
 /* Glyphs come from ../icons — one vocabulary for the whole app. This file only
    decides density: rail rows at 15px. */
 const RAIL_GLYPH = 15;
+
+/** How wide the rail may be dragged. The floor is the tree's own minimum: any
+ *  narrower and a nested conversation title has no room left after the two
+ *  indentation steps. The same numbers clamp the persisted setting. */
+export const RAIL_MIN_WIDTH = 200;
+export const RAIL_MAX_WIDTH = 460;
+/** Drag the edge inside this and the rail folds away instead of getting
+ *  narrower — the gap between it and the floor is what makes the fold feel
+ *  like a decision rather than a slip. */
+const RAIL_FOLD_AT = 168;
+
+/**
+ * What a drag of the rail's edge means, from where the edge now is.
+ *
+ * `width: null` means "leave the stored width alone" — folding must not
+ * overwrite the width you folded from, or the rail would come back at its
+ * minimum every time. Dragging back out from a folded rail therefore reopens
+ * at whatever it was, once the pointer clears the fold zone.
+ */
+export function railFromEdge(edgeX: number): { collapsed: boolean; width: number | null } {
+  if (edgeX < RAIL_FOLD_AT) return { collapsed: true, width: null };
+  return {
+    collapsed: false,
+    width: Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(edgeX))),
+  };
+}
+
+/** The rail's inner edge, as a control.
+ *
+ *  Visually it is the hairline that was always there; what is new is the wider
+ *  invisible band around it that catches the pointer, because a 1px drag target
+ *  is unhittable (the same trick `SideSplitter` plays in the workbench). Drag it
+ *  to set the width, drag it past the fold point to put the rail away, and drag
+ *  it back off the window edge to bring the rail back. Double-click toggles,
+ *  for anyone who would rather not aim — as does ⌘B. */
+function RailEdge({
+  collapsed,
+  width,
+  onEdgeMoved,
+  onToggle,
+}: {
+  collapsed: boolean;
+  width: number;
+  onEdgeMoved: (edgeX: number) => void;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <div
+        className="klide-rail-edge"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={collapsed ? "Show the sidebar" : "Resize the sidebar"}
+        title={collapsed ? "Drag to show the sidebar" : "Drag to resize · double-click to fold"}
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          // The edge's own x is the whole state a drag needs: a folded rail's
+          // edge is at 0, so both directions are the one subtraction.
+          const startEdge = collapsed ? 0 : width;
+          const startX = e.clientX;
+          beginDragSession({
+            cursor: "col-resize",
+            onMove: (ev) => onEdgeMoved(startEdge + (ev.clientX - startX)),
+          });
+        }}
+        onDoubleClick={onToggle}
+      />
+      {/* Folded, the edge is at the window's left border and there is nothing
+          left to read — so one quiet button says where the rail went. It sits
+          under the traffic lights' band, not in it. */}
+      {collapsed ? (
+        <button
+          type="button"
+          className="klide-rail-reveal"
+          aria-label="Show the sidebar"
+          title="Show the sidebar (⌘B)"
+          onClick={onToggle}
+        >
+          <SidebarIcon size={15} />
+        </button>
+      ) : null}
+    </>
+  );
+}
 
 /* Settings + Profile come from ../railDestinations — one definition of what
    the app's destinations are. */
@@ -774,6 +861,11 @@ export function WorkspaceRail({
   // unfolds the rest; opening a project that is not among them is the macOS
   // menu bar's job (File ▸ Open Folder…), not a second picker in here.
   const [showAllProjects, setShowAllProjects] = useState(false);
+  // Width and fold are persisted settings rather than local state: both shells
+  // render this component, and the rail should be the width you left it at
+  // whichever one you come back through. ⌘B (App.tsx) writes the same setting.
+  const [railWidth, setRailWidth] = useSetting(SETTINGS.railWidth);
+  const [collapsed, setCollapsed] = useSetting(SETTINGS.railCollapsed);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const { username, hostname, avatarUrl } = useUserInfo();
@@ -1082,11 +1174,27 @@ export function WorkspaceRail({
       className="klide-focus-rail"
       aria-label="Workspace navigation"
       data-tauri-drag-region
+      /* Folded, the rail keeps its box at zero width rather than unmounting:
+         its tree state, its scroll position and its history subscriptions all
+         survive the fold, so bringing it back is instant instead of a reload
+         and a re-run of the reveal cascade. CSS hides the contents. */
+      data-collapsed={collapsed || undefined}
       /* Above the docks and above the free layout's floating panels — that band
          climbs by one with every focus event, so the rail cannot hold a small
          local z the way it could when only Focus rendered it. */
-      style={{ zIndex: Z.rail }}
+      style={{ zIndex: Z.rail, width: collapsed ? 0 : railWidth }}
     >
+      <RailEdge
+        collapsed={collapsed}
+        width={railWidth}
+        onEdgeMoved={(edgeX) => {
+          const next = railFromEdge(edgeX);
+          setCollapsed(next.collapsed);
+          if (next.width !== null) setRailWidth(next.width);
+        }}
+        onToggle={() => setCollapsed(!collapsed)}
+      />
+
       {/* Brand row doubles as the search row: the field takes the brand slot
           rather than pushing a new row in, so opening search never moves the
           list it filters. */}

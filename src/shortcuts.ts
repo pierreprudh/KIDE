@@ -25,6 +25,7 @@ export type ShortcutId =
   | "close-tab"
   | "find-in-file"
   | "toggle-terminal"
+  | "toggle-sidebar"
   | "settings"
   | "profile"
   | "cheatsheet"
@@ -50,6 +51,7 @@ export const SHORTCUTS: Record<ShortcutId, Shortcut> = {
   "close-tab": { keys: ["⌘", "W"], label: "Close tab" },
   "find-in-file": { keys: ["⌘", "F"], label: "Find in file (editor)" },
   "toggle-terminal": { keys: ["⌘", "`"], label: "Toggle terminal" },
+  "toggle-sidebar": { keys: ["⌘", "B"], label: "Fold / unfold the sidebar" },
   settings: { keys: ["⌘", ","], label: "Settings" },
   profile: { keys: ["⌘", "."], label: "Profile" },
   cheatsheet: { keys: ["⌘", "/"], label: "Keyboard shortcuts" },
@@ -85,7 +87,7 @@ export const SHORTCUT_GROUPS: { title: string; ids: ShortcutId[] }[] = [
   },
   {
     title: "Panels & views",
-    ids: ["toggle-terminal", "settings", "profile", "cheatsheet"],
+    ids: ["toggle-sidebar", "toggle-terminal", "settings", "profile", "cheatsheet"],
   },
   {
     title: "AI panel",
