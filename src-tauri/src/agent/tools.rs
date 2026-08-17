@@ -69,7 +69,7 @@ pub const RUN_COMMAND_TOOL: &str = "run_command";
 pub enum PauseFlavor {
     /// `userAnswerQuestion` — ask the user, feed the verbatim answer back.
     Question,
-    /// `spawn_subagent` — park while the frontend runs a nested child run.
+    /// `spawn_subagent` — run a nested child Run in Rust and report back.
     Subagent,
     /// `consult_advisor` — park while a stronger model answers one question.
     Advisor,
@@ -536,16 +536,18 @@ fn registry() -> Vec<ToolEntry> {
             run_write_preview: None,
             summary: default_summary,
         },
-        // `spawn_subagent` is also a Pause tool: it does not execute in Rust.
-        // The loop dispatches `spawn_subagent` to `process_subagent_tool`, which
-        // emits SubagentRequested and parks on the same oneshot the question
-        // pause uses. The frontend runs the named (read-only) subagent as a
-        // nested child run and resolves with its report as the tool result.
+        // `spawn_subagent` does not execute in Rust like a read/write tool: the
+        // loop dispatches it to `process_subagent_tool`, which resolves the role
+        // from `agent::subagents` and drives a nested child Run to completion
+        // through the supervisor seam. It stays `Pause`-kinded so that
+        // `interactive_tool_names()` keeps excluding it from runs with nothing
+        // attached to host a child — headless Mission dispatch, and the children
+        // themselves, which is also what bounds subagent recursion.
         ToolEntry {
             kind: ToolKind::Pause,
             schema: schema("spawn_subagent", "Delegate a focused, read-only investigation to a named subagent and get its report back as the tool result. Use this to parallelise discovery without spending your own context — e.g. have the explorer map a subsystem or the reviewer critique a file. The subagent cannot edit; it returns findings only.",
                 serde_json::json!({
-                    "subagent": { "type": "string", "enum": ["explorer", "reviewer"], "description": "Which subagent to delegate to: 'explorer' locates and maps code; 'reviewer' critiques code for bugs and clarity." },
+                    "subagent": { "type": "string", "enum": crate::agent::subagents::model_selectable_ids(), "description": "Which subagent to delegate to: 'explorer' locates and maps code; 'reviewer' critiques code for bugs and clarity." },
                     "task": { "type": "string", "description": "The focused task for the subagent, with enough context for it to act standalone." }
                 }),
                 &["subagent", "task"]),

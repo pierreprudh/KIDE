@@ -9,6 +9,7 @@ mod network_allowlist;
 mod permission;
 mod run_core;
 mod steering;
+pub mod subagents;
 mod tool_handlers;
 use tool_handlers::{
     last_tool_output, process_advisor_tool, process_command_tool, process_network_tool,
@@ -194,6 +195,29 @@ trait RunSupervisor: Send + Sync {
     /// Default no-op keeps FakeSupervisor tests headless; the budget itself
     /// is unit-tested in failure_budget.rs.
     fn note_terminal(&self, _run_id: &str, _provider: &str, _model: &str, _failed: bool) {}
+    /// Start a nested subagent Run and resolve with its report once it settles.
+    ///
+    /// This is what makes a subagent durable. It used to be the frontend's job:
+    /// Rust emitted `SubagentRequested`, parked on the question oneshot, and the
+    /// AI panel started the child run and resolved the parent with the child's
+    /// last message — so unmounting the panel mid-subagent left the parent
+    /// parked forever. Owning the child here means the pair survives a panel
+    /// unmount, a reload, and a reattach, like every other Harness run.
+    ///
+    /// Returning a receiver rather than a future keeps the trait object-safe
+    /// without an async-trait dependency. The default impl refuses: a headless
+    /// context with no app attached cannot host a child run, and the caller
+    /// turns that into a failed tool result rather than a hang.
+    fn spawn_subagent(
+        &self,
+        _spec: subagents::SubagentRunSpec,
+    ) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(Err(
+            "Subagents are unavailable in this context (no run host attached).".to_string(),
+        ));
+        rx
+    }
 }
 
 /// Payload for the `agent-run:{id}` reattach stream. `seq` is the event's
@@ -261,6 +285,104 @@ impl RunSupervisor for TauriSupervisor {
             budget.record_success(run_id);
         }
     }
+
+    fn spawn_subagent(
+        &self,
+        spec: subagents::SubagentRunSpec,
+    ) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let app = self.app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tx.send(run_subagent_to_completion(app, spec).await);
+        });
+        rx
+    }
+}
+
+/// Start one nested subagent Run and return its report once the child settles.
+///
+/// The report is read back off the child's own transcript rather than sniffed
+/// from a live event stream: the loop appends every structural event durably
+/// before broadcasting it, so the transcript is the authoritative record of what
+/// the child said. That also means a child whose parent died still leaves a
+/// complete, readable run behind.
+async fn run_subagent_to_completion(
+    app: tauri::AppHandle,
+    spec: subagents::SubagentRunSpec,
+) -> Result<String, String> {
+    let runs_dir = app_runs_dir(&app)?;
+    let request = StartRunRequest {
+        run_id: Some(spec.run_id.clone()),
+        workspace_root: spec.workspace_root.clone(),
+        mode: spec.mode.clone(),
+        provider: spec.provider.clone(),
+        model: spec.model.clone(),
+        initial_text: spec.task.clone(),
+        attachments: vec![],
+        context: Some(AgentContextSnapshot {
+            workspace_root: spec.workspace_root.clone(),
+            attachments: vec![],
+            lens_items: vec![],
+            estimated_tokens: 0,
+            omitted: vec![],
+        }),
+        system_prompt: Some(spec.system_prompt.clone()),
+        // A child has no surface of its own to answer a question, consult an
+        // advisor, or spawn a further subagent — and the last of those is also
+        // what stops a subagent tree from recursing without bound. Derived from
+        // the Tool registry, never hand-listed, exactly as headless Mission
+        // dispatch does it.
+        disabled_tools: tools::interactive_tool_names(),
+        num_ctx: None,
+        num_predict: None,
+        reflection_level: None,
+        max_parallel_tools: None,
+        max_turns: spec.max_turns,
+        command_timeout_secs: None,
+        test_after_edit_command: None,
+        command_allowlist: vec![],
+        require_diff_review: spec.require_diff_review,
+        parent_id: Some(spec.parent_id.clone()),
+        mission_id: None,
+        mission_task_id: None,
+    };
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let on_event = Channel::<AgentEvent>::new(|_| Ok(()));
+    start_run(app, request, on_event, Some(done_tx)).await?;
+    // A dropped sender means the spawned loop task went away without settling.
+    // Report that instead of hanging the parent forever.
+    match done_rx.await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => return Err(err),
+        Err(_) => return Err("The subagent run ended without settling.".to_string()),
+    }
+    Ok(last_assistant_text(&runs_dir, &spec.run_id)
+        .unwrap_or_else(|| "(subagent produced no output)".to_string()))
+}
+
+/// The child's answer: the text of the last `AssistantMessage` on its
+/// transcript. `None` when the child never produced one.
+fn last_assistant_text(runs_dir: &Path, run_id: &str) -> Option<String> {
+    read_events(runs_dir, run_id)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find_map(|event| match event {
+            AgentEvent::AssistantMessage { content, .. } => {
+                let text = content
+                    .into_iter()
+                    .filter_map(|block| match block {
+                        AgentContentBlock::Text { text } => Some(text),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                let trimmed = text.trim().to_string();
+                (!trimmed.is_empty()).then_some(trimmed)
+            }
+            _ => None,
+        })
 }
 
 fn set_run_status(sup: &dyn RunSupervisor, run_id: &str, status: AgentRunStatus) {
@@ -880,7 +1002,7 @@ pub async fn agent_start_run(
     request: StartRunRequest,
     on_event: Channel<AgentEvent>,
 ) -> Result<StartRunResponse, String> {
-    start_run(app, request, on_event).await
+    start_run(app, request, on_event, None).await
 }
 
 /// Start a Harness run without a request-scoped frontend channel. Structural
@@ -892,13 +1014,18 @@ pub(crate) async fn start_background_run(
     request: StartRunRequest,
 ) -> Result<StartRunResponse, String> {
     let on_event = Channel::<AgentEvent>::new(|_| Ok(()));
-    start_run(app, request, on_event).await
+    start_run(app, request, on_event, None).await
 }
 
+/// `done` fires once the detached loop has finished, carrying whatever the loop
+/// returned. Only the nested-subagent path uses it: the parent's tool step has
+/// to know when the child settled before it can read the child's report off the
+/// transcript. Every other caller passes `None` and never waits.
 async fn start_run(
     app: tauri::AppHandle,
     mut request: StartRunRequest,
     on_event: Channel<AgentEvent>,
+    done: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> Result<StartRunResponse, String> {
     let state = app.state::<AgentSupervisorState>();
     let runs_dir = app_runs_dir(&app)?;
@@ -1015,8 +1142,13 @@ async fn start_run(
                 eprintln!("mission attempt {task_id} validation failed: {err}");
             }
         }
-        if let Err(err) = result {
+        if let Err(err) = &result {
             eprintln!("agent run {task_id} failed: {err}");
+        }
+        // Signal completion last, after mission write-back, so a waiting parent
+        // never observes a child as settled before its validation landed.
+        if let Some(done) = done {
+            let _ = done.send(result);
         }
     });
 

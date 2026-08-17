@@ -115,13 +115,17 @@ where
     }))
 }
 
-/// Subagent spawn tool (`spawn_subagent`): a Pause tool that delegates a
-/// focused, read-only investigation to a named subagent. The loop emits
-/// `SubagentRequested` and parks on the same oneshot the question pause uses;
-/// the frontend runs the child subagent (nested under this run via `parentId`)
-/// and resolves through `agent_resolve_question` with the subagent's report,
-/// which becomes this tool's result. Cancelling during the wait bubbles up as
-/// `Cancelled`.
+/// Subagent spawn tool (`spawn_subagent`): delegate a focused investigation to
+/// a named subagent and feed its report back as this tool's result.
+///
+/// The harness owns the whole exchange. It resolves the role from the Rust
+/// registry, composes the child prompt from *this* run's system prompt, and
+/// drives the child Run to completion through the supervisor seam — so the pair
+/// survives a panel unmount, a webview reload, and a reattach. It is no longer a
+/// Pause tool: nothing here waits on a human, so the parent reports `Paused`
+/// rather than borrowing the question pause's `WaitingForPermission` status.
+///
+/// Cancelling the parent cancels the child too, then bubbles up as `Cancelled`.
 pub(super) async fn process_subagent_tool<E>(
     ctx: &ToolCtx<'_>,
     call: &NormalizedToolCall,
@@ -142,35 +146,91 @@ where
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let Some(report) = run_pause_tool(
-        ctx,
-        call,
-        emit,
-        "sub",
-        "(subagent produced no output)",
-        |request_id| AgentEvent::SubagentRequested {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            subagent: subagent.clone(),
-            task: task.clone(),
-            ts: now_ms(),
-        },
-        |request_id, report| AgentEvent::SubagentResolved {
-            run_id: ctx.id.to_string(),
-            request_id: request_id.to_string(),
-            result: report.to_string(),
-            ts: now_ms(),
-        },
-    )
-    .await?
-    else {
-        return Ok(ToolOutcome::Cancelled);
+
+    // An unknown role is a model mistake, not a run failure: name the ones that
+    // exist and let it try again.
+    let Some(def) = subagents::resolve(&subagent) else {
+        return Ok(ToolOutcome::Produced(ToolResult {
+            ok: false,
+            content: format!(
+                "Unknown subagent \"{subagent}\". Available subagents: {}.",
+                subagents::model_selectable_ids().join(", ")
+            ),
+            metadata: None,
+        }));
     };
+    // The tool promises the delegate cannot edit. Until now only the schema's
+    // `enum` held that line, so a model that named an editing role anyway got
+    // one. Refuse here too: a contract worth stating is worth enforcing.
+    if !subagents::is_model_selectable(def) {
+        return Ok(ToolOutcome::Produced(ToolResult {
+            ok: false,
+            content: format!(
+                "Subagent \"{}\" makes edits and cannot be delegated to from a run. \
+                 Read-only subagents: {}.",
+                def.id,
+                subagents::model_selectable_ids().join(", ")
+            ),
+            metadata: None,
+        }));
+    }
+
+    let request_id = format!("sub_{}_{}", ctx.id, call.id);
+    emit(AgentEvent::SubagentRequested {
+        run_id: ctx.id.to_string(),
+        request_id: request_id.clone(),
+        subagent: def.id.to_string(),
+        task: task.clone(),
+        ts: now_ms(),
+    })?;
+
+    let spec = subagents::SubagentRunSpec {
+        run_id: request_id.clone(),
+        parent_id: ctx.id.to_string(),
+        workspace_root: ctx.request.workspace_root.clone(),
+        mode: def.mode.clone(),
+        provider: ctx.request.provider.clone(),
+        // The role may pin a cheaper model; otherwise the child inherits the
+        // parent's, so a subagent never silently escalates cost.
+        model: def
+            .model
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| ctx.request.model.clone()),
+        task: task.clone(),
+        system_prompt: subagents::build_system_prompt(def, &base_system_prompt(ctx.request)),
+        max_turns: ctx.request.max_turns,
+        require_diff_review: ctx.request.require_diff_review,
+    };
+
+    set_run_status(ctx.sup, ctx.id, AgentRunStatus::Paused);
+    let child = ctx.sup.spawn_subagent(spec);
+    let report = tokio::select! {
+        // Cancelling the parent must not leave the child running headless.
+        _ = ctx.cancel.cancelled() => {
+            ctx.sup.with_handle(&request_id, &mut |handle| handle.cancel.cancel());
+            return Ok(ToolOutcome::Cancelled);
+        }
+        result = child => match result {
+            Ok(Ok(report)) => report,
+            // A child that failed is a tool result the model can react to, not a
+            // dead parent run.
+            Ok(Err(err)) => format!("Subagent \"{}\" failed: {err}", def.id),
+            Err(_) => format!("Subagent \"{}\" ended without reporting.", def.id),
+        },
+    };
+    set_run_status(ctx.sup, ctx.id, AgentRunStatus::Running);
+
+    emit(AgentEvent::SubagentResolved {
+        run_id: ctx.id.to_string(),
+        request_id,
+        result: report.clone(),
+        ts: now_ms(),
+    })?;
 
     Ok(ToolOutcome::Produced(ToolResult {
         ok: true,
         content: report,
-        metadata: Some(serde_json::json!({ "subagent": subagent })),
+        metadata: Some(serde_json::json!({ "subagent": def.id })),
     }))
 }
 
