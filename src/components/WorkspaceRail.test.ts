@@ -42,8 +42,19 @@ describe("rail edge drag", () => {
     expect(railFromEdge(0).width).toBeNull();
   });
 
-  it("reopens when the edge is dragged back out past the fold point", () => {
-    expect(railFromEdge(260)).toEqual({ collapsed: false, width: 260 });
+  // The asymmetry is the fix for a rail that read as un-openable: a reopen drag
+  // measured against the fold distance does nothing for its first 167px.
+  it("reopens a folded rail as soon as the drag means it", () => {
+    expect(railFromEdge(40, true)).toEqual({ collapsed: false, width: RAIL_MIN_WIDTH });
+  });
+
+  it("still ignores a twitch on a folded rail", () => {
+    expect(railFromEdge(9, true).collapsed).toBe(true);
+  });
+
+  it("does not fold an open rail at the reopen threshold", () => {
+    expect(railFromEdge(40, false).collapsed).toBe(true);
+    expect(railFromEdge(180, false)).toEqual({ collapsed: false, width: RAIL_MIN_WIDTH });
   });
 });
 
