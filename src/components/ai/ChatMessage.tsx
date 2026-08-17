@@ -3,6 +3,8 @@ import type { Msg } from "./types";
 import { DelegateConsole } from "./DelegateTerminal";
 import { DotGridLoader, ToolIcon } from "./icons";
 import { renderMarkdown, splitThinking, stripPlanJson } from "../markdown";
+import { providerName } from "../../agent/providers";
+import type { ProviderId } from "../../agent/types";
 
 // Premium thinking block. Renders as a soft card with a pulsing dot while the
 // agent is still streaming, a rotating chevron, and a markdown body so code
@@ -270,7 +272,19 @@ function summarizeResult(content: string): { line: string; extra: string } {
 // Indented result line under its tool call — `⎿ <first line> · N lines`,
 // expandable to the full markdown-rendered content. Errors tint the
 // connector with --danger; in-flight calls pulse.
-function ToolResultRow({ content, active, toolName }: { content: string; active: boolean; toolName?: string }) {
+function ToolResultRow({
+  content,
+  active,
+  toolName,
+  observedBy,
+}: {
+  content: string;
+  active: boolean;
+  toolName?: string;
+  /** Provider id when a delegate CLI ran this itself. The row says so: Klide
+   *  applied no capability, permission gate or diff review to it. */
+  observedBy?: string;
+}) {
   const pending = active && /^Running /.test(content);
   const isError = /^(Tool error from|Error:)/.test(content);
   const isSubagent = toolName === "spawn_subagent";
@@ -365,6 +379,20 @@ function ToolResultRow({ content, active, toolName }: { content: string; active:
             }}
           >
             · {extra}
+          </span>
+        )}
+        {observedBy && (
+          <span
+            title={`Run by ${providerName(observedBy as ProviderId)} under its own permissions — not reviewed by Klide`}
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 10.5,
+              color: "var(--fg-dim)",
+              flexShrink: 0,
+              whiteSpace: "nowrap",
+            }}
+          >
+            · via {providerName(observedBy as ProviderId)}
           </span>
         )}
       </summary>
@@ -638,7 +666,14 @@ export function renderMessageBody(m: Msg, active = false): ReactElement {
   }
 
   if (m.role === "tool") {
-    return <ToolResultRow content={m.content} active={active} toolName={m.toolName} />;
+    return (
+      <ToolResultRow
+        content={m.content}
+        active={active}
+        toolName={m.toolName}
+        observedBy={m.observedBy}
+      />
+    );
   }
 
   if (m.role === "assistant") {

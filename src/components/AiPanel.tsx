@@ -922,7 +922,20 @@ export function AiPanel({
   const mentionMatches = mention !== null ? fuzzyFiles(fileList, mention.query) : [];
   const mentionTotal = subagentMatches.length + mentionMatches.length;
 
+  // Two different facts, long conflated behind one flag.
+  //
+  // `providerDelegatesWork` — a *capability*: this provider edits the
+  // workspace itself, so Goal mode needs no tool probe, images can't be sent,
+  // and the context lens has nothing to add.
+  //
+  // `delegateSession` — a *surface*: the conversation IS the CLI's interactive
+  // session, so the canvas hosts its terminal and the composer types into the
+  // PTY. That is right for a workbench panel and wrong for Focus, which is the
+  // chat-first surface: there the same delegate runs one-shot and headless
+  // (`delegate/chat.rs`, `claude -p --output-format text`) and its answer is
+  // rendered as an ordinary Klide message.
   const providerDelegatesWork = isDelegateProvider(provider);
+  const delegateSession = providerDelegatesWork && variant !== "focus";
   const isLocalProvider = isManagedLocalProvider(provider);
   // A delegate conversation's identity IS its PTY session id
   // (`{convoId}:{provider}`), so persist the panel↔convo pairing the moment
@@ -933,11 +946,11 @@ export function AiPanel({
   // reattaching to the same session — which, with the ptyd daemon on, is
   // still alive and waiting.
   useEffect(() => {
-    if (panelId && providerDelegatesWork) {
+    if (panelId && delegateSession) {
       persistConversationSessionBinding(panelId, conversationSessionRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [panelId, providerDelegatesWork, currentId]);
+  }, [panelId, delegateSession, currentId]);
   // Portalled to <body> like the composer popovers: the menu is taller than
   // the panel's clip region (`.floating-panel` is overflow: hidden), so an
   // in-tree absolute menu gets cut off and its own scrollbar never engages.
@@ -982,18 +995,10 @@ export function AiPanel({
     () => providerGroupsWithCustom(customProviders, customCli),
     [customProviders, customCli]
   );
-  const providerGroupsForSurface = useMemo(
-    () =>
-      variant === "focus"
-        ? providerGroups
-            .map((group) => ({
-              ...group,
-              items: group.items.filter((item) => !isDelegateProvider(item.id)),
-            }))
-            .filter((group) => group.items.length > 0)
-        : providerGroups,
-    [providerGroups, variant],
-  );
+  // Focus offers the same stacks the workbench does, delegates included: the
+  // canvas hosts their session the same way a panel does, and they are the one
+  // route that runs on a subscription instead of an API key.
+  const providerGroupsForSurface = providerGroups;
   // Hosted ("API") providers that have no key configured — badged in the picker
   // so a missing key is visible *before* selecting + sending, not after a failed
   // run. Populated when the menu opens.
@@ -1034,7 +1039,6 @@ export function AiPanel({
     setExpandedGroups(new Set(activeGroup ? [activeGroup.label] : []));
   }, [providerOpen]);
   function selectProvider(id: ProviderId) {
-    if (variant === "focus" && isDelegateProvider(id)) return;
     const nextModel = switchModelForProvider(id);
     transitionConversation({ type: "configured", provider: id, model: nextModel });
     onProviderChange?.(id);
@@ -1609,7 +1613,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     // pending send to bail once the server is ready (see send()).
     if (serverStarting) cancelledWarmupRef.current = true;
     abortActiveHarnessRun();
-    if (providerDelegatesWork) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
+    if (delegateSession) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
     // Bump the queue generation so any in-flight runProcessQueue sees its
     // tokens as stale and bails before it can start another turn.
     queueGenerationRef.current += 1;
@@ -1738,11 +1742,12 @@ This user request requires workspace inspection. Before answering, you MUST call
    * has to pick its live stream up again — otherwise the row animates in the
    * rail while the panel shows a frozen transcript.
    *
-   * Klide runs only: conversation id == transcript id, and delegates stream
-   * through the PTY instead.
+   * Klide runs only: conversation id == transcript id. A delegate *session*
+   * streams through the PTY and has no transcript to re-read; a delegate run
+   * on the headless Focus path does, and follows like any other.
    */
   function followConversationRun(conversationId: string, runProvider: ProviderId) {
-    if (isDelegateProvider(runProvider)) return;
+    if (isDelegateProvider(runProvider) && variant !== "focus") return;
     {
       const reattachId = conversationId;
       const baseLen = msgsRef.current.length;
@@ -1944,7 +1949,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   }, [actionsOpen]);
 
   function newConversation() {
-    if (providerDelegatesWork) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
+    if (delegateSession) { void stopDelegatePty(delegateSessionId(currentId, provider)); }
     setHistoryOpen(false);
     // Mark the previous chat as done on the run board so a "new chat" doesn't
     // leave a stale "running" row — unless it really is still running, which it
@@ -2477,7 +2482,11 @@ This user request requires workspace inspection. Before answering, you MUST call
     const userMsg = nextMsgs[userIndex];
     if (userMsg.role !== "user") return;
     nextMsgs[userIndex] = { ...userMsg, queueState: "running" };
-    const delegateConsole = isDelegateProvider(turn.provider);
+    // A console block is how you read a CLI's raw stdout. The headless
+    // one-shot path returns the assistant's prose (`--output-format text`), so
+    // in Focus it is rendered as an ordinary message instead — same chat, a
+    // different engine behind it.
+    const delegateConsole = isDelegateProvider(turn.provider) && variant !== "focus";
     const delegateProvider = providerName(turn.provider);
     nextMsgs.splice(userIndex + 1, 0, { role: "assistant", content: "", delegateConsole, delegateProvider });
     const assistantIndex = userIndex + 1;
@@ -2941,8 +2950,8 @@ This user request requires workspace inspection. Before answering, you MUST call
     // An image-only turn (no text) is valid; a bare empty turn is not.
     if (!text.trim() && stagedImages.length === 0) return;
     // Delegate TUIs do not accept image-only turns.
-    if (providerDelegatesWork && !text.trim()) return;
-    if (providerDelegatesWork) {
+    if (delegateSession && !text.trim()) return;
+    if (delegateSession) {
       // Delegate TUIs take text only — images aren't wired to their stdin.
       setInput(""); setMention(null); setSlash(null); setNextSendMode(null);
       await writeDelegatePty(delegateSessionId(currentId, provider), `${text}\r`);
@@ -3383,9 +3392,9 @@ This user request requires workspace inspection. Before answering, you MUST call
         <div
           ref={scrollRef}
           onScroll={updateStickFromScroll}
-          style={{ flex: 1, overflowX: "hidden", overflowY: providerDelegatesWork ? "hidden" : "auto", padding: providerDelegatesWork ? 0 : variant === "focus" ? `14px ${focusGutter} 16px` : "10px 12px 12px", fontSize: variant === "focus" ? 13.5 : 13, display: providerDelegatesWork ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !providerDelegatesWork && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
+          style={{ flex: 1, overflowX: "hidden", overflowY: delegateSession ? "hidden" : "auto", padding: delegateSession ? 0 : variant === "focus" ? `14px ${focusGutter} 16px` : "10px 12px 12px", fontSize: variant === "focus" ? 13.5 : 13, display: delegateSession ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !delegateSession && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
         >
-        {providerDelegatesWork ? (
+        {delegateSession ? (
           <DelegateTerminalSurface
             sessionId={delegateSessionId(currentId, provider)}
             providerId={provider}
@@ -3750,7 +3759,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             a long conversation when the user scrolls up. Anchoring
             here means it always sits at the bottom of the visible
             viewport, even mid-scroll. */}
-        {!providerDelegatesWork && !stickToBottom && msgs.length > 0 && (
+        {!delegateSession && !stickToBottom && msgs.length > 0 && (
           <span
             role="button"
             tabIndex={0}
@@ -3800,7 +3809,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         />
       </div>
 
-      {!providerDelegatesWork && (
+      {!delegateSession && (
       <div style={{ padding: variant === "focus" ? `0 ${focusGutter} 16px` : "0 10px 10px" }}>
         {pendingPermission && (
           <InlineCommandReview
@@ -4019,7 +4028,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 if (e.key === "Escape") { e.preventDefault(); setMention(null); return; }
               }
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-              else if (e.key === "Tab" && !providerDelegatesWork) { e.preventDefault(); toggleMode(); }
+              else if (e.key === "Tab" && !delegateSession) { e.preventDefault(); toggleMode(); }
               else if (e.key === "Escape" && (streaming || serverStarting)) { e.preventDefault(); stopCurrentStream(); }
             }}
             onFocus={() => { setComposerFocused(true); }}
@@ -4039,12 +4048,14 @@ This user request requires workspace inspection. Before answering, you MUST call
                   {providerControl}
                 </div>
               ) : null}
-              {providerDelegatesWork ? (
-                variant !== "focus" ? (
-                  <div title={`Speaking to ${providerName(provider)} delegate`} style={{ height: 24, display: "inline-flex", alignItems: "center", gap: 6, padding: "0 4px", color: "var(--fg-subtle)", fontSize: 11, fontWeight: 500, flexShrink: 0 }}>
-                    <ProviderLogo id={provider} size={13} /><span>{providerName(provider)}</span>
-                  </div>
-                ) : null
+              {delegateSession ? (
+                // A live CLI session owns its own mode and context, so the
+                // composer names who is listening instead of offering controls
+                // that would not reach it. (Never in Focus: `delegateSession`
+                // is false there, and the full control row applies.)
+                <div title={`Speaking to ${providerName(provider)} delegate`} style={{ height: 24, display: "inline-flex", alignItems: "center", gap: 6, padding: "0 4px", color: "var(--fg-subtle)", fontSize: 11, fontWeight: 500, flexShrink: 0 }}>
+                  <ProviderLogo id={provider} size={13} /><span>{providerName(provider)}</span>
+                </div>
               ) : (
                 <div style={{ position: "relative", flexShrink: 0 }}>
                   <button ref={modeTriggerRef} type="button" onClick={() => { if (!streaming) { if (modeOpen) closeModeMenu(); else openModeMenu(); } }} disabled={streaming}

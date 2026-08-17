@@ -13,6 +13,7 @@
 // provided method does the assembly once.
 
 mod chat;
+mod chat_stream;
 mod claude_code;
 mod codex;
 mod omp;
@@ -140,6 +141,30 @@ pub trait Delegate: Sync {
         let mut command = tokio::process::Command::new(cli);
         command.current_dir(cwd).args(args);
         Ok(command)
+    }
+
+    /// Args for a headless turn that reports its own work line by line, when
+    /// this CLI can (`claude --output-format stream-json`). `None` means "prose
+    /// only" and the caller falls back to [`Delegate::chat_args`], so a CLI
+    /// without a structured mode keeps working — it just shows no tool rows.
+    fn chat_stream_args(&self, _cwd: &str, _model: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    /// The structured-stream twin of [`Delegate::chat_invocation`]. `None` when
+    /// this CLI has no structured mode; `Some(Err)` when it has one but the
+    /// binary could not be resolved.
+    fn chat_stream_invocation(
+        &self,
+        cwd: &str,
+        model: &str,
+    ) -> Option<Result<tokio::process::Command, String>> {
+        let args = self.chat_stream_args(cwd, model)?;
+        Some(crate::cli::resolve_command(self.binary()).map(|cli| {
+            let mut command = tokio::process::Command::new(cli);
+            command.current_dir(cwd).args(args);
+            command
+        }))
     }
 
     // ── Run listing (Mission Control) ────────────────────────────────────

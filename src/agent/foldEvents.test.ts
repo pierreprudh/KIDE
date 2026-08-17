@@ -177,6 +177,75 @@ describe("foldAgentEvents", () => {
       expect(only.toolCalls[0]).toMatchObject({ id: "orphan", name: "list_dir", status: "finished" });
     });
 
+    it("folds a delegate's own tool work, tagged with who ran it", () => {
+      // Claude Code in Focus reports the tools *it* ran. They belong in the
+      // conversation, but tagged: Klide dispatched none of them, so nothing
+      // downstream may treat them as calls it gated.
+      const rows = foldAgentEvents([
+        {
+          type: "observed_tool_call",
+          runId: RUN,
+          toolCallId: "toolu_1",
+          provider: "claude-code",
+          name: "Edit",
+          input: { file_path: "src/auth.ts" },
+          summary: "Edit src/auth.ts",
+          ts: at(),
+        },
+        {
+          type: "observed_tool_result",
+          runId: RUN,
+          toolCallId: "toolu_1",
+          ok: true,
+          content: "applied",
+          ts: at(),
+        },
+      ]);
+      const row = rows[0];
+      if (row.kind !== "assistant") throw new Error("expected a synthesised assistant");
+      expect(row.toolCalls[0]).toMatchObject({
+        id: "toolu_1",
+        name: "Edit",
+        summary: "Edit src/auth.ts",
+        status: "finished",
+        observedBy: "claude-code",
+        result: { content: "applied", ok: true },
+      });
+
+      // …and the attribution survives into the rendered rows, which is what
+      // keeps the UI from implying Klide reviewed the edit.
+      const msgs = foldedRowToMsgs(row);
+      const toolMsg = msgs.find((m) => m.role === "tool");
+      expect(toolMsg).toMatchObject({ toolName: "Edit", observedBy: "claude-code" });
+    });
+
+    it("keeps observed calls distinguishable from dispatched ones", () => {
+      // The whole point of the separate event: a dispatched call carries no
+      // `observedBy`, so a reader can tell "Klide ran this under a capability"
+      // from "the delegate did this under its own permissions".
+      const rows = foldAgentEvents([
+        assistantMessage("both kinds", { toolCalls: [{ toolCallId: "t1", name: "read_file" }] }),
+        toolStarted("t1", "read_file"),
+        toolFinished("t1", "body"),
+        {
+          type: "observed_tool_call",
+          runId: RUN,
+          toolCallId: "obs",
+          provider: "claude-code",
+          name: "Bash",
+          input: { command: "npm test" },
+          summary: "Bash npm test",
+          ts: at(),
+        },
+      ]);
+      const row = rows[0];
+      if (row.kind !== "assistant") throw new Error("expected assistant");
+      const dispatched = row.toolCalls.find((t) => t.id === "t1");
+      const observed = row.toolCalls.find((t) => t.id === "obs");
+      expect(dispatched?.observedBy).toBeUndefined();
+      expect(observed?.observedBy).toBe("claude-code");
+    });
+
     it("records a still-running call as started and an undeclared finish as finished", () => {
       const rows = foldAgentEvents([
         assistantMessage("working", { toolCalls: [{ toolCallId: "t1", name: "bash" }] }),

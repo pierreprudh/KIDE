@@ -1324,6 +1324,41 @@ async fn run_agent_loop(
         let stream_first_token = first_token_ms.clone();
         let stream = Channel::<StreamChunk>::new(move |body| {
             if let Ok(chunk) = body.deserialize::<StreamChunk>() {
+                // A delegate CLI reporting work it already did. Forwarded as a
+                // distinct event, never as a ToolCallStarted: Klide did not
+                // dispatch it, no capability applied, and no permission or diff
+                // gate ran. It is shown so the conversation is honest about what
+                // happened, and kept separate so nothing downstream mistakes it
+                // for work this harness authorized.
+                if let Some(observed) = chunk.observed {
+                    let _ = stream_channel.send(match observed {
+                        crate::providers::ObservedToolActivity::Call {
+                            id,
+                            provider,
+                            name,
+                            input,
+                            summary,
+                        } => AgentEvent::ObservedToolCall {
+                            run_id: stream_run_id.clone(),
+                            tool_call_id: id,
+                            provider,
+                            name,
+                            input,
+                            summary,
+                            ts: now_ms(),
+                        },
+                        crate::providers::ObservedToolActivity::Result { id, ok, content } => {
+                            AgentEvent::ObservedToolResult {
+                                run_id: stream_run_id.clone(),
+                                tool_call_id: id,
+                                ok,
+                                content,
+                                ts: now_ms(),
+                            }
+                        }
+                    });
+                    return Ok(());
+                }
                 let _ = stream_first_token.compare_exchange(
                     0,
                     now_ms(),

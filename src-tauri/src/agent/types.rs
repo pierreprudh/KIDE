@@ -404,6 +404,8 @@ impl AgentEvent {
             | AgentEvent::ToolCallStarted { ts, .. }
             | AgentEvent::ToolProgress { ts, .. }
             | AgentEvent::ToolCallFinished { ts, .. }
+            | AgentEvent::ObservedToolCall { ts, .. }
+            | AgentEvent::ObservedToolResult { ts, .. }
             | AgentEvent::PermissionRequested { ts, .. }
             | AgentEvent::PermissionResolved { ts, .. }
             | AgentEvent::DiffProposed { ts, .. }
@@ -528,6 +530,33 @@ pub enum AgentEvent {
         run_id: String,
         tool_call_id: String,
         result: ToolResult,
+        ts: i64,
+    },
+    /// A tool the *delegate CLI* ran itself, reported by its own structured
+    /// output stream (`claude -p --output-format stream-json`).
+    ///
+    /// Separate from [`AgentEvent::ToolCallStarted`] on purpose. That variant
+    /// means "Klide dispatched this call under a capability, after whatever
+    /// permission policy applied"; this one means "the delegate did this under
+    /// its own permission mode, and Klide only watched". Folding the two
+    /// together would let an observed `Bash` be counted as a command Klide
+    /// verified (`summarize_validation` counts capabilities) and would tell the
+    /// user a diff was reviewed when nothing reviewed it.
+    ObservedToolCall {
+        run_id: String,
+        tool_call_id: String,
+        /// The delegate that ran it, e.g. `claude-code`.
+        provider: String,
+        name: String,
+        input: serde_json::Value,
+        summary: String,
+        ts: i64,
+    },
+    ObservedToolResult {
+        run_id: String,
+        tool_call_id: String,
+        ok: bool,
+        content: String,
         ts: i64,
     },
     PermissionRequested {

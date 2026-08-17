@@ -53,6 +53,24 @@ impl Delegate for ClaudeCode {
         Ok(args)
     }
 
+    /// Claude Code reports every step of a headless turn as JSONL — assistant
+    /// text, its own `tool_use` calls, the matching `tool_result`s, a closing
+    /// cost line. `--verbose` is required for `stream-json` under `-p`.
+    fn chat_stream_args(&self, cwd: &str, model: &str) -> Option<Vec<String>> {
+        let mut args = self.chat_args(cwd, model).ok()?;
+        // Same invocation, structured output: replace the *value* of the
+        // existing `--output-format` rather than appending a second, conflicting
+        // one. Located by its flag, not by searching for the string "text" —
+        // that would rewrite a model or prompt argument that happened to be
+        // called "text".
+        match args.iter().position(|a| a == "--output-format") {
+            Some(flag) if flag + 1 < args.len() => args[flag + 1] = "stream-json".to_string(),
+            _ => args.extend(["--output-format".to_string(), "stream-json".to_string()]),
+        }
+        args.push("--verbose".into());
+        Some(args)
+    }
+
     /// Claude Code is the one delegate with a first-class hooks system —
     /// Klide's status hooks ride `~/.claude/settings.json`.
     fn ensure_status_hooks(&self, home: &str) -> Result<bool, String> {
@@ -526,6 +544,30 @@ mod tests {
         assert_eq!(
             args.join(" "),
             "-p --model claude-sonnet-4-6 --permission-mode acceptEdits --output-format text"
+        );
+    }
+
+    #[test]
+    fn stream_args_swap_the_format_value_and_add_verbose() {
+        let args = ClaudeCode.chat_stream_args("/tmp/ws", "claude-sonnet-5").unwrap();
+        assert_eq!(
+            args.join(" "),
+            "-p --model claude-sonnet-5 --permission-mode acceptEdits \
+             --output-format stream-json --verbose"
+        );
+        // Exactly one format flag — a second would conflict.
+        assert_eq!(args.iter().filter(|a| *a == "--output-format").count(), 1);
+        assert!(!args.contains(&"text".to_string()));
+    }
+
+    #[test]
+    fn stream_args_rewrite_the_flag_value_not_a_model_named_text() {
+        // The value is found via `--output-format`, so a model argument that
+        // happens to be the word "text" survives untouched.
+        let args = ClaudeCode.chat_stream_args("/tmp/ws", "text").unwrap();
+        assert_eq!(
+            args.join(" "),
+            "-p --model text --permission-mode acceptEdits --output-format stream-json --verbose"
         );
     }
 

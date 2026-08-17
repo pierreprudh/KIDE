@@ -47,8 +47,20 @@ describe("Focus provider stack", () => {
     expect(onOpenKeySettings).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves delegate CLIs out of Focus", () => {
+  it("offers delegate CLIs, so a subscription can start a Focus conversation", () => {
     const options = buildProviderOptions([], new Set(), vi.fn());
-    expect(rowFor(options, "claude-code")).toBeUndefined();
+    expect(rowFor(options, "claude-code")?.label).toBeTruthy();
+  });
+
+  it("never quiets a delegate for a missing API key", () => {
+    const onOpenKeySettings = vi.fn();
+    // A delegate authenticates through its own CLI login, so an empty keychain
+    // says nothing about it — quieting the row would hide the one route that
+    // runs on a subscription rather than a key.
+    const options = buildProviderOptions([], new Set(["claude-code"]), onOpenKeySettings);
+
+    const row = rowFor(options, "claude-code");
+    expect(row?.dimmed).toBeFalsy();
+    expect(row?.resolve).toBeUndefined();
   });
 });

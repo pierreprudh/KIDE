@@ -8,6 +8,45 @@ Work on the v0.6 line. The orchestration milestone itself — Missions as
 outcomes, budgets, capacity, capability routing, validation contracts — is still
 open; these are the shell and correctness changes landed so far.
 
+### Subscriptions in Focus
+
+- **Delegate CLIs are selectable in Focus.** Claude Code, Codex, OpenCode and
+  Oh My Pi were filtered out of the Focus picker ("until that path is stable"),
+  which left Focus able to run only what an API key could reach — so the
+  subscription you already pay for was the one thing you couldn't start a Focus
+  conversation with. Picking one now mounts its session on the Focus canvas,
+  authenticated by its own CLI login, with no key anywhere in Klide.
+- Goal mode stays open to a delegate in Focus's composer, matching the AI
+  panel: the CLI does its own editing, so Klide's tool-support probe was never
+  the right gate. And a delegate row is never quieted for a missing API key —
+  by construction now, rather than by the accident of never being probed.
+- **A delegate in Focus renders as a conversation, not a terminal.** One flag
+  used to mean two things: "this provider edits the workspace itself" (a
+  capability) and "this conversation *is* the CLI's interactive session" (a
+  surface). They are separate now. The workbench keeps the session — its
+  terminal, its PTY composer, its reattach. Focus runs the same delegate
+  one-shot and headless (`delegate/chat.rs`) and renders the answer as an
+  ordinary Klide message, so the chat-first surface stays chat-first whichever
+  engine is behind it.
+- **You can see what the delegate did.** Klide asked Claude Code for
+  `--output-format text`, which reports an answer with no visible work behind
+  it. It now asks for `stream-json`, and the CLI's own `tool_use` calls and
+  their results are rendered as tool rows in the conversation — the delegate's
+  Read / Edit / Bash steps, in Klide's own design.
+  These arrive as a **separate** `observed_tool_call` / `observed_tool_result`
+  event pair, never as `tool_call_started`. Klide dispatched none of them: they
+  ran under the CLI's own permission mode, with no capability, no permission
+  prompt and no diff review. Every row says `via Claude Code` for that reason,
+  and `summarize_validation` — which counts capabilities — cannot mistake a
+  delegate's `Bash` for a command Klide verified.
+  A CLI with no structured mode keeps the prose path; it just shows no rows.
+- The headless delegate turn is no longer capped at 180 seconds — a ceiling
+  sized for answering questions, not for a Goal-mode task, which it would cut
+  mid-edit. The bound is now a 30-minute backstop against a wedged CLI, with
+  Stop as the real control. And that Stop now works: the child is spawned
+  `kill_on_drop`, so cancelling a turn ends the CLI instead of leaving it
+  editing the workspace with nobody reading its output.
+
 ### Provider gateway
 
 - Klide can run the **opencodex** proxy (`ocx`) as a managed localhost server

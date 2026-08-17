@@ -217,13 +217,6 @@ export function FocusMode({
   // two in a row, and the island only cares that the value moved.
   const [gitPing, setGitPing] = useState(0);
 
-  useEffect(() => {
-    if (!isDelegateProvider(provider)) return;
-    // Keep the unstable delegate/PTY route out of Focus even when a previous
-    // standard-panel session left one selected.
-    onProviderChange("ollama");
-  }, [provider, onProviderChange]);
-
   // The hero's "Continue where you left off" needs this project's recents. The
   // rail keeps its own copy for the tree — one read each, both from the same
   // durable index, rather than threading the rail's internals back out here.
@@ -1126,13 +1119,18 @@ export function buildProviderOptions(
   onOpenKeySettings: () => void,
 ): MenuOption[] {
   return providerGroupsWithCustom(custom).flatMap((group) => {
-    // Focus currently supports native API/local runs only. Delegate CLIs mount
-    // a separate PTY surface and stay out of this picker until that path is
-    // stable.
-    const items = group.items.filter((item) => item.available && !isDelegateProvider(item.id));
+    // Delegate CLIs belong here too. They run on the subscription you already
+    // pay for — no API key anywhere in Klide — and the canvas mounts their
+    // session instead of a message list, which is a different surface but the
+    // same conversation. They are never quieted: a delegate authenticates
+    // through its own login, so `keyless` has nothing to say about it.
+    const items = group.items.filter((item) => item.available);
     if (items.length === 0) return [];
     const rows: MenuOption[] = items.map((item) => {
-      const missingKey = keyless.has(item.id) && !isCustomProvider(item.id);
+      // A delegate is exempt by construction, not by luck: it authenticates
+      // through its own CLI login, so "no API key" is not a statement about it.
+      const missingKey =
+        keyless.has(item.id) && !isCustomProvider(item.id) && !isDelegateProvider(item.id);
       return {
         label: item.name,
         value: item.id,
@@ -1281,6 +1279,7 @@ function FocusAddMenu({
   workspaceRoot,
   mode,
   supportsTools,
+  providerDelegatesWork,
   requireDiffReview,
   onModeChange,
   onRequireDiffReviewChange,
@@ -1289,6 +1288,9 @@ function FocusAddMenu({
   workspaceRoot: string | null;
   mode: AgentMode;
   supportsTools: boolean;
+  /** A delegate CLI does its own editing, so Goal mode never depends on the
+   *  tool-support probe Klide runs for wire providers. */
+  providerDelegatesWork: boolean;
   requireDiffReview: boolean;
   onModeChange: (mode: AgentMode) => void;
   onRequireDiffReviewChange: (required: boolean) => void;
@@ -1354,13 +1356,13 @@ function FocusAddMenu({
     openMenu();
   }
 
-  // Through the shared ladder. Focus's own copy of this rule omitted the
-  // delegate exemption; it didn't bite only because Focus filters delegates out
-  // of its picker, which is a coincidence rather than a reason.
+  // Through the shared ladder. A delegate CLI does its own editing, so Goal
+  // mode stays open to it even though Klide never probed its tool support —
+  // the same exemption the AI panel applies.
   const effectiveMode = effectiveModeFor({
     mode,
     modelSupportsTools: supportsTools,
-    providerDelegatesWork: false,
+    providerDelegatesWork,
   });
   const activeKey = effectiveMode === "goal"
     ? requireDiffReview ? "goal-review" : "goal-auto"
@@ -1691,6 +1693,7 @@ function FocusComposer({
               workspaceRoot={workspaceRoot}
               mode={agentMode}
               supportsTools={supportsTools}
+              providerDelegatesWork={isDelegateProvider(provider)}
               requireDiffReview={requireDiffReview}
               onModeChange={selectAgentMode}
               onRequireDiffReviewChange={onRequireDiffReviewChange}
