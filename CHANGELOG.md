@@ -41,7 +41,22 @@ open; these are the shell and correctness changes landed so far.
   shells, so the rail is the same rail whichever layout you come back through.
 - Folding keeps the rail mounted at zero width rather than unmounting it, so its
   disclosure state, scroll position and history subscriptions survive the fold —
-  unfolding is instant, not a reload.
+  unfolding is a movement, not a reload.
+- And it moves like one: the width eases closed over 420ms, eased at *both* ends
+  so the panel gathers itself, travels and settles rather than starting at speed,
+  with its contents held at full width behind a clip — the tree slides out of
+  view instead of reflowing every label through two hundred narrower layouts on
+  the way. The hairline fades with it, and the reveal button cross-fades instead
+  of mounting: it arrives once the rail is mostly gone and leaves the instant the
+  rail comes back over it.
+- Dragging the edge is exempt from all of that, and exactly so: no transition (it
+  would trail your pointer by the fold's whole duration) and no clamp mid-gesture
+  — the rail may be any width your hand is holding it at, including ones it is
+  not allowed to rest at. Release settles it with the transition back on, so an
+  out-of-bounds release eases into the nearest legal width instead of snapping
+  to it. Clamping *during* the drag was what made reopening feel wrong: crossing
+  the threshold jumped the rail to its 200px minimum and then held it there, 170px
+  ahead of the hand dragging it. Under `prefers-reduced-motion` the fold is a cut.
 
 ### Focus rail
 

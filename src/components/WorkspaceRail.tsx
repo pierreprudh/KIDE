@@ -38,7 +38,7 @@ import {
 import { CloseIcon, FolderIcon, SearchIcon, SidebarIcon } from "../icons";
 import { Z } from "../zLayers";
 import { beginDragSession } from "../dragSession";
-import { SETTINGS, useSetting } from "../settingsStore";
+import { SETTINGS, getSetting, useSetting } from "../settingsStore";
 import { railDestination } from "../railDestinations";
 import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
 import {
@@ -137,17 +137,27 @@ export const RAIL_MAX_WIDTH = 460;
  *  narrower — the gap between it and the floor is what makes the fold feel
  *  like a decision rather than a slip. */
 const RAIL_FOLD_AT = 168;
+/** …but a drag that *starts* folded reopens as soon as it means it. The two
+ *  thresholds are a hysteresis, and the asymmetry is the whole point: made to
+ *  answer the fold distance, a reopen drag would sit dead for its first 167px
+ *  and read as a rail that cannot be brought back. */
+const RAIL_OPEN_AT = 24;
 
 /**
- * What a drag of the rail's edge means, from where the edge now is.
+ * What a drag of the rail's edge means, from where the edge now is and which
+ * state the gesture began in.
  *
  * `width: null` means "leave the stored width alone" — folding must not
  * overwrite the width you folded from, or the rail would come back at its
- * minimum every time. Dragging back out from a folded rail therefore reopens
- * at whatever it was, once the pointer clears the fold zone.
+ * minimum every time.
  */
-export function railFromEdge(edgeX: number): { collapsed: boolean; width: number | null } {
-  if (edgeX < RAIL_FOLD_AT) return { collapsed: true, width: null };
+export function railFromEdge(
+  edgeX: number,
+  startedCollapsed = false,
+): { collapsed: boolean; width: number | null } {
+  if (edgeX < (startedCollapsed ? RAIL_OPEN_AT : RAIL_FOLD_AT)) {
+    return { collapsed: true, width: null };
+  }
   return {
     collapsed: false,
     width: Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(edgeX))),
@@ -166,11 +176,13 @@ function RailEdge({
   collapsed,
   width,
   onEdgeMoved,
+  onEdgeReleased,
   onToggle,
 }: {
   collapsed: boolean;
   width: number;
-  onEdgeMoved: (edgeX: number) => void;
+  onEdgeMoved: (edgeX: number, startedCollapsed: boolean) => void;
+  onEdgeReleased: (edgeX: number, startedCollapsed: boolean) => void;
   onToggle: () => void;
 }) {
   return (
@@ -188,27 +200,41 @@ function RailEdge({
           // edge is at 0, so both directions are the one subtraction.
           const startEdge = collapsed ? 0 : width;
           const startX = e.clientX;
+          const startedCollapsed = collapsed;
+          // Where the drag left the edge. The release decides what that *means*
+          // — the move only ever reports a position.
+          let edgeX = startEdge;
           beginDragSession({
             cursor: "col-resize",
-            onMove: (ev) => onEdgeMoved(startEdge + (ev.clientX - startX)),
+            onMove: (ev) => {
+              edgeX = startEdge + (ev.clientX - startX);
+              onEdgeMoved(edgeX, startedCollapsed);
+            },
+            onDone: () => onEdgeReleased(edgeX, startedCollapsed),
           });
         }}
         onDoubleClick={onToggle}
       />
       {/* Folded, the edge is at the window's left border and there is nothing
           left to read — so one quiet button says where the rail went. It sits
-          under the traffic lights' band, not in it. */}
-      {collapsed ? (
-        <button
-          type="button"
-          className="klide-rail-reveal"
-          aria-label="Show the sidebar"
-          title="Show the sidebar (⌘B)"
-          onClick={onToggle}
-        >
-          <SidebarIcon size={15} />
-        </button>
-      ) : null}
+          under the traffic lights' band, not in it.
+          It stays mounted at every width: unmounting it on unfold made it
+          vanish in one frame while the rail was still opening, which is the
+          one moment the eye is following that exact spot. Hidden, it is
+          `pointer-events: none`, so it never stands in front of the rail's
+          own first row. */}
+      <button
+        type="button"
+        className="klide-rail-reveal"
+        data-shown={collapsed || undefined}
+        aria-label="Show the sidebar"
+        title="Show the sidebar (⌘B)"
+        tabIndex={collapsed ? undefined : -1}
+        aria-hidden={collapsed ? undefined : true}
+        onClick={onToggle}
+      >
+        <SidebarIcon size={15} />
+      </button>
     </>
   );
 }
@@ -866,6 +892,13 @@ export function WorkspaceRail({
   // whichever one you come back through. ⌘B (App.tsx) writes the same setting.
   const [railWidth, setRailWidth] = useSetting(SETTINGS.railWidth);
   const [collapsed, setCollapsed] = useSetting(SETTINGS.railCollapsed);
+  // The width the pointer is currently holding the rail at, or null when no
+  // drag is in flight. It exists so a drag can be *exactly* the pointer — every
+  // width, including ones the rail is not allowed to rest at — while the stored
+  // width stays a legal one. Release is what settles the two, and because the
+  // fold's transition comes back the moment this clears, that settle is a
+  // movement rather than a jump.
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const { username, hostname, avatarUrl } = useUserInfo();
@@ -1177,250 +1210,297 @@ export function WorkspaceRail({
       /* Folded, the rail keeps its box at zero width rather than unmounting:
          its tree state, its scroll position and its history subscriptions all
          survive the fold, so bringing it back is instant instead of a reload
-         and a re-run of the reveal cascade. CSS hides the contents. */
+         and a re-run of the reveal cascade. The clip below hides the contents,
+         and the width between the two states is what animates. */
       data-collapsed={collapsed || undefined}
+      data-dragging={dragWidth !== null || undefined}
       /* Above the docks and above the free layout's floating panels — that band
          climbs by one with every focus event, so the rail cannot hold a small
          local z the way it could when only Focus rendered it. */
-      style={{ zIndex: Z.rail, width: collapsed ? 0 : railWidth }}
+      style={{ zIndex: Z.rail, width: dragWidth ?? (collapsed ? 0 : railWidth) }}
     >
       <RailEdge
         collapsed={collapsed}
         width={railWidth}
-        onEdgeMoved={(edgeX) => {
-          const next = railFromEdge(edgeX);
-          setCollapsed(next.collapsed);
-          if (next.width !== null) setRailWidth(next.width);
+        onEdgeMoved={(edgeX, startedCollapsed) => {
+          // Under the pointer the rail is simply where the pointer is — no
+          // minimum, no snap. Clamping mid-drag was what made reopening feel
+          // wrong: crossing the threshold jumped the rail to its 200px minimum
+          // and then held it there, 170px ahead of the hand dragging it.
+          setDragWidth(Math.min(RAIL_MAX_WIDTH, Math.max(0, Math.round(edgeX))));
+          // The fold state still updates live, so the contents fade as you
+          // cross the point they will fold at — the gesture says what it is
+          // going to do before you commit to it. Read back through the store
+          // rather than the closure: this handler is captured for the whole
+          // drag, so its own `collapsed` is one mouse-move out of date, and
+          // writing every frame would put a localStorage write in the gesture.
+          const folding = railFromEdge(edgeX, startedCollapsed).collapsed;
+          if (folding !== getSetting(SETTINGS.railCollapsed)) setCollapsed(folding);
+        }}
+        onEdgeReleased={(edgeX, startedCollapsed) => {
+          const settled = railFromEdge(edgeX, startedCollapsed);
+          setCollapsed(settled.collapsed);
+          if (settled.width !== null) setRailWidth(settled.width);
+          // Last: clearing the drag hands the width back to the transition, so
+          // an out-of-bounds release eases into the legal width instead of
+          // snapping to it.
+          setDragWidth(null);
         }}
         onToggle={() => setCollapsed(!collapsed)}
       />
 
-      {/* Brand row doubles as the search row: the field takes the brand slot
-          rather than pushing a new row in, so opening search never moves the
-          list it filters. */}
-      <div className="klide-focus-brand">
-        {searchOpen ? (
-          <input
-            ref={searchRef}
-            className="klide-focus-brand-search"
-            type="search"
-            name="conversation-search"
-            aria-label="Search conversations"
-            autoComplete="off"
-            spellCheck={false}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setSearchOpen(false);
-                setQuery("");
-              }
-            }}
-            placeholder="Search conversations…"
-          />
-        ) : (
-          /* Reserved slot — the logo drops in here. */
-          <span className="klide-focus-brand-slot" aria-hidden="true" />
-        )}
-        <button
-          type="button"
-          className="klide-focus-brand-action"
-          aria-label={searchOpen ? "Close conversation search" : "Search conversations"}
-          aria-expanded={searchOpen}
-          onClick={() => {
-            setSearchOpen((v) => !v);
-            setQuery("");
-          }}
-        >
-          {searchOpen ? <CloseIcon size={RAIL_GLYPH} /> : <SearchIcon size={RAIL_GLYPH} />}
-        </button>
-      </div>
-
-      <div className="klide-focus-nav-group">
-        {nav.map((item) => (
-          <NavRow
-            key={item.id}
-            icon={item.icon}
-            label={item.label}
-            active={item.active}
-            onClick={(meta) => {
-              onNavigateAway?.();
-              item.onClick(meta);
-            }}
-          />
-        ))}
-      </div>
-
-      {/* Section break — a gradient hairline, not another written label,
-          separating the actions above from the workspace list below. */}
-      <div aria-hidden="true" className="klide-focus-rail-divider" />
-
-      <div className="klide-focus-rail-body" ref={railBodyRef}>
-        {searching ? (
-          <>
-            <SectionLabel>Results</SectionLabel>
-            {filtered.length === 0 ? (
-              <p className="klide-focus-rail-empty">No conversations match.</p>
+      {/* Two wrappers, and each earns its keep. The clip is what the fold
+          actually is — the rail's own width animates to zero and this hides
+          what no longer fits — and the inner holds the content at its full
+          width throughout, so the tree slides out of view instead of
+          reflowing every label through 200 narrower layouts on the way. */}
+      <div className="klide-rail-clip" inert={collapsed}>
+        {/* The drag region rides down here with the content: Tauri only moves
+            the window for the element the pointer actually hits, and after the
+            wrap that element is the inner, never the aside. */}
+        <div className="klide-rail-inner" style={{ width: railWidth }} data-tauri-drag-region>
+          {/* Brand row doubles as the search row: the field takes the brand slot
+              rather than pushing a new row in, so opening search never moves the
+              list it filters. */}
+          <div className="klide-focus-brand">
+            {searchOpen ? (
+              <input
+                ref={searchRef}
+                className="klide-focus-brand-search"
+                type="search"
+                name="conversation-search"
+                aria-label="Search conversations"
+                autoComplete="off"
+                spellCheck={false}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setSearchOpen(false);
+                    setQuery("");
+                  }
+                }}
+                placeholder="Search conversations…"
+              />
             ) : (
-              <div className="klide-focus-project-list">
-                {filtered.map((c) => (
-                  <ConvoRow
-                    key={c.id}
-                    convo={c}
-                    selected={selectedConversationId === c.id}
-                    open={openIds.has(c.id)}
-                    onOpen={() => openHistoryConversation(c)}
-                  />
-                ))}
-              </div>
+              /* Reserved slot — the logo drops in here. */
+              <span className="klide-focus-brand-slot" aria-hidden="true" />
             )}
-          </>
-        ) : (
-          <>
-            {railProjects.length === 0 && (
-              <p className="klide-focus-rail-empty">Open a folder to start.</p>
-            )}
-            <div className="klide-focus-project-list">
-              {visibleProjects.map((p) => {
-                const isActive = p === activeProjectRoot;
-                const isExpanded = expandedProjects.has(p);
-                const history = convosByProject.get(p) ?? [];
-                const providerHistories = providerHistoriesByProject.get(p) ?? [];
-                return (
-                  <div key={p} className="klide-focus-project">
-                    {/* The project's name pins to the top of the rail while you
-                        read down its history, and hands over when the next
-                        project reaches it — so you always know whose
-                        conversations you are looking at. */}
-                    <ProjectHead scrollRoot={railBodyRef}>
-                      <NavRow
-                        icon={<FolderIcon size={14} />}
-                        label={basename(p)}
-                        active={isActive}
-                        expanded={isExpanded}
-                        onClick={() => {
-                          // Switching makes a project current; clicking the
-                          // current one just folds its history open/closed.
-                          if (isActive) toggleProject(p);
-                          else {
-                            onNavigateAway?.();
-                            onSwitchProject(p);
-                          }
-                        }}
-                      />
-                    </ProjectHead>
-                    {isExpanded && history.length > 0 ? (
-                      <div
-                        className="klide-focus-provider-groups"
-                        data-contains-selected={
-                          history.some((c) => c.id === selectedConversationId) || undefined
-                        }
-                      >
-                        {providerHistories.map((providerHistory, providerIndex) => {
-                          const key = providerHistoryKey(p, providerHistory.provider);
-                          const providerExpanded = providerHistoryExpanded(
-                            expandedProviderGroups.get(key),
-                            providerHistory.provider,
-                            activeProvider,
-                            providerHistories[0]?.provider,
-                          );
-                          return (
-                            <ProviderHistoryGroup
-                              key={providerHistory.provider}
-                              group={providerHistory}
-                              expanded={providerExpanded}
-                              selectedConversationId={selectedConversationId ?? undefined}
-                              openConversationIds={openIds}
-                              revealIndex={providerIndex}
-                              conversationRevealBase={
-                                cascadingProjects.has(p)
-                                  ? providerHistories.length * PROVIDER_REVEAL_STEP_MS +
-                                    REVEAL_PHASE_GAP_MS
-                                  : 0
-                              }
-                              onToggle={() =>
-                                toggleProviderHistory(
-                                  p,
-                                  providerHistory.provider,
-                                  providerExpanded,
-                                )
-                              }
-                              onOpen={openHistoryConversation}
-                            />
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                    {isExpanded && history.length === 0 ? (
-                      <p className="klide-focus-rail-empty" data-nested="true">
-                        No conversations yet.
-                      </p>
-                    ) : null}
-                  </div>
-                );
-              })}
-              {/* Unfolds the rest of the recents. Opening a project that is not
-                  in that list belongs to the macOS menu bar — File ▸ Open
-                  Folder… (⌘O) — so the rail never grows a second picker. */}
-              {hiddenProjectCount > 0 || showAllProjects ? (
-                <button
-                  type="button"
-                  className="klide-focus-more-projects"
-                  aria-expanded={showAllProjects}
-                  onClick={() => setShowAllProjects((shown) => !shown)}
-                >
-                  {showAllProjects ? "Less" : "More"}
-                </button>
-              ) : null}
-            </div>
-          </>
-        )}
-      </div>
+            <button
+              type="button"
+              className="klide-focus-brand-action"
+              aria-label={searchOpen ? "Close conversation search" : "Search conversations"}
+              aria-expanded={searchOpen}
+              onClick={() => {
+                setSearchOpen((v) => !v);
+                setQuery("");
+              }}
+            >
+              {searchOpen ? <CloseIcon size={RAIL_GLYPH} /> : <SearchIcon size={RAIL_GLYPH} />}
+            </button>
+          </div>
 
-      {/* Destinations — read from one definition (../railDestinations) so
-          adding one never means editing two places. They are labeled rows like
-          every other row here; Profile is the exception, drawn as the identity
-          card because it has a name and a host to show. */}
-      <div className="klide-rail-dest-group">
-        <NavRow
-          icon={<settingsDest.Icon size={15} />}
-          label={settingsDest.label}
-          onClick={() => {
-            onNavigateAway?.();
-            onOpenSettings();
-          }}
-        />
-        {/* Identity row — the profile card takes the space its name and host
-            need, and the shell's own controls hang off the ragged right edge.
-            They sit apart from the destinations above because they change the
-            shell rather than opening a surface. */}
-        <div className="klide-rail-identity-row">
-          <button
-            type="button"
-            className="klide-rail-profile"
-            aria-label={`Open ${profileDest.label.toLowerCase()}`}
-            title={profileDest.label}
-            onClick={() => {
-              onNavigateAway?.();
-              onOpenProfile();
-            }}
-          >
-            <span className="klide-rail-profile-avatar" aria-hidden>
-              {initialsOf(username || "?")}
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt=""
-                  onError={(event) => { event.currentTarget.style.display = "none"; }}
-                />
-              ) : null}
-            </span>
-            <span className="klide-rail-profile-identity">
-              <span className="klide-rail-profile-name">{username || "Local profile"}</span>
-              <span className="klide-rail-profile-host">{hostname}</span>
-            </span>
-          </button>
-          {footActions}
+          <div className="klide-focus-nav-group">
+            {nav.map((item) => (
+              <NavRow
+                key={item.id}
+                icon={item.icon}
+                label={item.label}
+                active={item.active}
+                onClick={(meta) => {
+                  onNavigateAway?.();
+                  item.onClick(meta);
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Section break — a gradient hairline, not another written label,
+              separating the actions above from the workspace list below. */}
+          <div aria-hidden="true" className="klide-focus-rail-divider" />
+
+          <div className="klide-focus-rail-body" ref={railBodyRef}>
+            {searching ? (
+              <>
+                <SectionLabel>Results</SectionLabel>
+                {filtered.length === 0 ? (
+                  <p className="klide-focus-rail-empty">No conversations match.</p>
+                ) : (
+                  <div className="klide-focus-project-list">
+                    {filtered.map((c) => (
+                      <ConvoRow
+                        key={c.id}
+                        convo={c}
+                        selected={selectedConversationId === c.id}
+                        open={openIds.has(c.id)}
+                        onOpen={() => openHistoryConversation(c)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {railProjects.length === 0 && (
+                  <p className="klide-focus-rail-empty">Open a folder to start.</p>
+                )}
+                <div className="klide-focus-project-list">
+                  {visibleProjects.map((p) => {
+                    const isActive = p === activeProjectRoot;
+                    const isExpanded = expandedProjects.has(p);
+                    const history = convosByProject.get(p) ?? [];
+                    const providerHistories = providerHistoriesByProject.get(p) ?? [];
+                    return (
+                      <div key={p} className="klide-focus-project">
+                        {/* The project's name pins to the top of the rail while you
+                            read down its history, and hands over when the next
+                            project reaches it — so you always know whose
+                            conversations you are looking at. */}
+                        <ProjectHead scrollRoot={railBodyRef}>
+                          <NavRow
+                            icon={<FolderIcon size={14} />}
+                            label={basename(p)}
+                            active={isActive}
+                            expanded={isExpanded}
+                            onClick={() => {
+                              // Switching makes a project current; clicking the
+                              // current one just folds its history open/closed.
+                              if (isActive) toggleProject(p);
+                              else {
+                                onNavigateAway?.();
+                                onSwitchProject(p);
+                              }
+                            }}
+                          />
+                        </ProjectHead>
+                        {isExpanded && history.length > 0 ? (
+                          <div
+                            className="klide-focus-provider-groups"
+                            data-contains-selected={
+                              history.some((c) => c.id === selectedConversationId) || undefined
+                            }
+                          >
+                            {providerHistories.map((providerHistory, providerIndex) => {
+                              const key = providerHistoryKey(p, providerHistory.provider);
+                              const providerExpanded = providerHistoryExpanded(
+                                expandedProviderGroups.get(key),
+                                providerHistory.provider,
+                                activeProvider,
+                                providerHistories[0]?.provider,
+                              );
+                              return (
+                                <ProviderHistoryGroup
+                                  key={providerHistory.provider}
+                                  group={providerHistory}
+                                  expanded={providerExpanded}
+                                  selectedConversationId={selectedConversationId ?? undefined}
+                                  openConversationIds={openIds}
+                                  revealIndex={providerIndex}
+                                  conversationRevealBase={
+                                    cascadingProjects.has(p)
+                                      ? providerHistories.length * PROVIDER_REVEAL_STEP_MS +
+                                        REVEAL_PHASE_GAP_MS
+                                      : 0
+                                  }
+                                  onToggle={() =>
+                                    toggleProviderHistory(
+                                      p,
+                                      providerHistory.provider,
+                                      providerExpanded,
+                                    )
+                                  }
+                                  onOpen={openHistoryConversation}
+                                />
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                        {isExpanded && history.length === 0 ? (
+                          <p className="klide-focus-rail-empty" data-nested="true">
+                            No conversations yet.
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  {/* Unfolds the rest of the recents. Opening a project that is not
+                      in that list belongs to the macOS menu bar — File ▸ Open
+                      Folder… (⌘O) — so the rail never grows a second picker. */}
+                  {hiddenProjectCount > 0 || showAllProjects ? (
+                    <button
+                      type="button"
+                      className="klide-focus-more-projects"
+                      aria-expanded={showAllProjects}
+                      onClick={() => setShowAllProjects((shown) => !shown)}
+                    >
+                      {showAllProjects ? "Less" : "More"}
+                    </button>
+                  ) : null}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Destinations — read from one definition (../railDestinations) so
+              adding one never means editing two places. They are labeled rows like
+              every other row here; Profile is the exception, drawn as the identity
+              card because it has a name and a host to show. */}
+          <div className="klide-rail-dest-group">
+            <NavRow
+              icon={<settingsDest.Icon size={15} />}
+              label={settingsDest.label}
+              onClick={() => {
+                onNavigateAway?.();
+                onOpenSettings();
+              }}
+            />
+            {/* Identity row — the profile card takes the space its name and host
+                need, and the shell's own controls hang off the ragged right edge.
+                They sit apart from the destinations above because they change the
+                shell rather than opening a surface. */}
+            <div className="klide-rail-identity-row">
+              <button
+                type="button"
+                className="klide-rail-profile"
+                aria-label={`Open ${profileDest.label.toLowerCase()}`}
+                title={profileDest.label}
+                onClick={() => {
+                  onNavigateAway?.();
+                  onOpenProfile();
+                }}
+              >
+                <span className="klide-rail-profile-avatar" aria-hidden>
+                  {initialsOf(username || "?")}
+                  {avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt=""
+                      onError={(event) => { event.currentTarget.style.display = "none"; }}
+                    />
+                  ) : null}
+                </span>
+                <span className="klide-rail-profile-identity">
+                  <span className="klide-rail-profile-name">{username || "Local profile"}</span>
+                  <span className="klide-rail-profile-host">{hostname}</span>
+                </span>
+              </button>
+              {/* The fold, as a click. Dragging the edge is the direct way and ⌘B
+                  is the fast one, but neither is visible — and a control you can
+                  only reach by knowing it is there is not a control. It sits with
+                  the host's own shell buttons because that is what it is: this row
+                  is where the rail's chrome lives, not its destinations. */}
+              <button
+                type="button"
+                className="klide-rail-view-switch"
+                aria-label="Fold the sidebar"
+                title="Fold the sidebar (⌘B)"
+                onClick={() => setCollapsed(true)}
+              >
+                <SidebarIcon size={14} />
+              </button>
+              {footActions}
+            </div>
+          </div>
         </div>
       </div>
     </aside>
