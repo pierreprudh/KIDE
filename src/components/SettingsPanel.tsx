@@ -55,6 +55,7 @@ import {
 import { API_KEY_PROVIDERS, ApiKeyRow, ApiKeySummary, ProviderBalanceBlock } from "./settings/apiKeys";
 import { notify } from "../toast";
 import { CustomCliAgentsBlock, CustomEndpointsBlock } from "./settings/customProviders";
+import { GatewayBlock } from "./settings/gateway";
 import { LocalServerRow } from "./settings/localServers";
 import { AccountControl, GitHubAccountRow } from "./settings/accounts";
 import { StatsSection } from "./settings/stats";
@@ -187,7 +188,7 @@ const SECTION_SUBTITLES: Record<SectionId, string> = {
   layout: "Panel sizes and saved workbench layout presets.",
   ai: "How the assistant edits files, runs tools, and reasons.",
   "local-ai": "Run models on-device with Ollama and MLX — no key needed.",
-  api: "Hosted provider keys, stored in your macOS Keychain.",
+  api: "Hosted provider keys, the opencodex gateway, and self-hosted endpoints.",
   subscription: "Connect Claude Code, Codex, OpenCode, and Oh My Pi CLI logins — plus your ollama.com account.",
   editor: "Monaco editor preferences — font, gutter, and wrapping.",
   terminal: "The built-in shell's appearance and behaviour.",
@@ -209,6 +210,7 @@ const panelOnlyIndex: SettingIndexEntry[] = [
   { label: "Layout presets", section: "layout", keywords: "layout preset bento grid workbench arrange" },
   { label: "Local servers (Ollama / MLX)", section: "local-ai", keywords: "local ollama mlx server start stop concurrency model" },
   { label: "API keys", section: "api", keywords: "api key keychain anthropic openai mistral xai deepseek openrouter token secret" },
+  { label: "Provider gateway (opencodex)", section: "api", keywords: "gateway opencodex ocx proxy oauth subscription route provider bridge localhost 10100" },
   { label: "CLI subscriptions", section: "subscription", keywords: "subscription claude code codex opencode omp oh my pi ollama signin login account auth cli" },
   { label: "GitHub account", section: "subscription", keywords: "github account gh avatar profile picture identity work personal switch pin push pr" },
   { label: "Terminal", section: "terminal", keywords: "terminal shell font xterm" },
@@ -1692,6 +1694,9 @@ export function SettingsPanel({
               </SettingBlock>
               <SettingBlock title="Balance">
                 <ProviderBalanceBlock />
+              </SettingBlock>
+              <SettingBlock title="Provider gateway">
+                <GatewayBlock />
               </SettingBlock>
               <SettingBlock title="Self-hosted endpoints">
                 <CustomEndpointsBlock onProviderKeyChange={onProviderKeyChange} />

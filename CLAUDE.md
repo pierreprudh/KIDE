@@ -90,6 +90,7 @@ Klide/
 │   ├── delegateStatusNotify.ts  Delegate-status events → toasts under a noise policy
 │   ├── diffComments.ts          Line-anchored diff comments sent back to running agents
 │   ├── customProviders.ts       Self-hosted OpenAI-wire providers (customCli.ts: user CLI agents)
+│   ├── gateway.ts               opencodex proxy registered as one self-hosted endpoint
 │   ├── memory.ts                Project Memory data layer (+ memoryDrafts.ts, memorySearch.ts)
 │   ├── gitGraph.ts              Lane layout for the commit graph (gitTypes.ts: wire types)
 │   ├── gridLayouts.ts           Freeform grid layouts (layouts.ts: fixed presets)
@@ -101,7 +102,8 @@ Klide/
 │   ├── ipc/                     Typed Tauri command wire — one module per family, drift-tested
 │   │   ├── git.ts                 Every git_* / github_* / create_pr command + wire types
 │   │   ├── delegatePty.ts         Delegate PTY commands, events, reattach/replay handshake
-│   │   └── aiProviders.ts         Provider key status, model metadata, local-server start
+│   │   ├── aiProviders.ts         Provider key status, model metadata, local-server start
+│   │   └── gateway.ts             opencodex proxy lifecycle — installed, running, start/stop
 │   ├── hooks/
 │   │   ├── useFlipIndicator.ts  Shared FLIP animation for rail/tab indicators
 │   │   ├── useEditorTabs.ts     Open tabs: open/edit/save/close/rename, external-change watch
@@ -147,7 +149,7 @@ Klide/
 │   │   ├── ProfileModal.tsx     Local IDE profile (avatar + identity + workspace)
 │   │   ├── SearchPanel.tsx      Find-in-files results
 │   │   ├── SettingsPanel.tsx    Settings shell (sections live in settings/)
-│   │   ├── settings/            accounts, apiKeys, controls, customProviders, icons, localServers, stats
+│   │   ├── settings/            accounts, apiKeys, controls, customProviders, gateway, icons, localServers, stats
 │   │   ├── Sidebar.tsx          File explorer tree
 │   │   ├── SkillsModal.tsx      Skill editor + install + provenance groups
 │   │   ├── SplitPane.tsx        Vertical/horizontal split shell
@@ -209,6 +211,7 @@ Klide/
     │   ├── git/                  mod.rs: git shell-outs · github.rs: gh seam, PRs, avatars, pinned identity
     │   ├── skills.rs             Filesystem-skill loader (4 dirs, provenance) + install/uninstall
     │   ├── local_servers.rs      Ollama / MLX local server start/stop/status
+    │   ├── gateway.rs            opencodex proxy process — install check, start/stop, Codex un-inject
     │   ├── search.rs             Find-in-files over a Workspace with ignore policy
     │   ├── workspace.rs          Workspace module — owns the Workspace-rooted invariant
     │   ├── worktree_setup.rs     Per-workspace worktree bootstrap recipe (copy/link/port/script)
@@ -373,6 +376,26 @@ AnthropicAdapter   (~95 lines)
 ```
 
 New provider (e.g. LM Studio) = one adapter, not 120 lines of duplicated infrastructure.
+
+### Provider gateway (opencodex)
+
+A fourth wire would have been the wrong answer for reaching 40 more providers,
+so Klide reaches them through a proxy instead. **opencodex** (`ocx`,
+`npm install -g @bitkyc08/opencodex`) serves `/v1/chat/completions` and
+`/v1/models` on `127.0.0.1:10100` in front of ~40 upstreams — API keys *or*
+OAuth logins — which is exactly the shape `custom_providers.rs` already drives.
+So the gateway is registered as **one self-hosted endpoint** (`custom:opencodex`,
+no adapter, no token: the bearer is optional on loopback) and every surface —
+Focus, Workbench, Mission Control, the full Rust tool loop — treats it as a
+normal provider. Models are namespaced `provider/model` (`ollama/qwen3.5:9b`).
+
+`gateway.rs` owns only the process: install check, start, stop, health. Two
+deliberate behaviours: `ocx start` injects `openai_base_url` into
+`$CODEX_HOME/config.toml`, so Klide runs `ocx restore` right after a successful
+start — the Codex *delegate* must keep talking to OpenAI directly — and
+`gateway_status` reads that config back rather than assuming. Stop goes through
+`ocx stop`, never a bare kill, because the CLI is the only thing that unwinds
+its own injection.
 
 ### Tool registry (Rust source of truth)
 
