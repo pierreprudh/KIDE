@@ -8,6 +8,20 @@ Work on the v0.6 line. The orchestration milestone itself — Missions as
 outcomes, budgets, capacity, capability routing, validation contracts — is still
 open; these are the shell and correctness changes landed so far.
 
+### Provider gateway
+
+- Klide can run the **opencodex** proxy (`ocx`) as a managed localhost server
+  and register it as one self-hosted endpoint, which puts ~40 upstream
+  providers — API-key or OAuth — behind the normal model picker and the full
+  Rust tool loop, in Focus as everywhere else. Settings → API → Provider
+  gateway owns install detection, start/stop, connect/disconnect, and the
+  default `provider/model` route. No new wire adapter: the proxy speaks the
+  OpenAI wire the custom-provider store already drives.
+- Starting the proxy no longer hijacks the Codex CLI. `ocx start` injects
+  itself into `$CODEX_HOME/config.toml`; Klide un-injects immediately after a
+  successful start so the Codex delegate keeps talking to OpenAI directly, and
+  reports the config's real state instead of assuming it.
+
 ### One sidebar
 
 - Focus and the free/anchored workbench now render **the same rail**

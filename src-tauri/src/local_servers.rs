@@ -19,6 +19,16 @@ pub(crate) struct LocalServerState {
     processes: Mutex<HashMap<String, std::process::Child>>,
 }
 
+impl LocalServerState {
+    /// The one registry of localhost server processes Klide itself spawned,
+    /// keyed by a stable name (`ollama`, `mlx`, `opencodex`). Shared with
+    /// `gateway.rs` so a single place knows what this app owns and must reap —
+    /// a second private map would let a process outlive the app silently.
+    pub(crate) fn processes(&self) -> &Mutex<HashMap<String, std::process::Child>> {
+        &self.processes
+    }
+}
+
 fn is_local_server_provider(provider: &str) -> bool {
     matches!(provider, "ollama" | "mlx")
 }
@@ -124,7 +134,9 @@ fn ensure_mlx_cache_dir() -> Result<Option<PathBuf>, String> {
     Ok(Some(cache_dir))
 }
 
-fn local_server_stderr_path(provider: &str) -> PathBuf {
+/// Where a Klide-started server's stderr lands, so a failed start can show the
+/// real reason instead of "it didn't come up". Shared with `gateway.rs`.
+pub(crate) fn local_server_stderr_path(provider: &str) -> PathBuf {
     if cfg!(unix) {
         PathBuf::from(format!("/tmp/klide-{provider}-stderr.log"))
     } else {

@@ -6,6 +6,7 @@ mod custom_cli;
 mod custom_providers;
 mod delegate;
 mod durable;
+mod gateway;
 mod git;
 mod local_servers;
 mod memory;
@@ -813,6 +814,9 @@ pub fn run() {
             local_servers::ai_local_server_stop,
             local_servers::ai_local_server_status,
             local_servers::ollama_account_status,
+            gateway::gateway_status,
+            gateway::gateway_start,
+            gateway::gateway_stop,
             agent::agent_start_run,
             agent::agent_submit_user_turn,
             agent::agent_resolve_permission,
