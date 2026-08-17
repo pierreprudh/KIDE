@@ -61,11 +61,23 @@ impl Delegate for OpenCode {
         Ok(format!("opencode run{model_arg} {}", shell_quote(task)))
     }
 
-    /// OpenCode only works as an interactive PTY delegate — there is no
-    /// headless stdin mode worth driving. The error string is surfaced to
-    /// the chat verbatim.
-    fn chat_args(&self, _cwd: &str, _model: &str) -> Result<Vec<String>, String> {
-        Err("OpenCode is available as an interactive PTY delegate.".to_string())
+    /// `opencode run` with no message argument reads the prompt from stdin and
+    /// exits — so OpenCode does have a headless mode after all. This used to
+    /// return an error ("interactive PTY delegate only"), which was invisible
+    /// while Focus filtered delegates out of its picker and became a failed turn
+    /// the moment it stopped.
+    ///
+    /// Note `-p` is NOT the print flag here — for OpenCode it is `--password`.
+    /// `--auto` is the permission posture the other adapters already take
+    /// (Claude Code's `acceptEdits`, Codex's `workspace-write`): a headless turn
+    /// has no terminal to approve anything in.
+    fn chat_args(&self, _cwd: &str, model: &str) -> Result<Vec<String>, String> {
+        let mut args: Vec<String> = vec!["run".into()];
+        if !model.is_empty() {
+            args.extend(["--model".into(), model.into()]);
+        }
+        args.push("--auto".into());
+        Ok(args)
     }
 
     /// OpenCode prints "Using session: <id>" (or similar) when it starts.
@@ -564,9 +576,19 @@ mod tests {
     }
 
     #[test]
-    fn chat_is_pty_only() {
-        let err = OpenCode.chat_args("/tmp/ws", "minimax-m3").unwrap_err();
-        assert!(err.contains("interactive PTY delegate"));
+    fn chat_runs_headless_with_the_prompt_on_stdin() {
+        // `opencode run` with no message argument reads stdin, so OpenCode can
+        // hold a Focus conversation. This used to assert the opposite.
+        let args = OpenCode.chat_args("/tmp/ws", "minimax/minimax-m3").unwrap();
+        assert_eq!(args.join(" "), "run --model minimax/minimax-m3 --auto");
+        // `-p` is `--password` for this CLI — passing it as "print" would ask
+        // for a prompt on the wrong flag entirely.
+        assert!(!args.contains(&"-p".to_string()));
+    }
+
+    #[test]
+    fn chat_without_model_leaves_the_cli_default() {
+        assert_eq!(OpenCode.chat_args("/tmp/ws", "").unwrap().join(" "), "run --auto");
     }
 
     #[test]

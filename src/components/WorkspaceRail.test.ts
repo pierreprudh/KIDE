@@ -4,9 +4,12 @@
 
 import { describe, expect, it } from "vitest";
 
+import { conversationIsRestorable } from "./ai/storedConversations";
+
 import {
   RAIL_MAX_WIDTH,
   RAIL_MIN_WIDTH,
+  railDragWidth,
   railFromEdge,
   railProjectRoots,
   retrievableConversation,
@@ -39,11 +42,11 @@ describe("rail edge drag", () => {
   });
 
   it("leaves the stored width alone while folded, so it reopens as it was", () => {
-    expect(railFromEdge(0).width).toBeNull();
+    expect(railFromEdge(0, true).width).toBeNull();
   });
 
   // The asymmetry is the fix for a rail that read as un-openable: a reopen drag
-  // measured against the fold distance does nothing for its first 167px.
+  // measured against the open rail's fold point would sit dead for far too long.
   it("reopens a folded rail as soon as the drag means it", () => {
     expect(railFromEdge(40, true)).toEqual({ collapsed: false, width: RAIL_MIN_WIDTH });
   });
@@ -55,6 +58,25 @@ describe("rail edge drag", () => {
   it("does not fold an open rail at the reopen threshold", () => {
     expect(railFromEdge(40, false).collapsed).toBe(true);
     expect(railFromEdge(180, false)).toEqual({ collapsed: false, width: RAIL_MIN_WIDTH });
+  });
+
+  it("holds briefly at the minimum width while narrowing an open rail", () => {
+    expect(railDragWidth(260, false)).toBe(260);
+    expect(railDragWidth(199, false)).toBe(RAIL_MIN_WIDTH);
+    expect(railDragWidth(180, false)).toBe(RAIL_MIN_WIDTH);
+    expect(railDragWidth(168, false)).toBe(RAIL_MIN_WIDTH);
+  });
+
+  it("releases smoothly from the minimum-width detent into the fold", () => {
+    expect(railDragWidth(167, false)).toBe(199);
+    expect(railDragWidth(84, false)).toBe(100);
+    expect(railDragWidth(0, false)).toBe(0);
+  });
+
+  it("keeps a reopening drag directly under the pointer", () => {
+    expect(railDragWidth(40, true)).toBe(40);
+    expect(railDragWidth(-50, true)).toBe(0);
+    expect(railDragWidth(9_000, true)).toBe(RAIL_MAX_WIDTH);
   });
 });
 
@@ -73,6 +95,35 @@ describe("rail conversation resume", () => {
 
   it("returns null when the rendered conversation has disappeared", () => {
     expect(retrievableConversation("missing", [saved])).toBeNull();
+  });
+
+  it("treats a headless delegate conversation as restorable, a console one not", () => {
+    // The rail used to dim every delegate group as "read only in Focus",
+    // because a delegate conversation was always a PTY session with no
+    // transcript. A Focus delegate run stores ordinary messages, so what
+    // decides it is the content — not the provider.
+    const headless: Conversation = {
+      id: "cc-1",
+      title: "Fix the login bug",
+      provider: "claude-code",
+      msgs: [
+        { role: "user", content: "fix the login bug" },
+        { role: "assistant", content: "The guard was inverted — fixed." },
+      ],
+      updatedAt: 2,
+    };
+    const ptySession: Conversation = {
+      id: "cc-2",
+      title: "Terminal session",
+      provider: "claude-code",
+      msgs: [{ role: "assistant", content: "", delegateConsole: true }],
+      updatedAt: 3,
+    };
+
+    expect(conversationIsRestorable(headless)).toBe(true);
+    expect(conversationIsRestorable(ptySession)).toBe(false);
+    // …and a plain Klide conversation is unaffected either way.
+    expect(conversationIsRestorable(saved)).toBe(true);
   });
 });
 

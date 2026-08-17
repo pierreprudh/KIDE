@@ -40,6 +40,32 @@ open; these are the shell and correctness changes landed so far.
   and `summarize_validation` — which counts capabilities — cannot mistake a
   delegate's `Bash` for a command Klide verified.
   A CLI with no structured mode keeps the prose path; it just shows no rows.
+- **A delegate turn types out now.** `stream-json` alone emits each assistant
+  block only once the model has finished writing it, so a Focus turn sat silent
+  and then landed in one lump — and time-to-first-token measured a whole
+  paragraph rather than a token. Klide also passes
+  `--include-partial-messages`, whose `text_delta` events stream character by
+  character. What remains in that number is real: a delegate turn pays for CLI
+  boot, hook lifecycle and project-context loading before its first token, so
+  expect a couple of seconds even on a trivial prompt.
+  With partial messages on, every block arrives *twice* — as deltas, then whole
+  — so a completed block is dropped once any delta has been seen, and the
+  whole-block path stays for CLIs that stream nothing.
+- **Delegate conversations are no longer read-only in the rail.** The tree dimmed
+  every delegate group and tooltipped it "read only in Focus" — correct when a
+  delegate conversation was always a PTY session with no transcript to reopen,
+  wrong now that a Focus delegate run stores ordinary messages. Both that and
+  the auto-resume path asked "is this a delegate?"; they now ask the question
+  that was always meant — "does this conversation have anything to restore?" —
+  through one shared predicate, so a headless delegate conversation reopens and a
+  console-only one still doesn't.
+- **OpenCode can hold a Focus conversation.** Its adapter reported "interactive
+  PTY delegate only" and returned an error instead of headless args — harmless
+  while Focus filtered delegates out of its picker, a failed turn the moment it
+  stopped. `opencode run` with no message argument reads the prompt from stdin
+  and exits, so the headless mode was there all along. (`-p` is `--password` for
+  this CLI, not print; `--auto` matches the permission posture Claude Code and
+  Codex already take, since a headless turn has no terminal to approve in.)
 - The headless delegate turn is no longer capped at 180 seconds — a ceiling
   sized for answering questions, not for a Goal-mode task, which it would cut
   mid-edit. The bound is now a 30-minute backstop against a wedged CLI, with
@@ -87,29 +113,34 @@ open; these are the shell and correctness changes landed so far.
 - Gone with the ActivityBar: its collapse-to-56px pebble, the hover flyouts, and
   the Settings-section submenu. What replaces the pebble is the rail's own
   **inner edge**: drag it to set the width (200–460px), drag it past the fold
-  point to put the rail away entirely, and drag it back off the window edge to
+  point to put it away entirely, and drag it back off the window edge to
   bring it back at the width you left it. Double-click the edge or press **⌘B**
   to do the same without aiming; folded, one quiet button under the traffic
-  lights says where it went. Width and fold are persisted and shared by both
-  shells, so the rail is the same rail whichever layout you come back through.
-- Folding keeps the rail mounted at zero width rather than unmounting it, so its
-  disclosure state, scroll position and history subscriptions survive the fold —
-  unfolding is a movement, not a reload.
-- And it moves like one: the width eases closed over 420ms, eased at *both* ends
-  so the panel gathers itself, travels and settles rather than starting at speed,
+  lights says where it went. Like Codex, that button lives in the reserved app
+  header rather than in the collapsing rail, so it never lands over the first
+  editor tab, a panel header, or an overlay title.
+  Width and fold are persisted and shared by both shells, so the rail is the
+  same rail whichever layout you come back through.
+- Folding keeps the rail mounted at zero width rather than unmounting it, so
+  its disclosure state, scroll position and history subscriptions survive the
+  fold — unfolding is a movement, not a reload.
+- And it moves like Codex: width and content opacity share one 500ms low-bounce
+  spring, so the panel gathers itself, travels and settles as one object,
   with its contents held at full width behind a clip — the tree slides out of
   view instead of reflowing every label through two hundred narrower layouts on
-  the way. The hairline fades with it, and the reveal button cross-fades instead
-  of mounting: it arrives once the rail is mostly gone and leaves the instant the
-  rail comes back over it.
+  the way. The sidebar trigger stays fixed in the titlebar while the rail moves
+  beneath it, so folding and unfolding never makes the control jump. It is now
+  the only fold button: the duplicate beside the profile is gone, and its pane
+  retracts into a short handle as the rail closes instead of swapping glyphs.
 - Dragging the edge is exempt from all of that, and exactly so: no transition (it
-  would trail your pointer by the fold's whole duration) and no clamp mid-gesture
-  — the rail may be any width your hand is holding it at, including ones it is
-  not allowed to rest at. Release settles it with the transition back on, so an
-  out-of-bounds release eases into the nearest legal width instead of snapping
-  to it. Clamping *during* the drag was what made reopening feel wrong: crossing
-  the threshold jumped the rail to its 200px minimum and then held it there, 170px
-  ahead of the hand dragging it. Under `prefers-reduced-motion` the fold is a cut.
+  would trail your pointer by the fold's whole duration). When narrowing an open
+  rail, it now pauses at the usual 200px minimum for a short 32px detent, then
+  releases smoothly into the fold if the drag continues. Reopening from zero
+  still follows the pointer directly without jumping to the minimum width.
+  Release settles it with the transition back on, so an out-of-bounds release
+  eases into the nearest legal width instead of snapping to it. Under
+  `prefers-reduced-motion` the fold
+  is a cut.
 
 ### Focus rail
 

@@ -111,6 +111,12 @@ async fn run_cli_streaming(
     let answer = timeout(CHAT_TURN_CEILING, async {
         let mut lines = BufReader::new(stdout).lines();
         let mut answer = String::new();
+        // With partial messages on, every block arrives twice: as deltas while
+        // it is written, then again whole. Deltas win — they are what makes the
+        // answer type out — so a completed block is dropped once any delta has
+        // been seen. (The flag is per-adapter, so the whole-block path still has
+        // to work for a CLI that streams no deltas.)
+        let mut saw_delta = false;
         while let Some(line) = lines
             .next_line()
             .await
@@ -118,6 +124,15 @@ async fn run_cli_streaming(
         {
             for item in parse_stream_line(&line) {
                 match item {
+                    StreamItem::TextDelta(text) => {
+                        saw_delta = true;
+                        answer.push_str(&text);
+                        let _ = on_chunk.send(StreamChunk::text(text));
+                    }
+                    StreamItem::Text(text) if saw_delta => {
+                        // Already streamed, character for character.
+                        let _ = text;
+                    }
                     StreamItem::Text(text) => {
                         answer.push_str(&text);
                         answer.push('\n');

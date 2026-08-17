@@ -59,6 +59,7 @@ import {
   defaultModelForProvider,
   isDelegateProvider,
   normalizeAgentMode,
+  providerDefinition,
   providerGroupsWithCustom,
   providerName,
   providerNeedsApiKey,
@@ -66,7 +67,7 @@ import {
 import { isCustomProvider, type CustomProvider } from "../customProviders";
 import { ModelPicker } from "./ai/ModelPicker";
 import { ProviderLogo } from "./ai/icons";
-import { modelIdentity } from "../modelIdentity";
+import { modelIdentity, resolveModelLogo } from "../modelIdentity";
 import {
   canonicalWorkspaceRoot,
   linkedProjectForPath,
@@ -578,7 +579,9 @@ export function FocusMode({
             projectName={projectName}
             branch={branch}
             onPingGit={() => setGitPing((n) => n + 1)}
-            recent={projectConvos.slice(0, 3)}
+            // Four: `.klide-focus-card-grid` is a four-column grid that the
+            // starter set fills, so three resume cards left a hole in the row.
+            recent={projectConvos.slice(0, 4)}
             onOpenConversation={openHistoryConversation}
             onSubmit={onSubmit}
             controls={composerControls}
@@ -1809,9 +1812,10 @@ function FocusHome({
               ? recent.map((c) => ({
                   key: c.id,
                   title: c.title || "Untitled conversation",
-                  sub: `${relativeTime(c.updatedAt)} · Resume`,
+                  sub: relativeTime(c.updatedAt),
                   kind: "resume" as StarterKind,
                   model: c.model,
+                  provider: c.provider,
                   onClick: () => onOpenConversation(c),
                 }))
               : STARTERS.map((s) => ({
@@ -1820,6 +1824,7 @@ function FocusHome({
                   sub: s.sub,
                   kind: s.kind,
                   model: undefined,
+                  provider: undefined,
                   onClick: () => onSubmit(s.prompt),
                 }))
             ).map((card, index) => (
@@ -1829,6 +1834,7 @@ function FocusHome({
                 sub={card.sub}
                 kind={card.kind}
                 model={card.model}
+                provider={card.provider}
                 index={index}
                 onClick={card.onClick}
               />
@@ -1847,23 +1853,81 @@ function FocusHome({
   );
 }
 
+/** What ran a conversation, drawn as one mark. `bare` marks a brand logo that
+ *  carries its own shape, as opposed to Klide's lettermark, which wants the
+ *  boxed tile the starter icons use. */
+type ResumeMark = { node: ReactNode; label: string; bare: boolean };
+
+/**
+ * The mark for a resumable conversation, in the order that answers "what ran
+ * this" honestly:
+ *
+ * 1. A delegate (or a user CLI) — the CLI *is* the identity, and it outranks
+ *    any model mark: it picks its own model (the conversation usually stores
+ *    the `default` sentinel, which `modelIdentity` rightly refuses to brand),
+ *    and what you resumed was "a Claude Code conversation", not "a Sonnet one".
+ * 2. The model's maker, when the saved model id names one confidently.
+ * 3. The provider that hosted it — an unbranded local model still ran on
+ *    Ollama, and a self-hosted endpoint still has its own glyph. This is the
+ *    arm the card was missing: those conversations drew no mark at all.
+ * 4. Klide itself, for a conversation with neither (an older one saved before
+ *    the provider was recorded). A run this app drove is still a Klide run, and
+ *    an empty corner reads as a card that failed to load.
+ *
+ * Step 1's precedence is deliberately kept here rather than folded into
+ * `modelIdentity`: an unknown Ollama or custom model must stay unbranded
+ * there, and that rule is the point of that function.
+ */
+export function resumeMark(
+  model: string | null | undefined,
+  provider: ProviderId | null | undefined,
+): ResumeMark {
+  if (provider && isDelegateProvider(provider)) {
+    return {
+      node: <ProviderLogo id={provider} size={24} />,
+      label: providerName(provider),
+      bare: true,
+    };
+  }
+  const modelLogo = resolveModelLogo(model, 24);
+  if (modelLogo) {
+    return { node: modelLogo, label: modelIdentity(model)?.name ?? "Local model", bare: true };
+  }
+  if (provider && providerDefinition(provider)) {
+    return {
+      node: <ProviderLogo id={provider} size={24} />,
+      label: providerName(provider),
+      bare: true,
+    };
+  }
+  return {
+    node: <span className="klide-focus-home-card-lettermark">K</span>,
+    label: "Klide",
+    bare: false,
+  };
+}
+
 function HomeCard({
   title,
   sub,
   kind,
   model,
+  provider,
   index,
   onClick,
 }: {
   title: string;
+  /** One quiet line under the title — for a resume card, just when it last
+   *  moved. It used to read "3 hours ago · Resume": the middot separated two
+   *  facts, and the second one was already said by the card being there. */
   sub: string;
   kind: StarterKind;
   model?: string | null;
+  provider?: ProviderId | null;
   index: number;
   onClick: () => void;
 }) {
-  const identity = kind === "resume" ? modelIdentity(model) : null;
-  const ModelLogo = identity?.Logo;
+  const mark = kind === "resume" ? resumeMark(model, provider) : null;
 
   return (
     <button
@@ -1872,17 +1936,15 @@ function HomeCard({
       className="klide-focus-home-card"
       style={{ "--focus-card-delay": `${index * 35}ms` } as CSSProperties}
     >
-      {kind === "resume" ? (
-        ModelLogo ? (
-          <span
-            className="klide-focus-home-card-icon"
-            data-bare="true"
-            title={identity.name}
-            aria-hidden="true"
-          >
-            <ModelLogo size={24} />
-          </span>
-        ) : null
+      {mark ? (
+        <span
+          className="klide-focus-home-card-icon"
+          data-bare={mark.bare ? "true" : undefined}
+          title={mark.label}
+          aria-hidden="true"
+        >
+          {mark.node}
+        </span>
       ) : (
         <span className="klide-focus-home-card-icon" aria-hidden="true">
           <StarterIcon kind={kind} />

@@ -38,7 +38,6 @@ import { MagnifyingGlass } from "@phosphor-icons/react/dist/csr/MagnifyingGlass"
 import { Plus } from "@phosphor-icons/react/dist/csr/Plus";
 import { PuzzlePiece } from "@phosphor-icons/react/dist/csr/PuzzlePiece";
 import { Rectangle } from "@phosphor-icons/react/dist/csr/Rectangle";
-import { SidebarSimple } from "@phosphor-icons/react/dist/csr/SidebarSimple";
 import { Terminal } from "@phosphor-icons/react/dist/csr/Terminal";
 import { User } from "@phosphor-icons/react/dist/csr/User";
 import { X } from "@phosphor-icons/react/dist/csr/X";
@@ -172,11 +171,55 @@ export function FreeLayoutIcon(p: GlyphProps) {
   return <Icon as={Cards} {...p} />;
 }
 
-/** The sidebar itself, as a control: the frame with its left column filled.
- *  One mark for both directions — the button says "the rail", and what it does
- *  to it is read from the label, not from a second mirrored glyph. */
-export function SidebarIcon(p: GlyphProps) {
-  return <Icon as={SidebarSimple} {...p} />;
+/** The sidebar itself, as a control. The outer window remains one shape while
+ *  the pane retracts and its divider becomes a short handle, so toggling reads
+ *  as one object changing state rather than two unrelated icons cross-fading. */
+export function SidebarIcon({
+  size = RAIL_ICON_SIZE,
+  className,
+  style,
+  collapsed = false,
+}: GlyphProps & { collapsed?: boolean }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 20 20"
+      fill="none"
+      className={`klide-sidebar-icon${className ? ` ${className}` : ""}`}
+      data-collapsed={collapsed || undefined}
+      style={style}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect
+        className="klide-sidebar-icon-pane"
+        x="3.5"
+        y="4.5"
+        width="4.25"
+        height="11"
+        rx="1.4"
+        fill="currentColor"
+      />
+      <rect
+        className="klide-sidebar-icon-frame"
+        x="2.5"
+        y="3.25"
+        width="15"
+        height="13.5"
+        rx="2.75"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      />
+      <path
+        className="klide-sidebar-icon-divider"
+        d="M7.75 4.25V15.75"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
 }
 
 /** Disclosure. `open` rotates it rather than swapping in a second glyph, so

@@ -43,13 +43,14 @@ import { railDestination } from "../railDestinations";
 import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
 import {
   CONVERSATIONS_CHANGED_EVENT,
+  conversationIsRestorable,
   loadConversations,
   type ConversationChangedDetail,
 } from "./ai/storedConversations";
 import { relativeTime, isSubsequence } from "./ai/utils";
 import type { Conversation } from "./ai/types";
 import type { ProviderId } from "../agent/types";
-import { isDelegateProvider, providerName } from "../agent/providers";
+import { providerName } from "../agent/providers";
 import { DotGridLoader, ProviderLogo } from "./ai/icons";
 import { modelIdentity } from "../modelIdentity";
 import { useIsConversationRunning } from "../runningConversations";
@@ -164,6 +165,19 @@ export function railFromEdge(
   };
 }
 
+/**
+ * Adds a small physical detent at the normal minimum rail width while an open
+ * rail is being narrowed. Once the pointer passes the fold threshold, the rail
+ * releases smoothly toward zero. A drag that starts collapsed stays directly
+ * under the pointer so reopening never jumps to the minimum width.
+ */
+export function railDragWidth(edgeX: number, startedCollapsed = false): number {
+  const clampedEdge = Math.min(RAIL_MAX_WIDTH, Math.max(0, Math.round(edgeX)));
+  if (startedCollapsed || clampedEdge >= RAIL_MIN_WIDTH) return clampedEdge;
+  if (clampedEdge >= RAIL_FOLD_AT) return RAIL_MIN_WIDTH;
+  return Math.round((clampedEdge / RAIL_FOLD_AT) * RAIL_MIN_WIDTH);
+}
+
 /** The rail's inner edge, as a control.
  *
  *  Visually it is the hairline that was always there; what is new is the wider
@@ -215,25 +229,21 @@ function RailEdge({
         }}
         onDoubleClick={onToggle}
       />
-      {/* Folded, the edge is at the window's left border and there is nothing
-          left to read — so one quiet button says where the rail went. It sits
-          under the traffic lights' band, not in it.
-          It stays mounted at every width: unmounting it on unfold made it
-          vanish in one frame while the rail was still opening, which is the
-          one moment the eye is following that exact spot. Hidden, it is
-          `pointer-events: none`, so it never stands in front of the rail's
-          own first row. */}
+      {/* Codex keeps this control in the app header rather than inside the
+          collapsing panel. KIDE's titlebar band is already reserved by every
+          shell, so fixing the button there gives it the same stable hand-off:
+          the rail moves underneath while the control never moves and can never
+          cover a tab, panel header, or overlay title. The 98px leading inset is
+          the macOS traffic-light safe area. */}
       <button
         type="button"
         className="klide-rail-reveal"
-        data-shown={collapsed || undefined}
-        aria-label="Show the sidebar"
-        title="Show the sidebar (⌘B)"
-        tabIndex={collapsed ? undefined : -1}
-        aria-hidden={collapsed ? undefined : true}
+        data-collapsed={collapsed || undefined}
+        aria-label={collapsed ? "Show the sidebar" : "Hide the sidebar"}
+        title={`${collapsed ? "Show" : "Hide"} the sidebar (⌘B)`}
         onClick={onToggle}
       >
-        <SidebarIcon size={15} />
+        <SidebarIcon size={15} collapsed={collapsed} />
       </button>
     </>
   );
@@ -693,7 +703,15 @@ function ProviderHistoryGroup({
   useRowSlide(conversationListRef, group.conversations.map((c) => c.id).join());
   const disclosureStartHeightRef = useRef<number | null>(null);
   const disclosureAnimationRef = useRef<Animation | null>(null);
-  const readOnly = isDelegateProvider(group.provider);
+  // "Read only" used to mean "a delegate provider", because Focus could not run
+  // one and a delegate conversation was always a PTY session with no transcript
+  // behind it. Focus runs delegates headlessly now, so those conversations hold
+  // real messages and reopen like any other. What actually decides it is whether
+  // the stored conversation has anything to restore — which is also true of a
+  // Klide run that never got past an empty first turn.
+  const readOnly = group.conversations.every(
+    (conversation) => !conversationIsRestorable(conversation),
+  );
   const selectedConversationIndex = selectedConversationId === undefined
     ? -1
     : group.conversations.findIndex((conversation) => conversation.id === selectedConversationId);
@@ -1217,17 +1235,21 @@ export function WorkspaceRail({
       /* Above the docks and above the free layout's floating panels — that band
          climbs by one with every focus event, so the rail cannot hold a small
          local z the way it could when only Focus rendered it. */
-      style={{ zIndex: Z.rail, width: dragWidth ?? (collapsed ? 0 : railWidth) }}
+      style={{
+        zIndex: Z.rail,
+        width: dragWidth ?? (collapsed ? 0 : railWidth),
+        // The sampled spring briefly crosses its target. Codex clamps its
+        // animated progress before multiplying by the open width; maxWidth is
+        // the CSS equivalent, so opening settles at the stored width instead
+        // of making the whole layout bulge past it.
+        maxWidth: dragWidth === null ? railWidth : RAIL_MAX_WIDTH,
+      }}
     >
       <RailEdge
         collapsed={collapsed}
         width={railWidth}
         onEdgeMoved={(edgeX, startedCollapsed) => {
-          // Under the pointer the rail is simply where the pointer is — no
-          // minimum, no snap. Clamping mid-drag was what made reopening feel
-          // wrong: crossing the threshold jumped the rail to its 200px minimum
-          // and then held it there, 170px ahead of the hand dragging it.
-          setDragWidth(Math.min(RAIL_MAX_WIDTH, Math.max(0, Math.round(edgeX))));
+          setDragWidth(railDragWidth(edgeX, startedCollapsed));
           // The fold state still updates live, so the contents fade as you
           // cross the point they will fold at — the gesture says what it is
           // going to do before you commit to it. Read back through the store
@@ -1483,20 +1505,6 @@ export function WorkspaceRail({
                   <span className="klide-rail-profile-name">{username || "Local profile"}</span>
                   <span className="klide-rail-profile-host">{hostname}</span>
                 </span>
-              </button>
-              {/* The fold, as a click. Dragging the edge is the direct way and ⌘B
-                  is the fast one, but neither is visible — and a control you can
-                  only reach by knowing it is there is not a control. It sits with
-                  the host's own shell buttons because that is what it is: this row
-                  is where the rail's chrome lives, not its destinations. */}
-              <button
-                type="button"
-                className="klide-rail-view-switch"
-                aria-label="Fold the sidebar"
-                title="Fold the sidebar (⌘B)"
-                onClick={() => setCollapsed(true)}
-              >
-                <SidebarIcon size={14} />
               </button>
               {footActions}
             </div>

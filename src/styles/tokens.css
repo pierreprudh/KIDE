@@ -3656,24 +3656,40 @@ button:focus-visible .menu-leadout {
   /* No z-index here: the rail sets `Z.rail` inline (WorkspaceRail.tsx). It has
      to sit above the free layout's climbing floating-panel band, and that scale
      lives in zLayers.ts where the panels' own numbers do. */
-  /* How the fold moves. Long enough to read as a movement, short enough never
-     to delay you, and — the part that makes it feel smooth rather than merely
-     animated — eased at *both* ends. The panel gathers itself, travels, and
-     settles; it never starts at speed or stops dead. No overshoot: a sidebar is
-     furniture, not a spring. */
-  --rail-fold: 420ms;
-  --rail-fold-ease: cubic-bezier(0.4, 0, 0.12, 1);
+  /* Codex's app shell animates a 0 → 1 panel progress with a 500ms spring and
+     low bounce. KIDE's sampled spring is the same shape: width and opacity use
+     one progress curve, so the panel, its content and the content column all
+     travel as one object instead of cross-fading on separate timings. */
+  --rail-fold: 500ms;
+  --rail-fold-ease: var(--ease-spring);
   width: 252px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid var(--border);
   background: var(--bg-elevated);
   animation: klide-focus-rail-in 480ms var(--ease-soft) both;
-  transition:
-    width var(--rail-fold) var(--rail-fold-ease),
-    border-right-color var(--rail-fold) var(--rail-fold-ease);
+  transition: width var(--rail-fold) var(--rail-fold-ease);
+}
+
+/* Paint the inner-edge hairline without giving it layout width. A real border
+   keeps a border-box at 1px even when its declared width is zero; Codex's
+   animated panel reaches a true zero, so KIDE's line has to be paint only. */
+.klide-focus-rail::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+  background: var(--border);
+  opacity: 1;
+  transition: opacity var(--rail-fold) var(--rail-fold-ease);
+}
+
+.klide-focus-rail[data-collapsed]::after {
+  opacity: 0;
 }
 
 /* Under the pointer there is no animation: the rail's edge must be exactly
@@ -3707,11 +3723,10 @@ button:focus-visible .menu-leadout {
      behind the traffic lights — the title bar reads as part of the rail. The
      first row starts below them. */
   padding: calc(10px + var(--titlebar-h)) var(--rail-pad) 8px;
-  /* Content leaves ahead of the edge closing over it — shorter than the fold so
-     it is gone before the last pixels, rather than being cut off at them. It
-     keeps its transition during a drag too: that fade is the gesture telling
-     you, before you let go, that this is now a fold. */
-  transition: opacity calc(var(--rail-fold) * 0.5) var(--rail-fold-ease);
+  /* Codex derives both this opacity and the outer width from the same spring
+     progress. The fixed inner width prevents label reflow while that progress
+     clips the tree away. */
+  transition: opacity var(--rail-fold) var(--rail-fold-ease);
 }
 
 .klide-focus-rail[data-collapsed] .klide-rail-inner {
@@ -3722,21 +3737,14 @@ button:focus-visible .menu-leadout {
    252px above is only what it looks like before that lands.
    ────────────────────────────────────────────────────────────────────────
    Folded, the box goes to zero and its contents stop taking layout, so the
-   canvas simply gets the space. The element stays mounted — that is what keeps
+   canvas gets all the space. The element stays mounted — that is what keeps
    the tree's disclosure state, its scroll position and its history
-   subscriptions alive across a fold — and only two children survive the fold:
-   the edge you drag it back out by, and the button that says where it went. */
-/* Colour, not width: `border-box` can't take an element below its own border,
-   so zeroing the width mid-fold would jump the canvas by a pixel. The hairline
-   fades on the same curve instead and the 1px it still occupies is the last of
-   the rail, sitting against the window edge. */
-.klide-focus-rail[data-collapsed] {
-  border-right-color: transparent;
-}
+   subscriptions alive across a fold. The header owns the toggle separately,
+   exactly as Codex does. */
 
 /* The rail's inner edge as a control: the hairline you already see, plus a band
-   around it wide enough to actually hit. The line itself is the rail's
-   `border-right`; this only lights it while you are on it. */
+   around it wide enough to actually hit. The resting line is the rail's
+   paint-only `::after`; this only lights it while you are on it. */
 .klide-rail-edge {
   position: absolute;
   top: 0;
@@ -3762,57 +3770,71 @@ button:focus-visible .menu-leadout {
   background: var(--accent-soft);
 }
 
-/* Folded, the rail's edge and the *window's* left edge are the same line — and
-   the outer few pixels of that line belong to macOS, which resizes the window
-   with them. A band centred there would mostly be the OS's, so the folded band
-   steps fully inside the window (x≈4–18) and stays the rail's alone. */
+/* At zero width the edge and the window edge coincide. Shift the hit target
+   fully inside the app so macOS's window-resize affordance does not steal it. */
 .klide-focus-rail[data-collapsed] .klide-rail-edge {
   right: -18px;
   width: 14px;
 }
 
-/* The way back. It is the only thing left on that side of the window once the
-   rail is folded, so it is drawn at full strength — quiet in colour, not in
-   opacity. A control you have to hunt for is one the user reports as missing.
-   Below the title-bar band, never in it: the traffic lights own that strip. */
+/* The sidebar trigger belongs to the app header, not to the disappearing rail.
+   Every KIDE surface already reserves this 28px titlebar band, and the 98px
+   inset clears modern macOS traffic lights. It therefore overlaps nothing and
+   stays perfectly still while the rail springs beneath it — Codex's hand-off. */
 .klide-rail-reveal {
-  position: absolute;
-  top: calc(var(--titlebar-h) + 9px);
-  left: 9px;
+  position: fixed;
+  top: 0;
+  left: 98px;
   width: 28px;
-  height: 28px;
+  height: var(--titlebar-h);
+  z-index: 2;
   display: grid;
   place-items: center;
   color: var(--fg-dim);
   border-radius: var(--radius-lg);
-  /* Hidden is its resting state, and it is a *state*, not a mount: the button
-     lives at every rail width and fades between the two. Rendering it only
-     while folded made it vanish in a single frame the instant an unfold
-     started — right where the eye was looking. Opacity alone, no transform:
-     the global button-press scale lives on `transform`, and a transform here
-     would outrank and swallow it. */
-  opacity: 0;
-  pointer-events: none;
   transition:
-    opacity calc(var(--rail-fold) * 0.5) var(--rail-fold-ease),
     color var(--motion-fast) var(--ease-out),
     background var(--motion-fast) var(--ease-out);
 }
 
-/* Folded: it arrives once the rail is most of the way gone, so the two read as
-   one movement — the rail leaves, the button takes its place. Only the arrival
-   is delayed; leaving is immediate, because on unfold the rail is already on
-   its way over this spot. */
-.klide-rail-reveal[data-shown] {
-  opacity: 1;
-  pointer-events: auto;
-  transition-delay: calc(var(--rail-fold) * 0.5), 0s, 0s;
-}
-
-.klide-rail-reveal[data-shown]:hover,
-.klide-rail-reveal[data-shown]:focus-visible {
+.klide-rail-reveal:hover,
+.klide-rail-reveal:focus-visible {
   color: var(--fg-strong);
   background: var(--bg-hover);
+}
+
+/* One glyph, two sidebar states. The frame is the stable silhouette; the pane
+   withdraws toward the window edge while the divider follows it and contracts
+   into a short handle. These transforms share the rail spring, so the icon's
+   state reaches its destination with the panel rather than announcing it a
+   half-beat early. */
+.klide-sidebar-icon {
+  display: block;
+  overflow: visible;
+}
+
+.klide-sidebar-icon-pane {
+  opacity: 0.2;
+  transform-box: fill-box;
+  transform-origin: left center;
+  transition:
+    transform var(--rail-fold) var(--rail-fold-ease),
+    opacity var(--motion-med) var(--ease-out);
+}
+
+.klide-sidebar-icon-divider {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform var(--rail-fold) var(--rail-fold-ease);
+}
+
+.klide-sidebar-icon[data-collapsed] .klide-sidebar-icon-pane {
+  opacity: 0;
+  transform: scaleX(0);
+}
+
+.klide-sidebar-icon[data-collapsed] .klide-sidebar-icon-divider {
+  transform: translateX(-1.5px) scaleY(0.58);
 }
 
 /* Brand row — also the search row. Opening search swaps the wordmark for a
@@ -5587,10 +5609,20 @@ button:focus-visible .menu-leadout {
   white-space: nowrap;
 }
 
+/* Klide's own lettermark, echoing the hero tile — the honest mark for a
+   conversation this app drove itself with nothing else to brand it. */
+.klide-focus-home-card-lettermark {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.055em;
+  transform: translateX(-0.5px);
+}
+
 .klide-focus-home-card-sub {
   position: relative;
   z-index: 1;
   display: -webkit-box;
+  max-width: 100%;
   overflow: hidden;
   color: var(--fg-subtle);
   font-size: 11px;
@@ -6248,8 +6280,11 @@ button:focus-visible .menu-leadout {
   /* The fold becomes a cut: the rail is simply there or not, its contents with
      it, and the button that brings it back is there the moment it is. */
   .klide-focus-rail,
+  .klide-focus-rail::after,
   .klide-rail-inner,
   .klide-rail-reveal,
+  .klide-sidebar-icon-pane,
+  .klide-sidebar-icon-divider,
   .klide-focus-home-card,
   .klide-focus-git-island,
   .klide-focus-git-preview,

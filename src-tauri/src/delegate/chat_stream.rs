@@ -23,8 +23,15 @@ use serde_json::Value;
 pub(crate) enum StreamItem {
     /// The session id this turn runs under — what `--resume` needs later.
     Session(String),
-    /// Assistant prose. This, joined, is the turn's answer.
+    /// A whole assistant text block, delivered once the model finished it.
+    ///
+    /// With `--include-partial-messages` the same text has already arrived as
+    /// [`StreamItem::TextDelta`]s, so a consumer that saw any delta must ignore
+    /// these or the answer appears twice.
     Text(String),
+    /// One token-ish fragment, as it was produced. What makes a delegate turn
+    /// type into the conversation instead of landing in one block.
+    TextDelta(String),
     /// A tool the CLI called on its own.
     ToolCall {
         id: String,
@@ -75,6 +82,32 @@ pub(crate) fn parse_stream_line(line: &str) -> Vec<StreamItem> {
             .iter()
             .filter_map(tool_result_block)
             .collect(),
+        // Raw Anthropic stream events, passed through by
+        // `--include-partial-messages`. Only the text deltas matter here: tool
+        // calls are read from the assembled `assistant` message instead, so we
+        // never have to reassemble a partial `input_json_delta` ourselves.
+        Some("stream_event") => {
+            let event = value.get("event");
+            let is_text_delta = event
+                .and_then(|e| e.get("type"))
+                .and_then(Value::as_str)
+                == Some("content_block_delta")
+                && event
+                    .and_then(|e| e.get("delta"))
+                    .and_then(|d| d.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("text_delta");
+            if !is_text_delta {
+                return Vec::new();
+            }
+            event
+                .and_then(|e| e.get("delta"))
+                .and_then(|d| d.get("text"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(|text| vec![StreamItem::TextDelta(text.to_string())])
+                .unwrap_or_default()
+        }
         Some("result") => vec![StreamItem::Finished {
             cost_usd: value.get("total_cost_usd").and_then(Value::as_f64),
             turns: value.get("num_turns").and_then(Value::as_i64),
@@ -222,6 +255,29 @@ mod tests {
                 turns: Some(2)
             }]
         );
+    }
+
+    #[test]
+    fn text_deltas_are_read_and_their_scaffolding_ignored() {
+        const DELTA: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"One"}}}"#;
+        assert_eq!(
+            parse_stream_line(DELTA),
+            vec![StreamItem::TextDelta("One".into())]
+        );
+        // The frame around the deltas carries no text of its own. Emitting
+        // anything for these would double the answer.
+        for line in [
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"role":"assistant"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_stop"}}"#,
+            // A tool call's arguments also stream, but we read tool_use from
+            // the assembled `assistant` message rather than reassembling JSON.
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"fi"}}}"#,
+        ] {
+            assert!(parse_stream_line(line).is_empty(), "line: {line}");
+        }
     }
 
     #[test]

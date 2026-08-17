@@ -243,7 +243,17 @@ export function persistConversation(
   );
 }
 
-const DELEGATE_PROVIDER_IDS = new Set(["claude-code", "codex", "opencode"]);
+/** Whether reopening this conversation would show anything.
+ *
+ *  The one predicate for "resumable", replacing a provider blocklist that stood
+ *  in for it. A delegate conversation used to be unresumable by definition —
+ *  its transcript lived in the CLI's PTY, not in Klide — but a delegate run
+ *  through the headless Focus path stores ordinary messages. What disqualifies a
+ *  conversation is having nothing to restore: only a console placeholder, or an
+ *  empty first turn. */
+export function conversationIsRestorable(conv: Conversation): boolean {
+  return hasRestorableMessages(conv);
+}
 
 function hasRestorableMessages(conv: Conversation): boolean {
   if (!conv || !Array.isArray(conv.msgs)) return false;
@@ -260,8 +270,10 @@ export function latestRestorableConversationId(
   provider?: string | null,
 ): string | null {
   const conversations = loadConversations<Conversation>()
+    // No provider blocklist: a delegate conversation with restorable messages
+    // came from the headless path and reopens correctly, while a PTY-session one
+    // holds only console rows and is excluded by the predicate above.
     .filter((conv) => hasRestorableMessages(conv))
-    .filter((conv) => !conv.provider || !DELEGATE_PROVIDER_IDS.has(conv.provider))
     .filter((conv) => !workspaceRoot || !conv.cwd || conv.cwd === workspaceRoot)
     .sort((a, b) => b.updatedAt - a.updatedAt);
   const providerMatch = provider

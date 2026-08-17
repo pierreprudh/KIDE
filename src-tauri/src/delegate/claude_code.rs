@@ -68,6 +68,10 @@ impl Delegate for ClaudeCode {
             _ => args.extend(["--output-format".to_string(), "stream-json".to_string()]),
         }
         args.push("--verbose".into());
+        // Without this the CLI emits each assistant block only once complete, so
+        // a Focus turn sat silent and then landed in one lump — and time-to-first
+        // token measured the whole block, not the first token.
+        args.push("--include-partial-messages".into());
         Some(args)
     }
 
@@ -553,7 +557,7 @@ mod tests {
         assert_eq!(
             args.join(" "),
             "-p --model claude-sonnet-5 --permission-mode acceptEdits \
-             --output-format stream-json --verbose"
+             --output-format stream-json --verbose --include-partial-messages"
         );
         // Exactly one format flag — a second would conflict.
         assert_eq!(args.iter().filter(|a| *a == "--output-format").count(), 1);
@@ -567,7 +571,8 @@ mod tests {
         let args = ClaudeCode.chat_stream_args("/tmp/ws", "text").unwrap();
         assert_eq!(
             args.join(" "),
-            "-p --model text --permission-mode acceptEdits --output-format stream-json --verbose"
+            "-p --model text --permission-mode acceptEdits \
+             --output-format stream-json --verbose --include-partial-messages"
         );
     }
 
