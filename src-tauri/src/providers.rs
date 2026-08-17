@@ -916,11 +916,53 @@ pub(crate) struct AiChatResponse {
 // One streamed delta pushed to the frontend through the per-request Channel.
 // `content`/`thinking` are incremental fragments — the UI appends them for the
 // live typing effect, then reconciles against ai_chat's authoritative return.
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StreamChunk {
     pub(crate) content: String,
     pub(crate) thinking: String,
+    /// Tool work the *provider itself* performed and reported, rather than
+    /// asked Klide to perform. Only the structured delegate-CLI path fills
+    /// this; every wire adapter leaves it `None`, because a wire model asks for
+    /// tools through `tool_calls` and Klide runs them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observed: Option<ObservedToolActivity>,
+}
+
+impl StreamChunk {
+    /// A plain text delta — the shape every wire adapter sends.
+    pub(crate) fn text(content: impl Into<String>) -> Self {
+        StreamChunk {
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+}
+
+/// One piece of tool work a delegate CLI did on its own initiative, lifted out
+/// of its structured output stream so the conversation can show it.
+///
+/// This is deliberately *not* modelled as a Klide tool call. Klide neither
+/// chose nor gated these: they ran under the CLI's own permission mode, with no
+/// capability, no permission prompt and no diff review behind them. Keeping
+/// them a separate shape all the way to the UI is what stops a reader — human
+/// or `summarize_validation` — from counting a delegate's `Bash` as a command
+/// Klide verified.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub(crate) enum ObservedToolActivity {
+    /// The CLI invoked a tool of its own. Carries its own `provider` and
+    /// `summary` so the harness can forward the event without having to know
+    /// anything about delegate tool vocabularies.
+    Call {
+        id: String,
+        provider: String,
+        name: String,
+        input: serde_json::Value,
+        summary: String,
+    },
+    /// …and this is what it got back.
+    Result { id: String, ok: bool, content: String },
 }
 
 // Anthropic requires this header on every Messages API call; pinning a known

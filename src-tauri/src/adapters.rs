@@ -272,6 +272,7 @@ impl StreamingProvider for OllamaAdapter {
             on_chunk(StreamChunk {
                 content: c.to_string(),
                 thinking: t.to_string(),
+                observed: None,
             });
         }
         if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
@@ -606,6 +607,7 @@ impl StreamingProvider for OpenAiAdapter {
                 on_chunk(StreamChunk {
                     content: c.to_string(),
                     thinking: String::new(),
+                    observed: None,
                 });
             }
         }
@@ -623,6 +625,7 @@ impl StreamingProvider for OpenAiAdapter {
                 on_chunk(StreamChunk {
                     content: String::new(),
                     thinking: r.to_string(),
+                    observed: None,
                 });
             }
         }
@@ -1125,6 +1128,7 @@ impl StreamingProvider for AnthropicAdapter {
                                 on_chunk(StreamChunk {
                                     content: t.to_string(),
                                     thinking: String::new(),
+                                    observed: None,
                                 });
                             }
                         }
@@ -1137,6 +1141,7 @@ impl StreamingProvider for AnthropicAdapter {
                                 on_chunk(StreamChunk {
                                     content: String::new(),
                                     thinking: t.to_string(),
+                                    observed: None,
                                 });
                             }
                         }

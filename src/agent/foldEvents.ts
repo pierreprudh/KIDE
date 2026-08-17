@@ -27,6 +27,13 @@ export type FoldedToolCall = {
   summary?: string;
   result?: { content: string; ok: boolean };
   status: "started" | "finished" | "unknown";
+  /** Set when a *delegate CLI* ran this itself (its provider id, e.g.
+   *  `claude-code`) rather than Klide dispatching it. Klude applied no
+   *  capability, no permission prompt and no diff review to these, so every
+   *  surface that renders or counts tool work must be able to tell them apart —
+   *  that is the whole reason this field exists rather than a silent reuse of
+   *  the dispatched-call shape. */
+  observedBy?: string;
 };
 
 /** Per-message footer metrics. One type for both paces — a turn must read the
@@ -287,6 +294,29 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
       return { changed: [idx] };
     }
 
+    // Work a delegate CLI did on its own. Same row shape as a dispatched call
+    // so the conversation reads consistently, tagged with who ran it so nothing
+    // downstream can claim Klide gated it.
+    if (event.type === "observed_tool_call") {
+      const idx = upsertTool(event.toolCallId, (t) => {
+        t.name = event.name;
+        t.input = event.input;
+        t.summary = event.summary;
+        t.status = "started";
+        t.observedBy = event.provider;
+      });
+      open = null;
+      return { changed: [idx] };
+    }
+
+    if (event.type === "observed_tool_result") {
+      const idx = upsertTool(event.toolCallId, (t) => {
+        t.result = { content: event.content, ok: event.ok };
+        t.status = "finished";
+      });
+      return { changed: [idx] };
+    }
+
     if (event.type === "context_compacted") {
       // The auto-compactor collapsed the older turns for the *model*. The
       // transcript still holds them all, so replay renders everything — but it
@@ -490,13 +520,17 @@ export function foldedRowToMsgs(row: FoldedRow, view: FoldedMsgView = {}): Msg[]
         content: t.result.content,
         toolName: t.name,
         toolCallId: t.id,
+        observedBy: t.observedBy,
       });
     } else if (view.runningPlaceholders && t.status === "started") {
       msgs.push({
         role: "tool",
-        content: `Running ${t.name}...`,
+        // Same "Running …" convention for both, so the row renders as pending
+        // either way. For an observed call it names the delegate's own step.
+        content: `Running ${t.observedBy ? (t.summary ?? t.name) : t.name}...`,
         toolName: t.name,
         toolCallId: t.id,
+        observedBy: t.observedBy,
       });
     }
   }

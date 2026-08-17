@@ -79,6 +79,11 @@ export type Msg =
       content: string;
       toolName: string;
       toolCallId?: string;
+      /** Provider id of the *delegate CLI* that ran this itself (e.g.
+       *  `claude-code`). Absent for tools Klide dispatched. The row says so,
+       *  because Klide applied no capability, permission prompt or diff review
+       *  to an observed call and must not look as though it did. */
+      observedBy?: string;
       /** Legacy duplicate of `toolCallId`, written by the pre-2026-08 live
        *  path only so it could match its own rows. Nothing writes or reads it
        *  anymore; the field stays so stored conversations that carry it keep

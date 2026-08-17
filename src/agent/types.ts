@@ -225,6 +225,23 @@ export type AgentEvent =
     }
   | { type: "tool_progress"; runId: string; toolCallId: string; message: string; ts: number }
   | { type: "tool_call_finished"; runId: string; toolCallId: string; result: ToolResult; ts: number }
+  /** A tool the *delegate CLI* ran on its own, lifted from its structured
+   *  output stream. Deliberately not a `tool_call_started`: Klide neither
+   *  chose nor gated it — no capability, no permission prompt, no diff review
+   *  — so anything rendering or counting these must keep them apart from calls
+   *  the harness dispatched. */
+  | {
+      type: "observed_tool_call";
+      runId: string;
+      toolCallId: string;
+      /** The delegate that ran it, e.g. `claude-code`. */
+      provider: string;
+      name: string;
+      input: unknown;
+      summary: string;
+      ts: number;
+    }
+  | { type: "observed_tool_result"; runId: string; toolCallId: string; ok: boolean; content: string; ts: number }
   | { type: "permission_requested"; runId: string; request: PermissionRequest; ts: number }
   | { type: "permission_resolved"; runId: string; requestId: string; decision: PermissionDecision; ts: number }
   | { type: "diff_proposed"; runId: string; proposal: DiffProposal; ts: number }
