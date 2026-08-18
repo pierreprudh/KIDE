@@ -1,5 +1,7 @@
 export type ThemeId =
   | "klide-light"
+  | "sage-garden"
+  | "sage-garden-dark"
   | "cursor-dark"
   | "vscode-dark"
   | "github-light"
@@ -20,6 +22,20 @@ export const THEMES: ThemeMeta[] = [
     description: "Warm, quiet, and low-contrast for daylight work.",
     isDark: false,
     swatches: ["#f7f4ed", "#fcfbf8", "#5A7B4C", "#1c1c1c"],
+  },
+  {
+    id: "sage-garden",
+    name: "Sage Garden",
+    description: "Klide Light with cool ink and a greyer sage — one shade crisper.",
+    isDark: false,
+    swatches: ["#F8F7F3", "#FFFFFF", "#7C9082", "#1A1F2E"],
+  },
+  {
+    id: "sage-garden-dark",
+    name: "Sage Garden Dark",
+    description: "Warm near-black under cool light, with the accent back on sage.",
+    isDark: true,
+    swatches: ["#131512", "#191C18", "#8FAA97", "#C3C8C4"],
   },
   {
     id: "cursor-dark",
@@ -101,6 +117,48 @@ const TERMINAL_ANSI: Record<ThemeId, TerminalAnsi> = {
     brightMagenta: "#9C75AE",
     brightCyan: "#52969C",
     brightWhite: "#3A3833",
+  },
+  // Klide Light's earthy set, rotated cool to sit on Sage Garden's blue-charcoal
+  // ink — same muted energy, none of the sepia.
+  "sage-garden": {
+    selectionBackground: "#DCDFD8",
+    black: "#3A3F4B",
+    red: "#A85B52",
+    green: "#6E8A76",
+    yellow: "#98802F",
+    blue: "#4E6CA8",
+    magenta: "#84639C",
+    cyan: "#3F8389",
+    white: "#6B7180",
+    brightBlack: "#8F95A1",
+    brightRed: "#BC6E63",
+    brightGreen: "#82A089",
+    brightYellow: "#AC9243",
+    brightBlue: "#6280BC",
+    brightMagenta: "#9779AC",
+    brightCyan: "#52969C",
+    brightWhite: "#2C313E",
+  },
+  // Midnight's set with the blue-violet pulled back to sage, so program output
+  // agrees with the chrome instead of importing Cursor's accent.
+  "sage-garden-dark": {
+    selectionBackground: "#2E3A31",
+    black: "#282B26",
+    red: "#D98C84",
+    green: "#8FAA97",
+    yellow: "#D0A85C",
+    blue: "#8AA3B8",
+    magenta: "#B295BE",
+    cyan: "#84B5B0",
+    white: "#C3C8C4",
+    brightBlack: "#5F6560",
+    brightRed: "#E9A199",
+    brightGreen: "#A6C2AD",
+    brightYellow: "#E0BE79",
+    brightBlue: "#A3BACD",
+    brightMagenta: "#C6ADD1",
+    brightCyan: "#9DCAC5",
+    brightWhite: "#EDEFEC",
   },
   "cursor-dark": {
     selectionBackground: "#303A64",
@@ -200,6 +258,8 @@ export function getNextThemeId(id: ThemeId): ThemeId {
 
 export const MONACO_THEME_IDS: Record<ThemeId, string> = {
   "klide-light": "klide-monaco-light",
+  "sage-garden": "klide-monaco-sage-garden",
+  "sage-garden-dark": "klide-monaco-sage-garden-dark",
   "cursor-dark": "klide-monaco-midnight",
   "vscode-dark": "klide-monaco-vscode-dark",
   "github-light": "klide-monaco-github-light",
@@ -280,6 +340,58 @@ export function defineKlideMonacoThemes(monaco: MonacoLike) {
         "editorGutter.background": "#fcfbf8",
         "editorIndentGuide.background1": "#E8E7E3",
         "editorIndentGuide.activeBackground1": "#D9D8D2",
+      },
+    },
+    "sage-garden": {
+      base: "vs",
+      inherit: true,
+      rules: [
+        { token: "comment", foreground: "7B8290", fontStyle: "italic" },
+        { token: "keyword", foreground: "4263EB" },
+        { token: "string", foreground: "0F7B6C" },
+        { token: "number", foreground: "B56300" },
+        { token: "type", foreground: "7C5CDA" },
+        { token: "function", foreground: "0969DA" },
+        { token: "variable", foreground: "3A3F4B" },
+      ],
+      colors: {
+        "editor.background": "#FFFFFF",
+        "editor.foreground": "#3A3F4B",
+        "editorLineNumber.foreground": "#A3A8B2",
+        "editorLineNumber.activeForeground": "#3A3F4B",
+        "editorCursor.foreground": "#7C9082",
+        "editor.selectionBackground": "#D2DAD3",
+        "editor.inactiveSelectionBackground": "#E3E7E2",
+        "editor.lineHighlightBackground": "#F5F5F3",
+        "editorGutter.background": "#FFFFFF",
+        "editorIndentGuide.background1": "#E8E6E1",
+        "editorIndentGuide.activeBackground1": "#D5D8D6",
+      },
+    },
+    "sage-garden-dark": {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "comment", foreground: "6E756F", fontStyle: "italic" },
+        { token: "keyword", foreground: "A3BACD" },
+        { token: "string", foreground: "8FAA97" },
+        { token: "number", foreground: "D0A85C" },
+        { token: "type", foreground: "C6ADD1" },
+        { token: "function", foreground: "9DCAC5" },
+        { token: "variable", foreground: "C3C8C4" },
+      ],
+      colors: {
+        "editor.background": "#131512",
+        "editor.foreground": "#C3C8C4",
+        "editorLineNumber.foreground": "#5F6560",
+        "editorLineNumber.activeForeground": "#C3C8C4",
+        "editorCursor.foreground": "#8FAA97",
+        "editor.selectionBackground": "#2E3A31",
+        "editor.inactiveSelectionBackground": "#232A25",
+        "editor.lineHighlightBackground": "#191C18",
+        "editorGutter.background": "#131512",
+        "editorIndentGuide.background1": "#262A24",
+        "editorIndentGuide.activeBackground1": "#353A33",
       },
     },
     "cursor-dark": {

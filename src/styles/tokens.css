@@ -175,6 +175,121 @@
   --motion-slow: 240ms;
 }
 
+/* Sage Garden — Klide Light with the temperature corrected. Same bone-cream
+   identity, but the ink turns blue-charcoal (#1A1F2E) and the sage drops two
+   steps of chroma (#7C9082), so the accent recedes into chrome instead of
+   reading as olive. Cool ink + cool neutrals on warm paper is the tension the
+   flat-cream original is missing. Everything derived (chart ramp, composer
+   family, git lanes 2-8, syntax) follows from --accent / --bg / --fg for free. */
+:root[data-theme="sage-garden"] {
+  --bg:           #F8F7F3;
+  --bg-elevated:  #FFFFFF;
+  --bg-hover:     rgba(26, 31, 46, 0.045);
+  --bg-selected:  rgba(124, 144, 130, 0.16);
+
+  --fg-strong:    #1A1F2E;
+  --fg:           rgba(26, 31, 46, 0.82);
+  --fg-subtle:    #5C6472;
+  --fg-muted:     #5C6472;
+  --fg-dim:       rgba(26, 31, 46, 0.40);
+
+  --border:        #E8E6E1;
+  --border-strong: rgba(26, 31, 46, 0.34);
+
+  --accent:       #7C9082;
+  --accent-soft:  rgba(124, 144, 130, 0.16);
+  --accent-hover: #8CA192;
+
+  --control-primary-bg: #1A1F2E;
+  --control-primary-fg: #FFFFFF;
+  --focus-ring:   rgba(124, 144, 130, 0.34);
+
+  --success:      #6E8A76;
+  --warning:      #A8842F;
+  --danger:       #A85B52;
+
+  --diff-add:     #4A8062;
+  --diff-remove:  #A85B52;
+  --modal-scrim:  rgba(26, 31, 46, 0.30);
+
+  --code-comment: rgba(26, 31, 46, 0.42);
+
+  --terminal-bg:      #F4F3EE;
+  --terminal-fg:      #1A1F2E;
+  --terminal-muted:   #5C6472;
+  --terminal-border:  #E8E6E1;
+  --terminal-hover:   rgba(26, 31, 46, 0.045);
+  --terminal-cursor:  #1A1F2E;
+
+  --panel-glass:      color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+  --panel-border:     color-mix(in srgb, var(--border) 84%, transparent);
+  --panel-highlight:  rgba(255, 255, 255, 0.86);
+  --panel-shadow:
+    0 1px 1px rgba(26, 31, 46, 0.03),
+    0 10px 34px rgba(26, 31, 46, 0.06),
+    0 32px 90px rgba(26, 31, 46, 0.045);
+  --shadow-raised: 0 1px 2px rgba(26, 31, 46, 0.08);
+}
+
+/* Sage Garden Dark — the same correction Midnight never got. Midnight inherited
+   Cursor's blue-violet accent, so Klide reads sage in light and Cursor in dark;
+   here the accent is the brand sage lifted to carry on a dark surface (#8FAA97),
+   and every derived surface (chart ramp, git lane 1, composer warmth, focus
+   rings, switches) follows it back on-brand for free.
+   Midnight is also warm-on-warm — #C8C6BE text on #11110F. This keeps the
+   near-black warm, because that is the bone-cream identity inverted, and cools
+   the text instead: the same warm-ground / cool-light tension as the light
+   theme, read in the other direction. */
+:root[data-theme="sage-garden-dark"] {
+  --bg:           #131512;
+  --bg-elevated:  #191C18;
+  --bg-hover:     #23261F;
+  --bg-selected:  rgba(143, 170, 151, 0.16);
+
+  --fg-strong:    #EDEFEC;
+  --fg:           #C3C8C4;
+  --fg-subtle:    #888E89;
+  --fg-muted:     #888E89;
+  --fg-dim:       #5F6560;
+
+  --border:        #262A24;
+  --border-strong: #353A33;
+
+  --accent:       #8FAA97;
+  --accent-soft:  rgba(143, 170, 151, 0.16);
+  --accent-hover: #A0BAA7;
+
+  --control-primary-bg: #EDEFEC;
+  --control-primary-fg: #131512;
+  --focus-ring:   rgba(143, 170, 151, 0.36);
+
+  --success:      #8FAA97;
+  --warning:      #D0A85C;
+  --danger:       #D98C84;
+
+  --diff-add:     #7FC3A0;
+  --diff-remove:  #D98C84;
+  --modal-scrim:  rgba(0, 0, 0, 0.55);
+
+  --code-comment: #6E756F;
+
+  --terminal-bg:      #0F110E;
+  --terminal-fg:      #E5E8E4;
+  --terminal-muted:   #949A95;
+  --terminal-border:  #262A24;
+  --terminal-hover:   #23261F;
+  --terminal-cursor:  #8FAA97;
+
+  --panel-glass:      color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  --panel-border:     color-mix(in srgb, var(--border-strong) 70%, transparent);
+  --panel-highlight:  rgba(255, 255, 255, 0.045);
+  --panel-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.14),
+    0 12px 40px rgba(0, 0, 0, 0.18),
+    0 36px 110px rgba(0, 0, 0, 0.16);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
 :root[data-theme="cursor-dark"],
 :root[data-theme="dark"] {
   --bg:           #11110F;
@@ -193,6 +308,10 @@
 
   --accent:       #8EA2FF;
   --accent-soft:  #242B45;
+
+  /* The :root default is near-black at 40% — invisible on a dark surface.
+     Every dark theme owes itself an override. */
+  --code-comment: #6E6C66;
 
   --diff-add:     #6FBF8F;
   --diff-remove:  #D98C84;
@@ -235,6 +354,8 @@
 
   --accent:       #007ACC;
   --accent-soft:  #04395E;
+
+  --code-comment: #6A9955;
 
   --diff-add:     #6FBF8F;
   --diff-remove:  #D98C84;
@@ -314,6 +435,8 @@
 
   --accent:       #B58900;
   --accent-soft:  #2E4C3B;
+
+  --code-comment: #657B83;
 
   --diff-add:     #6FBF8F;
   --diff-remove:  #D98C84;
@@ -898,6 +1021,7 @@ textarea.klide-diff-comment-input:focus-visible {
    The framed cosmos card stays a dark "window into space" in both modes;
    here it floats on the theme's own background instead of a dark gutter. */
 :root[data-theme="klide-light"] .klide-welcome,
+:root[data-theme="sage-garden"] .klide-welcome,
 :root[data-theme="github-light"] .klide-welcome {
   --w-fg:          #1c1c1c;
   --w-dim:         rgba(28, 28, 28, 0.62);
