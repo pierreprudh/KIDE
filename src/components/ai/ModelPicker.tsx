@@ -17,7 +17,7 @@ import {
   type ProviderModelMetadata,
 } from "../../ipc/aiProviders";
 import { ProviderLogo } from "./icons";
-import { modelBrand } from "../../modelBrand";
+import { resolveModelLogo } from "../../modelIdentity";
 import { Z } from "../../zLayers";
 import { isFavModel, toggleFavModel, subscribeFavModels } from "../../favModels";
 import { useCustomProviders } from "../../hooks/useCustomProviders";
@@ -608,18 +608,18 @@ export function ModelPicker({
                       }}
                     >
                       {/* Per-row maker mark, so a long mixed list reads at a
-                          glance. Falls back to the runtime/provider logo when
-                          the model has no recognised maker. Selection is shown
-                          by the row highlight, so no check icon is needed. */}
+                          glance. `resolveModelLogo` is the one model → mark
+                          resolver every other surface uses (Mission Control,
+                          Focus, the rail); this row used to call `modelBrand`
+                          alone, which knows five makers — so a delegate list
+                          like OpenCode's showed DeepSeek's whale but fell back
+                          to the generic CLI mark for Kimi, GLM, Grok, GPT and
+                          MiniMax, which Klide does have marks for. Falls back
+                          to the runtime/provider logo when the maker really is
+                          unknown. Selection is shown by the row highlight, so
+                          no check icon is needed. */}
                       <span style={{ width: 20, height: 20, flexShrink: 0, display: "grid", placeItems: "center" }}>
-                        {(() => {
-                          const brand = modelBrand(m);
-                          if (brand) {
-                            const Logo = brand.Logo;
-                            return <Logo size={18} />;
-                          }
-                          return <ProviderLogo id={provider} size={17} />;
-                        })()}
+                        {resolveModelLogo(m, 18) ?? <ProviderLogo id={provider} size={17} />}
                       </span>
                       {/* Name. Long names would normally ellipsize; on hover we
                           slide the inner span left by exactly its overflow so

@@ -5,8 +5,8 @@
 // themselves still come from ai/icons, which owns every brand mark.
 
 import React from "react";
-import { BRAND_LOGO_PATHS, BrandImage, ProviderLogo, TwoToneMark } from "../ai/icons";
-import { resolveModelLogo } from "../../modelIdentity";
+import { BRAND_LOGO_PATHS, BrandImage, ProviderLogo } from "../ai/icons";
+import { ProviderModelMark, resolveModelLogo } from "../../modelIdentity";
 import type { ProviderId } from "../../agent/types";
 import type { RunKind, RunSource } from "../../runs";
 
@@ -151,17 +151,14 @@ export function SourceLogo({
       </svg>
     );
   }
-  // OpenCode uses its own two-tone logo (light/dark variants in /public) with
-  // a CSS theme-swap rule already in tokens.css. The wrapper class stacks the
-  // two <img>s at the same grid cell so only the right one shows per theme.
+  // OpenCode wears its own two-tone logo (ProviderLogo owns the light/dark
+  // variants and the tokens.css theme-swap), paired with the model's maker:
+  // every model in its catalogue comes from someone else, so the CLI mark on
+  // its own leaves the useful half of the row unsaid. `ProviderModelMark`
+  // falls back to the bare CLI mark when the model names no maker, and at
+  // sizes too small for a satellite.
   if (source === "opencode") {
-    return (
-      <TwoToneMark
-        light="/opencode-logo-light.svg"
-        dark="/opencode-logo-dark.svg"
-        size={size}
-      />
-    );
+    return <ProviderModelMark provider="opencode" model={model} size={size} />;
   }
   // Other Klide runs wear the logo of the model they used — Ollama for local
   // lfm2.5/llama, OpenAI for gpt, Anthropic for claude, etc. — so the board

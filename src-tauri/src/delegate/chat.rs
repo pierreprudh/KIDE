@@ -48,7 +48,7 @@ pub async fn run_subscription_chat(
     // is most of what the user wants to see.
     let content = match adapter.chat_stream_invocation(&cwd, model) {
         Some(command) => {
-            run_cli_streaming(command?, prompt, label, adapter.id(), on_chunk).await?
+            run_cli_streaming(adapter, command?, prompt, label, on_chunk).await?
         }
         None => run_cli_with_stdin(adapter.chat_invocation(&cwd, model)?, prompt, label, on_chunk)
             .await?
@@ -73,13 +73,14 @@ pub async fn run_subscription_chat(
 /// The returned string is the assistant text only — the answer — so a saved
 /// transcript reads as prose rather than as a mixture of prose and tool logs.
 async fn run_cli_streaming(
+    adapter: &dyn Delegate,
     mut command: TokioCommand,
     prompt: String,
     label: &str,
-    provider_id: &str,
     on_chunk: &Channel<StreamChunk>,
 ) -> Result<String, String> {
-    use super::chat_stream::{parse_stream_line, summarize_call, StreamItem};
+    let provider_id = adapter.id();
+    use super::chat_stream::{summarize_call, StreamItem};
 
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
@@ -117,17 +118,42 @@ async fn run_cli_streaming(
         // been seen. (The flag is per-adapter, so the whole-block path still has
         // to work for a CLI that streams no deltas.)
         let mut saw_delta = false;
+        // How much of each named text part has already been streamed. OpenCode
+        // reports text per part rather than as deltas, and a part that is still
+        // growing may be re-sent whole; keeping the emitted length per id means
+        // only the new suffix goes out either way — no duplicated answer if it
+        // repeats, no lost text if it does not.
+        let mut emitted_parts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         while let Some(line) = lines
             .next_line()
             .await
             .map_err(|e| format!("Unable to read {label} stdout: {e}"))?
         {
-            for item in parse_stream_line(&line) {
+            for item in adapter.parse_stream_line(&line) {
                 match item {
                     StreamItem::TextDelta(text) => {
                         saw_delta = true;
                         answer.push_str(&text);
                         let _ = on_chunk.send(StreamChunk::text(text));
+                    }
+                    StreamItem::TextPart { id, text } => {
+                        let already = emitted_parts.get(&id).copied().unwrap_or(0);
+                        // A part that shrank or was replaced is not a suffix of
+                        // what we sent; start it over rather than slicing at a
+                        // stale offset (which could also split a char boundary).
+                        let suffix = if text.len() > already && text.is_char_boundary(already) {
+                            &text[already..]
+                        } else if already == 0 {
+                            &text[..]
+                        } else {
+                            ""
+                        };
+                        if !suffix.is_empty() {
+                            answer.push_str(suffix);
+                            let _ = on_chunk.send(StreamChunk::text(suffix.to_string()));
+                        }
+                        emitted_parts.insert(id, text.len());
                     }
                     StreamItem::Text(text) if saw_delta => {
                         // Already streamed, character for character.
@@ -284,9 +310,15 @@ async fn run_cli_with_stdin(
                 line = stderr_lines.next_line(), if !stderr_done => {
                     match line.map_err(|e| format!("Unable to read {label} stderr: {e}"))? {
                         Some(line) => {
+                            // Collected for diagnostics, never streamed into the
+                            // answer. A CLI's stderr is its chrome: OpenCode puts
+                            // its banner, its `→ Read README.md` progress and the
+                            // full stdout of every command it ran there, which
+                            // arrived in the conversation as a wall of
+                            // "stderr: total 720 / drwxr-xr-x@ …". The answer is
+                            // on stdout; this is only shown if the turn fails.
                             stderr_text.push_str(&line);
                             stderr_text.push('\n');
-                            let _ = on_chunk.send(StreamChunk::text(format!("stderr: {line}\n")));
                         }
                         None => stderr_done = true,
                     }

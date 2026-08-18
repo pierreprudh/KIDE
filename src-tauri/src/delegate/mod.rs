@@ -151,6 +151,22 @@ pub trait Delegate: Sync {
         None
     }
 
+    /// Read one line of this CLI's structured stream into the shared
+    /// [`StreamItem`](chat_stream::StreamItem) vocabulary.
+    ///
+    /// Each CLI has its own dialect — Claude Code splits a call and its result
+    /// across two Anthropic-shaped lines, OpenCode packs both into one event
+    /// keyed by `callID` — and that knowledge belongs to the adapter, not to a
+    /// switch in the runner. The default reads nothing, which is correct for a
+    /// CLI with no structured mode: it never gets called, because
+    /// [`Delegate::chat_stream_args`] returned `None`.
+    ///
+    /// An unrecognised or malformed line must yield no items rather than an
+    /// error — a new line type in a future release must not fail a turn.
+    fn parse_stream_line(&self, _line: &str) -> Vec<chat_stream::StreamItem> {
+        Vec::new()
+    }
+
     /// The structured-stream twin of [`Delegate::chat_invocation`]. `None` when
     /// this CLI has no structured mode; `Some(Err)` when it has one but the
     /// binary could not be resolved.

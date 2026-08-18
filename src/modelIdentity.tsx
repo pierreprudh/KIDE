@@ -1,6 +1,7 @@
-import type { ReactElement } from "react";
+import type { CSSProperties, ReactElement } from "react";
 import { modelBrand } from "./modelBrand";
 import { BrandImage, ProviderLogo, TwoToneMark } from "./components/ai/icons";
+import type { ProviderId } from "./agent/types";
 
 type LogoProps = { size?: number };
 type LogoComponent = (props: LogoProps) => ReactElement;
@@ -95,4 +96,75 @@ export function resolveModelLogo(
     return <ProviderLogo id="ollama" size={size} />;
   }
   return null;
+}
+
+/* ─────────────────────── provider + model, as one mark ───────────────────── */
+
+/** The pair splits one slot between two marks, so below this neither half is
+ *  legible and the provider stands alone — which is also the right answer for
+ *  the 16px source-filter marks, where the row is *about* the runner and a
+ *  maker would be noise. */
+const PAIR_MIN_SIZE = 22;
+
+/** The maker's share of the box; the rest goes to the runner. */
+const MAKER_SHARE = 0.46;
+
+/** How much of the maker rides *over* the runner's corner. Corner-to-corner the
+ *  two boxes would only touch at a point, and every mark keeps padding inside
+ *  its own box, so a pair that merely abuts reads as two strays with a hole
+ *  between them. The maker tucks into the runner instead — and nothing is drawn
+ *  around it to make the tuck work: no disc, no ring, no tile. */
+const OVERLAP = 0.35;
+
+/**
+ * A conversation's runner and its model drawn as one mark.
+ *
+ * "An OpenCode conversation" and "…on Kimi" are two different facts, and every
+ * surface that shows one of these used to pick a side and drop the other:
+ * Focus's resume cards showed only the CLI, Mission Control's conversation
+ * avatar only the model. So the same run read differently depending on where
+ * you looked at it — and for a delegate whose whole catalogue is other makers'
+ * models, the CLI-only answer says nothing about what actually replied.
+ *
+ * The runner leads from the top-left and the maker tucks over its bottom-right
+ * corner, bare — a disc-and-hairline cut-out under the small mark would read as
+ * the chrome this app doesn't wear, so the overlap carries itself.
+ *
+ * `size` is the *total* footprint, so a caller's geometry is the same whether
+ * the model names a maker or not — an unbranded model simply leaves the
+ * provider mark alone, which is still the honest answer.
+ */
+export function ProviderModelMark({
+  provider,
+  model,
+  size = 24,
+}: {
+  provider: ProviderId;
+  model?: string | null;
+  size?: number;
+}): ReactElement {
+  const makerSize = Math.round(size * MAKER_SHARE);
+  const maker = resolveModelLogo(model, makerSize);
+  if (size < PAIR_MIN_SIZE || !maker) return <ProviderLogo id={provider} size={size} />;
+
+  const runnerSize = size - makerSize + Math.round(makerSize * OVERLAP);
+  const corner: CSSProperties = { position: "absolute", display: "grid", placeItems: "center" };
+  return (
+    <span
+      style={{
+        position: "relative",
+        display: "inline-block",
+        width: size,
+        height: size,
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ ...corner, top: 0, left: 0, width: runnerSize, height: runnerSize }}>
+        <ProviderLogo id={provider} size={runnerSize} />
+      </span>
+      <span style={{ ...corner, right: 0, bottom: 0, width: makerSize, height: makerSize }}>
+        {maker}
+      </span>
+    </span>
+  );
 }

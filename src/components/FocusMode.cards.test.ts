@@ -8,14 +8,18 @@ import { describe, expect, it } from "vitest";
 import { resumeMark } from "./FocusMode";
 
 describe("resume card mark", () => {
-  it("lets the delegate outrank the model it happened to pick", () => {
-    // The CLI stores the `default` sentinel far more often than a model id,
-    // and what you resumed is a Claude Code conversation either way.
+  it("lets the delegate lead, and names the maker beside it", () => {
+    // The CLI stores the `default` sentinel far more often than a model id, and
+    // there is no second fact to add when it does.
     expect(resumeMark("default", "claude-code")).toMatchObject({
       label: "Claude Code",
       bare: true,
     });
-    expect(resumeMark("claude-sonnet-4-6", "claude-code").label).toBe("Claude Code");
+    // When the id does name a maker, the CLI no longer erases it: OpenCode
+    // drives ~30 other makers' models, so "an OpenCode conversation" alone
+    // leaves out what actually replied.
+    expect(resumeMark("claude-sonnet-4-6", "claude-code").label).toBe("Claude Code · Anthropic");
+    expect(resumeMark("opencode-go/kimi-k3", "opencode").label).toBe("OpenCode · Kimi");
   });
 
   it("brands a hosted conversation by the model's maker", () => {

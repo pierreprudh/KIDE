@@ -127,6 +127,50 @@ describe("createTurnDriver", () => {
     expect(h.measured.usage).toEqual({ prompt: 500, completion: 42 });
   });
 
+  it("renders a delegate's own tool work live, and counts it as first output", () => {
+    // This whitelist is the only thing that decides what appears *during* a
+    // turn. `observed_tool_call` was missing from it, so a delegate's Read/Edit
+    // rows folded on replay and were invisible while the turn ran — and TTFT
+    // measured to the delegate's first word instead, reporting its whole tool
+    // phase (15s of file reading) as latency.
+    const h = harness([{ role: "assistant", content: "" }]);
+    h.setClock(1300);
+    const handled = h.driver.handleEvent({
+      type: "observed_tool_call",
+      runId: "r",
+      toolCallId: "toolu_1",
+      provider: "claude-code",
+      name: "Read",
+      input: { file_path: "TODO.md" },
+      summary: "Read TODO.md",
+      ts: 0,
+    });
+    expect(handled).toBe(true);
+    // Committed immediately — not batched behind the delta timer.
+    expect(h.commits).toHaveLength(1);
+    const toolRow = h.ref.current.find((m) => m.role === "tool");
+    expect(toolRow).toMatchObject({ toolName: "Read", observedBy: "claude-code" });
+
+    h.driver.handleEvent({
+      type: "observed_tool_result",
+      runId: "r",
+      toolCallId: "toolu_1",
+      ok: true,
+      content: "# TODO",
+      ts: 0,
+    });
+    // The tool call, not the first word, is when this turn started producing.
+    h.setClock(9000);
+    h.driver.handleEvent(delta("The milestone is"));
+    h.setClock(9500);
+    h.driver.handleEvent(message([{ type: "text", text: "" }]));
+    // A tool row closes the open bubble, so the answer lands in a fresh one
+    // below it — same as a dispatched call.
+    const assistants = h.ref.current.filter((m) => m.role === "assistant");
+    const answer = assistants[assistants.length - 1] as { meta?: { ttftMs?: number } };
+    expect(answer.meta?.ttftMs).toBe(300); // 1300 - 1000, not 8000
+  });
+
   it("declines non-transcript events so the panel keeps handling them", () => {
     const h = harness([{ role: "assistant", content: "" }]);
     const handled = h.driver.handleEvent({

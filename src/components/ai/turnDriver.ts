@@ -127,6 +127,21 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
         projectCommit();
         return true;
       }
+      // A delegate CLI reporting work it ran itself. These reach the fold the
+      // same way a dispatched call does — the whitelist below is the *only*
+      // thing that decides what renders live, so an event missing from it folds
+      // on replay and is invisible while the turn is actually happening.
+      case "observed_tool_call": {
+        // First observable output of the turn. A delegate often opens with
+        // several file reads before it says anything, and measuring TTFT to its
+        // first *word* reported the whole tool phase as latency — 15s of "no
+        // response" for a run that started working immediately.
+        if (firstTokenAt === null) firstTokenAt = now();
+        transcript.apply(event);
+        projectCommit();
+        return true;
+      }
+      case "observed_tool_result":
       case "tool_call_started":
       case "tool_call_finished":
       case "steering_injected": {

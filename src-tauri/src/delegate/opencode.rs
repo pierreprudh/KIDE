@@ -1,4 +1,5 @@
 use super::runs::{cap_messages, clean_title, project_name, tool_file_path, RunToolCall};
+use super::chat_stream::{result_text, StreamItem};
 use super::{shell_quote, AgentRun, Delegate, RunCandidate, RunMessage, RunParser};
 use std::collections::HashSet;
 
@@ -78,6 +79,107 @@ impl Delegate for OpenCode {
         }
         args.push("--auto".into());
         Ok(args)
+    }
+
+    /// `--format json` puts structured events on stdout — which is also what
+    /// stops a turn reading as a wall of `stderr:` chrome, since the human
+    /// format writes its banner, its `→ Read README.md` progress and the full
+    /// output of every command it runs to stderr.
+    fn chat_stream_args(&self, cwd: &str, model: &str) -> Option<Vec<String>> {
+        let mut args = self.chat_args(cwd, model).ok()?;
+        args.extend(["--format".to_string(), "json".to_string()]);
+        Some(args)
+    }
+
+    /// OpenCode's dialect is its own: one event object per line, each wrapping a
+    /// `part`. Two differences from Claude Code's shape drive everything here —
+    /// a single `tool_use` event carries the call *and* its result (keyed by
+    /// `callID`, with `state.status` saying which stage it is in), and text
+    /// arrives per part rather than as deltas, so it is reported as
+    /// [`StreamItem::TextPart`] and the runner streams the new suffix.
+    fn parse_stream_line(&self, line: &str) -> Vec<StreamItem> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Vec::new();
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return Vec::new();
+        };
+        let part = value.get("part");
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("text") => {
+                let Some(part) = part else { return Vec::new() };
+                let text = part.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+                if text.is_empty() {
+                    return Vec::new();
+                }
+                vec![StreamItem::TextPart {
+                    // Without an id every part would look like the same one, and
+                    // the suffix logic would drop the second block's text.
+                    id: part
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("text")
+                        .to_string(),
+                    text: text.to_string(),
+                }]
+            }
+            Some("tool_use") => {
+                let Some(part) = part else { return Vec::new() };
+                let id = part
+                    .get("callID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let name = part
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let state = part.get("state");
+                let status = state
+                    .and_then(|s| s.get("status"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let mut items = vec![StreamItem::ToolCall {
+                    id: id.clone(),
+                    name,
+                    input: state
+                        .and_then(|s| s.get("input"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                }];
+                // A call is re-sent as it progresses (pending → running →
+                // completed); emitting the call every time is harmless because
+                // the fold upserts by id, and the result only exists at the end.
+                match status {
+                    "completed" => items.push(StreamItem::ToolResult {
+                        id,
+                        ok: true,
+                        content: result_text(state.and_then(|s| s.get("output"))),
+                    }),
+                    "error" => items.push(StreamItem::ToolResult {
+                        id,
+                        ok: false,
+                        content: state
+                            .and_then(|s| s.get("error"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| result_text(state.and_then(|s| s.get("output")))),
+                    }),
+                    _ => {}
+                }
+                items
+            }
+            // Every event carries the session id; the first one to arrive is
+            // enough, and the runner ignores repeats.
+            Some("step_start") => value
+                .get("sessionID")
+                .and_then(|v| v.as_str())
+                .map(|id| vec![StreamItem::Session(id.to_string())])
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     /// OpenCode prints "Using session: <id>" (or similar) when it starts.
@@ -531,6 +633,101 @@ fn message_text(parts: &[serde_json::Value]) -> Option<(String, Vec<RunToolCall>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Captured from a real `opencode run --auto --format json` turn. OpenCode's
+    // events wrap a `part`, and one `tool_use` carries the call *and* its result.
+    const STEP_START: &str = r#"{"type":"step_start","sessionID":"ses_fef0","part":{"id":"prt_01","type":"step-start"}}"#;
+    const TEXT: &str = r#"{"type":"text","sessionID":"ses_fef0","part":{"id":"prt_02","type":"text","text":"DONE"}}"#;
+    const TOOL_DONE: &str = r#"{"type":"tool_use","sessionID":"ses_fef0","part":{"type":"tool","tool":"read","callID":"call_1b21","state":{"status":"completed","input":{"filePath":"/ws/TODO.md","limit":1},"output":"<content>\n1: # TODO\n</content>"}}}"#;
+    const TOOL_RUNNING: &str = r#"{"type":"tool_use","sessionID":"ses_fef0","part":{"type":"tool","tool":"bash","callID":"call_9","state":{"status":"running","input":{"command":"npm test"}}}}"#;
+
+    #[test]
+    fn one_tool_event_yields_both_the_call_and_its_result() {
+        assert_eq!(
+            OpenCode.parse_stream_line(TOOL_DONE),
+            vec![
+                StreamItem::ToolCall {
+                    id: "call_1b21".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"filePath": "/ws/TODO.md", "limit": 1}),
+                },
+                StreamItem::ToolResult {
+                    id: "call_1b21".into(),
+                    ok: true,
+                    content: "<content>\n1: # TODO\n</content>".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_still_running_reports_no_result_yet() {
+        // Re-sent as it progresses; the fold upserts by id, so emitting the call
+        // again is harmless — inventing a result would not be.
+        assert_eq!(
+            OpenCode.parse_stream_line(TOOL_RUNNING),
+            vec![StreamItem::ToolCall {
+                id: "call_9".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "npm test"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_failed_call_is_marked_not_ok() {
+        let line = r#"{"type":"tool_use","part":{"tool":"read","callID":"c3","state":{"status":"error","error":"file not found"}}}"#;
+        let items = OpenCode.parse_stream_line(line);
+        assert_eq!(
+            items[1],
+            StreamItem::ToolResult {
+                id: "c3".into(),
+                ok: false,
+                content: "file not found".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn text_is_reported_per_part_so_the_runner_can_stream_the_suffix() {
+        assert_eq!(
+            OpenCode.parse_stream_line(TEXT),
+            vec![StreamItem::TextPart {
+                id: "prt_02".into(),
+                text: "DONE".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn the_session_id_comes_off_the_first_step() {
+        assert_eq!(
+            OpenCode.parse_stream_line(STEP_START),
+            vec![StreamItem::Session("ses_fef0".into())]
+        );
+    }
+
+    #[test]
+    fn unknown_and_malformed_lines_are_ignored_not_fatal() {
+        for line in [
+            r#"{"type":"step_finish","part":{"reason":"stop"}}"#,
+            r#"{"type":"something_new","part":{}}"#,
+            r#"{"type":"text","part":{"id":"p","text":""}}"#,
+            "{not json",
+            "",
+        ] {
+            assert!(OpenCode.parse_stream_line(line).is_empty(), "line: {line}");
+        }
+    }
+
+    #[test]
+    fn stream_args_ask_for_json_on_stdout() {
+        let args = OpenCode.chat_stream_args("/tmp/ws", "minimax/minimax-m3").unwrap();
+        assert_eq!(
+            args.join(" "),
+            "run --model minimax/minimax-m3 --auto --format json"
+        );
+    }
 
     fn temp_home(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("klide-delegate-test-opencode-{name}"));

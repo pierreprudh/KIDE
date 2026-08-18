@@ -66,6 +66,38 @@ open; these are the shell and correctness changes landed so far.
   and exits, so the headless mode was there all along. (`-p` is `--password` for
   this CLI, not print; `--auto` matches the permission posture Claude Code and
   Codex already take, since a headless turn has no terminal to approve in.)
+- **Observed tool rows render live, and TTFT stops lying about them.** The
+  rows folded correctly on replay but never appeared while a turn was running:
+  `turnDriver`'s event switch is a whitelist, `observed_tool_call` was not on
+  it, and everything else falls through to "the panel handles this" — silently.
+  A delegate also opens with several file reads before it says anything, and
+  first-output was timed to its first *word*, so a run that started working
+  immediately reported ~15s of latency. Observed activity now counts as first
+  output, in both the harness and the driver. Harness runs are unaffected: a
+  dispatched tool call can only follow the model's own response.
+- **OpenCode shows its work too, and each CLI owns its own dialect.** Reading a
+  delegate's structured stream moved behind the Delegate seam
+  (`Delegate::parse_stream_line`), because the two CLIs disagree about
+  everything but the meaning: Claude Code splits a call and its result across
+  two Anthropic-shaped lines, OpenCode packs both into one `tool_use` event
+  keyed by `callID` with a `state.status` saying which stage it is in. What they
+  produce is one shared `StreamItem` vocabulary, so one loop in `chat.rs` drives
+  either. `chat_stream.rs` keeps that vocabulary and the JSON helpers; each
+  dialect and its fixtures live in the adapter that speaks it.
+  OpenCode now runs with `--format json`, which also puts its output on stdout
+  where it belongs. Text needed one new shape: OpenCode reports it per *part*
+  rather than as deltas, and a growing part may be re-sent whole, so a part
+  carries its text-so-far and the runner streams only the new suffix — no
+  duplicated answer if it repeats, no lost text if it does not.
+  omp keeps the prose path: it has `--mode json`, but its shape is unverified
+  here (omp reads provider keys from the shell environment, and there are none
+  to run it with), and a guessed dialect is worse than none.
+- **A delegate's stderr stays out of the answer.** OpenCode puts its banner, its
+  `→ Read README.md` progress lines and the entire stdout of every command it
+  runs on stderr, and the prose path streamed all of it into the conversation
+  prefixed `stderr:` — a turn came back as a wall of `ls -la` output with the
+  real answer buried at the end. stderr is a CLI's chrome: it is collected for
+  diagnostics and shown only when the turn fails. The answer is on stdout.
 - The headless delegate turn is no longer capped at 180 seconds — a ceiling
   sized for answering questions, not for a Goal-mode task, which it would cut
   mid-edit. The bound is now a 30-minute backstop against a wedged CLI, with
