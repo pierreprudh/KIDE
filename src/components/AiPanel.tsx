@@ -23,6 +23,7 @@ import {
 import { usePortalMenu } from "../hooks/usePortalMenu";
 import { Kbd } from "./Kbd";
 import { keysFor } from "../shortcuts";
+import { providerFailureMessage } from "../errors";
 import { InlineDiffReview } from "./InlineDiffReview";
 import { InlineCommandReview } from "./InlineCommandReview";
 import { conversationToConvo, deleteKlideConvo, publishKlideConvo, settleKlideConvo } from "../klideConvos";
@@ -2731,7 +2732,9 @@ This user request requires workspace inspection. Before answering, you MUST call
       const i = located.index;
       const failedUser = next[userIndex];
       if (failedUser?.role === "user") next[userIndex] = { ...failedUser, queueState: undefined, queueId: undefined };
-      next[i] = { role: "assistant", content: `⚠ ${(e as Error).message}. Check ${providerName(turn.provider)} connection and credentials.` };
+      // `providerFailureMessage` also drops the `(e as Error)` cast: a rejected
+      // Tauri command throws a bare string, which rendered as "undefined".
+      next[i] = { role: "assistant", content: `⚠ ${providerFailureMessage(e, providerName(turn.provider))}` };
       // A failed MLX stream may mean the model went cold — re-warm next send.
       if (turn.provider === "mlx") mlxWarmedRef.current = null;
       commit(next);
