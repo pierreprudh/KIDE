@@ -1331,6 +1331,18 @@ async fn run_agent_loop(
                 // happened, and kept separate so nothing downstream mistakes it
                 // for work this harness authorized.
                 if let Some(observed) = chunk.observed {
+                    // Counts as first output: a delegate that reads three files
+                    // before speaking started working immediately, and timing
+                    // TTFT to its first word reported the entire tool phase as
+                    // dead air. Harness runs are unaffected — a dispatched tool
+                    // call can only follow the model's own response, so their
+                    // first chunk is still a token.
+                    let _ = stream_first_token.compare_exchange(
+                        0,
+                        now_ms(),
+                        std::sync::atomic::Ordering::Relaxed,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     let _ = stream_channel.send(match observed {
                         crate::providers::ObservedToolActivity::Call {
                             id,

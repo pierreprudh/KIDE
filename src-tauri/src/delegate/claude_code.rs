@@ -2,6 +2,7 @@ use super::runs::{
     cap_messages, clean_title, extract_user_text, mtime_ms, project_name, recency_status,
     tool_file_path, AgentRun, RunMessage, RunToolCall,
 };
+use super::chat_stream::{message_blocks, result_text, StreamItem};
 use super::{shell_quote, Delegate, RunCandidate, RunParser};
 use std::collections::HashSet;
 
@@ -73,6 +74,69 @@ impl Delegate for ClaudeCode {
         // token measured the whole block, not the first token.
         args.push("--include-partial-messages".into());
         Some(args)
+    }
+
+    /// Claude Code's dialect is Anthropic's, wrapped one object per line:
+    /// a `system`/`init` line naming the session, `assistant` messages holding
+    /// text and `tool_use` blocks, the matching `tool_result`s addressed to
+    /// `user` (that is how they are fed back to the model), raw `stream_event`
+    /// deltas from `--include-partial-messages`, and a closing `result` line.
+    fn parse_stream_line(&self, line: &str) -> Vec<StreamItem> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Vec::new();
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return Vec::new();
+        };
+        match value.get("type").and_then(|v| v.as_str()) {
+            // Only `init` carries the session id; the other `system` lines
+            // (hook_started, hook_response, …) are noise for our purposes.
+            Some("system") => match value.get("subtype").and_then(|v| v.as_str()) {
+                Some("init") => value
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|id| vec![StreamItem::Session(id.to_string())])
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            },
+            Some("assistant") => message_blocks(&value)
+                .iter()
+                .filter_map(assistant_block)
+                .collect(),
+            Some("user") => message_blocks(&value)
+                .iter()
+                .filter_map(tool_result_block)
+                .collect(),
+            // Raw Anthropic stream events. Only the text deltas matter: tool
+            // calls are read from the assembled `assistant` message instead, so
+            // a partial `input_json_delta` never has to be reassembled here.
+            Some("stream_event") => {
+                let event = value.get("event");
+                let is_text_delta = event.and_then(|e| e.get("type")).and_then(|v| v.as_str())
+                    == Some("content_block_delta")
+                    && event
+                        .and_then(|e| e.get("delta"))
+                        .and_then(|d| d.get("type"))
+                        .and_then(|v| v.as_str())
+                        == Some("text_delta");
+                if !is_text_delta {
+                    return Vec::new();
+                }
+                event
+                    .and_then(|e| e.get("delta"))
+                    .and_then(|d| d.get("text"))
+                    .and_then(|v| v.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(|text| vec![StreamItem::TextDelta(text.to_string())])
+                    .unwrap_or_default()
+            }
+            Some("result") => vec![StreamItem::Finished {
+                cost_usd: value.get("total_cost_usd").and_then(|v| v.as_f64()),
+                turns: value.get("num_turns").and_then(|v| v.as_i64()),
+            }],
+            _ => Vec::new(),
+        }
     }
 
     /// Claude Code is the one delegate with a first-class hooks system —
@@ -488,9 +552,142 @@ fn message_text(message: &serde_json::Value) -> Option<(String, Vec<RunToolCall>
     None
 }
 
+/// One `assistant` content block → an item. Text and tool calls only; other
+/// block types (thinking, redacted) carry nothing this vocabulary holds.
+fn assistant_block(block: &serde_json::Value) -> Option<StreamItem> {
+    match block.get("type").and_then(|v| v.as_str()) {
+        Some("text") => {
+            let text = block.get("text").and_then(|v| v.as_str())?;
+            // Empty text blocks appear between tool calls; they would add blank
+            // lines to the answer.
+            (!text.is_empty()).then(|| StreamItem::Text(text.to_string()))
+        }
+        Some("tool_use") => Some(StreamItem::ToolCall {
+            id: block
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            name: block
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool")
+                .to_string(),
+            input: block.get("input").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        _ => None,
+    }
+}
+
+/// One `tool_result` block → an item. `is_error` absent means it worked.
+fn tool_result_block(block: &serde_json::Value) -> Option<StreamItem> {
+    if block.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
+        return None;
+    }
+    Some(StreamItem::ToolResult {
+        id: block
+            .get("tool_use_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        ok: !block
+            .get("is_error")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        content: result_text(block.get("content")),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Captured from a real `claude -p --output-format stream-json --verbose
+    // --include-partial-messages` run, trimmed to the lines that matter. Kept
+    // verbatim so a CLI change shows up here as a failing test rather than as an
+    // empty conversation.
+    const INIT: &str = r#"{"type":"system","subtype":"init","cwd":"/ws","session_id":"abc-123"}"#;
+    const HOOK: &str = r#"{"type":"system","subtype":"hook_started","hook_id":"9dec"}"#;
+    const TEXT_AND_CALL: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I'll read the first line."},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/ws/README.md","limit":1}}]}}"#;
+    const RESULT_LINE: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"1\t<div align=\"center\">"}]}}"#;
+    const RATE_LIMIT: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#;
+    const FINISHED: &str = r#"{"type":"result","subtype":"success","total_cost_usd":0.348942,"num_turns":2}"#;
+
+    #[test]
+    fn reads_session_text_calls_and_results_from_a_real_turn() {
+        assert_eq!(
+            ClaudeCode.parse_stream_line(INIT),
+            vec![StreamItem::Session("abc-123".into())]
+        );
+        assert_eq!(
+            ClaudeCode.parse_stream_line(TEXT_AND_CALL),
+            vec![
+                StreamItem::Text("I'll read the first line.".into()),
+                StreamItem::ToolCall {
+                    id: "toolu_1".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({"file_path": "/ws/README.md", "limit": 1}),
+                },
+            ]
+        );
+        assert_eq!(
+            ClaudeCode.parse_stream_line(RESULT_LINE),
+            vec![StreamItem::ToolResult {
+                id: "toolu_1".into(),
+                ok: true,
+                content: "1\t<div align=\"center\">".into(),
+            }]
+        );
+        assert_eq!(
+            ClaudeCode.parse_stream_line(FINISHED),
+            vec![StreamItem::Finished {
+                cost_usd: Some(0.348942),
+                turns: Some(2)
+            }]
+        );
+    }
+
+    #[test]
+    fn text_deltas_are_read_and_their_scaffolding_ignored() {
+        const DELTA: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"One"}}}"#;
+        assert_eq!(
+            ClaudeCode.parse_stream_line(DELTA),
+            vec![StreamItem::TextDelta("One".into())]
+        );
+        // The frame around the deltas carries no text of its own. Emitting
+        // anything for these would double the answer.
+        for line in [
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"role":"assistant"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_stop"}}"#,
+            // Tool arguments stream too, but the call is read from the assembled
+            // `assistant` message rather than reassembled from partial JSON.
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"fi"}}}"#,
+        ] {
+            assert!(ClaudeCode.parse_stream_line(line).is_empty(), "line: {line}");
+        }
+    }
+
+    #[test]
+    fn unknown_and_malformed_lines_are_ignored_not_fatal() {
+        for line in [HOOK, RATE_LIMIT, "{not json", "", "   "] {
+            assert!(ClaudeCode.parse_stream_line(line).is_empty(), "line: {line}");
+        }
+    }
+
+    #[test]
+    fn tool_result_blocks_flatten_and_errors_are_marked() {
+        let blocks = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"line one"},{"type":"text","text":"line two"}]}]}}"#;
+        assert_eq!(
+            ClaudeCode.parse_stream_line(blocks),
+            vec![StreamItem::ToolResult {
+                id: "t2".into(),
+                ok: false,
+                content: "line one\nline two".into(),
+            }]
+        );
+    }
 
     fn temp_home(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("klide-delegate-test-claude-{name}"));
