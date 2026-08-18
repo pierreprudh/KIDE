@@ -90,6 +90,12 @@ export const BRAND_LOGO_PATHS: Partial<Record<ProviderId, string>> = {
   mistral:
     "M17.143 3.429v3.428h-3.429v3.429h-3.428V6.857H6.857V3.43H3.43v13.714H0v3.428h10.286v-3.428H6.857v-3.429h3.429v3.429h3.429v-3.429h3.428v3.429h-3.428v3.428H24v-3.428h-3.43V3.429z",
   vllm: "m23.6 0-8.721 4.59L9.829 24h7.41zM9.83 24V5.142H.4Z",
+  // xAI's real mark: the X's long backslash stroke, its "/" broken into an upper-right
+  // blade and a lower-left one, plus the slant-topped "I" pillar. Traced from
+  // the official art (four convex quads, so straight lines all the way) and
+  // fitted to the 24-box by height, centred horizontally. It replaces the
+  // placeholder two-stroke cross that used to stand in for it.
+  xai: "M1.06 7.74 6.13 7.74 17.53 24 12.46 24ZM18.8 7.73 22.94 1.81 22.54 24 19.22 24ZM17.88 0 22.94 0 12.49 14.94 9.93 11.34ZM6.13 16.78 8.65 20.4 6.13 24 1.06 24Z",
   openrouter: OPENROUTER_PATH,
 };
 
@@ -236,12 +242,6 @@ export function ProviderLogo({ id, size = 14 }: { id: ProviderId; size?: number 
       return (
         <svg {...line} strokeWidth="1.8">
           <path d="M9 7l-5 5 5 5M15 7l5 5-5 5" />
-        </svg>
-      );
-    case "xai":
-      return (
-        <svg {...line} strokeWidth="2">
-          <path d="M5 5l14 14M19 5L5 19" />
         </svg>
       );
     case "omp":

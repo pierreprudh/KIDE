@@ -145,7 +145,7 @@ import { ModelPicker } from "./ai/ModelPicker";
 import { dispatchRace, PartialRaceError, type RaceAgentPick } from "../agent/race";
 import { listRaces, raceForRun, subscribeRaces, type RaceGroup, type RaceMember } from "../races";
 import { refreshCustomCli } from "../customCli";
-import { resolveModelLogo } from "../modelIdentity";
+import { ProviderModelMark, resolveModelLogo } from "../modelIdentity";
 import { renderMarkdown } from "./markdown";
 import { buildRunHandoff } from "../agentHandoff";
 import { notify } from "../toast";
@@ -1719,7 +1719,11 @@ function ConversationAvatar({
   user?: boolean;
 }) {
   const initials = user ? initialsOf(label || "Me") : null;
-  const modelLogo = source === "opencode" ? resolveModelLogo(model, 21) : null;
+  // OpenCode drives ~30 other makers' models, so neither half of the pair is
+  // optional here: this used to swap the OpenCode mark *out* for the model's,
+  // which answered "on Kimi" while losing "an OpenCode conversation". The
+  // paired mark says both, and collapses to the CLI alone when the recorded
+  // model names no maker.
   const logo =
     source === "klide" && provider ? (
       <SourceLogo source={source} provider={provider} model={model} size={21} />
@@ -1727,8 +1731,8 @@ function ConversationAvatar({
       <ClaudeCodeLogo size={21} />
     ) : source === "codex" ? (
       <CodexLogo size={21} />
-    ) : source === "opencode" && modelLogo ? (
-      modelLogo
+    ) : source === "opencode" ? (
+      <ProviderModelMark provider="opencode" model={model} size={24} />
     ) : (
       <SourceLogo source={source} size={21} />
     );
