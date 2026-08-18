@@ -53,6 +53,7 @@ import type { ProviderId } from "../agent/types";
 import { providerName } from "../agent/providers";
 import { DotGridLoader, ProviderLogo } from "./ai/icons";
 import { modelIdentity } from "../modelIdentity";
+import { setConversationDrag } from "../conversationDrag";
 import { useIsConversationRunning } from "../runningConversations";
 import { keepOrder, providerHistoryExpanded } from "../focusHistory";
 import { canonicalWorkspaceRoot, linkedProjectForPath } from "../projectPaths";
@@ -445,6 +446,14 @@ function ConvoRow({
     <button
       type="button"
       onClick={onOpen}
+      /* Draggable as well as clickable: a click opens the conversation where
+         Focus normally puts one, a drag lets you say *which half* of a split
+         canvas it lands in. The row keeps its click — HTML drag only starts
+         once the pointer actually moves. */
+      draggable
+      onDragStart={(e) => {
+        if (e.dataTransfer) setConversationDrag(e.dataTransfer, convo.id);
+      }}
       /* One line, most urgent fact first — the tooltip is where a screen
          reader and a hovering pointer get what the route and the text weight
          say silently. */

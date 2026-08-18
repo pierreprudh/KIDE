@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -76,6 +77,10 @@ import { defaultLayout as defaultPanelLayout, PANEL_CONSTRAINTS, type PanelRect 
 import { Z } from "./zLayers";
 import { detectLanguage } from "./editorLanguage";
 import { beginDragSession } from "./dragSession";
+import {
+  isConversationDrag,
+  readConversationDrag,
+} from "./conversationDrag";
 import { CommandPalette } from "./components/CommandPalette";
 import { SearchPanel } from "./components/SearchPanel";
 import { useEditorTabs } from "./hooks/useEditorTabs";
@@ -178,6 +183,68 @@ function App() {
   // the hero composer's text on its way into the AI panel.
   const [focusChatActive, setFocusChatActive] = useState(false);
   const [focusInitialMessage, setFocusInitialMessage] = useState<string | null>(null);
+  // Focus split — a second conversation beside the first. Only the *identity*
+  // of the second panel lives here; the panel itself is an ordinary member of
+  // the AI fleet, so both halves are fully wired conversations rather than a
+  // reader copy, and neither loses its run subscription to the other. The
+  // divider's position is remembered, the split itself is not: Focus opens on
+  // one conversation.
+  const [focusSplitPanelId, setFocusSplitPanelId] = useState<string | null>(null);
+  const [focusSplitRatio, setFocusSplitRatio] = useState(() => {
+    const stored = Number(localStorage.getItem("klide.focus.splitRatio"));
+    return Number.isFinite(stored) && stored >= 0.25 && stored <= 0.75 ? stored : 0.5;
+  });
+  const focusSplitRowRef = useRef<HTMLDivElement | null>(null);
+  // The drag ends in a closure captured when the drag started; the ref is what
+  // it reads the settled ratio back out of.
+  const focusSplitRatioRef = useRef(focusSplitRatio);
+  focusSplitRatioRef.current = focusSplitRatio;
+  // Which half the pointer is over mid-drag, and whether a conversation is
+  // being dragged at all. The second one is what makes the "Open beside"
+  // landing strip appear only when there is something to land — the canvas
+  // grows no permanent drop chrome.
+  const [focusDropTarget, setFocusDropTarget] = useState<"primary" | "split" | null>(null);
+  // The seam opens rather than appears. `shown` is deliberately a frame behind
+  // the panel's existence — a width transition needs a previous value to
+  // animate FROM, and a half that arrives already at its full width just pops.
+  // Same two-frame ritual as the terminal dock, for the same reason.
+  const [focusSplitShown, setFocusSplitShown] = useState(false);
+  const [focusSplitResizing, setFocusSplitResizing] = useState(false);
+  const [focusConversationDrag, setFocusConversationDrag] = useState(false);
+  useEffect(() => {
+    if (!focusSplitPanelId) {
+      setFocusSplitShown(false);
+      return;
+    }
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setFocusSplitShown(true));
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [focusSplitPanelId]);
+  useEffect(() => {
+    function onDragStart(e: DragEvent) {
+      if (isConversationDrag(e.dataTransfer)) setFocusConversationDrag(true);
+    }
+    function onDragEnd() {
+      setFocusConversationDrag(false);
+      setFocusDropTarget(null);
+    }
+    window.addEventListener("dragstart", onDragStart);
+    window.addEventListener("dragend", onDragEnd);
+    // A drop anywhere ends the gesture — including on a target that ignored
+    // it, which never fires `dragend` on the source in every browser.
+    window.addEventListener("drop", onDragEnd);
+    return () => {
+      window.removeEventListener("dragstart", onDragStart);
+      window.removeEventListener("dragend", onDragEnd);
+      window.removeEventListener("drop", onDragEnd);
+    };
+  }, []);
+
   // The shell docked under Focus's canvas. Not persisted: Focus should open on
   // its home (or the conversation you left), never on a terminal you forgot.
   const [focusTerminalOpen, setFocusTerminalOpen] = useState(false);
@@ -1087,6 +1154,231 @@ function App() {
     );
   }
 
+  /** Accept a conversation dropped onto one half of the Focus canvas. The
+   *  drop carries only an id — the stored conversation is resolved here, and a
+   *  row whose messages never made it to disk is refused out loud rather than
+   *  opening an empty panel. */
+  function openDroppedConversation(target: "primary" | "split", conversationId: string) {
+    const convo = loadConversations<Conversation>().find(
+      (c) => c.id === conversationId && Array.isArray(c.msgs)
+    );
+    if (!convo) {
+      notify("That conversation is no longer in local history.", { tone: "warn" });
+      return;
+    }
+    openFocusConversation(convo, target);
+  }
+
+  /** Resume a stored conversation into one half of the Focus canvas — the one
+   *  path for a rail click, a ⌘P-style navigation, and a drop. A conversation
+   *  carries the project it ran in: resuming it against the wrong tree would
+   *  point every tool at the wrong files.
+   *
+   *  Which half it lands in changes what "bring its project along" means. The
+   *  main half IS the app's workspace, so it switches the workspace. The split
+   *  half is one panel, so it pins itself to the conversation's directory
+   *  instead and leaves the other half — and the rest of the app — where they
+   *  were. Two conversations side by side are allowed to come from two
+   *  projects. */
+  function openFocusConversation(convo: Conversation, target: "primary" | "split") {
+    endFocusRaceWatch();
+    // Legacy ordinary conversations were auto-isolated before that policy was
+    // removed. Reopen those on the Workspace; intentional worktree
+    // conversations stay pinned.
+    const legacyWorkspace = legacyAutoRunWorkspace(convo);
+    const resumedConvo = legacyWorkspace
+      ? { ...convo, cwd: legacyWorkspace, branch: null, worktree: null }
+      : convo;
+    markFolderWorked(resumedConvo.cwd);
+    const pinnedCwd = legacyWorkspace ? undefined : convo.cwd ?? undefined;
+    if (target === "split") {
+      openFocusSplit(resumedConvo, pinnedCwd);
+      setFocusChatActive(true);
+      return;
+    }
+    const owningWorkspace =
+      linkedProjectForPath(resumedConvo.cwd, recentFolders) ??
+      canonicalWorkspaceRoot(resumedConvo.cwd);
+    if (owningWorkspace && owningWorkspace !== workspaceRoot) {
+      changeRoot(owningWorkspace);
+    }
+    setAiPanelCwd(primaryPanelId, pinnedCwd);
+    targetResume(primaryPanelId, resumedConvo);
+    setFocusChatActive(true);
+  }
+
+  /** The drop plumbing every Focus half shares. `dragover` must preventDefault
+   *  for the drop to be allowed at all, and it is also the only moment the
+   *  browser lets us ask *what* is being dragged — hence the types check
+   *  rather than a payload read. */
+  function focusPaneDropProps(target: "primary" | "split") {
+    return {
+      onDragOver: (e: ReactDragEvent) => {
+        if (!isConversationDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      },
+      onDragEnter: (e: ReactDragEvent) => {
+        if (isConversationDrag(e.dataTransfer)) setFocusDropTarget(target);
+      },
+      onDragLeave: (e: ReactDragEvent) => {
+        // Moving onto a child fires `dragleave` on the parent; only a pointer
+        // that has actually left the pane clears the highlight.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setFocusDropTarget((current) => (current === target ? null : current));
+      },
+      onDrop: (e: ReactDragEvent) => {
+        const id = readConversationDrag(e.dataTransfer);
+        setFocusDropTarget(null);
+        if (!id) return;
+        e.preventDefault();
+        openDroppedConversation(target, id);
+      },
+    };
+  }
+
+  /** The Focus canvas. One conversation, two side by side, or the race strip's
+   *  tabs — always the same fully wired AiPanel, never a reader copy, and
+   *  always mounted: run subscriptions are mount-tied, so a half you are not
+   *  looking at must still be in the tree to keep streaming.
+   *
+   *  The canvas carries no split affordance of its own. A split is opened by
+   *  dragging a conversation onto it or with ⌘N, and killed with ⌘W — three
+   *  gestures, no chrome added to the calm screen. */
+  function renderFocusChat(): ReactNode {
+    if (raceWatchTabs.length > 0) {
+      // Race watch: every racer's panel stays MOUNTED, the inactive tab is
+      // only display:none.
+      const activeId = focusActiveTabId ?? raceWatchTabs[0].panelId;
+      return raceWatchTabs.map((t) => (
+        <div
+          key={t.panelId}
+          style={{
+            display: t.panelId === activeId ? "flex" : "none",
+            flex: 1,
+            minHeight: 0,
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          {renderAiPanel(aiPanels.find((p) => p.id === t.panelId), {
+            key: `focus-${t.panelId}`,
+            variant: "focus",
+            respectWorktree: true,
+          })}
+        </div>
+      ));
+    }
+    const splitPanel = focusSplitPanelId
+      ? aiPanels.find((p) => p.id === focusSplitPanelId)
+      : undefined;
+    // Dragging a conversation over an unsplit canvas opens the seam *while you
+    // drag*: the conversation you are in gives up exactly the width the second
+    // one will take, so the drop lands where the preview already is. Dropping
+    // means "beside" — it is the whole point of the gesture, and a drop that
+    // replaced what you were reading would be the one thing you cannot undo.
+    const previewing = focusConversationDrag && !splitPanel;
+    const opened = splitPanel !== undefined && focusSplitShown;
+    const primaryBasis = opened || previewing ? focusSplitRatio * 100 : 100;
+    return (
+      <div
+        ref={focusSplitRowRef}
+        className="klide-focus-split-row"
+        data-resizing={focusSplitResizing || undefined}
+        {...(splitPanel ? {} : focusPaneDropProps("split"))}
+      >
+        <div
+          key="focus-pane-primary"
+          className="klide-focus-split-pane"
+          data-drop-target={focusDropTarget === "primary" || undefined}
+          style={{ flexBasis: `${primaryBasis}%` }}
+          {...(splitPanel ? focusPaneDropProps("primary") : {})}
+        >
+          {renderPanel("ai", "focus-ai", { aiVariant: "focus" })}
+        </div>
+        {splitPanel ? (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize the split"
+              className="klide-focus-split-divider"
+              data-shown={opened || undefined}
+              onMouseDown={() => {
+                const row = focusSplitRowRef.current;
+                if (!row) return;
+                setFocusSplitResizing(true);
+                beginDragSession({
+                  cursor: "col-resize",
+                  onMove: (e) => {
+                    const box = row.getBoundingClientRect();
+                    if (box.width <= 0) return;
+                    const next = Math.min(
+                      0.75,
+                      Math.max(0.25, (e.clientX - box.left) / box.width)
+                    );
+                    setFocusSplitRatio(next);
+                  },
+                  onDone: () => {
+                    setFocusSplitResizing(false);
+                    try {
+                      localStorage.setItem(
+                        "klide.focus.splitRatio",
+                        String(focusSplitRatioRef.current)
+                      );
+                    } catch {
+                      /* storage unavailable */
+                    }
+                  },
+                });
+              }}
+            />
+            <div
+              key="focus-pane-split"
+              className="klide-focus-split-pane klide-focus-split-pane--second"
+              data-drop-target={focusDropTarget === "split" || undefined}
+              data-shown={opened || undefined}
+              style={{ flexBasis: `${opened ? (1 - focusSplitRatio) * 100 : 0}%` }}
+              {...focusPaneDropProps("split")}
+            >
+              {renderAiPanel(splitPanel, {
+                key: `focus-${splitPanel.id}`,
+                variant: "focus",
+                respectWorktree: true,
+              })}
+              {/* Focus hides the AI panel's own header, so the half needs a way
+                  out that isn't a keystroke. A word, revealed by the pointer
+                  being in this half — the same quiet text control the race
+                  strip closes with, not a piece of chrome the calm screen
+                  carries all the time. */}
+              <button
+                type="button"
+                className="klide-focus-split-close"
+                title="Close this half — the run keeps going (⌘W)"
+                onClick={() => closeFocusSplit()}
+              >
+                Close
+              </button>
+            </div>
+          </>
+        ) : (
+          previewing && (
+            /* Where it will land. Not a drop target of its own — the whole
+               canvas is one, and this is the shape the drop takes. */
+            <div
+              className="klide-focus-split-ghost"
+              aria-hidden="true"
+              data-drop-target={focusDropTarget === "split" || undefined}
+              style={{ flexBasis: `${(1 - focusSplitRatio) * 100}%` }}
+            >
+              <span>Open beside</span>
+            </div>
+          )
+        )}
+      </div>
+    );
+  }
+
   // Build the real panel for a grid cell. Reuses the same state/handlers as the
   // fixed frame, but with `fill` so each panel sizes to its cell.
   function renderPanel(
@@ -1596,6 +1888,52 @@ function App() {
     endRaceWatch();
   }
 
+  // Split the Focus canvas in two. The second half is an ordinary fleet panel
+  // (appended directly rather than through `admit`, whose reveal ritual is for
+  // panels arriving into the *workbench*), so it carries its own provider,
+  // model, history and composer. Closing the split releases it — the run it
+  // was watching keeps going in Rust and stays on the Mission Control board,
+  // the same contract "End watch" honours for a race.
+  function openFocusSplit(convo?: Conversation, cwd?: string) {
+    if (focusSplitPanelId) {
+      // An empty call is "make sure the split is open" — ⌘N and the rail
+      // toggle both mean that, and neither may repoint a half that already
+      // holds a conversation.
+      if (convo) {
+        setAiPanelCwd(focusSplitPanelId, cwd);
+        targetResume(focusSplitPanelId, convo);
+      }
+      return focusSplitPanelId;
+    }
+    const primary = aiPanels[0];
+    const panelId = appendAiPanel({
+      provider: convo?.provider ?? primary?.provider,
+      model: convo?.model ?? primary?.model,
+      // Seeded at creation rather than pinned after: the panel's workspace is
+      // part of its Conversation session key, so setting it afterwards would
+      // remount the half the moment it appeared.
+      cwd: convo ? cwd : primary?.cwd,
+    });
+    setFocusSplitPanelId(panelId);
+    if (convo) targetResume(panelId, convo);
+    return panelId;
+  }
+
+  function closeFocusSplit() {
+    if (!focusSplitPanelId) return;
+    release(focusSplitPanelId);
+    setFocusSplitPanelId(null);
+  }
+
+  // The split half can also be closed from its own panel chrome, or released
+  // with the fleet — the canvas must not keep pointing at a panel that is
+  // gone.
+  useEffect(() => {
+    if (focusSplitPanelId && !aiPanels.some((p) => p.id === focusSplitPanelId)) {
+      setFocusSplitPanelId(null);
+    }
+  }, [aiPanels, focusSplitPanelId]);
+
   // Open an existing worktree (from the Worktrees modal) in a fresh AI panel
   // pinned to its path — same pin mechanism as newWorktreeRun, no new branch.
   function openExistingWorktree(path: string) {
@@ -1977,6 +2315,14 @@ function App() {
         setPaletteOpen(true);
         return;
       }
+      // ⌘W closes what is in front of you. Focus has no editor tabs, so there
+      // it means the second conversation — the counterpart to ⌘N, and the only
+      // way to close a half now that the canvas carries no chrome.
+      if (mod && !e.shiftKey && e.key === "w" && focusBase && overlay === null && focusSplitPanelId) {
+        e.preventDefault();
+        closeFocusSplit();
+        return;
+      }
       if (mod && !e.shiftKey && e.key === "w" && tabs.length > 0) {
         e.preventDefault();
         closeTab(activeIdx >= 0 ? activeIdx : 0);
@@ -1994,6 +2340,14 @@ function App() {
       }
       if (mod && !e.shiftKey && e.key === "n") {
         e.preventDefault();
+        // ⌘N means "the other one": in the workbench that is the editor you
+        // came from, and in Focus — which has no editor — it is a second
+        // conversation beside the one you are in. Already split, it does
+        // nothing: ⌘N never takes a conversation away.
+        if (focusBase && overlay === null && focusChatActive) {
+          if (!focusSplitPanelId) openFocusSplit();
+          return;
+        }
         back();
         return;
       }
@@ -2027,7 +2381,7 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, activeIdx, tabs, saveActive, paletteOpen, searchVisible, overlay, explorerVisible, terminalVisible, aiVisible, shortcutsOpen]);
+  }, [active, activeIdx, tabs, saveActive, paletteOpen, searchVisible, overlay, explorerVisible, terminalVisible, aiVisible, shortcutsOpen, focusBase, focusChatActive, focusSplitPanelId, aiPanels]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -2382,37 +2736,7 @@ function App() {
                     setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
                     setFocusChatActive(false);
                   }}
-                  onOpenConversation={(convo) => {
-                    // A conversation from another project's history brings its
-                    // project along — resuming it against the wrong workspace
-                    // would point every tool at the wrong tree.
-                    endFocusRaceWatch();
-                    const legacyWorkspace = legacyAutoRunWorkspace(convo);
-                    const resumedConvo = legacyWorkspace
-                      ? {
-                          ...convo,
-                          cwd: legacyWorkspace,
-                          branch: null,
-                          worktree: null,
-                        }
-                      : convo;
-                    markFolderWorked(resumedConvo.cwd);
-                    const owningWorkspace =
-                      linkedProjectForPath(resumedConvo.cwd, recentFolders) ??
-                      canonicalWorkspaceRoot(resumedConvo.cwd);
-                    if (owningWorkspace && owningWorkspace !== workspaceRoot) {
-                      changeRoot(owningWorkspace);
-                    }
-                    // Legacy ordinary conversations were auto-isolated before
-                    // that policy was removed. Reopen those on the Workspace;
-                    // intentional worktree conversations stay pinned.
-                    setAiPanelCwd(
-                      primaryPanelId,
-                      legacyWorkspace ? undefined : convo.cwd ?? undefined,
-                    );
-                    targetResume(primaryPanelId, resumedConvo);
-                    setFocusChatActive(true);
-                  }}
+                  onOpenConversation={(convo) => openFocusConversation(convo, "primary")}
                   onSubmit={(text) => {
                     markFolderWorked(workspaceRoot);
                     // A normal Focus task runs in the open Workspace. Worktree
@@ -2524,31 +2848,7 @@ function App() {
                     endFocusRaceWatch();
                     setFocusChatActive(false);
                   }}
-                  renderChat={() => {
-                    if (raceWatchTabs.length === 0)
-                      return renderPanel("ai", "focus-ai", { aiVariant: "focus" });
-                    // Race watch: every racer's panel stays MOUNTED (run
-                    // subscriptions are mount-tied), the inactive tab is only
-                    // display:none.
-                    const activeId = focusActiveTabId ?? raceWatchTabs[0].panelId;
-                    return raceWatchTabs.map((t) => (
-                      <div
-                        key={t.panelId}
-                        style={{
-                          display: t.panelId === activeId ? "flex" : "none",
-                          flex: 1,
-                          minHeight: 0,
-                          flexDirection: "column",
-                          overflow: "hidden",
-                        }}
-                      >
-                        {renderAiPanel(
-                          aiPanels.find((p) => p.id === t.panelId),
-                          { key: `focus-${t.panelId}`, variant: "focus", respectWorktree: true }
-                        )}
-                      </div>
-                    ));
-                  }}
+                  renderChat={renderFocusChat}
                   provider={
                     aiPanels[0]?.provider ??
                     ((localStorage.getItem("klide.provider") as ProviderId) || "ollama")
