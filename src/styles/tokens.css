@@ -3772,6 +3772,25 @@ button:focus-visible .menu-leadout {
      are 15px and so had an inset to hide behind). Measured from the box edge,
      not from the artwork, so it holds whatever a logo looks like. */
   --rail-branch-gap: 4px;
+  /* A tree row's glyph steps off the fill's leading edge, the way a top-level
+     row's steps off its `--rail-row-pad`. Without it the mark sits flush in the
+     corner of the highlight — the fill starts where the content starts, and a
+     provider mark fills its 16px box edge to edge, so a full-bleed one (Claude
+     Code's) reads as ragged against it. Smaller than a top-level row's pad:
+     these rows are tighter by nature, and the branch already leaves
+     `--rail-branch-gap` of air before the fill even begins. It applies at every
+     nesting level, so each one steps in by the same amount and the offset from
+     the parent's label reads as rhythm rather than a slip. */
+  --rail-fill-lead: 4px;
+  /* One fill for every row in the rail, at every level: quiet under the
+     pointer, full when the row is the active one. It was written out five
+     times further down, which is five places to drift. */
+  --rail-fill-hover: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+  --rail-fill-active: var(--bg-hover);
+  /* Rows fade their fill rather than snapping it — the shortest motion token,
+     so it registers as a response without becoming an animation. */
+  --rail-fill-motion: background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
   /* One colour for the whole tree — the vertical and the curve both read it,
      so they can never drift apart. */
   --rail-tree-line: color-mix(in srgb, var(--fg-subtle) 26%, transparent);
@@ -4041,16 +4060,17 @@ button:focus-visible .menu-leadout {
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
+  transition: var(--rail-fill-motion);
 }
 
 .klide-focus-nav-row:hover {
   color: var(--fg-strong);
-  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+  background: var(--rail-fill-hover);
 }
 
 .klide-focus-nav-row[data-active="true"] {
   color: var(--fg-strong);
-  background: var(--bg-hover);
+  background: var(--rail-fill-active);
 }
 
 /* Every stack of rows in the rail uses the same gap, so the vertical rhythm is
@@ -4098,31 +4118,43 @@ button:focus-visible .menu-leadout {
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
+  transition: var(--rail-fill-motion);
 }
 
 .klide-focus-more-projects:hover,
 .klide-focus-more-projects:focus-visible {
   color: var(--fg-strong);
-  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+  background: var(--rail-fill-hover);
 }
 
+/* The disclosure under a provider's conversations. It belongs to that level, so
+   it is measured from it rather than padded in by an eyeballed two steps: the
+   box starts exactly where a conversation's fill starts (one step to the
+   conversation spine, then that row's own content offset), so no fill in the
+   group crosses a trunk line. Its label then steps one more to land on the
+   conversation titles — it has no icon of its own, so the title column is the
+   column it belongs in. */
 .klide-focus-more-conversations {
-  width: 100%;
+  width: auto;
   height: calc(var(--rail-row-h) - 4px);
   display: flex;
   align-items: center;
-  padding: 0 var(--rail-row-pad) 0 calc(var(--rail-row-pad) + var(--rail-step) + var(--rail-step));
+  margin-left: calc(
+    var(--rail-step) + var(--rail-row-pad) + var(--rail-step) - var(--rail-spine)
+  );
+  padding: 0 var(--rail-row-pad) 0 calc(var(--rail-fill-lead) + var(--rail-step));
   border-radius: var(--radius-lg);
   color: var(--fg-dim);
   font-size: 11.5px;
   text-align: left;
   cursor: pointer;
+  transition: var(--rail-fill-motion);
 }
 
 .klide-focus-more-conversations:hover,
 .klide-focus-more-conversations:focus-visible {
   color: var(--fg-strong);
-  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+  background: var(--rail-fill-hover);
 }
 
 .klide-focus-project-head {
@@ -4443,10 +4475,32 @@ button:focus-visible .menu-leadout {
   text-align: left;
 }
 
+/* The provider row hangs off a spine too, so its fill has the same job as a
+   conversation's: start after the elbow's run, and reach through the row's
+   right padding so every rail hover shares one trailing edge. Painting it on
+   the row would swallow the curve, since the row's box starts on the spine. */
+.klide-focus-provider-history-content {
+  transition: var(--rail-fill-motion);
+  padding-left: var(--rail-fill-lead);
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--rail-gap);
+  flex: 1;
+  border-radius: var(--radius-lg);
+  margin-right: calc(-1 * var(--rail-row-pad));
+  padding-right: var(--rail-row-pad);
+}
+
 .klide-focus-provider-history-row:hover,
 .klide-focus-provider-history-row:focus-visible {
   color: var(--fg-strong);
-  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+}
+
+.klide-focus-provider-history-row:hover .klide-focus-provider-history-content,
+.klide-focus-provider-history-row:focus-visible .klide-focus-provider-history-content {
+  background: var(--rail-fill-hover);
 }
 
 .klide-focus-provider-history-logo {
@@ -4519,8 +4573,9 @@ button:focus-visible .menu-leadout {
 }
 
 .klide-focus-provider-history[data-contains-selected="true"]
-  > .klide-focus-provider-history-row[aria-expanded="false"] {
-  background: var(--bg-hover);
+  > .klide-focus-provider-history-row[aria-expanded="false"]
+  .klide-focus-provider-history-content {
+  background: var(--rail-fill-active);
 }
 
 /* ── Revealing a project's tree ───────────────────────────────────────────
@@ -4724,6 +4779,7 @@ button:focus-visible .menu-leadout {
 }
 
 .klide-focus-convo-content {
+  transition: var(--rail-fill-motion);
   min-width: 0;
   height: 100%;
   display: flex;
@@ -4740,6 +4796,7 @@ button:focus-visible .menu-leadout {
 .klide-focus-convo-row[data-nested="true"] .klide-focus-convo-content {
   margin-right: calc(-1 * var(--rail-row-pad));
   padding-right: var(--rail-row-pad);
+  padding-left: var(--rail-fill-lead);
 }
 
 .klide-focus-convo-row:hover,
@@ -4751,7 +4808,7 @@ button:focus-visible .menu-leadout {
 .klide-focus-convo-row:not([data-nested="true"]):focus-visible,
 .klide-focus-convo-row[data-nested="true"]:hover .klide-focus-convo-content,
 .klide-focus-convo-row[data-nested="true"]:focus-visible .klide-focus-convo-content {
-  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+  background: var(--rail-fill-hover);
 }
 
 .klide-focus-convo-title {
@@ -6419,6 +6476,11 @@ button:focus-visible .menu-leadout {
   .klide-focus-git-island-arrow,
   .klide-focus-home-card-arrow,
   .klide-focus-provider-groups,
+  .klide-focus-nav-row,
+  .klide-focus-convo-content,
+  .klide-focus-provider-history-content,
+  .klide-focus-more-projects,
+  .klide-focus-more-conversations,
   .klide-focus-provider-history-count,
   .klide-focus-provider-history-chevron,
   .klide-focus-tree-elbow,

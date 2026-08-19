@@ -797,28 +797,33 @@ function ProviderHistoryGroup({
         title={`${providerName(group.provider)} · ${countLabel}${readOnly ? " · read only in Focus" : ""}`}
       >
         <TreeElbow />
-        <span className="klide-focus-provider-history-logo" aria-hidden="true">
-          <ProviderLogo id={group.provider} size={16} />
-        </span>
-        <span className="klide-focus-provider-history-name">
-          {providerName(group.provider)}
-        </span>
-        <span className="klide-focus-provider-history-count" aria-label={countLabel}>
-          {group.conversations.length}
-        </span>
-        <span className="klide-focus-provider-history-chevron" aria-hidden="true">
-          <svg
-            width="9"
-            height="9"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="m9 6 6 6-6 6" />
-          </svg>
+        {/* Same wrapper the conversation rows use: the row's box starts on the
+            spine, so its own fill would paint under the curve. The fill lives
+            on the content instead, which begins after the elbow's run. */}
+        <span className="klide-focus-provider-history-content">
+          <span className="klide-focus-provider-history-logo" aria-hidden="true">
+            <ProviderLogo id={group.provider} size={16} />
+          </span>
+          <span className="klide-focus-provider-history-name">
+            {providerName(group.provider)}
+          </span>
+          <span className="klide-focus-provider-history-count" aria-label={countLabel}>
+            {group.conversations.length}
+          </span>
+          <span className="klide-focus-provider-history-chevron" aria-hidden="true">
+            <svg
+              width="9"
+              height="9"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="m9 6 6 6-6 6" />
+            </svg>
+          </span>
         </span>
       </button>
 
