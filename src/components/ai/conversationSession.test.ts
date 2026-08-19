@@ -75,6 +75,8 @@ describe("restoreConversationSession", () => {
       messages: saved.msgs,
       provider: "openai",
       model: "gpt-5.4",
+      originProvider: "openai",
+      originModel: "gpt-5.4",
       workspaceRoot: "/workspace",
       branch: "feature/saved",
       worktree: "saved-tree",
@@ -511,5 +513,97 @@ describe("snapshotConversationSession", () => {
       worktree: "a",
       forkedFrom: null,
     });
+  });
+});
+
+describe("a thread records the Provider that produced it, not the picker", () => {
+  it("stamps the origin from the Run that dispatched, once", () => {
+    const started = conversationSessionReducer(
+      session({ provider: "claude-code", model: "default" }),
+      { type: "run-started", activity: "thinking", provider: "claude-code", model: "default" },
+    );
+    expect(started.originProvider).toBe("claude-code");
+
+    // A second Run on another Provider continues the thread; it does not
+    // rewrite what the earlier turns came from.
+    const switched = conversationSessionReducer(started, {
+      type: "configured",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4",
+    });
+    const secondRun = conversationSessionReducer(switched, {
+      type: "run-started",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4",
+    });
+    expect(secondRun.provider).toBe("openrouter");
+    expect(secondRun.originProvider).toBe("claude-code");
+    expect(secondRun.originModel).toBe("default");
+  });
+
+  it("persists the origin, so moving the picker cannot relabel history", () => {
+    const ran = conversationSessionReducer(
+      session({ provider: "claude-code", model: "default" }),
+      { type: "run-started", provider: "claude-code", model: "default" },
+    );
+    const switched = conversationSessionReducer(ran, {
+      type: "configured",
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4",
+    });
+    const snapshot = snapshotConversationSession(switched, 100);
+    expect(snapshot?.provider).toBe("claude-code");
+    expect(snapshot?.model).toBe("default");
+  });
+
+  it("a fresh identity is unstamped until its own Run", () => {
+    const ran = conversationSessionReducer(session(), {
+      type: "run-started",
+      provider: "ollama",
+      model: "qwen3",
+    });
+    const fresh = conversationSessionReducer(ran, {
+      type: "fresh-started",
+      conversationId: "conversation-b",
+    });
+    expect(fresh.originProvider).toBeUndefined();
+    expect(
+      conversationSessionReducer(fresh, {
+        type: "run-started",
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4",
+      }).originProvider,
+    ).toBe("openrouter");
+  });
+
+  it("keeps a mid-thread Provider switch as the dispatch target across a remount", () => {
+    const stored: Conversation = {
+      id: "delegate-thread",
+      title: "Saved",
+      msgs: [userMessage, { role: "assistant", content: "Working" }],
+      updatedAt: 42,
+      provider: "claude-code",
+      model: "default",
+      cwd: "/workspace",
+    };
+    localStorage.setItem("klide-conversations", JSON.stringify([stored]));
+    const binding: PanelSession = {
+      convoId: stored.id,
+      workspaceRoot: "/workspace",
+      provider: "openrouter",
+    };
+    localStorage.setItem("klide.panelSession.ai-main", JSON.stringify(binding));
+
+    const restored = restoreConversationSession({
+      panelId: "ai-main",
+      provider: "ollama",
+      model: "qwen3",
+      workspaceRoot: "/workspace",
+    });
+    // Next turn goes where the panel was left…
+    expect(restored.provider).toBe("openrouter");
+    // …while the thread still says what produced its turns.
+    expect(restored.originProvider).toBe("claude-code");
+    expect(snapshotConversationSession(restored, 50)?.provider).toBe("claude-code");
   });
 });

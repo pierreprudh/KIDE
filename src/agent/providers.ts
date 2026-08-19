@@ -1,6 +1,6 @@
 import type { AgentMode, ProviderId } from "./types";
 import { customProviderSync, isCustomProvider } from "../customProviders";
-import { customCliSync, isCustomCli } from "../customCli";
+import { customCliSync, getCustomCliSync, isCustomCli } from "../customCli";
 import { isDelegateId } from "../delegates";
 
 export type ProviderGroup = {
@@ -218,6 +218,35 @@ export function providerGroupsWithCustom(
 
 export function isDelegateProvider(id: ProviderId): boolean {
   return providerDefinition(id)?.runtime === "delegate" || isDelegateId(id);
+}
+
+/**
+ * The reverse of `providerName`, for delegate CLIs only.
+ *
+ * A stored assistant turn records the CLI that produced it as a *display name*
+ * (`Msg.delegateProvider`, written as `providerName(turn.provider)`), which is
+ * the only surviving evidence of a thread's origin once its metadata has been
+ * overwritten. This maps that name back to an id so the heal in
+ * `conversationOriginHeal.ts` can restore it.
+ *
+ * Built-ins plus whatever custom CLIs the sync store already holds; `null`
+ * when no delegate in this build answers to that name (a renamed custom CLI,
+ * or a store not yet loaded — the caller must leave such a record alone rather
+ * than guess).
+ */
+export function delegateProviderByName(name: string): ProviderId | null {
+  const wanted = name.trim().toLowerCase();
+  if (!wanted) return null;
+  const builtin = PROVIDER_CATALOG.find(
+    (provider) =>
+      provider.runtime === "delegate" &&
+      (provider.name.toLowerCase() === wanted ||
+        provider.shortName?.toLowerCase() === wanted ||
+        provider.id.toLowerCase() === wanted),
+  );
+  if (builtin) return builtin.id;
+  const custom = getCustomCliSync().find((cli) => cli.label.trim().toLowerCase() === wanted);
+  return custom ? (custom.id as ProviderId) : null;
 }
 
 export function normalizeAgentMode(value: string | null): AgentMode {

@@ -276,10 +276,16 @@ export function latestRestorableConversationId(
     .filter((conv) => hasRestorableMessages(conv))
     .filter((conv) => !workspaceRoot || !conv.cwd || conv.cwd === workspaceRoot)
     .sort((a, b) => b.updatedAt - a.updatedAt);
-  const providerMatch = provider
-    ? conversations.find((conv) => conv.provider === provider)
-    : null;
-  return (providerMatch ?? conversations[0])?.id ?? null;
+  // A panel only restores a Conversation that ran on its own Provider. The
+  // fallback used to be "otherwise the most recent thread of any Provider",
+  // which is how an OpenRouter panel silently adopted a Claude Code thread —
+  // and, once the picker moved, relabelled it (see `originProvider` in
+  // conversationSession.ts). With no thread for this Provider the panel opens
+  // a fresh one; history is one click away and keeps its own identity.
+  if (provider) {
+    return conversations.find((conv) => conv.provider === provider)?.id ?? null;
+  }
+  return conversations[0]?.id ?? null;
 }
 
 // A panel's *conversation* identity is separate from its *panel* identity

@@ -6,6 +6,7 @@ import {
   conversationDuration,
   conversationStartedAt,
   deriveTitle,
+  latestRestorableConversationId,
   loadConversations,
   loadPanelSession,
   persistConversation,
@@ -359,5 +360,29 @@ describe("deriveTitle — the one title rule", () => {
     expect(deriveTitle([])).toBe("Untitled chat");
     expect(deriveTitle([{ role: "user", content: "   " }])).toBe("Untitled chat");
     expect(deriveTitle([{ role: "assistant", content: "only me" }])).toBe("Untitled chat");
+  });
+});
+
+describe("a panel restores only its own Provider's thread", () => {
+  it("does not adopt another Provider's conversation when this one has none", () => {
+    saveConversations([
+      conversation({ id: "delegate-thread", provider: "claude-code", updatedAt: 9 }),
+    ]);
+    expect(latestRestorableConversationId("/workspace", "openrouter")).toBeNull();
+  });
+
+  it("still finds this Provider's own most recent thread past a newer foreign one", () => {
+    saveConversations([
+      conversation({ id: "delegate-thread", provider: "claude-code", updatedAt: 9 }),
+      conversation({ id: "router-thread", provider: "openrouter", updatedAt: 4 }),
+    ]);
+    expect(latestRestorableConversationId("/workspace", "openrouter")).toBe("router-thread");
+  });
+
+  it("falls back to the latest thread only when no Provider is asked for", () => {
+    saveConversations([
+      conversation({ id: "delegate-thread", provider: "claude-code", updatedAt: 9 }),
+    ]);
+    expect(latestRestorableConversationId("/workspace")).toBe("delegate-thread");
   });
 });

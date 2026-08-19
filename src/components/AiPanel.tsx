@@ -606,8 +606,16 @@ export function AiPanel({
   function setMsgs(messages: Msg[]) {
     transitionConversation({ type: "messages-replaced", messages });
   }
-  function startConversationRun(activity: ConversationRunActivity = null) {
-    transitionConversation({ type: "run-started", activity });
+  function startConversationRun(
+    activity: ConversationRunActivity = null,
+    dispatched?: { provider: ProviderId; model: string },
+  ) {
+    transitionConversation({
+      type: "run-started",
+      activity,
+      provider: dispatched?.provider,
+      model: dispatched?.model,
+    });
   }
   function settleConversationRun() {
     transitionConversation({ type: "run-settled" });
@@ -2493,7 +2501,9 @@ This user request requires workspace inspection. Before answering, you MUST call
     const assistantIndex = userIndex + 1;
     msgsRef.current = nextMsgs;
     setMsgs(nextMsgs);
-    startConversationRun("thinking");
+    // The turn carries the pair it actually dispatches with, which stamps the
+    // thread's origin on its first Run.
+    startConversationRun("thinking", { provider: turn.provider, model: turn.model });
     // A fresh assistant turn is the one place we want to yank the user
     // back to the bottom even if they were scrolled up reading context.
     // Their action (sending a message) implies "I want to see the reply".

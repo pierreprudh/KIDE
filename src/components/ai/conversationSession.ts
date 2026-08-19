@@ -26,8 +26,17 @@ export type ConversationRunActivity = "thinking" | "waiting" | null;
 export type ConversationSession = {
   conversationId: string;
   messages: Msg[];
+  /** Where the *next* turn goes. The picker edits this; it is the panel's
+   *  dispatch target, not a claim about the messages already on screen. */
   provider: ProviderId;
   model: string;
+  /** Where the turns already on screen actually came from — stamped by the
+   *  first Run of this identity and then frozen. This, not `provider`, is
+   *  what the Stored conversation records, so moving the picker to another
+   *  Provider cannot retroactively relabel a thread it never ran. Undefined
+   *  until a Run stamps it (or a restore/resume carries one in). */
+  originProvider?: ProviderId;
+  originModel?: string | null;
   workspaceRoot: string | null;
   branch: string | null;
   worktree: string | null;
@@ -71,7 +80,14 @@ export type ConversationSessionAction =
       mode: "chat" | "worktree";
       createdAt: number;
     }
-  | { type: "run-started"; activity?: ConversationRunActivity }
+  | {
+      type: "run-started";
+      activity?: ConversationRunActivity;
+      /** The pair this Run actually dispatched with. Stamps the thread's
+       *  origin on its first Run; later Runs never restamp it. */
+      provider?: ProviderId;
+      model?: string;
+    }
   | { type: "run-settled" };
 
 function workspaceMatches(conversation: Conversation, workspaceRoot: string | null): boolean {
@@ -139,11 +155,22 @@ export function restoreConversationSession({
     createId();
   const saved = byId.get(conversationId);
 
+  // The binding records where this panel last dispatched THIS conversation, so
+  // it outranks the stored record for the next turn — a mid-thread Provider
+  // switch survives a remount. The stored record still owns the thread's
+  // origin below.
+  const bindingProvider =
+    canUsePanelBinding && panelBinding?.convoId === conversationId
+      ? panelBinding.provider
+      : undefined;
+
   return {
     conversationId,
     messages: saved?.msgs ?? [],
-    provider: saved?.provider ?? (canUsePanelBinding ? boundProvider : provider),
+    provider: bindingProvider ?? saved?.provider ?? provider,
     model: saved?.model || model,
+    originProvider: saved?.provider,
+    originModel: saved?.model ?? undefined,
     workspaceRoot,
     // A restored Conversation without branch metadata predates branch
     // capture. Treat that as unknown: assigning today's checked-out branch
@@ -176,6 +203,9 @@ export function conversationSessionReducer(
         ...session,
         conversationId: action.conversationId,
         messages: [],
+        // A new identity has produced nothing yet — its first Run stamps it.
+        originProvider: undefined,
+        originModel: undefined,
         branch: action.branch ?? null,
         worktree: null,
         forkedFrom: null,
@@ -191,6 +221,8 @@ export function conversationSessionReducer(
         messages: conversation.msgs,
         provider: conversation.provider ?? session.provider,
         model: conversation.model || session.model,
+        originProvider: conversation.provider,
+        originModel: conversation.model ?? undefined,
         branch: conversation.branch ?? null,
         worktree: conversation.worktree ?? null,
         forkedFrom: conversation.forkedFrom ?? null,
@@ -214,6 +246,13 @@ export function conversationSessionReducer(
     case "run-started":
       return {
         ...session,
+        // First Run of this identity stamps what produced its turns; a later
+        // Run on another Provider continues the thread without rewriting it.
+        originProvider: session.originProvider ?? action.provider ?? session.provider,
+        originModel:
+          session.originProvider !== undefined
+            ? session.originModel
+            : action.model ?? session.model,
         run: { active: true, activity: action.activity ?? null },
       };
     case "run-settled":
@@ -313,8 +352,10 @@ export function snapshotConversationSession(
     msgs: messages,
     updatedAt,
     createdAt: (firstStamped as { ts?: number } | undefined)?.ts ?? updatedAt,
-    provider: session.provider,
-    model: session.model,
+    // The thread's own Provider/model, never the panel's current dispatch
+    // target — history rows and Mission Control read this snapshot.
+    provider: session.originProvider ?? session.provider,
+    model: session.originModel ?? session.model,
     cwd: session.workspaceRoot,
     branch: session.branch,
     worktree: session.worktree,
