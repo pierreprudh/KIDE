@@ -5500,33 +5500,45 @@ button:focus-visible .menu-leadout {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* The way out of the second half, in a word. Hidden until the pointer is in
-   that half — a conversation you are only reading carries no controls — and
-   sitting in the top-right corner the focus variant leaves empty. */
+/* The way out of the second half. Focus hides the panel header, so this stands
+   where that header's close would have been — the app's own close mark, at the
+   app's one icon weight, never a private glyph.
+
+   It stays visible: a control you cannot find is not a control, and this half's
+   only other exit is a keystroke. The mark is all there is — no fill, no frame,
+   nothing that reads as a box. What answers the pointer is weight of colour,
+   dim at rest and strong under the cursor. The 24px square is hit area only. */
 .klide-focus-split-close {
   position: absolute;
   top: 8px;
-  right: 14px;
+  right: 10px;
   z-index: 4;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: none;
   background: transparent;
-  padding: 2px 4px;
-  font: inherit;
-  font-size: 11.5px;
   color: var(--fg-dim);
   cursor: pointer;
-  opacity: 0;
+  /* Barely there until looked for: present enough to be found, faint enough
+     that a conversation you are reading is not sharing the page with a
+     control. */
+  opacity: 0.4;
   transition:
     opacity var(--motion-fast) var(--ease-out),
     color var(--motion-fast) var(--ease-out);
 }
 
-.klide-focus-split-pane:hover .klide-focus-split-close,
-.klide-focus-split-close:focus-visible {
-  opacity: 1;
+.klide-focus-split-pane:hover .klide-focus-split-close {
+  opacity: 0.75;
+  color: var(--fg-subtle);
 }
 
-.klide-focus-split-close:hover {
+.klide-focus-split-close:hover,
+.klide-focus-split-close:focus-visible {
+  opacity: 1;
   color: var(--fg-strong);
 }
 

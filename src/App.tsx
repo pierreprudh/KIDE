@@ -14,6 +14,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { WorkspaceRail, type RailNavItem } from "./components/WorkspaceRail";
 import {
+  CloseIcon,
   FocusLayoutIcon,
   FolderIcon,
   GitIcon,
@@ -1347,17 +1348,17 @@ function App() {
                 respectWorktree: true,
               })}
               {/* Focus hides the AI panel's own header, so the half needs a way
-                  out that isn't a keystroke. A word, revealed by the pointer
-                  being in this half — the same quiet text control the race
-                  strip closes with, not a piece of chrome the calm screen
-                  carries all the time. */}
+                  out that isn't a keystroke. The app's own close mark from
+                  icons.tsx — one vocabulary, one weight — sitting where that
+                  header's close would have been. */}
               <button
                 type="button"
                 className="klide-focus-split-close"
+                aria-label="Close this conversation"
                 title="Close this half — the run keeps going (⌘W)"
                 onClick={() => closeFocusSplit()}
               >
-                Close
+                <CloseIcon size={14} />
               </button>
             </div>
           </>
