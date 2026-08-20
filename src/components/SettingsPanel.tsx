@@ -562,8 +562,6 @@ export function SettingsPanel({
 
   return (
     <main
-      // Its top inset is the title-bar band, so that strip drags the window.
-      data-tauri-drag-region
       style={{
         flex: 1,
         minWidth: 0,

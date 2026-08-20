@@ -2206,7 +2206,7 @@ function App() {
         style={{ flex: 1, display: "flex", minHeight: 0 }}
       >
         {overlay === "settings" ? (
-          <div className="klide-shell-col">
+          <div className="klide-shell-col" data-tauri-drag-region>
           <Suspense fallback={null}>
             <SettingsPanel
               key={settingsInitial ?? "default"}
@@ -2291,8 +2291,13 @@ function App() {
             )}
 
             {/* Everything right of the rail — the views and the status bar —
-                is one column, so the bar stops at the rail's inner edge. */}
-            <div className="klide-shell-col">
+                is one column, so the bar stops at the rail's inner edge. It
+                also owns the title-bar band (`.klide-app-row` rule), so it is
+                the element the traffic-light strip belongs to — and therefore
+                the one that has to carry the window drag region. Its children
+                fill the rest of the column and remain their own event targets,
+                so only the empty band drags. */}
+            <div className="klide-shell-col" data-tauri-drag-region>
             {overlay === "git-review" ? (
               <Suspense fallback={null}>
                 <GitReview
@@ -2343,11 +2348,6 @@ function App() {
                 showing. Grid mode owns its own layout, so it's excluded. */}
             {!activeGrid && (
               <div
-                // Its top inset is the title-bar band (`.klide-app-row` rule),
-                // and in free/anchored mode that band is the widest thing the
-                // window can be grabbed by — the rail alone is 56px. Children
-                // are their own event targets and keep their clicks.
-                data-tauri-drag-region
                 style={{
                   display: overlay === null ? "flex" : "none",
                   flex: 1,
