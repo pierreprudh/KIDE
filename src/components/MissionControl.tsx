@@ -4567,9 +4567,6 @@ export function MissionControl({
     <div
       className="mission-control-workbench"
       data-inspector-open={artifactOpen ? "true" : undefined}
-      // The board's top inset is the title-bar band, so that strip drags the
-      // window (see `.klide-app-row` in tokens.css).
-      data-tauri-drag-region
       style={{ flex: 1, display: "flex", minWidth: 0, background: "var(--bg)" }}
     >
       {/* Board motion — same de-blur/spring-settle family as the rest of the app

@@ -1584,8 +1584,6 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
     <div
       ref={rootRef}
       className="shell-enter"
-      // Its top inset is the title-bar band, so that strip drags the window.
-      data-tauri-drag-region
       style={{ position: "relative", flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: "var(--bg)" }}
     >
       {/* Action feedback — a notification tucked into the bottom-right corner,

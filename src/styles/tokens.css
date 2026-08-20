@@ -1671,7 +1671,12 @@ textarea.klide-diff-comment-input:focus-visible {
    (workbench, Mission Control, Git, Orchestrator, Settings). The rail runs to
    the window's top edge — its surface is what the traffic lights sit on, and
    it pays for that band itself in `.klide-focus-rail`'s padding — so
-   everything *else* in the row keeps the band clear instead. */
+   everything *else* in the row keeps the band clear instead.
+
+   The row's non-rail child is `.klide-shell-col`, so *it* is the element the
+   band belongs to and the one that carries `data-tauri-drag-region` (App.tsx).
+   The views inside it no longer own an inset of their own, so putting the
+   attribute on them drags nothing. */
 .klide-app-row > *:not(.klide-focus-rail) {
   padding-top: var(--titlebar-h);
 }
