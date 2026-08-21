@@ -75,7 +75,12 @@ import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
 import { mayActivateModel } from "./ai/modelActivationPolicy";
-import { hostModelAdoption, offlineModelFallback } from "./ai/modelSelection";
+import {
+  hostModelAdoption,
+  offlineModelFallback,
+  providerSwitchModel,
+  unavailableModelFallback,
+} from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
 import { favModelsFor } from "../favModels";
@@ -410,14 +415,26 @@ function normalizeReflectionLevel(level: string | undefined | null): string | un
   }
 }
 
-// The model a provider SWITCH lands on: the top favourite for that provider
-// when one is starred, else the last-used/stored model. Continuing an existing
-// conversation still restores that conversation's own model — this only seeds
-// fresh provider picks. If the favourite turns out not to be available, the
-// models-load effect corrects to the first favourite that is (then the list
-// head).
+/** `klide.model.<provider>` when it holds a value this Provider can actually
+ *  use — the guards in `storedModelForProvider` reject another Provider's id
+ *  that leaked in, and a rejected value is no evidence of a pick. */
+function rememberedModelForProvider(id: ProviderId): string | null {
+  const raw = localStorage.getItem(`klide.model.${id}`);
+  if (!raw) return null;
+  return storedModelForProvider(id) === raw ? raw : null;
+}
+
+// The model a provider SWITCH lands on — see `providerSwitchModel` for why the
+// remembered pick outranks the stars. Continuing an existing conversation still
+// restores that conversation's own model; this only seeds fresh provider picks.
+// If the seed turns out not to be served, the models-load effect corrects it
+// through `unavailableModelFallback`.
 function switchModelForProvider(id: ProviderId): string {
-  return favModelsFor(id)[0] ?? storedModelForProvider(id);
+  return providerSwitchModel({
+    remembered: rememberedModelForProvider(id),
+    favourites: favModelsFor(id),
+    providerDefault: defaultModelForProvider(id),
+  });
 }
 
 // One-time migration, v2 (2026-07): delegate CLIs used to force a --model on
@@ -649,6 +666,16 @@ export function AiPanel({
   function changeModel(nextModel: string) {
     transitionConversation({ type: "configured", model: nextModel });
     onModelChange(nextModel);
+  }
+  /** The model the Provider substituted for a pick it no longer serves. Read
+   *  and cleared by the persist effect, so a substitution is never written
+   *  back as this Provider's remembered model. */
+  const autoPickedModelRef = useRef<string | null>(null);
+  /** Move off a model the Provider retired. Same transition as a human pick —
+   *  the session and the host both have to follow — but not remembered as one. */
+  function retireModel(nextModel: string) {
+    autoPickedModelRef.current = nextModel;
+    changeModel(nextModel);
   }
   // A restored Conversation owns its Provider/model pair. Notify the host on
   // first mount instead of letting the host's stale panel preferences overwrite
@@ -2292,6 +2319,17 @@ This user request requires workspace inspection. Before answering, you MUST call
       modelPersistArmed.current = true;
       return;
     }
+    // A model the *Provider* chose (the current pick was retired from its
+    // list) reaches this effect indistinguishably from one a human picked, and
+    // writing it makes the substitute the remembered default forever. That is
+    // how one stale pick became a permanent one: the panel landed on the
+    // oldest star for the Provider, wrote it here, and every later mount read
+    // it back. Retirements announce themselves through this ref and are not
+    // remembered; the pick they replace stays the last human answer.
+    if (autoPickedModelRef.current === model) {
+      autoPickedModelRef.current = null;
+      return;
+    }
     localStorage.setItem(`klide.model.${provider}`, model);
   }, [model, provider]);
 
@@ -2310,12 +2348,17 @@ This user request requires workspace inspection. Before answering, you MUST call
           next.unshift(CLI_DEFAULT_MODEL);
         }
         onAvailableModelsChange(next);
-        // Current model isn't available on this provider — prefer the first
-        // starred favourite that is, then fall back to the list head.
-        if (next.length > 0 && !next.includes(model)) {
-          const fav = favModelsFor(provider).find((m) => next.includes(m));
-          changeModel(fav ?? next[0]);
-        }
+        // The Provider does not serve the current pick, so it has to move —
+        // but to the best-evidenced model, not to whichever star is oldest
+        // (`unavailableModelFallback` records what that cost).
+        const retired = unavailableModelFallback({
+          available: next,
+          sessionModel: model,
+          rememberedModel: storedModelForProvider(provider),
+          providerDefault: fallbackModel,
+          favourites: favModelsFor(provider),
+        });
+        if (retired) retireModel(retired);
       } catch {
         if (cancelled) return;
         setConnected(false);
@@ -2327,7 +2370,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         // conversation ended up saved as an LFM one.
         const fallback = offlineModelFallback(model, storedModelForProvider(provider));
         onAvailableModelsChange([fallback]);
-        if (model !== fallback) changeModel(fallback);
+        if (model !== fallback) retireModel(fallback);
       }
     }
     void loadProviderModels();

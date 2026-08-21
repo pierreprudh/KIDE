@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hostModelAdoption, offlineModelFallback } from "./modelSelection";
+import {
+  hostModelAdoption,
+  offlineModelFallback,
+  providerSwitchModel,
+  unavailableModelFallback,
+} from "./modelSelection";
 
 describe("hostModelAdoption", () => {
   it("leaves the pair alone on mount — the restored Conversation owns it", () => {
@@ -69,5 +74,118 @@ describe("offlineModelFallback", () => {
     expect(offlineModelFallback("", "pierreprudh/lfm2.5-8b-a1b:latest")).toBe(
       "pierreprudh/lfm2.5-8b-a1b:latest",
     );
+  });
+});
+
+describe("unavailableModelFallback", () => {
+  // Pierre's own store, which is where this was found: seventeen OpenRouter
+  // stars, `sakana/fugu-ultra` the oldest and the DeepSeek pair the newest,
+  // with `klide.model.openrouter` holding the real last pick.
+  const favourites = ["sakana/fugu-ultra", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"];
+  const available = [
+    "sakana/fugu-ultra",
+    "z-ai/glm-5.2",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-4o",
+  ];
+
+  it("keeps a pick the Provider still serves", () => {
+    expect(
+      unavailableModelFallback({
+        available,
+        sessionModel: "deepseek/deepseek-v4-flash",
+        rememberedModel: "deepseek/deepseek-v4-flash",
+        providerDefault: "openai/gpt-4o",
+        favourites,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns to the Provider's remembered pick, not its oldest star", () => {
+    expect(
+      unavailableModelFallback({
+        // A foreign model crossed in — an Ollama tag on an OpenRouter panel.
+        available,
+        sessionModel: "pierreprudh/lfm2.5-8b-a1b:latest",
+        rememberedModel: "deepseek/deepseek-v4-flash",
+        providerDefault: "openai/gpt-4o",
+        favourites,
+      }),
+    ).toBe("deepseek/deepseek-v4-flash");
+  });
+
+  it("falls to the configured default when the remembered pick is gone too", () => {
+    expect(
+      unavailableModelFallback({
+        available,
+        sessionModel: "gone/model",
+        rememberedModel: "also-gone/model",
+        providerDefault: "openai/gpt-4o",
+        favourites,
+      }),
+    ).toBe("openai/gpt-4o");
+  });
+
+  it("prefers the newest star over the oldest", () => {
+    expect(
+      unavailableModelFallback({
+        available,
+        sessionModel: "gone/model",
+        rememberedModel: "",
+        providerDefault: "not-served/model",
+        favourites,
+      }),
+    ).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("takes the list head only when nothing else is evidenced", () => {
+    expect(
+      unavailableModelFallback({
+        available: ["only/model"],
+        sessionModel: "gone/model",
+        rememberedModel: "",
+        providerDefault: "",
+        favourites: [],
+      }),
+    ).toBe("only/model");
+  });
+
+  it("changes nothing when the list is empty — it said nothing", () => {
+    expect(
+      unavailableModelFallback({
+        available: [],
+        sessionModel: "anything",
+        rememberedModel: "x",
+        providerDefault: "y",
+        favourites,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("providerSwitchModel", () => {
+  const favourites = ["sakana/fugu-ultra", "z-ai/glm-5.2", "deepseek/deepseek-v4-pro"];
+
+  it("lands on the Provider's remembered pick, not a star", () => {
+    expect(
+      providerSwitchModel({
+        remembered: "deepseek/deepseek-v4-flash",
+        favourites,
+        providerDefault: "openai/gpt-4o",
+      }),
+    ).toBe("deepseek/deepseek-v4-flash");
+  });
+
+  it("uses the newest star when nothing is remembered", () => {
+    expect(
+      providerSwitchModel({ remembered: null, favourites, providerDefault: "openai/gpt-4o" }),
+    ).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("falls back to the configured default with no stars either", () => {
+    expect(
+      providerSwitchModel({ remembered: null, favourites: [], providerDefault: "openai/gpt-4o" }),
+    ).toBe("openai/gpt-4o");
   });
 });

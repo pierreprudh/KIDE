@@ -57,3 +57,74 @@ export function offlineModelFallback(
 ): string {
   return sessionModel || rememberedModel;
 }
+
+/**
+ * Which model to move to when the Provider's list comes back and does *not*
+ * contain the session's current pick. `null` means keep the pick.
+ *
+ * This is the third host-side echo, and the one the two above did not cover: a
+ * *successful* list fetch that retires the current model. Retiring it is right
+ * — the Provider is the authority on what it serves — but the replacement was
+ * "the first starred favourite that is available", and `favModelsFor` returns
+ * stars in insertion order. So the replacement was the user's OLDEST star for
+ * that Provider, which for a long-lived favourites list is close to random: a
+ * model starred once, months ago, outranked the one picked this morning. The
+ * Provider's own remembered pick — the value the picker writes on every human
+ * choice — was never consulted at all.
+ *
+ * Order of evidence, strongest first: the Provider's remembered human pick,
+ * then its configured default, then the NEWEST star, then the list head. Only
+ * the last of those is a guess.
+ */
+export function unavailableModelFallback({
+  available,
+  sessionModel,
+  rememberedModel,
+  providerDefault,
+  favourites,
+}: {
+  available: string[];
+  sessionModel: string;
+  /** `klide.model.<provider>` — what a human last picked on this Provider. */
+  rememberedModel: string;
+  providerDefault: string;
+  /** Stars for this Provider, oldest first (`favModelsFor`'s order). */
+  favourites: string[];
+}): string | null {
+  if (available.length === 0) return null;
+  if (available.includes(sessionModel)) return null;
+  const has = (candidate: string) => !!candidate && available.includes(candidate);
+  if (has(rememberedModel)) return rememberedModel;
+  if (has(providerDefault)) return providerDefault;
+  // Newest star first: the far end of the insertion-ordered list.
+  const newestStar = [...favourites].reverse().find(has);
+  return newestStar ?? available[0];
+}
+
+/**
+ * The model a Provider *switch* lands on.
+ *
+ * "The top favourite for that provider" was the intent, and `favModelsFor`
+ * returns stars oldest-first — so the seed was the oldest star, and the
+ * Provider's remembered pick was never consulted. Switching to a Provider you
+ * use daily handed you a model you starred once and never chose again.
+ *
+ * A star is a bookmark; the last model you actually ran on a Provider is the
+ * stronger statement about what you want next. So: the remembered pick, then
+ * the newest star, then the Provider's configured default.
+ */
+export function providerSwitchModel({
+  remembered,
+  favourites,
+  providerDefault,
+}: {
+  /** `klide.model.<provider>`, or null when unset (or rejected as another
+   *  Provider's id by the caller's guards). */
+  remembered: string | null;
+  /** Stars for this Provider, oldest first (`favModelsFor`'s order). */
+  favourites: string[];
+  providerDefault: string;
+}): string {
+  if (remembered) return remembered;
+  return favourites[favourites.length - 1] || providerDefault;
+}
