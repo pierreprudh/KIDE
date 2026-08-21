@@ -453,6 +453,70 @@ pub fn read_events(runs_dir: &Path, run_id: &str) -> Result<Vec<AgentEvent>, Str
     Ok(events)
 }
 
+/// The Provider/model a run was *dispatched* with, as recorded by the first
+/// `RunStarted` line of its Transcript.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunOrigin {
+    pub run_id: String,
+    pub provider: String,
+    pub model: String,
+}
+
+/// How far into a transcript to look for the origin. `RunStarted` is the first
+/// line a run writes, so a bound this generous only exists so a damaged head
+/// cannot turn into a full-file scan of a multi-megabyte transcript.
+const ORIGIN_SCAN_LINES: usize = 64;
+
+/// The pair a run started on, or `None` when its transcript names no origin.
+///
+/// This is the authority on what produced a Conversation's turns. The run
+/// summary is not: it is a rollup that the *latest* run rewrites, so a thread
+/// that began on one model and continued on another reports the continuation
+/// there. `RunStarted` is written once per run at dispatch, so the first one is
+/// the thread's origin — exactly what `originProvider`/`originModel` mean.
+///
+/// Reads the head only, and streams: this runs over every stored Conversation
+/// at boot, and the answer is on line one.
+pub fn read_run_origin(runs_dir: &Path, run_id: &str) -> Result<Option<RunOrigin>, String> {
+    use std::io::BufRead;
+    let path = transcript_path(runs_dir, run_id);
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        // No transcript is not a failure: plenty of Conversations never ran
+        // through the Harness at all.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Unable to read transcript: {e}")),
+    };
+    for raw in std::io::BufReader::new(file)
+        .lines()
+        .take(ORIGIN_SCAN_LINES)
+    {
+        let raw = raw.map_err(|e| format!("Unable to read transcript: {e}"))?;
+        if raw.trim().is_empty() {
+            continue;
+        }
+        // A line this scan cannot parse is skipped rather than refused. Unlike
+        // `read_events`, nothing here is reconstructing what a run did — a
+        // label is being checked against evidence, and "no evidence" is an
+        // answer this caller handles by leaving the record alone.
+        let Ok(row) = serde_json::from_str::<TranscriptLine>(&raw) else {
+            continue;
+        };
+        if let AgentEvent::RunStarted {
+            provider, model, ..
+        } = row.event
+        {
+            return Ok(Some(RunOrigin {
+                run_id: run_id.to_string(),
+                provider,
+                model,
+            }));
+        }
+    }
+    Ok(None)
+}
+
 pub fn list_summaries(
     runs_dir: &Path,
     limit: Option<usize>,
@@ -882,6 +946,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn run_started(id: &str, provider: &str, model: &str) -> AgentEvent {
+        AgentEvent::RunStarted {
+            run_id: id.to_string(),
+            cwd: None,
+            mode: crate::agent::types::AgentMode::Chat,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            ts: 1,
+        }
+    }
+
+    #[test]
+    fn run_origin_is_the_first_dispatch_not_the_latest() {
+        let dir = read_dir_for("origin-first");
+        let id = "origin1";
+        append_event(&dir, id, 0, &run_started(id, "openrouter", "deepseek/deepseek-v4-flash"))
+            .unwrap();
+        append_event(&dir, id, 1, &assistant_with_text(id, "hi")).unwrap();
+        // A continuation on another model: the thread's origin is unchanged.
+        append_event(&dir, id, 2, &run_started(id, "openrouter", "sakana/fugu-ultra")).unwrap();
+        let origin = read_run_origin(&dir, id).unwrap().unwrap();
+        assert_eq!(origin.provider, "openrouter");
+        assert_eq!(origin.model, "deepseek/deepseek-v4-flash");
+    }
+
+    #[test]
+    fn run_origin_is_absent_for_a_transcript_that_never_started() {
+        let dir = read_dir_for("origin-none");
+        let id = "origin2";
+        append_event(&dir, id, 0, &assistant_with_text(id, "no start line")).unwrap();
+        assert!(read_run_origin(&dir, id).unwrap().is_none());
+    }
+
+    #[test]
+    fn run_origin_of_a_conversation_that_never_ran_is_absent_not_an_error() {
+        let dir = read_dir_for("origin-missing");
+        assert!(read_run_origin(&dir, "never-ran").unwrap().is_none());
     }
 
     #[test]

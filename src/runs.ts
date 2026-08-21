@@ -487,6 +487,26 @@ function fromDto(a: AgentRunDto): Run {
   };
 }
 
+/** The Provider/model a Run was dispatched with, from its Transcript's first
+ *  `run_started` line — see `read_run_origin` in Rust for why the summary is
+ *  not the authority here. */
+export type RunOrigin = {
+  runId: string;
+  provider: string;
+  model: string;
+};
+
+/**
+ * What each of these Runs actually started on. Ids with no Transcript, or whose
+ * Transcript names no origin, are absent from the result rather than reported —
+ * the caller checks labels against evidence, and no evidence means the label is
+ * left alone.
+ */
+export function fetchRunOrigins(runIds: string[]): Promise<RunOrigin[]> {
+  if (runIds.length === 0) return Promise.resolve([]);
+  return invoke<RunOrigin[]>("agent_run_origins", { runIds });
+}
+
 // Pull a page of real runs from the backend (newest first). Throws if the
 // command is unavailable (e.g. running outside Tauri) — callers fall back to
 // the seed. Pages are offset-based so loading more never re-parses earlier runs.

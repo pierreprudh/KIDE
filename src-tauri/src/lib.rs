@@ -826,6 +826,7 @@ pub fn run() {
             agent::agent_abort_run,
             agent::agent_run_status,
             agent::agent_list_runs,
+            agent::agent_run_origins,
             agent::agent_read_run,
             agent::agent_export_evidence,
             agent::agent_list_checkpoints,

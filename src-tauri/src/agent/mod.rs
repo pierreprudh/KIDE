@@ -38,8 +38,8 @@ use self::tools::{
     NormalizedToolCall, ToolKind,
 };
 use self::transcripts::{
-    app_runs_dir, append_event, list_summaries, now_ms, read_events, run_id, transcript_path,
-    validate_run_id, write_summary,
+    app_runs_dir, append_event, list_summaries, now_ms, read_events, read_run_origin, run_id,
+    transcript_path, validate_run_id, write_summary, RunOrigin,
 };
 use self::types::error_code;
 use self::types::{
@@ -1976,6 +1976,44 @@ pub async fn agent_compact_context(
         },
     )?;
     Ok(())
+}
+
+/// The Provider/model each of these Conversations actually started on.
+///
+/// Ids with no Transcript, or whose Transcript names no origin, are simply
+/// absent from the result — the caller is repairing labels against evidence,
+/// and no evidence means leave the label alone.
+///
+/// Bounded by the caller's id list and reads only each transcript's head, so
+/// this stays cheap enough to run at boot over the whole Conversation index.
+#[tauri::command]
+pub async fn agent_run_origins(
+    app: tauri::AppHandle,
+    run_ids: Vec<String>,
+) -> Result<Vec<RunOrigin>, String> {
+    let runs_dir = app_runs_dir(&app)?;
+    // Transcript reads are blocking file IO; a boot-time sweep of them must not
+    // sit on the async runtime and stall every other pending invoke().
+    tokio::task::spawn_blocking(move || {
+        let mut origins = Vec::new();
+        for run_id in run_ids {
+            // A malformed id is not this command's business to report: it
+            // cannot name a transcript, so it has no origin.
+            if validate_run_id(&run_id).is_err() {
+                continue;
+            }
+            match read_run_origin(&runs_dir, &run_id) {
+                Ok(Some(origin)) => origins.push(origin),
+                Ok(None) => {}
+                // One unreadable transcript must not cost the whole sweep the
+                // other ids' answers.
+                Err(e) => eprintln!("klide: no origin for run {run_id}: {e}"),
+            }
+        }
+        origins
+    })
+    .await
+    .map_err(|e| format!("Run origin scan failed: {e}"))
 }
 
 #[tauri::command]

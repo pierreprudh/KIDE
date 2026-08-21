@@ -3,6 +3,8 @@ import { memoryStorage } from "../../testStorage";
 import type { Conversation, Msg } from "./types";
 import {
   healStoredConversationOrigins,
+  healStoredConversationsFromTranscripts,
+  healedConversationFromRunOrigin,
   healedConversationOrigin,
   originDelegateOf,
 } from "./conversationOriginHeal";
@@ -103,5 +105,106 @@ describe("healStoredConversationOrigins", () => {
     expect(healStoredConversationOrigins()).toBe(1);
     expect(healStoredConversationOrigins()).toBe(0);
     expect(loadConversations<Conversation>()[0].provider).toBe("codex");
+  });
+});
+
+describe("healedConversationFromRunOrigin", () => {
+  const origin = (provider: string, model: string) => ({
+    runId: "thread",
+    provider,
+    model,
+  });
+
+  it("returns the record to what its Run was dispatched with", () => {
+    const healed = healedConversationFromRunOrigin(
+      conversation({ provider: "openrouter", model: "sakana/fugu-ultra" }),
+      origin("openrouter", "deepseek/deepseek-v4-flash"),
+    );
+    expect(healed?.provider).toBe("openrouter");
+    expect(healed?.model).toBe("deepseek/deepseek-v4-flash");
+  });
+
+  it("corrects the Provider too, in either direction", () => {
+    // An OpenRouter label over a Claude Code run…
+    expect(
+      healedConversationFromRunOrigin(
+        conversation({ provider: "openrouter", model: "sakana/fugu-ultra" }),
+        origin("claude-code", "default"),
+      )?.provider,
+    ).toBe("claude-code");
+    // …and a delegate label over an OpenRouter run. The delegate heal cannot
+    // touch this one; the transcript settles it.
+    expect(
+      healedConversationFromRunOrigin(
+        conversation({ provider: "claude-code", model: "default" }),
+        origin("openrouter", "deepseek/deepseek-v4-flash"),
+      )?.provider,
+    ).toBe("openrouter");
+  });
+
+  it("leaves a record that already agrees with its Run", () => {
+    expect(
+      healedConversationFromRunOrigin(
+        conversation({ provider: "openrouter", model: "deepseek/deepseek-v4-flash" }),
+        origin("openrouter", "deepseek/deepseek-v4-flash"),
+      ),
+    ).toBeNull();
+  });
+
+  it("treats a missing model as needing the Run's", () => {
+    expect(
+      healedConversationFromRunOrigin(
+        conversation({ provider: "claude-code", model: null }),
+        origin("claude-code", "default"),
+      )?.model,
+    ).toBe("default");
+  });
+
+  it("leaves a thread whose Transcript is gone exactly as it is", () => {
+    expect(
+      healedConversationFromRunOrigin(conversation(), undefined),
+    ).toBeNull();
+  });
+});
+
+describe("healStoredConversationsFromTranscripts", () => {
+  it("heals the index and leaves updatedAt alone", async () => {
+    saveConversations(
+      [
+        conversation({ id: "a", provider: "openrouter", model: "sakana/fugu-ultra", updatedAt: 5 }),
+        conversation({ id: "b", provider: "ollama", model: "bge-m3:latest", updatedAt: 7 }),
+      ],
+      undefined,
+      false,
+    );
+    const healed = await healStoredConversationsFromTranscripts(async () => [
+      { runId: "a", provider: "openrouter", model: "deepseek/deepseek-v4-flash" },
+      { runId: "b", provider: "ollama", model: "bge-m3:latest" },
+    ]);
+    expect(healed).toBe(1);
+    const stored = loadConversations<Conversation>();
+    const a = stored.find((c) => c.id === "a");
+    expect(a?.model).toBe("deepseek/deepseek-v4-flash");
+    // Repairing a label is not activity — Focus orders its rail by this.
+    expect(a?.updatedAt).toBe(5);
+    expect(stored.find((c) => c.id === "b")?.model).toBe("bge-m3:latest");
+  });
+
+  it("writes nothing when every label already agrees", async () => {
+    saveConversations(
+      [conversation({ id: "a", provider: "ollama", model: "qwen3.5:9b" })],
+      undefined,
+      false,
+    );
+    const healed = await healStoredConversationsFromTranscripts(async () => [
+      { runId: "a", provider: "ollama", model: "qwen3.5:9b" },
+    ]);
+    expect(healed).toBe(0);
+  });
+
+  it("asks for nothing when there is no history", async () => {
+    const fetchOrigins = vi.fn(async () => []);
+    expect(await healStoredConversationsFromTranscripts(fetchOrigins)).toBe(0);
+    expect(fetchOrigins).not.toHaveBeenCalled();
   });
 });
