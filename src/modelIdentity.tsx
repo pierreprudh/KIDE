@@ -1,6 +1,14 @@
 import type { CSSProperties, ReactElement } from "react";
-import { modelBrand } from "./modelBrand";
+import {
+  DeepSeekLogo,
+  LiquidAiLogo,
+  LlamaLogo,
+  MistralLogo,
+  QwenLogo,
+  modelBrand,
+} from "./modelBrand";
 import { BrandImage, ProviderLogo, TwoToneMark } from "./components/ai/icons";
+import { isDelegateProvider, providerDefinition, providerName } from "./agent/providers";
 import type { ProviderId } from "./agent/types";
 
 type LogoProps = { size?: number };
@@ -43,26 +51,89 @@ function XaiLogo({ size = 14 }: LogoProps) {
   return <ProviderLogo id="xai" size={size} />;
 }
 
+const MINIMAX: ModelIdentity = { name: "MiniMax", Logo: MiniMaxLogo };
+const KIMI: ModelIdentity = { name: "Kimi", Logo: KimiLogo };
+const ANTHROPIC: ModelIdentity = { name: "Anthropic", Logo: AnthropicLogo };
+const OPENAI: ModelIdentity = { name: "OpenAI", Logo: OpenAiLogo };
+const ZAI: ModelIdentity = { name: "Z.AI", Logo: ZaiLogo };
+const GOOGLE: ModelIdentity = { name: "Google", Logo: GoogleLogo };
+const XAI: ModelIdentity = { name: "xAI", Logo: XaiLogo };
+const DEEPSEEK: ModelIdentity = { name: "DeepSeek", Logo: DeepSeekLogo };
+const QWEN: ModelIdentity = { name: "Qwen", Logo: QwenLogo };
+const MISTRAL: ModelIdentity = { name: "Mistral AI", Logo: MistralLogo };
+const LLAMA: ModelIdentity = { name: "Llama", Logo: LlamaLogo };
+const LIQUID_AI: ModelIdentity = { name: "LiquidAI", Logo: LiquidAiLogo };
+
 const MODEL_IDENTITY_RULES: { pattern: RegExp; identity: ModelIdentity }[] = [
-  { pattern: /minimax/i, identity: { name: "MiniMax", Logo: MiniMaxLogo } },
-  { pattern: /kimi|moonshot/i, identity: { name: "Kimi", Logo: KimiLogo } },
-  { pattern: /claude|sonnet|opus|haiku/i, identity: { name: "Anthropic", Logo: AnthropicLogo } },
+  { pattern: /minimax/i, identity: MINIMAX },
+  { pattern: /kimi|moonshot/i, identity: KIMI },
+  { pattern: /claude|sonnet|opus|haiku/i, identity: ANTHROPIC },
   { pattern: /codex/i, identity: { name: "Codex", Logo: CodexLogo } },
-  {
-    pattern: /(?:^|\/)gpt-|(?:^|\/)o[134](?:\b|-)/i,
-    identity: { name: "OpenAI", Logo: OpenAiLogo },
-  },
-  { pattern: /glm|z-?ai/i, identity: { name: "Z.AI", Logo: ZaiLogo } },
-  { pattern: /gemini|gemma/i, identity: { name: "Google", Logo: GoogleLogo } },
-  { pattern: /grok/i, identity: { name: "xAI", Logo: XaiLogo } },
+  { pattern: /(?:^|\/)gpt-|(?:^|\/)o[134](?:\b|-)/i, identity: OPENAI },
+  { pattern: /glm|z-?ai/i, identity: ZAI },
+  { pattern: /gemini|gemma/i, identity: GOOGLE },
+  { pattern: /grok/i, identity: XAI },
 ];
+
+/**
+ * The maker named by a namespaced model id's *vendor* segment.
+ *
+ * A gateway id says who made the model before it says which one: OpenRouter
+ * serves `openai/chatgpt-4o-latest` and `anthropic/claude-next`, and the rules
+ * above — which read the model half — see nothing in either. That is how a
+ * conversation ended up wearing no mark at all: the maker was written down, in
+ * the half nothing was reading.
+ *
+ * An allowlist, not a heuristic, so an unrecognised org (`nousresearch/…`) or a
+ * local namespace (`mlx-community/…`, `pierreprudh/…`) still resolves to
+ * nothing here and falls through to the runner's own mark. `openrouter` is
+ * deliberately absent: it routes models, it does not make them, so
+ * `openrouter/auto` has no maker to name.
+ */
+const MAKER_BY_VENDOR: Record<string, ModelIdentity> = {
+  openai: OPENAI,
+  anthropic: ANTHROPIC,
+  google: GOOGLE,
+  "google-vertex": GOOGLE,
+  xai: XAI,
+  "x-ai": XAI,
+  moonshot: KIMI,
+  moonshotai: KIMI,
+  zai: ZAI,
+  "z-ai": ZAI,
+  minimax: MINIMAX,
+  minimaxai: MINIMAX,
+  deepseek: DEEPSEEK,
+  "deepseek-ai": DEEPSEEK,
+  qwen: QWEN,
+  alibaba: QWEN,
+  mistral: MISTRAL,
+  mistralai: MISTRAL,
+  meta: LLAMA,
+  "meta-llama": LLAMA,
+  liquid: LIQUID_AI,
+  liquidai: LIQUID_AI,
+};
+
+/** The vendor segment of a namespaced id, or null for a bare model name. The
+ *  leading punctuation strip is for OpenRouter's variant prefixes (a saved id
+ *  can read `~deepseek/deepseek-v4-flash-latest`). */
+function vendorSegment(model: string): string | null {
+  if (!model.includes("/")) return null;
+  const vendor = model.split("/")[0].replace(/^[^a-z0-9]+/i, "").toLowerCase();
+  return vendor || null;
+}
 
 const NON_MODEL_LABEL = /^(auto|default|none|null|unknown)$/i;
 
 /**
  * Resolve only identities that can be inferred confidently from the saved
- * model id. This deliberately has no provider/runtime fallback: an unknown
- * Ollama, MLX, OpenRouter, or custom model should remain visually unbranded.
+ * model id — its own text, in three passes: a maker brand, then the model-name
+ * rules, then the vendor segment of a namespaced id.
+ *
+ * This deliberately has no provider/runtime fallback: an unknown Ollama, MLX,
+ * OpenRouter, or custom model stays unbranded *here*, and callers that want the
+ * runner's mark as a floor ask `conversationMark` for it.
  */
 export function modelIdentity(model: string | null | undefined): ModelIdentity | null {
   const normalized = model?.trim();
@@ -71,7 +142,14 @@ export function modelIdentity(model: string | null | undefined): ModelIdentity |
   const brand = modelBrand(normalized);
   if (brand) return { name: brand.name, Logo: brand.Logo };
 
-  return MODEL_IDENTITY_RULES.find(({ pattern }) => pattern.test(normalized))?.identity ?? null;
+  const byModel = MODEL_IDENTITY_RULES.find(({ pattern }) => pattern.test(normalized))?.identity;
+  if (byModel) return byModel;
+
+  // Last, and only for a namespaced id: the vendor segment. The model half is
+  // the more specific evidence, so it is read first — `nvidia/llama-3.3-…` is a
+  // Llama, not an unknown.
+  const vendor = vendorSegment(normalized);
+  return (vendor ? MAKER_BY_VENDOR[vendor] : undefined) ?? null;
 }
 
 /** On-device families with no maker mark of their own. They still ran locally,
@@ -167,4 +245,52 @@ export function ProviderModelMark({
       </span>
     </span>
   );
+}
+
+/* ───────────────────── what ran a conversation, as one mark ───────────────── */
+
+export type ConversationMark = { node: ReactElement; label: string };
+
+/**
+ * The mark for a stored conversation, in the order that answers "what ran
+ * this" honestly:
+ *
+ * 1. A delegate (or a user CLI) — the CLI *is* the identity, and it leads: what
+ *    you resumed was "a Claude Code conversation", not "a Sonnet one". When the
+ *    saved id also names a maker, that maker rides as a satellite
+ *    (`ProviderModelMark`) — OpenCode's whole catalogue is other makers'
+ *    models, so the CLI mark alone leaves half the row unsaid.
+ * 2. The model's maker, when the saved model id names one confidently.
+ * 3. The provider that hosted it — an OpenRouter slug whose vendor this app
+ *    doesn't recognise, an unbranded local pull, a self-hosted endpoint: the
+ *    thread still ran *somewhere*, and that somewhere has a mark.
+ *
+ * `null` means neither is known — a conversation saved before the provider was
+ * recorded. Callers decide what an unknown runner looks like; the Focus home
+ * card wears Klide's lettermark, the rail stays quiet.
+ *
+ * Step 1's precedence deliberately lives here rather than in `modelIdentity`:
+ * an unknown Ollama or custom model must stay unbranded *there*, and that rule
+ * is the whole point of that function.
+ */
+export function conversationMark(
+  model: string | null | undefined,
+  provider: ProviderId | null | undefined,
+  size = 24,
+): ConversationMark | null {
+  if (provider && isDelegateProvider(provider)) {
+    const maker = modelIdentity(model)?.name;
+    return {
+      node: <ProviderModelMark provider={provider} model={model} size={size} />,
+      label: maker ? `${providerName(provider)} · ${maker}` : providerName(provider),
+    };
+  }
+  const modelLogo = resolveModelLogo(model, size);
+  if (modelLogo) {
+    return { node: modelLogo, label: modelIdentity(model)?.name ?? "Local model" };
+  }
+  if (provider && providerDefinition(provider)) {
+    return { node: <ProviderLogo id={provider} size={size} />, label: providerName(provider) };
+  }
+  return null;
 }

@@ -52,7 +52,7 @@ import type { Conversation } from "./ai/types";
 import type { ProviderId } from "../agent/types";
 import { providerName } from "../agent/providers";
 import { DotGridLoader, ProviderLogo } from "./ai/icons";
-import { modelIdentity } from "../modelIdentity";
+import { conversationMark } from "../modelIdentity";
 import { useIsConversationRunning } from "../runningConversations";
 import { keepOrder, providerHistoryExpanded } from "../focusHistory";
 import { canonicalWorkspaceRoot, linkedProjectForPath } from "../projectPaths";
@@ -434,8 +434,13 @@ function ConvoRow({
   /** Set only for rows in a tree — a flat search result appears at once. */
   revealDelay?: string;
 }) {
-  const identity = modelIdentity(convo.model);
-  const ModelLogo = identity?.Logo;
+  // What ran this thread, by the same precedence the Focus home cards use: the
+  // CLI if a delegate ran it, else the model's maker, else the provider that
+  // hosted it. The row used to ask `modelIdentity` alone, so a thread whose
+  // model id names no maker Klide recognises — an OpenRouter vendor slug, an
+  // unbranded local pull — drew no mark at all, and the tree read as if the
+  // metadata had failed to load.
+  const mark = conversationMark(convo.model, convo.provider, 15);
   const running = useIsConversationRunning(convo.id);
   // Captured once: see `useEntranceValue`. Recomputing this from the row's
   // current index is what made the tree replay on every list update.
@@ -469,9 +474,9 @@ function ConvoRow({
     >
       {indent ? <TreeElbow /> : null}
       <span className="klide-focus-convo-content">
-        {ModelLogo ? (
-          <span className="klide-focus-convo-model" title={identity.name} aria-hidden="true">
-            <ModelLogo size={15} />
+        {mark ? (
+          <span className="klide-focus-convo-model" title={mark.label} aria-hidden="true">
+            {mark.node}
           </span>
         ) : null}
         <span className="klide-focus-convo-title">{convo.title || "Untitled"}</span>

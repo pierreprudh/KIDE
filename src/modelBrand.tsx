@@ -42,6 +42,11 @@ export function DeepSeekLogo({ size = 14 }: LogoProps) {
   return <ImgLogo src="/deepseek-logo.png" themeClass="color-logo-img" size={size} />;
 }
 
+// Sakana AI's mark is brand red (#E10600) — keep its colour in both themes.
+export function SakanaLogo({ size = 14 }: LogoProps) {
+  return <ImgLogo src="/sakana-logo.svg" themeClass="color-logo-img" size={size} />;
+}
+
 // Llama models are Meta's — wear the Meta infinity mark (blue, keep colour).
 export function LlamaLogo({ size = 14 }: LogoProps) {
   return <ImgLogo src="/meta-logo.png" themeClass="color-logo-img" size={size} />;
@@ -62,6 +67,10 @@ const BRAND_RULES: { pattern: RegExp; brand: ModelBrand }[] = [
   // Covers the hosted ids (deepseek-chat / deepseek-reasoner), the Ollama pulls
   // (deepseek-r1:8b, deepseek-coder:6.7b) and OpenRouter's `deepseek/…` slugs.
   { pattern: /deepseek/i, brand: { name: "DeepSeek", href: "https://www.deepseek.com/", Logo: DeepSeekLogo } },
+  // OpenRouter serves these as `sakana/<model>`, and the model half names no
+  // maker (`fugu-ultra`) — the vendor segment is the whole evidence, and a
+  // substring rule reads it without a second table.
+  { pattern: /sakana/i, brand: { name: "Sakana AI", href: "https://sakana.ai/", Logo: SakanaLogo } },
 ];
 
 // Resolve a model name to its maker brand + a homepage link. Models pulled

@@ -59,7 +59,6 @@ import {
   defaultModelForProvider,
   isDelegateProvider,
   normalizeAgentMode,
-  providerDefinition,
   providerGroupsWithCustom,
   providerName,
   providerNeedsApiKey,
@@ -67,7 +66,7 @@ import {
 import { isCustomProvider, type CustomProvider } from "../customProviders";
 import { ModelPicker } from "./ai/ModelPicker";
 import { ProviderLogo } from "./ai/icons";
-import { ProviderModelMark, modelIdentity, resolveModelLogo } from "../modelIdentity";
+import { conversationMark } from "../modelIdentity";
 import {
   canonicalWorkspaceRoot,
   linkedProjectForPath,
@@ -1859,52 +1858,20 @@ function FocusHome({
 type ResumeMark = { node: ReactNode; label: string; bare: boolean };
 
 /**
- * The mark for a resumable conversation, in the order that answers "what ran
- * this" honestly:
- *
- * 1. A delegate (or a user CLI) — the CLI *is* the identity, and it leads: what
- *    you resumed was "a Claude Code conversation", not "a Sonnet one". But it
- *    no longer *replaces* the model: when the saved id names a maker, that
- *    maker rides as a satellite on the CLI's mark (`ProviderModelMark`), which
- *    is what OpenCode needs — its whole catalogue is other makers' models, so
- *    the CLI mark alone said nothing about what actually replied. A CLI that
- *    picks its own model stores the `default` sentinel, which `modelIdentity`
- *    rightly refuses to brand, so those cards keep the bare CLI mark.
- * 2. The model's maker, when the saved model id names one confidently.
- * 3. The provider that hosted it — an unbranded local model still ran on
- *    Ollama, and a self-hosted endpoint still has its own glyph. This is the
- *    arm the card was missing: those conversations drew no mark at all.
- * 4. Klide itself, for a conversation with neither (an older one saved before
- *    the provider was recorded). A run this app drove is still a Klide run, and
- *    an empty corner reads as a card that failed to load.
- *
- * Step 1's precedence is deliberately kept here rather than folded into
- * `modelIdentity`: an unknown Ollama or custom model must stay unbranded
- * there, and that rule is the point of that function.
+ * The mark for a resumable conversation: `conversationMark`'s precedence (the
+ * CLI that ran it, else the model's maker, else the provider that hosted it),
+ * plus the arm only a home card needs — Klide's own lettermark for a
+ * conversation saved before the provider was recorded. A run this app drove is
+ * still a Klide run, and an empty corner reads as a card that failed to load.
  */
 export function resumeMark(
   model: string | null | undefined,
   provider: ProviderId | null | undefined,
 ): ResumeMark {
-  if (provider && isDelegateProvider(provider)) {
-    const maker = modelIdentity(model)?.name;
-    return {
-      node: <ProviderModelMark provider={provider} model={model} size={24} />,
-      label: maker ? `${providerName(provider)} · ${maker}` : providerName(provider),
-      bare: true,
-    };
-  }
-  const modelLogo = resolveModelLogo(model, 24);
-  if (modelLogo) {
-    return { node: modelLogo, label: modelIdentity(model)?.name ?? "Local model", bare: true };
-  }
-  if (provider && providerDefinition(provider)) {
-    return {
-      node: <ProviderLogo id={provider} size={24} />,
-      label: providerName(provider),
-      bare: true,
-    };
-  }
+  // Steps 1-3 are `conversationMark`, shared with the rail so the same thread
+  // does not wear one mark on the home card and none in the tree.
+  const mark = conversationMark(model, provider, 24);
+  if (mark) return { ...mark, bare: true };
   return {
     node: <span className="klide-focus-home-card-lettermark">K</span>,
     label: "Klide",
