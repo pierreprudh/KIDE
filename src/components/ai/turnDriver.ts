@@ -100,6 +100,23 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
 
   const handleEvent = (event: AgentEvent): boolean => {
     switch (event.type) {
+      // Not a row of its own — it tells the fold which pair is dispatching, so
+      // the turn about to stream is stamped with what actually produced it.
+      // Without this case the stamp would only ever exist after a reload, which
+      // is the trap this whitelist's comment warns about.
+      //
+      // Deliberately does NOT project. The panel pre-inserts the placeholder
+      // bubble this run streams into, and the transcript shell adopts that Msg
+      // so its identity survives until the stream first writes to it. Projecting
+      // here would rebuild the row and hand back a different object while the
+      // bubble is still empty — and since the shell's foreign-edit guard
+      // compares by reference, the next commit still holding the original would
+      // detach the transcript for the rest of the run. The stamp is on the fold
+      // row either way, so it reaches the screen with the first delta.
+      case "run_started": {
+        transcript.apply(event);
+        return true;
+      }
       case "assistant_delta": {
         if (firstTokenAt === null) firstTokenAt = now();
         // The fold takes deltas per token (a string append on the open row);

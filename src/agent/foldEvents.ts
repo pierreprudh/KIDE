@@ -15,6 +15,7 @@ import type {
   AgentEvent,
   AgentTurnTiming,
   AgentUsage,
+  ProviderId,
 } from "./types";
 import type { Msg } from "../components/ai/types";
 import type { RunMessage, RunToolCall } from "../runs";
@@ -81,6 +82,13 @@ export type FoldedRow =
       meta?: AssistantMeta;
       /** The `assistant_message` event's `ts`, epoch ms. */
       ts?: number;
+      /** What produced THIS turn, from the `run_started` line in effect when
+       *  the row opened. Per-row, not per-thread: a conversation continued on
+       *  another model has turns from both, and one label over all of them is
+       *  wrong for every turn but the last. Absent on rows folded from
+       *  transcripts written before the fold read `run_started`. */
+      provider?: ProviderId;
+      model?: string;
     }
   | {
       kind: "compaction";
@@ -144,9 +152,21 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
   // belongs below me" (tool card, steering marker, user turn) — mirroring how
   // the live view splits a turn's text around its tool cards.
   let open: { row: AssistantRow; idx: number } | null = null;
+  // The pair the harness last said it was dispatching with. Every assistant row
+  // is stamped with whatever this holds when the row opens, so the stamp is a
+  // fact about that turn rather than about the conversation.
+  let dispatch: { provider: ProviderId; model: string } | null = null;
+
+  const newAssistant = (): AssistantRow => ({
+    kind: "assistant",
+    text: "",
+    toolCalls: [],
+    provider: dispatch?.provider,
+    model: dispatch?.model,
+  });
 
   if (opts.seedOpenAssistant) {
-    const seeded: AssistantRow = { kind: "assistant", text: "", toolCalls: [] };
+    const seeded = newAssistant();
     rows.push(seeded);
     open = { row: seeded, idx: 0 };
   }
@@ -185,7 +205,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
     }
     let host = lastAssistant();
     if (!host) {
-      const created: AssistantRow = { kind: "assistant", text: "", toolCalls: [] };
+      const created = newAssistant();
       rows.push(created);
       host = { row: created, idx: rows.length - 1 };
     }
@@ -201,6 +221,20 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
   };
 
   const apply = (event: AgentEvent, live?: FoldLiveTiming): FoldStep => {
+    if (event.type === "run_started") {
+      dispatch = { provider: event.provider, model: event.model };
+      // The live path seeds an open placeholder *before* the run starts, so the
+      // row that will carry this turn already exists and has to be stamped
+      // here. A row that already carries a pair keeps it: a continuation opens
+      // its own row, and restamping would rewrite the turn above it.
+      if (open && open.row.model === undefined && open.row.provider === undefined) {
+        open.row.provider = dispatch.provider;
+        open.row.model = dispatch.model;
+        return { changed: [open.idx] };
+      }
+      return { changed: [] };
+    }
+
     if (event.type === "user_message") {
       turnStartTs = event.ts;
       open = null;
@@ -215,7 +249,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
 
     if (event.type === "assistant_delta") {
       if (!open) {
-        const created: AssistantRow = { kind: "assistant", text: "", toolCalls: [] };
+        const created = newAssistant();
         rows.push(created);
         open = { row: created, idx: rows.length - 1 };
       }
@@ -247,7 +281,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
         target = open;
         open = null;
       } else {
-        const created: AssistantRow = { kind: "assistant", text: "", toolCalls: [] };
+        const created = newAssistant();
         rows.push(created);
         target = { row: created, idx: rows.length - 1 };
       }
@@ -486,6 +520,10 @@ export function foldedRowToMsgs(row: FoldedRow, view: FoldedMsgView = {}): Msg[]
     {
       role: "assistant",
       content: row.text,
+      // What ran this turn — `run_started` already types its provider as a
+      // `ProviderId`, so this travels the whole fold without a cast.
+      provider: row.provider,
+      model: row.model,
       thinking: row.thinking,
       toolCalls: row.toolCalls.length
         ? row.toolCalls.map((t) => ({

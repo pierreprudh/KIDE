@@ -14,6 +14,7 @@ import type {
   AgentEvent,
   AgentTurnTiming,
   AgentUsage,
+  ProviderId,
 } from "./types";
 import type { Msg } from "../components/ai/types";
 
@@ -68,6 +69,10 @@ function assistantMessage(
   };
 }
 
+function runStarted(provider: ProviderId, model: string): AgentEvent {
+  return { type: "run_started", runId: RUN, cwd: null, mode: "goal", provider, model, ts: at() };
+}
+
 function toolStarted(toolCallId: string, name: string, input?: unknown): AgentEvent {
   return {
     type: "tool_call_started",
@@ -115,13 +120,74 @@ describe("foldAgentEvents", () => {
     expect(rows[1]).toMatchObject({ kind: "assistant", text: "hi there" });
   });
 
-  it("ignores events it does not model, like run_started and context_snapshot", () => {
+  it("gives run_started and context_snapshot no row of their own", () => {
     const rows = foldAgentEvents([
-      { type: "run_started", runId: RUN, cwd: null, mode: "goal", provider: "ollama", model: "m", ts: at() },
+      runStarted("ollama", "m"),
       userMessage("go"),
       assistantMessage("done"),
     ]);
     expect(rows).toHaveLength(2);
+  });
+
+  describe("what produced each turn", () => {
+    it("stamps a turn with the pair that was dispatching when it opened", () => {
+      const rows = foldAgentEvents([
+        runStarted("openrouter", "deepseek/deepseek-v4-flash"),
+        userMessage("go"),
+        assistantMessage("done"),
+      ]);
+      expect(rows[1]).toMatchObject({
+        kind: "assistant",
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4-flash",
+      });
+    });
+
+    it("leaves an earlier turn alone when the thread continues on another model", () => {
+      const rows = foldAgentEvents([
+        runStarted("openrouter", "deepseek/deepseek-v4-flash"),
+        userMessage("first"),
+        assistantMessage("on deepseek"),
+        // Same conversation, next run, different model.
+        runStarted("anthropic", "claude-sonnet-5"),
+        userMessage("second"),
+        assistantMessage("on sonnet"),
+      ]);
+      expect(rows[1]).toMatchObject({ model: "deepseek/deepseek-v4-flash" });
+      expect(rows[3]).toMatchObject({ provider: "anthropic", model: "claude-sonnet-5" });
+    });
+
+    it("stamps the placeholder the live path seeds before the run starts", () => {
+      const fold = createFold({ seedOpenAssistant: true });
+      const step = fold.apply(runStarted("mlx", "mlx-community/gemma-4-E4B-it-qat-4bit"));
+      // The seeded row already exists, so the stamp has to reach it — and the
+      // caller has to know to re-project it.
+      expect(step.changed).toEqual([0]);
+      expect(fold.rows()[0]).toMatchObject({
+        kind: "assistant",
+        provider: "mlx",
+        model: "mlx-community/gemma-4-E4B-it-qat-4bit",
+      });
+    });
+
+    it("carries the stamp through to the rendered message", () => {
+      const rows = foldAgentEvents([
+        runStarted("openrouter", "sakana/fugu-ultra"),
+        userMessage("go"),
+        assistantMessage("done"),
+      ]);
+      const msgs = foldedRowToMsgs(rows[1]);
+      expect(msgs[0]).toMatchObject({
+        role: "assistant",
+        provider: "openrouter",
+        model: "sakana/fugu-ultra",
+      });
+    });
+
+    it("leaves a turn from a transcript written before the stamp unmarked", () => {
+      const rows = foldAgentEvents([userMessage("go"), assistantMessage("done")]);
+      expect(rows[1]).toMatchObject({ kind: "assistant", provider: undefined, model: undefined });
+    });
   });
 
   it("joins multiple text blocks and lifts thinking out of the content array", () => {

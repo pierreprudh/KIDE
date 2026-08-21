@@ -84,6 +84,7 @@ import {
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
 import { favModelsFor } from "../favModels";
+import { conversationMark } from "../modelIdentity";
 import { buildSystemPrompt } from "./ai/system-prompt";
 import { summarizeAndHandoff, generateMemoryNote, detectAndGenerateSkill, summarizeForCompaction } from "./ai/summarize";
 import { addMemoryDraft } from "../memoryDrafts";
@@ -642,6 +643,22 @@ export function AiPanel({
   const provider = conversationSession.provider;
   const model = conversationSession.model;
   const currentForkedFrom = conversationSession.forkedFrom;
+  // The mark for a response whose own turn carries no stamp — everything
+  // stored before the fold started recording one. The thread's origin is the
+  // best available answer there, and it is a better one than the picker's
+  // current pair: relabelling every old turn each time the model changes is
+  // precisely what this stopped doing.
+  const threadMark = conversationMark(
+    conversationSession.originModel ?? model,
+    conversationSession.originProvider ?? provider,
+    22,
+  );
+  /** The mark for one response: what produced THAT turn. A thread continued on
+   *  another model shows both, each against the turn it actually ran. */
+  function responseMark(stamp: { provider?: ProviderId; model?: string }) {
+    if (!stamp.model && !stamp.provider) return threadMark;
+    return conversationMark(stamp.model ?? null, stamp.provider ?? provider, 22);
+  }
   const conversationGitMeta = useMemo(
     () => ({
       branch: conversationSession.branch,
@@ -3668,12 +3685,24 @@ This user request requires workspace inspection. Before answering, you MUST call
           // mid-run, which is the one thing this rule exists to prevent.
           const nextMsg = msgs[i + 1];
           const isResponseEnd = !nextMsg || (nextMsg.role === "user" && nextMsg.queueState !== "queued");
+          const mark = isResponseStart && m.role === "assistant" ? responseMark(m) : null;
           return (
             <div key={i} className="ai-msg-in" style={{ display: "flex", gap: 10, margin: isResponseStart ? "14px 0 8px" : "3px 0", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
               {isResponseStart ? (
-                <div aria-hidden="true" style={{ flexShrink: 0, width: 22, height: 22, marginTop: 1, borderRadius: "50%", display: "grid", placeItems: "center", color: "var(--accent)", background: "color-mix(in srgb, var(--accent-soft) 80%, transparent)" }}>
-                  <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>K</span>
-                </div>
+                // A brand mark is worn bare — no disc, no ring, no tile, the
+                // rule every other pairing in the app follows. The lettermark
+                // keeps its sage disc, because a lone letter needs one to read
+                // as a mark at all. Same 22px box either way, so bodies stay
+                // column-aligned with the tool rows below them.
+                mark ? (
+                  <div aria-hidden="true" style={{ flexShrink: 0, width: 22, height: 22, marginTop: 1, display: "grid", placeItems: "center" }}>
+                    {mark.node}
+                  </div>
+                ) : (
+                  <div aria-hidden="true" style={{ flexShrink: 0, width: 22, height: 22, marginTop: 1, borderRadius: "50%", display: "grid", placeItems: "center", color: "var(--accent)", background: "color-mix(in srgb, var(--accent-soft) 80%, transparent)" }}>
+                    <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>K</span>
+                  </div>
+                )
               ) : (
                 <div aria-hidden="true" style={{ flexShrink: 0, width: 22 }} />
               )}

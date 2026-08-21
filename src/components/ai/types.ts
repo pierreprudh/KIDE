@@ -32,6 +32,13 @@ export type Msg =
       thinking?: string;
       delegateConsole?: boolean;
       delegateProvider?: string;
+      /** What produced THIS turn — the pair the harness dispatched it with, as
+       *  recorded by the `run_started` line in effect at the time. The
+       *  discussion draws each response's mark from it, so a thread continued
+       *  on another model shows both. Absent on turns stored before the fold
+       *  read `run_started`; readers fall back to the thread's origin. */
+      provider?: ProviderId;
+      model?: string;
       /** Set when this message is a background subagent's report (dispatched
        *  via an embedded `@role` mention that ran concurrently with the main
        *  answer). `subagentPending` is true while it's still working. */
