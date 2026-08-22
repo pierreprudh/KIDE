@@ -5,7 +5,7 @@
 // themselves still come from ai/icons, which owns every brand mark.
 
 import React from "react";
-import { BRAND_LOGO_PATHS, BrandImage, ProviderLogo } from "../ai/icons";
+import { BRAND_LOGO_PATHS, BrandImage, KlideMark, ProviderLogo } from "../ai/icons";
 import { ProviderModelMark, resolveModelLogo } from "../../modelIdentity";
 import type { ProviderId } from "../../agent/types";
 import type { RunKind, RunSource } from "../../runs";
@@ -23,7 +23,7 @@ export function ClaudeCodeLogo({ size = 13 }: { size?: number }) {
 // the run belongs to Klide's harness, so it carries the Klide mark, not the
 // underlying maker's logo.
 export function KlideLogo({ size = 13 }: { size?: number }) {
-  return <BrandImage src="/klide-logo.png" size={size} />;
+  return <KlideMark size={size} />;
 }
 // Codex and Z.AI marks are white-on-transparent — invert them on light themes
 // via the white-logo-img rule in tokens.css so they stay visible everywhere.
@@ -215,7 +215,7 @@ export function RunAvatar({
 // would hit ProviderLogo's fallback circle — render the Klide mark instead.
 export function SourceMark({ source, size = 16 }: { source: RunSource; size?: number }) {
   if (source === "klide") {
-    return <BrandImage className="provider-logo-img" src="/klide-logo.png" size={size} />;
+    return <KlideMark className="provider-logo-img" size={size} />;
   }
   return <ProviderLogo id={source as ProviderId} size={size} />;
 }

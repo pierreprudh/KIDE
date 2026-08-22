@@ -267,7 +267,7 @@ export type ConversationMark = { node: ReactElement; label: string };
  *
  * `null` means neither is known — a conversation saved before the provider was
  * recorded. Callers decide what an unknown runner looks like; the Focus home
- * card wears Klide's lettermark, the rail stays quiet.
+ * card and the harness chat wear Klide's own mark, the rail stays quiet.
  *
  * Step 1's precedence deliberately lives here rather than in `modelIdentity`:
  * an unknown Ollama or custom model must stay unbranded *there*, and that rule

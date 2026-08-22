@@ -5688,13 +5688,6 @@ button:focus-visible .menu-leadout {
   -webkit-backdrop-filter: blur(18px) saturate(1.18);
 }
 
-.klide-focus-hero-mark span {
-  font-size: 18px;
-  font-weight: 650;
-  letter-spacing: -0.055em;
-  transform: translateX(-0.5px);
-}
-
 .klide-focus-stage h1 {
   margin: 0;
   color: var(--fg-strong);
@@ -5793,15 +5786,6 @@ button:focus-visible .menu-leadout {
   font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* Klide's own lettermark, echoing the hero tile — the honest mark for a
-   conversation this app drove itself with nothing else to brand it. */
-.klide-focus-home-card-lettermark {
-  font-size: 13px;
-  font-weight: 650;
-  letter-spacing: -0.055em;
-  transform: translateX(-0.5px);
 }
 
 .klide-focus-home-card-sub {

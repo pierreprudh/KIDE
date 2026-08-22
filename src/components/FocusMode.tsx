@@ -65,7 +65,7 @@ import {
 } from "../agent/providers";
 import { isCustomProvider, type CustomProvider } from "../customProviders";
 import { ModelPicker } from "./ai/ModelPicker";
-import { ProviderLogo } from "./ai/icons";
+import { KlideMark, ProviderLogo } from "./ai/icons";
 import { conversationMark } from "../modelIdentity";
 import {
   canonicalWorkspaceRoot,
@@ -1796,7 +1796,7 @@ function FocusHome({
     <div className="klide-focus-home">
       <section className="klide-focus-stage" aria-labelledby="klide-focus-title">
         <div className="klide-focus-rise klide-focus-hero-mark" aria-hidden="true">
-          <span>K</span>
+          <KlideMark size={24} />
         </div>
         <h1 id="klide-focus-title" className="klide-focus-rise">
           {projectName ? `What should we build in ${projectName}?` : "What should we build?"}
@@ -1853,15 +1853,15 @@ function FocusHome({
 }
 
 /** What ran a conversation, drawn as one mark. `bare` marks a brand logo that
- *  carries its own shape, as opposed to Klide's lettermark, which wants the
+ *  carries its own shape and color, as opposed to a line glyph, which wants the
  *  boxed tile the starter icons use. */
 type ResumeMark = { node: ReactNode; label: string; bare: boolean };
 
 /**
  * The mark for a resumable conversation: `conversationMark`'s precedence (the
  * CLI that ran it, else the model's maker, else the provider that hosted it),
- * plus the arm only a home card needs — Klide's own lettermark for a
- * conversation saved before the provider was recorded. A run this app drove is
+ * plus the arm only a home card needs — Klide's own mark for a conversation
+ * saved before the provider was recorded. A run this app drove is
  * still a Klide run, and an empty corner reads as a card that failed to load.
  */
 export function resumeMark(
@@ -1872,11 +1872,10 @@ export function resumeMark(
   // does not wear one mark on the home card and none in the tree.
   const mark = conversationMark(model, provider, 24);
   if (mark) return { ...mark, bare: true };
-  return {
-    node: <span className="klide-focus-home-card-lettermark">K</span>,
-    label: "Klide",
-    bare: false,
-  };
+  // Klide's own mark, worn bare like every other brand logo: the app has a
+  // logo, and a thread it drove itself should wear that logo rather than a
+  // hand-typed initial in a tile.
+  return { node: <KlideMark size={22} />, label: "Klide", bare: true };
 }
 
 function HomeCard({

@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -69,7 +70,7 @@ import type {
 } from "../agent/types";
 import { enabledSkillsPrompt, type Skill } from "../skills";
 
-import { ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
+import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
@@ -134,6 +135,7 @@ import {
 import { Z } from "../zLayers";
 import { notify } from "../toast";
 import { delegateSessionId, stopDelegatePty, writeDelegatePty } from "../ipc/delegatePty";
+import { initialsOf, useUserInfo } from "../hooks/useUserInfo";
 
 function LocalServerStartingRow({ providerLabel, centered = false }: { providerLabel: string; centered?: boolean }) {
   const hairline = (
@@ -174,6 +176,60 @@ function LocalServerStartingRow({ providerLabel, centered = false }: { providerL
     </div>
   );
 }
+
+/**
+ * Who asked — the other half of a discussion. It sits against the user's turn
+ * the way a response mark sits against the model's, in the same 22px box, so
+ * the thread reads as two participants talking rather than a stack of answers
+ * with a single logo down one edge.
+ *
+ * The GitHub picture when there is one, initials when there isn't, and quiet
+ * either way: this mark identifies a speaker, it never competes with the
+ * message it belongs to.
+ */
+const AskerMark = memo(function AskerMark({
+  username,
+  avatarUrl,
+}: {
+  username: string;
+  avatarUrl: string;
+}) {
+  return (
+    <div
+      aria-hidden="true"
+      title={username || undefined}
+      style={{
+        position: "relative",
+        flexShrink: 0,
+        width: 22,
+        height: 22,
+        marginTop: 1,
+        overflow: "hidden",
+        borderRadius: "50%",
+        display: "grid",
+        placeItems: "center",
+        background: "var(--bg-hover)",
+        border: "1px solid var(--border)",
+        color: "var(--fg-subtle)",
+        fontFamily: "var(--font-ui)",
+        fontSize: 9,
+        fontWeight: 600,
+        letterSpacing: "0.01em",
+        userSelect: "none",
+      }}
+    >
+      {username ? initialsOf(username) : ""}
+      {avatarUrl ? (
+        <img
+          src={avatarUrl}
+          alt=""
+          onError={(event) => { event.currentTarget.style.display = "none"; }}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", borderRadius: "inherit", objectFit: "cover" }}
+        />
+      ) : null}
+    </div>
+  );
+});
 
 function asksForWorkspaceInspection(text: string): boolean {
   const normalized = text.toLowerCase();
@@ -653,6 +709,10 @@ export function AiPanel({
     conversationSession.originProvider ?? provider,
     22,
   );
+  // Who asked, drawn once so it can sit against every user turn: a thread with
+  // a mark on one side only reads as a log of answers, and this is a
+  // discussion — two participants, each turn attributed to the one who made it.
+  const { username, avatarUrl } = useUserInfo();
   /** The mark for one response: what produced THAT turn. A thread continued on
    *  another model shows both, each against the turn it actually ran. */
   function responseMark(stamp: { provider?: ProviderId; model?: string }) {
@@ -3489,8 +3549,8 @@ This user request requires workspace inspection. Before answering, you MUST call
           <>
         {msgs.length === 0 && !serverStarting && (
           <div style={{ width: "min(300px, 86%)", textAlign: "center", color: "var(--fg-subtle)", lineHeight: 1.55, transform: "translateY(-10px)" }}>
-            <div style={{ width: 38, height: 38, margin: "0 auto 14px", borderRadius: "var(--radius-lg)", display: "grid", placeItems: "center", color: "var(--accent)", background: "color-mix(in srgb, var(--accent-soft) 70%, transparent)", border: "1px solid var(--panel-border)" }}>
-              <span style={{ fontFamily: "var(--font-ui)", fontSize: 19, fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>K</span>
+            <div style={{ width: 38, height: 38, margin: "0 auto 14px", display: "grid", placeItems: "center" }}>
+              <KlideMark size={34} />
             </div>
             <div style={{ color: "var(--fg-strong)", fontSize: 14, fontWeight: 500, marginBottom: 6 }}>{workspaceRoot ? "Ask Kit" : "Open a workspace"}</div>
             <div style={{ fontSize: 12 }}>{workspaceRoot ? (providerDelegatesWork ? `Delegate workspace tasks to ${providerName(provider)}.` : `Read, reason, and propose edits with ${providerName(provider)}.`) : "Open a folder to enable local agent mode."}</div>
@@ -3564,73 +3624,76 @@ This user request requires workspace inspection. Before answering, you MUST call
             const isEditing = editingIdx === i;
             const imageAtts = m.attachments?.filter((a) => a.dataUri) ?? [];
             return (
-              <div key={i} className="ai-msg-in" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "14px 0 12px", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
-                {m.subagent && (
-                  <div style={{ marginBottom: 4, paddingRight: 2, fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 500, letterSpacing: "0.01em", color: "var(--accent)", userSelect: "none" }}>
-                    @{m.subagent}
-                  </div>
-                )}
-                {isEditing ? (
-                  <textarea
-                    autoFocus
-                    value={editingDraft}
-                    onChange={(e) => setEditingDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); commitEdit(i); }
-                      else if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
-                    }}
-                    onBlur={() => commitEdit(i)}
-                    rows={Math.max(1, Math.min(10, editingDraft.split("\n").length))}
-                    style={{ maxWidth: "88%", width: "min(440px, 88%)", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.55, padding: "8px 12px", borderRadius: "12px 12px 4px 12px", border: "1px solid color-mix(in srgb, var(--accent) 50%, var(--border))", background: "var(--accent-soft)", color: "var(--fg-strong)", whiteSpace: "pre-wrap", wordBreak: "break-word", boxSizing: "border-box" }}
-                  />
-                ) : (
-                  <>
-                    {imageAtts.length > 0 && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end", maxWidth: "88%", marginBottom: m.content.trim() ? 6 : 0 }}>
-                        {imageAtts.map((a, gi) => (
-                          <button
-                            key={gi}
-                            type="button"
-                            title="Open image"
-                            aria-label={`Open ${a.path || "image"}`}
-                            onClick={() => setLightboxImage(a.dataUri ?? null)}
-                            style={{ padding: 0, width: 92, height: 92, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--bg-elevated)", cursor: "zoom-in", flexShrink: 0, display: "block" }}
-                          >
-                            <img src={a.dataUri} alt={a.path || "Attached image"} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {m.content.trim() && (
-                      <div
-                        style={{ maxWidth: "88%", background: queued ? "color-mix(in srgb, var(--accent-soft) 48%, var(--bg))" : "var(--accent-soft)", color: queued ? "var(--fg-subtle)" : "var(--fg-strong)", border: (queued || running) ? "1px solid color-mix(in srgb, var(--accent) 36%, var(--border))" : "1px solid transparent", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word", opacity: queued ? 0.82 : 1 }}>
-                        {m.content}
-                      </div>
-                    )}
-                  </>
-                )}
-                {!queued && !running && m.content.trim() && !isEditing && (
-                  <MessageActions
-                    role="user"
-                    copied={copiedIdx === i}
-                    disabled={streaming}
-                    onCopy={() => { void navigator.clipboard?.writeText(m.content); setCopiedIdx(i); window.setTimeout(() => setCopiedIdx((c) => (c === i ? null : c)), 1400); }}
-                    onRetry={() => retryFromMessage(i)}
-                    onBranch={() => branchFromMessage(i)}
-                    onBranchInWorktree={onForkConversationInWorktree ? () => branchMessageInWorktree(i) : undefined}
-                    onEdit={() => editMessage(i)}
-                    onDelete={() => deleteMessage(i)}
-                  />
-                )}
-                {!isEditing && m.tokenInfo && m.content.trim() && (
-                  <div
-                    className="klide-msg-meta"
-                    title={m.tokenInfo.exact ? "Exact count from the model's tokenizer" : "Estimate — this provider has no tokenizer endpoint"}
-                    style={{ marginTop: 3, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-dim)", letterSpacing: "0.02em", userSelect: "none" }}
-                  >
-                    {m.tokenInfo.exact ? "" : "~"}{m.tokenInfo.count.toLocaleString()} tokens
-                  </div>
-                )}
+              <div key={i} className="ai-msg-in" style={{ display: "flex", gap: 10, alignItems: "flex-start", margin: "14px 0 12px", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                  {m.subagent && (
+                    <div style={{ marginBottom: 4, paddingRight: 2, fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 500, letterSpacing: "0.01em", color: "var(--accent)", userSelect: "none" }}>
+                      @{m.subagent}
+                    </div>
+                  )}
+                  {isEditing ? (
+                    <textarea
+                      autoFocus
+                      value={editingDraft}
+                      onChange={(e) => setEditingDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); commitEdit(i); }
+                        else if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+                      }}
+                      onBlur={() => commitEdit(i)}
+                      rows={Math.max(1, Math.min(10, editingDraft.split("\n").length))}
+                      style={{ maxWidth: "88%", width: "min(440px, 88%)", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.55, padding: "8px 12px", borderRadius: "12px 12px 4px 12px", border: "1px solid color-mix(in srgb, var(--accent) 50%, var(--border))", background: "var(--accent-soft)", color: "var(--fg-strong)", whiteSpace: "pre-wrap", wordBreak: "break-word", boxSizing: "border-box" }}
+                    />
+                  ) : (
+                    <>
+                      {imageAtts.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end", maxWidth: "88%", marginBottom: m.content.trim() ? 6 : 0 }}>
+                          {imageAtts.map((a, gi) => (
+                            <button
+                              key={gi}
+                              type="button"
+                              title="Open image"
+                              aria-label={`Open ${a.path || "image"}`}
+                              onClick={() => setLightboxImage(a.dataUri ?? null)}
+                              style={{ padding: 0, width: 92, height: 92, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--bg-elevated)", cursor: "zoom-in", flexShrink: 0, display: "block" }}
+                            >
+                              <img src={a.dataUri} alt={a.path || "Attached image"} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {m.content.trim() && (
+                        <div
+                          style={{ maxWidth: "88%", background: queued ? "color-mix(in srgb, var(--accent-soft) 48%, var(--bg))" : "var(--accent-soft)", color: queued ? "var(--fg-subtle)" : "var(--fg-strong)", border: (queued || running) ? "1px solid color-mix(in srgb, var(--accent) 36%, var(--border))" : "1px solid transparent", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word", opacity: queued ? 0.82 : 1 }}>
+                          {m.content}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {!queued && !running && m.content.trim() && !isEditing && (
+                    <MessageActions
+                      role="user"
+                      copied={copiedIdx === i}
+                      disabled={streaming}
+                      onCopy={() => { void navigator.clipboard?.writeText(m.content); setCopiedIdx(i); window.setTimeout(() => setCopiedIdx((c) => (c === i ? null : c)), 1400); }}
+                      onRetry={() => retryFromMessage(i)}
+                      onBranch={() => branchFromMessage(i)}
+                      onBranchInWorktree={onForkConversationInWorktree ? () => branchMessageInWorktree(i) : undefined}
+                      onEdit={() => editMessage(i)}
+                      onDelete={() => deleteMessage(i)}
+                    />
+                  )}
+                  {!isEditing && m.tokenInfo && m.content.trim() && (
+                    <div
+                      className="klide-msg-meta"
+                      title={m.tokenInfo.exact ? "Exact count from the model's tokenizer" : "Estimate — this provider has no tokenizer endpoint"}
+                      style={{ marginTop: 3, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-dim)", letterSpacing: "0.02em", userSelect: "none" }}
+                    >
+                      {m.tokenInfo.exact ? "" : "~"}{m.tokenInfo.count.toLocaleString()} tokens
+                    </div>
+                  )}
+                </div>
+                <AskerMark username={username} avatarUrl={avatarUrl} />
               </div>
             );
           }
@@ -3690,19 +3753,14 @@ This user request requires workspace inspection. Before answering, you MUST call
             <div key={i} className="ai-msg-in" style={{ display: "flex", gap: 10, margin: isResponseStart ? "14px 0 8px" : "3px 0", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
               {isResponseStart ? (
                 // A brand mark is worn bare — no disc, no ring, no tile, the
-                // rule every other pairing in the app follows. The lettermark
-                // keeps its sage disc, because a lone letter needs one to read
-                // as a mark at all. Same 22px box either way, so bodies stay
-                // column-aligned with the tool rows below them.
-                mark ? (
-                  <div aria-hidden="true" style={{ flexShrink: 0, width: 22, height: 22, marginTop: 1, display: "grid", placeItems: "center" }}>
-                    {mark.node}
-                  </div>
-                ) : (
-                  <div aria-hidden="true" style={{ flexShrink: 0, width: 22, height: 22, marginTop: 1, borderRadius: "50%", display: "grid", placeItems: "center", color: "var(--accent)", background: "color-mix(in srgb, var(--accent-soft) 80%, transparent)" }}>
-                    <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 700, lineHeight: 1, letterSpacing: "-0.02em" }}>K</span>
-                  </div>
-                )
+                // rule every other pairing in the app follows. Klide's own mark
+                // is a brand mark too, so an unstamped response wears the app
+                // logo bare rather than a hand-typed initial in a sage disc.
+                // Same 22px box either way, so bodies stay column-aligned with
+                // the tool rows below them.
+                <div aria-hidden="true" style={{ flexShrink: 0, width: 22, height: 22, marginTop: 1, display: "grid", placeItems: "center" }}>
+                  {mark ? mark.node : <KlideMark size={20} />}
+                </div>
               ) : (
                 <div aria-hidden="true" style={{ flexShrink: 0, width: 22 }} />
               )}

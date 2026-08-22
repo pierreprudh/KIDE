@@ -50,7 +50,8 @@ describe("resume card mark", () => {
   });
 
   it("wears Klide's own mark when there is nothing else to brand", () => {
-    expect(resumeMark(null, null)).toMatchObject({ label: "Klide", bare: false });
+    // Klide's logo is a brand mark like any other, so it is worn bare too.
+    expect(resumeMark(null, null)).toMatchObject({ label: "Klide", bare: true });
     expect(resumeMark("some-unknown-model", null).label).toBe("Klide");
   });
 });
