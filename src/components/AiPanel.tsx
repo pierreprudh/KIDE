@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -3643,15 +3644,61 @@ This user request requires workspace inspection. Before answering, you MUST call
             const docAtts = (m.attachments ?? []).filter(
               (a) => !a.dataUri && !m.content.includes(a.path),
             );
+            const hasText = m.content.trim().length > 0;
+            // The mark belongs to the message, not to the top of the turn. It
+            // rides beside the bubble — or beside the attachment strip when a
+            // turn carries no text — the way the response mark rides beside an
+            // answer's first line, nudged down so it centres on that line
+            // rather than on the bubble's padding.
+            const asker = (
+              <div style={{ flexShrink: 0, marginTop: hasText || isEditing ? 6 : 0 }}>
+                <AskerMark username={username} avatarUrl={avatarUrl} />
+              </div>
+            );
+            // Everything the mark does not sit beside keeps its right edge in
+            // line with the bubble's, so the column stays one edge, not two.
+            const askerGutter = 32;
+            const beside = (node: ReactNode) => (
+              <div style={{ display: "flex", width: "100%", maxWidth: "88%", gap: 10, alignItems: "flex-start", justifyContent: "flex-end" }}>
+                {node}
+                {asker}
+              </div>
+            );
+            const imagesBlock = imageAtts.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end", maxWidth: hasText ? "88%" : "100%", paddingRight: hasText ? askerGutter : 0, marginBottom: hasText || docAtts.length > 0 ? 6 : 0 }}>
+                {imageAtts.map((a, gi) => (
+                  <button
+                    key={gi}
+                    type="button"
+                    title="Open image"
+                    aria-label={`Open ${a.path || "image"}`}
+                    onClick={() => setLightboxImage(a.dataUri ?? null)}
+                    style={{ padding: 0, width: 92, height: 92, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--bg-elevated)", cursor: "zoom-in", flexShrink: 0, display: "block" }}
+                  >
+                    <img src={a.dataUri} alt={a.path || "Attached image"} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  </button>
+                ))}
+              </div>
+            );
+            const docsBlock = docAtts.length > 0 && (
+              <div
+                style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end", maxWidth: hasText ? "88%" : "100%", paddingRight: hasText ? askerGutter : 0, marginBottom: hasText ? 6 : 0, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-subtle)" }}>
+                {docAtts.map((a, gi) => (
+                  <span key={gi} title={`${a.path} — sent as text`}>
+                    {a.path.split("/").pop() || a.path}
+                  </span>
+                ))}
+              </div>
+            );
             return (
-              <div key={i} className="ai-msg-in" style={{ display: "flex", gap: 10, alignItems: "flex-start", margin: "14px 0 12px", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
-                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-                  {m.subagent && (
-                    <div style={{ marginBottom: 4, paddingRight: 2, fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 500, letterSpacing: "0.01em", color: "var(--accent)", userSelect: "none" }}>
-                      @{m.subagent}
-                    </div>
-                  )}
-                  {isEditing ? (
+              <div key={i} className="ai-msg-in" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "14px 0 12px", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
+                {m.subagent && (
+                  <div style={{ marginBottom: 4, paddingRight: askerGutter + 2, fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 500, letterSpacing: "0.01em", color: "var(--accent)", userSelect: "none" }}>
+                    @{m.subagent}
+                  </div>
+                )}
+                {isEditing ? (
+                  beside(
                     <textarea
                       autoFocus
                       value={editingDraft}
@@ -3662,45 +3709,32 @@ This user request requires workspace inspection. Before answering, you MUST call
                       }}
                       onBlur={() => commitEdit(i)}
                       rows={Math.max(1, Math.min(10, editingDraft.split("\n").length))}
-                      style={{ maxWidth: "88%", width: "min(440px, 88%)", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.55, padding: "8px 12px", borderRadius: "12px 12px 4px 12px", border: "1px solid color-mix(in srgb, var(--accent) 50%, var(--border))", background: "var(--accent-soft)", color: "var(--fg-strong)", whiteSpace: "pre-wrap", wordBreak: "break-word", boxSizing: "border-box" }}
-                    />
-                  ) : (
-                    <>
-                      {imageAtts.length > 0 && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end", maxWidth: "88%", marginBottom: m.content.trim() ? 6 : 0 }}>
-                          {imageAtts.map((a, gi) => (
-                            <button
-                              key={gi}
-                              type="button"
-                              title="Open image"
-                              aria-label={`Open ${a.path || "image"}`}
-                              onClick={() => setLightboxImage(a.dataUri ?? null)}
-                              style={{ padding: 0, width: 92, height: 92, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--bg-elevated)", cursor: "zoom-in", flexShrink: 0, display: "block" }}
-                            >
-                              <img src={a.dataUri} alt={a.path || "Attached image"} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {docAtts.length > 0 && (
+                      style={{ maxWidth: "100%", width: "min(440px, 100%)", minWidth: 0, resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.55, padding: "8px 12px", borderRadius: "12px 12px 4px 12px", border: "1px solid color-mix(in srgb, var(--accent) 50%, var(--border))", background: "var(--accent-soft)", color: "var(--fg-strong)", whiteSpace: "pre-wrap", wordBreak: "break-word", boxSizing: "border-box" }}
+                    />,
+                  )
+                ) : (
+                  <>
+                    {hasText ? imagesBlock : null}
+                    {hasText ? docsBlock : null}
+                    {hasText ? (
+                      beside(
                         <div
-                          style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end", maxWidth: "88%", marginBottom: m.content.trim() ? 6 : 0, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-subtle)" }}>
-                          {docAtts.map((a, gi) => (
-                            <span key={gi} title={`${a.path} — sent as text`}>
-                              {a.path.split("/").pop() || a.path}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {m.content.trim() && (
-                        <div
-                          style={{ maxWidth: "88%", background: queued ? "color-mix(in srgb, var(--accent-soft) 48%, var(--bg))" : "var(--accent-soft)", color: queued ? "var(--fg-subtle)" : "var(--fg-strong)", border: (queued || running) ? "1px solid color-mix(in srgb, var(--accent) 36%, var(--border))" : "1px solid transparent", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word", opacity: queued ? 0.82 : 1 }}>
+                          style={{ minWidth: 0, background: queued ? "color-mix(in srgb, var(--accent-soft) 48%, var(--bg))" : "var(--accent-soft)", color: queued ? "var(--fg-subtle)" : "var(--fg-strong)", border: (queued || running) ? "1px solid color-mix(in srgb, var(--accent) 36%, var(--border))" : "1px solid transparent", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word", opacity: queued ? 0.82 : 1 }}>
                           {m.content}
-                        </div>
-                      )}
-                    </>
-                  )}
-                  {!queued && !running && m.content.trim() && !isEditing && (
+                        </div>,
+                      )
+                    ) : (
+                      beside(
+                        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                          {imagesBlock}
+                          {docsBlock}
+                        </div>,
+                      )
+                    )}
+                  </>
+                )}
+                {!queued && !running && hasText && !isEditing && (
+                  <div style={{ paddingRight: askerGutter }}>
                     <MessageActions
                       role="user"
                       copied={copiedIdx === i}
@@ -3712,18 +3746,17 @@ This user request requires workspace inspection. Before answering, you MUST call
                       onEdit={() => editMessage(i)}
                       onDelete={() => deleteMessage(i)}
                     />
-                  )}
-                  {!isEditing && m.tokenInfo && m.content.trim() && (
-                    <div
-                      className="klide-msg-meta"
-                      title={m.tokenInfo.exact ? "Exact count from the model's tokenizer" : "Estimate — this provider has no tokenizer endpoint"}
-                      style={{ marginTop: 3, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-dim)", letterSpacing: "0.02em", userSelect: "none" }}
-                    >
-                      {m.tokenInfo.exact ? "" : "~"}{m.tokenInfo.count.toLocaleString()} tokens
-                    </div>
-                  )}
-                </div>
-                <AskerMark username={username} avatarUrl={avatarUrl} />
+                  </div>
+                )}
+                {!isEditing && m.tokenInfo && hasText && (
+                  <div
+                    className="klide-msg-meta"
+                    title={m.tokenInfo.exact ? "Exact count from the model's tokenizer" : "Estimate — this provider has no tokenizer endpoint"}
+                    style={{ marginTop: 3, paddingRight: askerGutter, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-dim)", letterSpacing: "0.02em", userSelect: "none" }}
+                  >
+                    {m.tokenInfo.exact ? "" : "~"}{m.tokenInfo.count.toLocaleString()} tokens
+                  </div>
+                )}
               </div>
             );
           }
@@ -4183,7 +4216,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             onRemove={(i) => setPendingAttachments((prev) => prev.filter((_, j) => j !== i))}
             onOpenPhoto={(dataUri) => setLightboxImage(dataUri)}
           />
-          <textarea ref={taRef} value={input}
+          <textarea ref={taRef} className="klide-composer-textarea" value={input}
             onChange={(e) => handleComposerChange(e.target.value, e.target.selectionStart)}
             onKeyDown={(e) => {
               if (slash !== null && slashMatches.length > 0) {

@@ -1791,6 +1791,7 @@ function FocusComposer({
         )}
         <textarea
           ref={taRef}
+          className="klide-composer-textarea"
           name="task-prompt"
           aria-label={placeholder}
           autoComplete="off"
