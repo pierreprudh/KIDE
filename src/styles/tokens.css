@@ -504,7 +504,13 @@ button:active {
    keyboard-only for buttons; text inputs also show it on click, matching how
    .klide-field already rings on focus. The textarea rule excludes Monaco's
    (.inputarea) and xterm's (.xterm-helper-textarea) hidden editing surfaces,
-   which focus constantly and manage their own (ringless) appearance. */
+   which focus constantly and manage their own (ringless) appearance — and the
+   chat composers (.klide-composer-textarea), whose whole card answers focus.
+   A composer card clips its overflow, so a ring on the textarea inside showed
+   up as two coloured bars across the composer the moment you typed. Note the
+   :not() chain also decides the cascade here: its class arguments count toward
+   specificity, so a composer's own `outline: none` — inline or in a rule —
+   cannot win against this one. Exempting by name is the only fix. */
 button:focus-visible,
 select:focus-visible,
 input:focus-visible {
@@ -512,7 +518,7 @@ input:focus-visible {
   outline-offset: 1px;
 }
 
-textarea:focus-visible:not(.inputarea):not(.xterm-helper-textarea):not(.klide-diff-comment-input) {
+textarea:focus-visible:not(.inputarea):not(.xterm-helper-textarea):not(.klide-diff-comment-input):not(.klide-composer-textarea) {
   outline: 2px solid var(--accent-soft) !important;
   outline-offset: 1px;
 }
@@ -6004,26 +6010,24 @@ button:focus-visible .menu-leadout {
   transition: opacity 280ms var(--ease-out);
 }
 
+/* Typing is not an event. Focus keeps the hairline and the lift — no accent
+   frame, no coloured ring: a bar of colour arriving the moment you write is
+   exactly the busy chrome this surface is supposed to be free of. */
 .klide-focus-composer[data-focused="true"] {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent),
     inset 0 1px 0 var(--panel-highlight),
     0 22px 54px rgba(28, 28, 28, 0.085);
   transform: translateY(-2px) scale(1.002);
 }
 
-.klide-focus-composer[data-focused="true"]::before {
-  opacity: 0.68;
-}
-
-/* Dragging a photo or document over the start stage. The card answers with the
-   same lift it gives focus — no dashed outline, no overlay: the composer is
-   already the target, so it only needs to say it is listening. */
+/* Dragging a photo or document over the start stage. A drag IS an event — it
+   asks "will you take this?" — so here the accent hairline earns its place.
+   Still a hairline: no ring, no dashed outline, no overlay. The named landing
+   line below carries the answer. */
 .klide-focus-composer[data-dropping] {
   border-color: var(--accent);
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent),
     inset 0 1px 0 var(--panel-highlight),
     0 22px 54px rgba(28, 28, 28, 0.085);
   transform: translateY(-2px) scale(1.002);

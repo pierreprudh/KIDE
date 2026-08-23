@@ -184,7 +184,7 @@ const sections: { id: SectionId; label: string; icon: ReactNode }[] = [
 // self-explanatory the way Linear / Vercel settings do, without a help click.
 const SECTION_SUBTITLES: Record<SectionId, string> = {
   general: "Startup, files, tabs, and workbench-wide defaults.",
-  appearance: "Theme and how Klide follows your system light/dark setting.",
+  appearance: "Theme, how Klide follows your system light/dark setting, and how a conversation is laid out.",
   layout: "Panel sizes and saved workbench layout presets.",
   ai: "How the assistant edits files, runs tools, and reasons.",
   "local-ai": "Run models on-device with Ollama and MLX — no key needed.",
@@ -374,6 +374,7 @@ export function SettingsPanel({
   const [autoSaveMode, onAutoSaveModeChange] = useSetting(SETTINGS.autoSaveMode);
   const [showHiddenFiles, onShowHiddenFilesChange] = useSetting(SETTINGS.showHiddenFiles);
   const [confirmCloseDirty, onConfirmCloseDirtyChange] = useSetting(SETTINGS.confirmCloseDirty);
+  const [showAskerAvatar, onShowAskerAvatarChange] = useSetting(SETTINGS.showAskerAvatar);
   const isSectionId = (value: string | null | undefined): value is SectionId =>
     sections.some((section) => section.id === value);
   const [settingsProvider, setSettingsProvider] = useState<ProviderId>(
@@ -1003,6 +1004,21 @@ export function SettingsPanel({
                       }))}
                     />
                   )}
+                </Panel>
+              </SettingBlock>
+              <SettingBlock title="Conversation">
+                <Panel>
+                  <Row
+                    title="Your profile picture"
+                    description="Show your picture beside your own messages, so a thread reads as two participants."
+                    control={
+                      <Toggle
+                        checked={showAskerAvatar}
+                        onChange={onShowAskerAvatarChange}
+                        label="Your profile picture"
+                      />
+                    }
+                  />
                 </Panel>
               </SettingBlock>
               <SettingBlock title="Layout">

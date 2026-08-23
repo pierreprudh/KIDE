@@ -256,6 +256,18 @@ export const SETTINGS = {
     normalize: (v: ThemeId) => normalizeThemeId(v),
     search: AUTO_THEME_SEARCH,
   } as SettingDef<ThemeId>,
+  /** Your profile picture beside your own turns in a conversation. On by
+   *  default: a thread reads as two participants talking. Off drops the mark
+   *  and its gutter, and the bubbles keep the right edge to themselves. */
+  showAskerAvatar: {
+    key: "klide-conversation-avatar",
+    fallback: () => true,
+    search: {
+      label: "Profile picture in conversations",
+      section: "appearance",
+      keywords: "avatar profile picture photo conversation message mark chat me",
+    },
+  } as SettingDef<boolean>,
   restoreLastProject: {
     key: "klide-restore-project",
     fallback: () => false,
