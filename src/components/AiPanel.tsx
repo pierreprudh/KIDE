@@ -4213,12 +4213,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             style={{ width: "100%", minHeight: 40, maxHeight: 168, resize: "none", background: "transparent", border: "none", color: "var(--fg-strong)", font: "inherit", fontSize: 13.5, lineHeight: 1.55, padding: "12px 14px 8px", outline: "none", display: "block" }}
           />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: width < 360 ? 4 : 6, padding: "6px 8px", borderTop: "1px solid color-mix(in srgb, var(--border) 30%, transparent)", flexWrap: "nowrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: width < 360 ? 4 : 6, minWidth: 0, flex: "0 0 auto", flexWrap: "nowrap", overflow: "hidden" }}>
-              {variant === "focus" ? (
-                <div className="klide-focus-provider-control">
-                  {providerControl}
-                </div>
-              ) : null}
+            <div style={{ display: "flex", alignItems: "center", gap: variant === "focus" ? 1 : width < 360 ? 4 : 6, minWidth: 0, flex: "0 0 auto", flexWrap: "nowrap", overflow: "hidden" }}>
               {delegateSession ? (
                 // A live CLI session owns its own mode and context, so the
                 // composer names who is listening instead of offering controls
@@ -4290,6 +4285,14 @@ This user request requires workspace inspection. Before answering, you MUST call
                   )}
                 </div>
               )}
+              {/* Focus keeps the same footer order as the start-stage composer
+                  (FocusMode.tsx): the "+" leads, the provider follows — firing
+                  the first message must not shuffle the controls. */}
+              {variant === "focus" ? (
+                <div className="klide-focus-provider-control">
+                  {providerControl}
+                </div>
+              ) : null}
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: width < 360 ? 1 : 2, flex: "1 1 auto", minWidth: 0 }}>
               {!isLocalProvider && conversationCostUsd > 0 && width >= 380 && (
