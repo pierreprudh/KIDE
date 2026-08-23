@@ -71,6 +71,7 @@ import type {
 import { enabledSkillsPrompt, type Skill } from "../skills";
 
 import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
+import { AttachIcon } from "../icons";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
@@ -87,6 +88,8 @@ import { ModelPicker, modelLabel } from "./ai/ModelPicker";
 import { favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
 import { buildSystemPrompt } from "./ai/system-prompt";
+import { isPhotoAttachment, stageFiles } from "./ai/attachments";
+import { AttachmentTray } from "./ai/AttachmentTray";
 import { summarizeAndHandoff, generateMemoryNote, detectAndGenerateSkill, summarizeForCompaction } from "./ai/summarize";
 import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
@@ -345,6 +348,10 @@ type Props = {
    *  Starts a fresh conversation first if the restored session already has
    *  messages (the hero composer always means "new chat"). */
   initialMessage?: string | null;
+  /** Photos/documents staged beside that first message on the Focus start
+   *  stage. They ride the same handoff so the opening turn carries what was
+   *  dropped there — the panel doesn't re-read them from anywhere. */
+  initialAttachments?: Attachment[] | null;
   onInitialMessageConsumed?: () => void;
   /** A message to send into the CURRENT conversation as a follow-up turn —
    *  the race "ask both" composer fans one text out to every racer's panel
@@ -624,6 +631,7 @@ export function AiPanel({
   initialTask,
   onInitialConsumed,
   initialMessage,
+  initialAttachments,
   onInitialMessageConsumed,
   followUpMessage,
   onFollowUpConsumed,
@@ -945,13 +953,17 @@ export function AiPanel({
     () => Boolean(resumeConversation) || conversationSession.messages.length > 0,
   );
   const manuallyInspectedModelRef = useRef<string | null>(null);
-  // Images pasted/dropped into the composer, staged as data-URI attachments
-  // until the turn is sent. Only offered when the model can see them.
-  const [pendingImages, setPendingImages] = useState<Attachment[]>([]);
-  // Whether an image is being dragged over the panel (drives the drop overlay).
-  const [imageDragOver, setImageDragOver] = useState(false);
+  // Photos and documents pasted/dropped into the composer, staged until the
+  // turn is sent. A photo needs a model that can see it; a document is text
+  // and reaches every model, so the two are gated separately (see stageFiles).
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  // Whether a file is being dragged over the panel (drives the drop overlay).
+  const [fileDragOver, setFileDragOver] = useState(false);
   // A conversation image opened full-size (data URI), or null when closed.
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+  // The OS file picker behind the + menu's attach row — for a photo or
+  // document that isn't in the workspace, so it can't be reached with `@`.
+  const filePickerRef = useRef<HTMLInputElement>(null);
   const {
     open: modeOpen,
     pos: modeMenuPos,
@@ -1387,51 +1399,39 @@ export function AiPanel({
     else flashMode(review ? "reviewing every edit" : "auto-accept edits on", review ? "muted" : "accent");
   }
 
-  // Stage pasted/dropped image files as data-URI attachments. Guarded by
-  // vision support so we never offer to attach where the model is blind, and
-  // capped at ~6 MB/image to match the harness's per-image guard.
-  async function addImageFiles(files: File[]) {
-    if (!modelSupportsVision || providerDelegatesWork) return;
-    const images = files.filter((f) => f.type.startsWith("image/")).slice(0, 8);
-    if (images.length === 0) return;
-    const read = await Promise.all(
-      images.map(
-        (f) =>
-          new Promise<Attachment | null>((resolve) => {
-            if (f.size > 6_000_000) {
-              notify(`${f.name || "Image"} is too large to attach (max 6 MB).`, { tone: "warn" });
-              resolve(null);
-              return;
-            }
-            const reader = new FileReader();
-            reader.onload = () => {
-              const dataUri = typeof reader.result === "string" ? reader.result : "";
-              resolve(dataUri ? { path: f.name || "pasted-image", content: "", mime: f.type, dataUri } : null);
-            };
-            reader.onerror = () => resolve(null);
-            reader.readAsDataURL(f);
-          }),
-      ),
-    );
-    const ok = read.filter((a): a is Attachment => a !== null);
-    if (ok.length) setPendingImages((prev) => [...prev, ...ok].slice(0, 12));
+  // Stage pasted/dropped files through the one set of attachment rules
+  // (src/components/ai/attachments.ts): a photo becomes a data URI for a
+  // vision-capable model, a document becomes text every model can read, and
+  // anything Klide has no wire for is refused by name rather than attached as
+  // garbage.
+  async function addFiles(files: File[]) {
+    if (!canAttachFiles || files.length === 0) return;
+    const { attachments, notices } = await stageFiles(files, {
+      allowPhotos: modelSupportsVision,
+      alreadyStaged: pendingAttachments.length,
+    });
+    for (const notice of notices) notify(notice.text, { tone: notice.tone });
+    if (attachments.length) setPendingAttachments((prev) => [...prev, ...attachments]);
   }
 
-  const canAttachImages = modelSupportsVision && !providerDelegatesWork;
+  // A delegate CLI takes text on its stdin and nothing else, so attaching is
+  // off there entirely. Everywhere else the composer accepts files and lets
+  // the staging rules decide what each one becomes.
+  const canAttachFiles = !providerDelegatesWork;
 
   function onComposerPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
-    if (files.length && canAttachImages) {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length && canAttachFiles) {
       e.preventDefault();
-      void addImageFiles(files);
+      void addFiles(files);
     }
   }
 
   function onComposerDrop(e: React.DragEvent<HTMLTextAreaElement>) {
-    const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith("image/"));
-    if (files.length && canAttachImages) {
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length && canAttachFiles) {
       e.preventDefault();
-      void addImageFiles(files);
+      void addFiles(files);
     }
   }
 
@@ -2111,15 +2111,25 @@ This user request requires workspace inspection. Before answering, you MUST call
     attachments: Attachment[];
   } | null>(null);
   const consumedInitialMessageRef = useRef<string | null>(null);
+  // Read at consumption time rather than through the effect's deps: the
+  // attachments arrive in the same render as the text, and re-running on a new
+  // array identity would re-send the same opening turn.
+  const initialAttachmentsRef = useRef<Attachment[]>([]);
+  initialAttachmentsRef.current = initialAttachments ?? [];
   useEffect(() => {
-    const text = initialMessage?.trim();
-    if (!text || consumedInitialMessageRef.current === text) return;
-    consumedInitialMessageRef.current = text;
+    const text = initialMessage?.trim() ?? "";
+    const staged = initialAttachmentsRef.current;
+    // An attachment-only handoff is a real turn — a dropped screenshot with no
+    // words — so the guard is "nothing at all", not "no text".
+    if (!text && staged.length === 0) return;
+    const receipt = `${text}::${staged.map((a) => a.path).join("|")}`;
+    if (consumedInitialMessageRef.current === receipt) return;
+    consumedInitialMessageRef.current = receipt;
     onInitialMessageConsumed?.();
     if (msgsRef.current.length > 0) newConversation();
-    setPendingHeroSend({ text, attachments: [] });
+    setPendingHeroSend({ text, attachments: staged });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMessage]);
+  }, [initialMessage, initialAttachments]);
   useEffect(() => {
     if (pendingHeroSend === null) return;
     const turn = pendingHeroSend;
@@ -2481,7 +2491,11 @@ This user request requires workspace inspection. Before answering, you MUST call
     setModelSupportsReflection(inspection.supportsReflection);
     setModelSupportsVision(inspection.supportsVision);
     setContextLimit(inspection.contextLimit);
-    if (!inspection.supportsVision) setPendingImages([]);
+    // Losing vision (a model switch) invalidates staged photos only. The
+    // documents alongside them are text, and every model still reads those.
+    if (!inspection.supportsVision) {
+      setPendingAttachments((prev) => prev.filter((a) => !isPhotoAttachment(a)));
+    }
   }
 
   async function activateModelInspectionForSend(): Promise<ModelInspection> {
@@ -3078,14 +3092,14 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   async function send(opts?: { text?: string; mode?: AgentMode; attachments?: Attachment[] }) {
     const text = opts?.text ?? input;
-    const stagedImages = opts?.attachments ?? pendingImages;
+    const stagedFiles = opts?.attachments ?? pendingAttachments;
     if (serverStarting) return;
-    // An image-only turn (no text) is valid; a bare empty turn is not.
-    if (!text.trim() && stagedImages.length === 0) return;
+    // An attachment-only turn (no text) is valid; a bare empty turn is not.
+    if (!text.trim() && stagedFiles.length === 0) return;
     // Delegate TUIs do not accept image-only turns.
     if (delegateSession && !text.trim()) return;
     if (delegateSession) {
-      // Delegate TUIs take text only — images aren't wired to their stdin.
+      // Delegate TUIs take text only — attachments aren't wired to their stdin.
       setInput(""); setMention(null); setSlash(null); setNextSendMode(null);
       await writeDelegatePty(delegateSessionId(currentId, provider), `${text}\r`);
       return;
@@ -3129,10 +3143,10 @@ This user request requires workspace inspection. Before answering, you MUST call
         ? "plan"
         : availableMode;
     setInput(""); setMention(null); setSlash(null); setNextSendMode(null);
-    setPendingImages([]);
+    setPendingAttachments([]);
     const collected = await collectAttachments(effectiveText);
-    // Staged images ride ahead of @-mention file attachments on the turn.
-    const attachments = [...stagedImages, ...collected];
+    // Staged photos/documents ride ahead of @-mention file attachments.
+    const attachments = [...stagedFiles, ...collected];
     const activeProjectContext = lensItemsForPrompt(projectContext, effectiveText, contextMode);
     enqueueTurn({ clientId: genId(), text: effectiveText, mode, provider, model: subagentModel ?? model, modelSupportsTools: supportsToolsForTurn, modelSupportsReflection: supportsReflectionForTurn, reflectionLevel: supportsReflectionForTurn ? panelReflectionLevel : undefined, attachments, subagent: directive?.subagent.id, projectContext: activeProjectContext.length > 0 ? { mode: contextMode, items: activeProjectContext } : undefined });
     // A subagent named *inside* a larger message (not a leading directive) runs
@@ -3379,18 +3393,18 @@ This user request requires workspace inspection. Before answering, you MUST call
       className={variant === "focus" ? "klide-focus-ai-surface" : "floating-panel"}
       aria-label="AI conversation"
       style={{ width: fill ? "100%" : width, height: fill ? "100%" : undefined, margin: fill ? 0 : "4px 4px 4px 0", display: fill || visible ? "flex" : "none", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}
-      onDragOver={(e) => { if (canAttachImages && Array.from(e.dataTransfer?.types ?? []).includes("Files")) { e.preventDefault(); setImageDragOver(true); } }}
-      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setImageDragOver(false); }}
+      onDragOver={(e) => { if (canAttachFiles && Array.from(e.dataTransfer?.types ?? []).includes("Files")) { e.preventDefault(); setFileDragOver(true); } }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFileDragOver(false); }}
       onDrop={(e) => {
-        if (!canAttachImages) return;
+        if (!canAttachFiles) return;
         e.preventDefault();
-        setImageDragOver(false);
-        const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith("image/"));
-        if (files.length) void addImageFiles(files);
+        setFileDragOver(false);
+        const files = Array.from(e.dataTransfer?.files ?? []);
+        if (files.length) void addFiles(files);
       }}>
-      {imageDragOver && canAttachImages && (
+      {fileDragOver && canAttachFiles && (
         <div aria-hidden="true" style={{ position: "absolute", inset: 0, zIndex: 45, pointerEvents: "none", display: "grid", placeItems: "center", background: "color-mix(in srgb, var(--accent-soft) 55%, transparent)", border: "2px dashed var(--accent)", borderRadius: "inherit" }}>
-          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)", background: "var(--bg-elevated)", padding: "6px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>Drop image to attach</div>
+          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)", background: "var(--bg-elevated)", padding: "6px 12px", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>{modelSupportsVision ? "Drop an image or document to attach" : "Drop a document to attach"}</div>
         </div>
       )}
       {variant !== "focus" ? (
@@ -3623,6 +3637,12 @@ This user request requires workspace inspection. Before answering, you MUST call
             const running = m.queueState === "running";
             const isEditing = editingIdx === i;
             const imageAtts = m.attachments?.filter((a) => a.dataUri) ?? [];
+            // Documents that rode along without being named in the text — a
+            // dropped or pasted file. An `@mention` attachment already shows
+            // in the message itself, so repeating it here would be noise.
+            const docAtts = (m.attachments ?? []).filter(
+              (a) => !a.dataUri && !m.content.includes(a.path),
+            );
             return (
               <div key={i} className="ai-msg-in" style={{ display: "flex", gap: 10, alignItems: "flex-start", margin: "14px 0 12px", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
                 <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
@@ -3659,6 +3679,16 @@ This user request requires workspace inspection. Before answering, you MUST call
                             >
                               <img src={a.dataUri} alt={a.path || "Attached image"} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
                             </button>
+                          ))}
+                        </div>
+                      )}
+                      {docAtts.length > 0 && (
+                        <div
+                          style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end", maxWidth: "88%", marginBottom: m.content.trim() ? 6 : 0, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-subtle)" }}>
+                          {docAtts.map((a, gi) => (
+                            <span key={gi} title={`${a.path} — sent as text`}>
+                              {a.path.split("/").pop() || a.path}
+                            </span>
                           ))}
                         </div>
                       )}
@@ -4137,24 +4167,22 @@ This user request requires workspace inspection. Before answering, you MUST call
             </div>
           )}
           <div style={{ overflow: "hidden", borderRadius: "var(--radius-lg)" }}>
-          {pendingImages.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "10px 12px 2px" }}>
-              {pendingImages.map((img, i) => (
-                <div key={i} style={{ position: "relative", width: 52, height: 52, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)", flexShrink: 0 }}>
-                  <img src={img.dataUri} alt={img.path} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                  <button
-                    type="button"
-                    aria-label={`Remove ${img.path}`}
-                    title="Remove"
-                    onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
-                    style={{ position: "absolute", top: 2, right: 2, width: 16, height: 16, display: "grid", placeItems: "center", padding: 0, border: "none", borderRadius: "50%", background: "color-mix(in srgb, var(--bg) 70%, transparent)", color: "var(--fg-strong)", cursor: "pointer", lineHeight: 1 }}
-                  >
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+          <input
+            ref={filePickerRef}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = ""; // picking the same file twice still fires
+              if (files.length) void addFiles(files);
+            }}
+          />
+          <AttachmentTray
+            attachments={pendingAttachments}
+            onRemove={(i) => setPendingAttachments((prev) => prev.filter((_, j) => j !== i))}
+            onOpenPhoto={(dataUri) => setLightboxImage(dataUri)}
+          />
           <textarea ref={taRef} value={input}
             onChange={(e) => handleComposerChange(e.target.value, e.target.selectionStart)}
             onKeyDown={(e) => {
@@ -4178,8 +4206,8 @@ This user request requires workspace inspection. Before answering, you MUST call
             onBlur={() => { setComposerFocused(false); setMention(null); setSlash(null); }}
             onPaste={onComposerPaste}
             onDrop={onComposerDrop}
-            onDragOver={(e) => { if (canAttachImages && Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === "file")) e.preventDefault(); }}
-            placeholder={serverStarting ? `Starting ${providerName(provider)}...` : streaming ? "Queue another message…" : canAttachImages ? "Ask anything, @ to attach a file, paste an image…" : "Ask anything, @ to attach a file…"}
+            onDragOver={(e) => { if (canAttachFiles && Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === "file")) e.preventDefault(); }}
+            placeholder={serverStarting ? `Starting ${providerName(provider)}...` : streaming ? "Queue another message…" : canAttachFiles ? "Ask anything, @ to attach a file, drop a photo or document…" : "Ask anything, @ to attach a file…"}
             rows={1}
             data-ai-composer
             style={{ width: "100%", minHeight: 40, maxHeight: 168, resize: "none", background: "transparent", border: "none", color: "var(--fg-strong)", font: "inherit", fontSize: 13.5, lineHeight: 1.55, padding: "12px 14px 8px", outline: "none", display: "block" }}
@@ -4217,6 +4245,21 @@ This user request requires workspace inspection. Before answering, you MUST call
                         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
                         <span style={{ flex: 1, textAlign: "left" }}>Add file</span>
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-dim)" }}>@</span>
+                      </button>
+                      {/* `@` reaches workspace files by path; this reaches a
+                          photo or document from anywhere on disk. */}
+                      <button type="button" role="menuitem" disabled={!canAttachFiles}
+                        onClick={() => { closeModeMenu(); filePickerRef.current?.click(); }}
+                        title={canAttachFiles
+                          ? modelSupportsVision
+                            ? "Attach a photo or a text document"
+                            : `${model} can't see images — attach a text document`
+                          : "This CLI takes text only"}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, height: 32, padding: "0 10px", border: "none", borderRadius: "var(--radius-sm)", background: "transparent", color: canAttachFiles ? "var(--fg)" : "var(--fg-dim)", font: "inherit", fontSize: 13, cursor: canAttachFiles ? "pointer" : "default" }}
+                        onMouseEnter={(e) => { if (canAttachFiles) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                        <span style={{ flex: 1, textAlign: "left" }}>{modelSupportsVision ? "Photo or document" : "Document"}</span>
+                        <AttachIcon size={14} />
                       </button>
                       <div style={{ height: 1, background: "var(--border)", margin: "4px 8px" }} />
                       {AUTONOMY_RUNGS.map((rung, i) => {

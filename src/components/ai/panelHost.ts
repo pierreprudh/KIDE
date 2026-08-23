@@ -8,7 +8,7 @@
 // prop lists and hoping they stayed consistent. The policy now lives here,
 // and `App.renderAiPanel` is the one place that turns it into props.
 import type { ReactNode } from "react";
-import type { ProviderId } from "../../agent/types";
+import type { AgentAttachment, ProviderId } from "../../agent/types";
 import type { AiPanelInstance } from "../../hooks/usePanelLayout";
 import { normalizeProjectPath } from "../../projectPaths";
 
@@ -131,6 +131,10 @@ export type AiPanelRenderOptions = {
   variant?: "focus";
   /** Focus hero composer hands its first message through this. */
   initialMessage?: string | null;
+  /** Photos/documents staged on that first message. They travel beside the
+   *  text rather than inside it, so the first turn carries what was dropped
+   *  on the start stage. */
+  initialAttachments?: AgentAttachment[] | null;
   /** Honour a per-panel worktree cwd (free-floating surfaces only). */
   respectWorktree?: boolean;
   /** Show the close action (surfaces with more than one panel). */

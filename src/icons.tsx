@@ -36,6 +36,7 @@ import { GitBranch } from "@phosphor-icons/react/dist/csr/GitBranch";
 import { House } from "@phosphor-icons/react/dist/csr/House";
 import { MagnifyingGlass } from "@phosphor-icons/react/dist/csr/MagnifyingGlass";
 import { Plus } from "@phosphor-icons/react/dist/csr/Plus";
+import { Paperclip } from "@phosphor-icons/react/dist/csr/Paperclip";
 import { PuzzlePiece } from "@phosphor-icons/react/dist/csr/PuzzlePiece";
 import { Rectangle } from "@phosphor-icons/react/dist/csr/Rectangle";
 import { Terminal } from "@phosphor-icons/react/dist/csr/Terminal";
@@ -150,6 +151,11 @@ export function NewTaskIcon(p: GlyphProps) {
 
 export function CloseIcon(p: GlyphProps) {
   return <Icon as={X} {...p} />;
+}
+
+/** Attaching a photo or a document to a turn. */
+export function AttachIcon(p: GlyphProps) {
+  return <Icon as={Paperclip} {...p} />;
 }
 
 export function SendIcon(p: GlyphProps) {

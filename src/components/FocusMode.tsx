@@ -23,10 +23,12 @@ import { createPortal } from "react-dom";
 import {
   listProviderModels,
   modelSupportsTools as queryModelSupportsTools,
+  modelSupportsVision as queryModelSupportsVision,
   readProviderKeyStatus,
 } from "../ipc/aiProviders";
 import { Z } from "../zLayers";
 import {
+  AttachIcon,
   FreeLayoutIcon,
   GitIcon,
   MemoryIcon,
@@ -52,7 +54,10 @@ import {
 } from "./ai/storedConversations";
 import { relativeTime, isSubsequence } from "./ai/utils";
 import type { Conversation } from "./ai/types";
-import type { AgentMode, ProviderId } from "../agent/types";
+import type { AgentAttachment as Attachment, AgentMode, ProviderId } from "../agent/types";
+import { stageFiles } from "./ai/attachments";
+import { AttachmentTray } from "./ai/AttachmentTray";
+import { notify } from "../toast";
 import { AUTONOMY_RUNGS, effectiveMode as effectiveModeFor } from "./ai/autonomyLadder";
 import {
   PROVIDER_GROUPS,
@@ -87,7 +92,7 @@ type Props = {
   onNewChat: () => void;
   /** Resume a saved conversation in the same live Focus chat surface. */
   onOpenConversation: (convo: Conversation) => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, attachments: Attachment[]) => void;
   onOpenMissionControl: () => void;
   /** The rail's shared destinations — the same handler the free-mode activity
    *  bar calls, so Focus opens the identical Git view / Memory / Skills /
@@ -1286,6 +1291,9 @@ function FocusAddMenu({
   onModeChange,
   onRequireDiffReviewChange,
   onAddFile,
+  canAttachFiles,
+  supportsVision,
+  onAttachFiles,
 }: {
   workspaceRoot: string | null;
   mode: AgentMode;
@@ -1297,8 +1305,15 @@ function FocusAddMenu({
   onModeChange: (mode: AgentMode) => void;
   onRequireDiffReviewChange: (required: boolean) => void;
   onAddFile: (path: string) => void;
+  /** False for a delegate CLI, which takes text on its stdin and nothing else. */
+  canAttachFiles: boolean;
+  /** Whether the chosen model can see a photo — decides what this row promises. */
+  supportsVision: boolean;
+  onAttachFiles: (files: File[]) => void;
 }) {
   const [view, setView] = useState<"actions" | "files">("actions");
+  // The OS file picker, for a photo or document that isn't in the workspace.
+  const pickerRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<string[] | null>(null);
   const [fileQuery, setFileQuery] = useState("");
   const fileSearchRef = useRef<HTMLInputElement>(null);
@@ -1375,6 +1390,18 @@ function FocusAddMenu({
 
   return (
     <div style={{ display: "flex", flexShrink: 0 }}>
+      <input
+        ref={pickerRef}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          e.target.value = ""; // so picking the same file twice still fires
+          close();
+          if (files.length) onAttachFiles(files);
+        }}
+      />
       <button
         ref={triggerRef}
         type="button"
@@ -1446,6 +1473,28 @@ function FocusAddMenu({
               >
                 <span>Add file</span>
                 <span className="klide-focus-add-menu-meta">@</span>
+              </button>
+              {/* A photo or document from anywhere — the workspace row above
+                  attaches by path, this one attaches the file itself. */}
+              <button
+                type="button"
+                role="menuitem"
+                className="klide-focus-add-menu-row"
+                disabled={!canAttachFiles}
+                title={
+                  canAttachFiles
+                    ? supportsVision
+                      ? "Attach a photo or a text document"
+                      : "This model can't see images — attach a text document"
+                    : "This CLI takes text only"
+                }
+                onClick={() => pickerRef.current?.click()}
+              >
+                <span>
+                  {supportsVision ? "Photo or document" : "Document"}
+                  <small>{supportsVision ? "Attach an image or text file" : "Attach a text file"}</small>
+                </span>
+                <AttachIcon size={14} />
               </button>
               <div className="klide-focus-add-menu-divider" />
               {AUTONOMY_RUNGS.map((choice) => {
@@ -1520,7 +1569,7 @@ function FocusComposer({
   controls: FocusComposerControls;
   branch?: string | null;
   onPingGit?: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, attachments: Attachment[]) => void;
   placeholder?: string;
   autoFocus?: boolean;
 }) {
@@ -1540,6 +1589,11 @@ function FocusComposer({
   } = controls;
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
+  // Photos and documents staged on the first turn. They ride the handoff into
+  // the AI panel with the text, so a Focus task can start from a screenshot.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [dropping, setDropping] = useState(false);
+  const [supportsVision, setSupportsVision] = useState(false);
   const [agentMode, setAgentMode] = useState<AgentMode>(
     () => normalizeAgentMode(localStorage.getItem("klide.agentMode"))
   );
@@ -1619,15 +1673,50 @@ function FocusComposer({
     };
   }, [provider, model]);
 
+  // Vision is a per-model fact, so switching models can strand a staged photo.
+  // Drop the photos when that happens (documents are text — they still travel)
+  // rather than sending an image somewhere it can't be seen.
+  useEffect(() => {
+    let cancelled = false;
+    queryModelSupportsVision(provider, model)
+      .then((supported) => {
+        if (cancelled) return;
+        setSupportsVision(supported);
+        if (!supported) setAttachments((prev) => prev.filter((a) => !a.dataUri));
+      })
+      .catch(() => {
+        if (!cancelled) setSupportsVision(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, model]);
+
   useEffect(() => {
     if (autoFocus) taRef.current?.focus();
   }, [autoFocus]);
 
+  // A delegate CLI takes text on its stdin only — the same rule the AI panel
+  // composer applies.
+  const canAttachFiles = !isDelegateProvider(provider);
+
   function submit() {
     const text = draft.trim();
-    if (!text) return;
+    // An attachment-only first turn is valid: a dropped screenshot is a task.
+    if (!text && attachments.length === 0) return;
     setDraft("");
-    onSubmit(text);
+    setAttachments([]);
+    onSubmit(text, attachments);
+  }
+
+  async function addFiles(files: File[]) {
+    if (!canAttachFiles || files.length === 0) return;
+    const staged = await stageFiles(files, {
+      allowPhotos: supportsVision,
+      alreadyStaged: attachments.length,
+    });
+    for (const notice of staged.notices) notify(notice.text, { tone: notice.tone });
+    if (staged.attachments.length) setAttachments((prev) => [...prev, ...staged.attachments]);
   }
 
   function selectAgentMode(next: AgentMode) {
@@ -1650,7 +1739,7 @@ function FocusComposer({
     });
   }
 
-  const canSend = draft.trim().length > 0;
+  const canSend = draft.trim().length > 0 || attachments.length > 0;
 
   // The persistent task dock combines Codex's context ribbon with Claude's
   // bottom-anchored composer.
@@ -1669,7 +1758,37 @@ function FocusComposer({
         </div>
       )}
 
-      <div className="klide-focus-composer" data-focused={focused || undefined}>
+      <div
+        className="klide-focus-composer"
+        data-focused={focused || undefined}
+        data-dropping={dropping || undefined}
+        onDragOver={(e) => {
+          if (!canAttachFiles) return;
+          if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+          e.preventDefault();
+          setDropping(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false);
+        }}
+        onDrop={(e) => {
+          if (!canAttachFiles) return;
+          e.preventDefault();
+          setDropping(false);
+          const files = Array.from(e.dataTransfer?.files ?? []);
+          if (files.length) void addFiles(files);
+        }}
+      >
+        <AttachmentTray
+          attachments={attachments}
+          onRemove={(i) => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+          padding="12px 14px 0"
+        />
+        {dropping && attachments.length === 0 && (
+          <div className="klide-focus-composer-drop-hint" aria-hidden="true">
+            {supportsVision ? "Drop a photo or document" : "Drop a document"}
+          </div>
+        )}
         <textarea
           ref={taRef}
           name="task-prompt"
@@ -1679,6 +1798,13 @@ function FocusComposer({
           onChange={(e) => setDraft(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData?.files ?? []);
+            if (files.length && canAttachFiles) {
+              e.preventDefault();
+              void addFiles(files);
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -1700,6 +1826,9 @@ function FocusComposer({
               onModeChange={selectAgentMode}
               onRequireDiffReviewChange={onRequireDiffReviewChange}
               onAddFile={addFile}
+              canAttachFiles={canAttachFiles}
+              supportsVision={supportsVision}
+              onAttachFiles={(files) => void addFiles(files)}
             />
             <InlineMenu
               label="Provider"
@@ -1789,7 +1918,7 @@ function FocusHome({
   onPingGit: () => void;
   recent: Conversation[];
   onOpenConversation: (convo: Conversation) => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, attachments: Attachment[]) => void;
   controls: FocusComposerControls;
 }) {
   return (
@@ -1824,7 +1953,7 @@ function FocusHome({
                   kind: s.kind,
                   model: undefined,
                   provider: undefined,
-                  onClick: () => onSubmit(s.prompt),
+                  onClick: () => onSubmit(s.prompt, []),
                 }))
             ).map((card, index) => (
               <HomeCard

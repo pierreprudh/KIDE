@@ -6017,6 +6017,27 @@ button:focus-visible .menu-leadout {
   opacity: 0.68;
 }
 
+/* Dragging a photo or document over the start stage. The card answers with the
+   same lift it gives focus — no dashed outline, no overlay: the composer is
+   already the target, so it only needs to say it is listening. */
+.klide-focus-composer[data-dropping] {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent),
+    inset 0 1px 0 var(--panel-highlight),
+    0 22px 54px rgba(28, 28, 28, 0.085);
+  transform: translateY(-2px) scale(1.002);
+}
+
+/* One line where the tray will be, so the drop has a named landing place. */
+.klide-focus-composer-drop-hint {
+  padding: 12px 14px 0;
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  color: var(--accent);
+  pointer-events: none;
+}
+
 .klide-focus-composer textarea {
   position: relative;
   z-index: 1;

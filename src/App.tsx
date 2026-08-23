@@ -50,7 +50,7 @@ import {
   loadConversations,
   loadPanelSession,
 } from "./components/ai/storedConversations";
-import type { AgentEvent, ProviderId } from "./agent/types";
+import type { AgentAttachment, AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider } from "./agent/providers";
 import type { Conversation, Msg } from "./components/ai/types";
 import { summarizeAndHandoff } from "./components/ai/summarize";
@@ -178,6 +178,10 @@ function App() {
   // the hero composer's text on its way into the AI panel.
   const [focusChatActive, setFocusChatActive] = useState(false);
   const [focusInitialMessage, setFocusInitialMessage] = useState<string | null>(null);
+  // Photos/documents staged on the start stage, travelling with that first
+  // message. Cleared by the same consume callback, so a second task never
+  // inherits the first one's attachments.
+  const [focusInitialAttachments, setFocusInitialAttachments] = useState<AgentAttachment[]>([]);
   // The shell docked under Focus's canvas. Not persisted: Focus should open on
   // its home (or the conversation you left), never on a terminal you forgot.
   const [focusTerminalOpen, setFocusTerminalOpen] = useState(false);
@@ -1064,8 +1068,10 @@ function App() {
         onResumeConsumed={() => consumeResume(panelId)}
         variant={opts?.variant}
         initialMessage={opts?.initialMessage ?? null}
+        initialAttachments={opts?.initialAttachments ?? null}
         onInitialMessageConsumed={() => {
           setFocusInitialMessage(null);
+          setFocusInitialAttachments([]);
         }}
         followUpMessage={followUpsByPanel[panelId] ?? null}
         onFollowUpConsumed={() => consumeFollowUp(panelId)}
@@ -1164,6 +1170,8 @@ function App() {
           key,
           variant: opts?.aiVariant,
           initialMessage: opts?.aiVariant === "focus" ? focusInitialMessage : null,
+          initialAttachments:
+            opts?.aiVariant === "focus" ? focusInitialAttachments : null,
         });
       default:
         return (
@@ -2413,13 +2421,14 @@ function App() {
                     targetResume(primaryPanelId, resumedConvo);
                     setFocusChatActive(true);
                   }}
-                  onSubmit={(text) => {
+                  onSubmit={(text, attachments) => {
                     markFolderWorked(workspaceRoot);
                     // A normal Focus task runs in the open Workspace. Worktree
                     // isolation is opt-in through the dedicated action/fork
                     // flows, never an invisible side effect of pressing Send.
                     setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
                     setFocusInitialMessage(text);
+                    setFocusInitialAttachments(attachments);
                     setFocusChatActive(true);
                   }}
                   onOpenMissionControl={() => openOverlay("runs")}
