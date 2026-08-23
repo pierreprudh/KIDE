@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { eventsToConversation, eventsToMsgs, isSilentRunError } from "./replayConversation";
+import {
+  eventsToConversation,
+  eventsToMsgs,
+  isSilentRunError,
+  replayForAdoption,
+} from "./replayConversation";
 import type { AgentEvent } from "../../agent/types";
+import type { Msg } from "./types";
 
 // No `as AgentEvent` anywhere below: the union is the contract, and an
 // unchecked cast is how a fixture ends up describing a wire shape Rust never
@@ -123,5 +129,38 @@ describe("eventsToMsgs", () => {
 
   it("is empty for an empty transcript", () => {
     expect(eventsToMsgs([])).toEqual([]);
+  });
+});
+
+describe("replayForAdoption", () => {
+  const transcript = [runStarted(1), userMessage("hi", 2), assistantMessage("hello", 3)];
+
+  it("heals a view that stopped short of what the run wrote", () => {
+    // The case this exists for: the panel took the user turn and the start of
+    // the answer, then stopped following the run. The Transcript has the whole
+    // exchange, so adopting it puts the answer back on screen.
+    const onScreen: Msg[] = [{ role: "user", content: "hi" }];
+    const healed = replayForAdoption(transcript, onScreen);
+    expect(healed?.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(healed?.[1].content).toBe("hello");
+  });
+
+  it("carries queued turns across the replay", () => {
+    // A turn typed ahead has not been sent, so the Transcript cannot know about
+    // it. Dropping it here would silently swallow what the user just wrote.
+    const queued: Msg = { role: "user", content: "and then?", queueState: "queued" };
+    const healed = replayForAdoption(transcript, [{ role: "user", content: "hi" }, queued]);
+    expect(healed?.[healed.length - 1]).toBe(queued);
+  });
+
+  it("refuses a replay shorter than what is already on screen", () => {
+    // A half-written or truncated read must never eat live rows.
+    const onScreen: Msg[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "assistant", content: "and more" },
+    ];
+    expect(replayForAdoption(transcript, onScreen)).toBeNull();
+    expect(replayForAdoption([], onScreen)).toBeNull();
   });
 });

@@ -42,13 +42,15 @@ function steered(reason: string): AgentEvent {
 /** A tiny stand-in for the panel: an array cell plus apply-then-project. */
 function panel(initial: Msg[], regionStart = initial.length - 1) {
   const seedCandidate = initial[regionStart];
+  const detachments: number[] = [];
   const transcript: RunTranscript = createRunTranscript({
     regionStart,
     seed: seedCandidate?.role === "assistant" ? seedCandidate : null,
     delegate: {},
     pricing: null,
+    onDetached: () => detachments.push(1),
   });
-  const state = { msgs: initial };
+  const state = { msgs: initial, detachments };
   const feed = (...events: AgentEvent[]) => {
     for (const event of events) transcript.apply(event);
     const next = transcript.project(state.msgs);
@@ -145,6 +147,50 @@ describe("createRunTranscript", () => {
     p.transcript.apply(delta(" more"));
     expect(p.transcript.project(p.state.msgs)).toBeNull();
     expect(p.state.msgs[0]).toMatchObject({ content: "⚠ provider unavailable" });
+  });
+
+  it("says so when it detaches, instead of going quiet", () => {
+    // Detaching is right, but it is also the moment the view stops following
+    // the Run: everything the agent says from here reaches the Transcript and
+    // not the screen. The panel heals from disk on this signal, so a transcript
+    // that detached without announcing it is the bug, not the detach.
+    const p = panel([placeholder()]);
+    p.feed(delta("partial"));
+    expect(p.transcript.isDetached()).toBe(false);
+    expect(p.state.detachments).toHaveLength(0);
+
+    p.state.msgs = [{ role: "assistant", content: "someone else's row" }];
+    p.transcript.apply(message(text("the answer the user never saw")));
+    expect(p.transcript.project(p.state.msgs)).toBeNull();
+
+    expect(p.transcript.isDetached()).toBe(true);
+    expect(p.state.detachments).toHaveLength(1);
+    // Reported once, not on every later projection.
+    p.transcript.apply(delta("more"));
+    p.transcript.project(p.state.msgs);
+    expect(p.state.detachments).toHaveLength(1);
+  });
+
+  it("keeps projecting a run whose turns arrive as tool calls then an answer", () => {
+    // The shape of a Goal-mode turn on a hosted model: two tool-only assistant
+    // turns, then the answer. The answer opens a third fold row, and the row
+    // cache has to grow with it — a projection that walks past a gap in that
+    // cache drops the answer and leaves a conversation ending on a tool call.
+    const p = panel([{ role: "user", content: "What this ?" }, placeholder()]);
+    p.feed(message([{ type: "tool_call", toolCallId: "c1", name: "list_dir", input: {} }]));
+    p.feed(toolStarted("c1", "list_dir"), toolFinished("c1", "Direct entries in ."));
+    p.feed(message([{ type: "tool_call", toolCallId: "c2", name: "read_file", input: {} }]));
+    p.feed(toolStarted("c2", "read_file"), toolFinished("c2", "Contents of README.md"));
+    p.feed(delta("This is the Welcome screen"), message(text("This is the Welcome screen")));
+
+    expect(p.transcript.isDetached()).toBe(false);
+    expect(p.state.msgs.map((m) => m.role)).toEqual([
+      "user", "assistant", "tool", "assistant", "tool", "assistant",
+    ]);
+    expect(p.state.msgs[5]).toMatchObject({
+      role: "assistant",
+      content: "This is the Welcome screen",
+    });
   });
 
   it("assistantIndex points at the current turn's bubble", () => {

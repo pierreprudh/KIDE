@@ -10,6 +10,7 @@ function harness(initial: Msg[]) {
   let clock = 1000;
   const timers: { fn: () => void; at: number; cancelled: boolean }[] = [];
   const measured: { prompt?: number; usage?: { prompt: number; completion: number } } = {};
+  let detachments = 0;
   const driver = createTurnDriver({
     assistantIndex: initial.length - 1,
     delegate: {},
@@ -21,6 +22,7 @@ function harness(initial: Msg[]) {
     },
     onMeasuredPromptTokens: (n) => (measured.prompt = n),
     onMeasuredUsage: (u) => (measured.usage = u),
+    onDetached: () => (detachments += 1),
     now: () => clock,
     setTimer: (fn, ms) => {
       const t = { fn, at: clock + ms, cancelled: false };
@@ -36,6 +38,7 @@ function harness(initial: Msg[]) {
     ref,
     commits,
     measured,
+    detachments: () => detachments,
     tick(ms: number) {
       clock += ms;
       for (const t of timers.splice(0)) if (!t.cancelled && t.at <= clock) t.fn();
@@ -202,5 +205,32 @@ describe("createTurnDriver", () => {
     expect(h.pendingTimers()).toBe(0);
     h.driver.finish(); // second call is a no-op
     expect(h.commits).toHaveLength(1);
+  });
+});
+
+describe("a turn that stops reaching the screen says so", () => {
+  // The driver is the panel's only view of whether the turn it started is still
+  // landing. When the region is taken over mid-run, everything the agent says
+  // from there on reaches the Transcript and not the screen — so the panel has
+  // to be told, or a run that answered looks like a run that said nothing.
+  it("reports the detach and stays detached", () => {
+    const h = harness([{ role: "user", content: "What this ?" }, { role: "assistant", content: "" }]);
+    h.driver.handleEvent(delta("wor"));
+    h.tick(60);
+    expect(h.driver.isDetached()).toBe(false);
+    expect(h.detachments()).toBe(0);
+
+    // Something else rewrote the run's region.
+    h.ref.current = [{ role: "user", content: "What this ?" }, { role: "assistant", content: "elsewhere" }];
+    h.driver.handleEvent(delta("king on it"));
+    h.tick(60);
+
+    expect(h.driver.isDetached()).toBe(true);
+    expect(h.detachments()).toBe(1);
+    // The answer the user never saw: consumed by the driver, absent from view.
+    h.driver.handleEvent(message([{ type: "text", text: "This is the Welcome screen" }]));
+    h.driver.finish();
+    expect(h.ref.current[1]).toMatchObject({ content: "elsewhere" });
+    expect(h.driver.isDetached()).toBe(true);
   });
 });

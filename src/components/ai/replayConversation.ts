@@ -47,6 +47,29 @@ export function eventsToMsgs(events: AgentEvent[]): Msg[] {
   return foldedToMsgs(foldAgentEvents(events));
 }
 
+/**
+ * The replay a live panel should adopt over what it currently shows.
+ *
+ * Two paths need this and must agree: the mount reconnect (`followConversationRun`)
+ * and the post-turn heal that runs when a turn stopped reaching the screen.
+ * Both add back the turns queued locally — a queued turn was typed ahead and
+ * has not been sent, so the Transcript cannot know about it — and both refuse a
+ * replay that is *shorter* than what is on screen, which is how a half-written
+ * or truncated read is kept from eating live rows.
+ *
+ * Returns null when the replay has nothing to add.
+ */
+export function replayForAdoption(
+  events: AgentEvent[],
+  current: Msg[],
+): Msg[] | null {
+  const queuedLocal = current.filter(
+    (m) => m.role === "user" && m.queueState === "queued",
+  );
+  const replayed = [...eventsToMsgs(events), ...queuedLocal];
+  return replayed.length >= current.length ? replayed : null;
+}
+
 /** Reconstruct a Conversation from events for AiPanel resumption. */
 export function eventsToConversation(
   events: AgentEvent[],

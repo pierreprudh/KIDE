@@ -94,7 +94,7 @@ import { AttachmentTray } from "./ai/AttachmentTray";
 import { summarizeAndHandoff, generateMemoryNote, detectAndGenerateSkill, summarizeForCompaction } from "./ai/summarize";
 import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
-import { eventsToMsgs, isSilentRunError } from "./ai/replayConversation";
+import { isSilentRunError, replayForAdoption } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
 import { decideOnLeavingRun, type RunLeaveDecision } from "./ai/leavingRun";
 import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
@@ -1676,6 +1676,12 @@ This user request requires workspace inspection. Before answering, you MUST call
   const processingQueueRef = useRef(false);
   const queueGenerationRef = useRef(0);
   const activeHarnessRunRef = useRef<string | null>(null);
+  // Why the view is short of the Run's Transcript, when it is. Set by the two
+  // places that stop taking a live Run's events — the region splice detaching
+  // and a retired turn generation — and cleared at the top of every turn. Read
+  // once the Run settles, to decide whether the panel has to re-read the
+  // Transcript to show what the agent actually said.
+  const viewBehindRef = useRef<"region-detached" | "generation-retired" | null>(null);
   // Live subscription to a run that was still going when this panel mounted
   // (see the mount reconnect effect). Held so we can detach on unmount / when
   // the run settles, and so a conversation switch doesn't leave it listening.
@@ -1844,7 +1850,16 @@ This user request requires workspace inspection. Before answering, you MUST call
     }
   }
 
-  useEffect(() => { msgsRef.current = msgs; }, [msgs]);
+  // There is deliberately no `msgsRef.current = msgs` effect here. Every
+  // mutation already goes through `transitionConversation`, which advances the
+  // ref synchronously — ahead of the React commit, on purpose, because the run
+  // callbacks are async and need the latest array before React has rendered it.
+  // Mirroring the *rendered* `msgs` back into the ref could therefore only ever
+  // move it backwards, and a rewound ref is not a cosmetic lag: the turn
+  // driver's region splice compares the array it is handed against the rows it
+  // last projected, by reference, and detaches for the rest of the run when
+  // they disagree. That is one way a run's final answer ends up on disk and
+  // never on screen.
 
   /**
    * Reconnect a conversation to the Harness Run still working on it, if there
@@ -1882,18 +1897,15 @@ This user request requires workspace inspection. Before answering, you MUST call
           // Turns queued locally (waiting for this external run to settle)
           // aren't in the transcript yet — carry them across the replay or a
           // long-running race run would silently swallow an "ask both" send.
-          const queuedLocal = msgsRef.current.filter(
-            (m) => m.role === "user" && m.queueState === "queued",
-          );
-          const replayed = [...eventsToMsgs(events), ...queuedLocal];
+          // That rule, and the refusal to adopt a replay shorter than what is
+          // on screen, live in `replayForAdoption`: the post-turn heal in
+          // `runHarnessTurn` adopts on exactly the same terms.
+          const replayed = replayForAdoption(events, msgsRef.current);
           const safe =
+            replayed !== null &&
             conversationSessionRef.current.conversationId === reattachId &&
-            (guardBaseLen === undefined || msgsRef.current.length === guardBaseLen) &&
-            replayed.length >= msgsRef.current.length;
-          if (safe) {
-            setMsgs(replayed);
-            msgsRef.current = replayed;
-          }
+            (guardBaseLen === undefined || msgsRef.current.length === guardBaseLen);
+          if (safe) setMsgs(replayed);
           const tail = events[events.length - 1]?.type;
           return {
             len: events.length,
@@ -2648,6 +2660,14 @@ This user request requires workspace inspection. Before answering, you MUST call
     // Their action (sending a message) implies "I want to see the reply".
     forceStickToBottom();
 
+    // Two things can stop this turn reaching the screen while the Run keeps
+    // working: the region splice detaching, and events dropped for a retired
+    // turn generation. Both are silent by construction, and both strand the
+    // Run's later turns — its *answer*, usually, since a tool phase comes
+    // first — on disk and nowhere else. Cleared here, set by whichever fires,
+    // read once the Run settles.
+    viewBehindRef.current = null;
+
     let harnessError: Error | null = null;
     // Track user-initiated stops so the auto-memory hook can distinguish a
     // clean run_result from a `run_error` with code "aborted". We don't
@@ -2678,6 +2698,9 @@ This user request requires workspace inspection. Before answering, you MUST call
       commit,
       onMeasuredPromptTokens: setMeasuredPromptTokens,
       onMeasuredUsage: setMeasuredUsageTokens,
+      onDetached: () => {
+        viewBehindRef.current = "region-detached";
+      },
     });
 
     // The executor (this run's model) called `consult_advisor` and is parked on
@@ -2692,7 +2715,15 @@ This user request requires workspace inspection. Before answering, you MUST call
       serviceAdvisorConsult({ event, advisor: resolveAdvisor(harnessSettings), workspaceRoot });
 
     const handleEvent = (event: AgentEvent) => {
-      if (queueGenerationRef.current !== generation) return;
+      if (queueGenerationRef.current !== generation) {
+        // This turn's generation was retired mid-Run (the panel left the
+        // conversation, or a Stop bumped it). Dropping the event is right — it
+        // must not land in whatever conversation is adopted next — but the Run
+        // is still working, so what we have on screen is now short of the
+        // Transcript. Say so, rather than letting the turn look finished.
+        viewBehindRef.current = "generation-retired";
+        return;
+      }
       // Transcript events (deltas, finalized messages, tool cards) belong to
       // the turn driver; everything below is panel behaviour.
       if (driver.handleEvent(event)) return;
@@ -2890,6 +2921,43 @@ This user request requires workspace inspection. Before answering, you MUST call
     }
     // Cancel the batch timer + render any delta still pending.
     driver.finish();
+    // The turn stopped reaching the screen partway through. The Run itself kept
+    // going in Rust and wrote every turn to its Transcript, so the answer is not
+    // lost — it is simply not here. Re-read the Transcript and adopt it, the
+    // same heal a remount gets from `followConversationRun`, instead of leaving
+    // a conversation that ends on a tool call and looks like a model that said
+    // nothing.
+    //
+    // Two Runs are deliberately not healed this way. A Delegate conversation
+    // outside Focus has no Transcript of its own to read. And a subagent turn
+    // is its OWN child Run: its events stream into this panel but land in the
+    // child's Transcript, so the conversation's own Transcript is not the
+    // record of what was on screen and adopting it would be a different kind of
+    // wrong from the one being fixed.
+    if (driver.isDetached()) viewBehindRef.current ??= "region-detached";
+    const behind = viewBehindRef.current;
+    viewBehindRef.current = null;
+    if (
+      behind &&
+      queueGenerationRef.current === generation &&
+      conversationSessionRef.current.conversationId === currentId &&
+      !turn.subagent &&
+      !(isDelegateProvider(turn.provider) && variant !== "focus")
+    ) {
+      // Loud on purpose. This is the diagnostic that was missing: the last time
+      // a turn went dark, the only evidence was a conversation that looked like
+      // it ended on a tool call, and finding out why meant reading the
+      // Transcript off disk by hand.
+      console.warn(`Klide: turn stopped reaching the view (${behind}) — healing from the transcript.`);
+      try {
+        const healed = replayForAdoption(await readAgentRunEvents(currentId), msgsRef.current);
+        if (healed) commit(healed);
+      } catch {
+        // A Transcript that cannot be read leaves the view as it stands. The
+        // turn is already over; failing loudly here would replace a short
+        // conversation with an error about a file the user never asked about.
+      }
+    }
     settleConversationRun();
     setPendingDiff(null);
     if (isDelegateProvider(turn.provider)) onWorkspaceChanged?.();
