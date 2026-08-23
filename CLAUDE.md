@@ -48,14 +48,15 @@ Klide/
 ├── CONTEXT.md                 Domain language — reviews use this vocabulary; code drifts, not it
 ├── CHANGELOG.md               Notable changes per milestone
 ├── TODO.md                    Current milestone + shipped history
-├── Ideas.md                   Future ideas + inspiration
+├── Ideas.md                   Future ideas + inspiration (git-ignored, local only)
 ├── HARNESS_CONTRACT.md        The harness trust model (modes, capabilities, permissions)
 ├── KLIDE_HARNESS_SCHEMA.md    Tool interface schema
-├── docs/                      Design docs (delegate replay, competitors, website) + adr/
+├── Design.md                  Design system — tokens, themes, principles (mirror changes in styles/tokens.css)
+├── docs/                      Design docs (delegate replay, competitors, website) + adr/ (git-ignored, local only)
 ├── src/                       React + TypeScript frontend
 │   ├── main.tsx                 React boot
 │   ├── App.tsx                  Root layout — composes view/panel/editor state; threads props
-│   ├── theme.ts                 5 themes + Monaco theme defs
+│   ├── theme.ts                 7 themes + Monaco theme defs
 │   ├── styles/tokens.css        CSS custom properties + design primitives
 │   ├── icons.tsx                App-wide icon vocabulary, one weight lever (Phosphor Light; brand/file marks stay hand-drawn)
 │   ├── zLayers.ts               Z scale for root-level overlay stacking
@@ -429,10 +430,10 @@ enforce wrapper coverage for the git family.
 - [x] Activity bar — top zone (6 tools) with FLIP-animated indicator + bottom zone (Settings + Profile) with a dock-style dot and a hairline divider.
 - [x] File explorer with tree view, git decorations, context menu, inline rename
 - [x] Tabs with dirty indicator, unsaved-changes confirm, FLIP-animated 2px bottom accent bar
-- [x] Monaco editor with syntax highlighting, Cmd+S, 5 themes
+- [x] Monaco editor with syntax highlighting, Cmd+S, 7 themes
 - [x] Status bar — file path, language, git branch, theme/terminal/layout toggles, dot separators
 - [x] Terminal panel with real shell via Rust portable-pty
-- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted endpoints, 14 built-in tools, inline diff review + auto-accept toggle
+- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted endpoints, 19 built-in tools, inline diff review + auto-accept toggle
 - [x] Agent mode — goal/plan modes, diff-reviewed edits, tool loop
 - [x] Git panel — full-view Git Review workbench (staging + diffs)
 - [x] Mission Control — aggregate agent run board (Claude Code, Codex, OpenCode, Oh My Pi, Klide) with handoff to AI panel

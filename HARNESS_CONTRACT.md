@@ -30,13 +30,13 @@ Mode filtering happens twice:
 The second check is load-bearing. A Provider may hallucinate, replay, or return a
 Tool call that was not advertised. The Harness still denies disallowed Tools.
 
-## Goal Mode vs Goal Loops
+## Goal Mode vs Mission Supervision
 
 `goal` mode is a capability tier: the model may use the full Tool surface, while
 writes, commands, and pause points stay gated by the Harness.
 
-A Goal Loop is a supervisor contract above one or more Runs. It should not
-execute tools itself. It defines:
+A supervisor contract sits above one or more Runs. It does not execute tools
+itself. It defines:
 
 - the goal and definition of done
 - context sources the worker may rely on
@@ -45,15 +45,18 @@ execute tools itself. It defines:
 - iteration, revision, stall, time, and spend limits
 - a recorded result with the final stop reason
 
-Klide's first pure Goal Loop implementation lives in
-`src/agent/goalLoop.ts`. It is deliberately separate from the Rust Harness loop:
-the Harness keeps owning provider turns, Tool dispatch, Diff review, permission,
-Transcript writes, and cancellation. Goal Loop state can be projected from
-Mission, Validation contract, Budget ledger, and Transcript evidence.
+Klide's supervisor contract is a Mission, not a second loop. Rust owns the
+durable Mission under `.klide/missions/` (`src-tauri/src/missions.rs`) and
+TypeScript compiles those documents and events into a `MissionState` projection
+(`src/agent/durableMissions.ts`, `src/agent/missionHarness.ts`). The Harness
+keeps owning provider turns, Tool dispatch, Diff review, permission, Transcript
+writes, and cancellation. Gates, budgets, and evidence come from
+`src/agent/validationContracts.ts`, `src/agent/budgetLedger.ts`, and the
+Transcript.
 
 In practical terms:
 
-1. The design step creates a `GoalLoopSpec`.
+1. The design step authors a Mission spec with its task graph.
 2. A Run does the actual work through the existing Harness.
 3. Validation evidence becomes gate attempts.
 4. Failed gates route to a bounded revision, not an unbounded retry.
@@ -69,8 +72,9 @@ Every Tool has one capability:
 | `ReadWorkspace` | `ReadOnly` | May run in `plan` and `goal`. Must resolve paths through the Workspace module when touching files. |
 | `WriteWorkspace` | `Write` | Goal-only. Produces a Diff proposal and waits for Diff review before writing. |
 | `RunCommand` | `Command` | Goal-only. Produces a permission request and runs only after approval. |
-| `PauseForUser` | `Pause` | Goal-only. Pauses the Run for typed user input. |
+| `PauseForUser` | `Pause` | Goal-only. Pauses the Run and resumes on an outside answer — typed user input (`userAnswerQuestion`), a nested subagent Run (`spawn_subagent`), or an advisor model (`consult_advisor`). |
 | `Network` | `Network` | Goal-only. Produces a permission request and reads from the network only after approval. |
+| `UpdatePlanState` | `PlanState` | May run in `plan` and `goal`. Mutates Klide's own planning metadata (the TODO store), never Workspace files, so it needs no Diff review. |
 
 Dynamic tools loaded from `.agents/tools.json` are shell-backed command tools.
 They are always `RunCommand` capability, Goal-only, approval-gated, timeout

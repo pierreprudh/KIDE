@@ -223,21 +223,27 @@ components:
     border: "1px solid {colors.bone-border}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THEMES — the light "Bone" theme is the default. Other themes layer on top
-# of the same token names. To add a theme, add it here AND in src/theme.ts.
+# THEMES — the light "Klide Light" theme is the default; it carries the bone
+# palette described above. Other themes layer on top of the same token names.
+# To add a theme, add it here AND in src/theme.ts.
 # ─────────────────────────────────────────────────────────────────────────────
 
 themes:
-  - id: bone
-    name: "Bone"
-    description: "Warm parchment cream with a soft sage accent. The default Klide identity — quiet, organic, distinct from AI-blue."
-    isDark: false
-    swatches: ["#f7f4ed", "#eceae4", "#5A7B4C", "#1c1c1c"]
   - id: klide-light
     name: "Klide Light"
-    description: "Earlier warm-quiet theme. Kept for users who prefer the original look."
+    description: "Warm parchment cream with a soft sage accent. The default Klide identity — quiet, organic, distinct from AI-blue."
     isDark: false
-    swatches: ["#FBFBFA", "#F4F4F2", "#4263EB", "#555552"]
+    swatches: ["#f7f4ed", "#fcfbf8", "#5A7B4C", "#1c1c1c"]
+  - id: sage-garden
+    name: "Sage Garden"
+    description: "Klide Light with cool ink and a greyer sage — one shade crisper."
+    isDark: false
+    swatches: ["#F8F7F3", "#FFFFFF", "#7C9082", "#1A1F2E"]
+  - id: sage-garden-dark
+    name: "Sage Garden Dark"
+    description: "Warm near-black under cool light, with the accent back on sage."
+    isDark: true
+    swatches: ["#131512", "#191C18", "#8FAA97", "#C3C8C4"]
   - id: cursor-dark
     name: "Midnight"
     description: "Soft black surfaces with a blue-violet accent."
@@ -278,7 +284,6 @@ principles:
 # ─────────────────────────────────────────────────────────────────────────────
 
 known_gaps:
-  - "Dark bone variant — the default system is light. A dark bone variant (charcoal canvas, bone-light text, sage accent) is planned but not implemented."
-  - "Loading / skeleton states — not yet tokenized."
   - "Form input error states — focus ring is documented, but validation error styles are not."
   - "Decorative gradients — hero, footer, and onboarding use subtle warm gradients; stops are described qualitatively, not numerically."
+  - "Chart and diff tokens — --chart-1..7 and --diff-add/--diff-remove ship in tokens.css but are not documented here."

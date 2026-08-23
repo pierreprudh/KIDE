@@ -47,8 +47,8 @@ Tools are filtered by **kind** per mode (`tools.rs:list_tools`):
 | Mode | Tools exposed |
 |---|---|
 | **Chat** | none — converse from visible context only |
-| **Plan** | `ReadOnly` workspace tools only (10) — inspect local context, never edit, execute shell-backed dynamic tools, or use network |
-| **Goal** | all kinds (17) + dynamic command tools — inspect + approval-gated network reads + diff-reviewed edits + approval-gated commands + pause |
+| **Plan** | `ReadOnly` (9) + `PlanState` (1) — inspect local context and keep the plan, never edit, execute shell-backed dynamic tools, or use network |
+| **Goal** | all kinds (19) + dynamic command tools — inspect + approval-gated network reads + diff-reviewed edits + approval-gated commands + pause |
 
 *Dynamic tools* (`load_dynamic_tools`) are shell-backed command tools loaded at
 runtime from `.agents/tools.json`. They are Goal-only and pass through the same
@@ -61,7 +61,7 @@ warnings for unverified implementation work.
 
 ## Tool registry (`src-tauri/src/agent/tools.rs`)
 
-### Read-only workspace tools (Plan + Goal) — 10
+### Read-only workspace tools (Plan + Goal) — 9
 
 | Tool | Purpose | Lineage |
 |---|---|---|
@@ -74,7 +74,12 @@ warnings for unverified implementation work.
 | `get_git_log` | Recent commit history (hash/subject/date/author). | K |
 | `clean_context` | Drop dead-end tool results from the current turn (replaced by `[cleaned: …]`), keeping the prompt cache intact. | K (OC compaction spirit) |
 | `get_todo_list` | Read the project TODO list. | CC (TodoWrite) |
-| `update_todo_list` | add/complete/uncomplete/edit/remove/clear todos. *(Read-only kind: mutates the todo store, not workspace files — no diff review.)* | CC (TodoWrite) |
+
+### Plan state (Plan + Goal) — 1
+
+| Tool | Purpose | Lineage |
+|---|---|---|
+| `update_todo_list` | add/complete/uncomplete/edit/remove/clear todos. *(`PlanState` kind, capability `UpdatePlanState`: it mutates Klide's own planning metadata, not workspace files — so it runs in Plan mode with no diff review.)* | CC (TodoWrite) |
 
 ### Network (Goal only) — 2
 
@@ -97,22 +102,29 @@ warnings for unverified implementation work.
 |---|---|---|
 | `run_command` | Run a shell command from the workspace root; returns stdout + stderr + exit code. The agent's way to run tests, build, typecheck, lint, install — i.e. verify its own work. Every new command is shown for **approval before it runs** (same permission gate diff review is for edits), via the wired `PermissionRequested`/`agent_resolve_permission` flow. The Harness preflights paths resolving outside the workspace (absolute, `~`/`$HOME`/`$PWD`, and relative `..` escapes) and shows them in the permission request. "Approve for this run" stores the exact command/cwd in memory for the current run; "Approve for project" persists the exact command to `.klide/command-allowlist.json`, whose `rules` array can also hold intentional wildcard patterns like `cargo test *`. Killed after a **timeout** (default 180s, Settings → Harness) so a hung command can't stall the run; output capped at 16KB. | CC/CX/OC (bash tool) + K (approval gate) |
 
-### Pause (Goal only) — 1
+### Pause (Goal only) — 3
+
+A Pause tool does not execute in Rust at all: the registry entry has no
+`run_read`/`run_write_preview`, and the loop parks the Run on a `oneshot` until
+something outside it answers.
 
 | Tool | Purpose | Lineage |
 |---|---|---|
 | `userAnswerQuestion` | Pause the run and ask the user one free-form question; their typed answer returns as the tool result. Powers the Codebase Interview. One question per turn. | K |
+| `spawn_subagent` | Delegate a focused, read-only investigation to a named subagent (`explorer` maps code, `reviewer` critiques it) and get its report back as the tool result. The subagent cannot edit — it parallelises discovery without spending the parent's context. Roles live in `src-tauri/src/agent/subagents.rs`, mirrored by `src/agent/subagents.ts`. | OC (sub-agent nesting) + K |
+| `consult_advisor` | Escalate one hard decision to a stronger advisor model without handing off the task. Emits `AdvisorRequested`; the frontend puts the self-contained question to the advisor (a bigger model or a Claude Code session) and resolves with the advice. The cheap executor stays in control and applies it. | K (the advisor strategy) |
 
 ## The edit contract *(Pi-derived, the core of write reliability)*
 
 Why edits land cleanly even on small local models:
 
-1. **Numbered reads** — `read_file` returns `N: ` line gutters (`tools.rs:928`).
+1. **Numbered reads** — `read_file` returns `N: ` line gutters (`number_lines`).
 2. **Tolerant matching** — `write_file` strips a copied `N: ` prefix and
-   forgives indentation when locating `old_str` (`tools.rs:1633`), so a model
-   that pastes a numbered line still edits.
+   forgives indentation when locating `old_str` (`normalize_match_line` +
+   the line-based fallback in `locate_edit`), so a model that pastes a
+   numbered line still edits.
 3. **Post-edit syntax verify** — freshly written Rust/JSON is parsed in-process
-   ("omp's post-edit diagnostics, lite", `tools.rs:1897`); advisory, not blocking.
+   ("omp's post-edit diagnostics, lite", `verify_syntax`); advisory, not blocking.
 4. **Diff review** — every write pauses for the user to APPLY or REJECT via a
    `oneshot` channel before anything touches disk. Applied writes can be
    reverted one checkpoint at a time or all remaining checkpoints for the Run.
