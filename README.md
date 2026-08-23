@@ -96,7 +96,7 @@ Klide currently targets macOS. Apple Silicon is the primary development platform
 
 ### Download the unsigned Apple Silicon build
 
-Download the latest `.app.zip` from [GitHub Releases](https://github.com/pierreprudh/KLIDE/releases/latest), unzip it, and move `Klide.app` to Applications. That link gives you the newest stable build; the [releases page](https://github.com/pierreprudh/KLIDE/releases) also carries v0.6.1 as a pre-release, which is further along but ships an incomplete orchestration layer.
+Download the latest `.app.zip` from [GitHub Releases](https://github.com/pierreprudh/KLIDE/releases/latest), unzip it, and move `Klide.app` to Applications.
 
 This build is ad-hoc signed and is not Apple-notarized. On first launch, macOS may block it because the developer cannot be verified. Control-click `Klide.app`, choose **Open**, then confirm **Open**. Only install builds published from this repository.
 
@@ -156,7 +156,7 @@ Read the [Harness contract](./HARNESS_CONTRACT.md) for the trust model and [Harn
 
 Klide v0.5 is feature-complete and remains under active development. Its frontend tests, production build, Rust suite, PTY socket integration, and release-bundle boot check pass. Unsigned Apple Silicon bundles and source builds are available now; Apple-notarized bundles are not yet published.
 
-v0.6.1 is published as a pre-release: Focus reaches every provider Klide supports, delegate CLIs run there on their own subscription and show their work, and the opencodex gateway adds around forty upstreams behind one self-hosted endpoint. The v0.6 orchestration milestone itself is still open, which is why it is not the stable download.
+v0.6.1 is the current release: Focus reaches every provider Klide supports, delegate CLIs run there on their own subscription and show their work, and the opencodex gateway adds around forty upstreams behind one self-hosted endpoint. The v0.6 orchestration milestone itself — Missions as outcomes, budget and capacity in the dispatch path, capability routing, automatic validation contracts — is still open, so treat those surfaces as unfinished.
 
 Current priorities:
 

@@ -2,13 +2,12 @@
 
 Notable changes per milestone. Dates are completion dates.
 
-## v0.6.1 — Subscriptions and Reach (2026-08-23, pre-release)
+## v0.6.1 — Subscriptions and Reach (2026-08-23)
 
 Work on the v0.6 line. The orchestration milestone itself — Missions as
 outcomes, budgets, capacity, capability routing, validation contracts — is still
-open; these are the shell and correctness changes landed so far, published as a
-pre-release because of it. The macOS bundle is still ad-hoc signed and not
-Apple-notarized.
+open; these are the shell and correctness changes landed so far. The macOS
+bundle is still ad-hoc signed and not Apple-notarized.
 
 ### Subscriptions in Focus
 
