@@ -140,6 +140,7 @@ import { Z } from "../zLayers";
 import { notify } from "../toast";
 import { delegateSessionId, stopDelegatePty, writeDelegatePty } from "../ipc/delegatePty";
 import { initialsOf, useUserInfo } from "../hooks/useUserInfo";
+import { SETTINGS, useSetting } from "../settingsStore";
 
 function LocalServerStartingRow({ providerLabel, centered = false }: { providerLabel: string; centered?: boolean }) {
   const hairline = (
@@ -722,6 +723,9 @@ export function AiPanel({
   // a mark on one side only reads as a log of answers, and this is a
   // discussion — two participants, each turn attributed to the one who made it.
   const { username, avatarUrl } = useUserInfo();
+  // …unless you'd rather not look at yourself. Off, the mark and its gutter
+  // both go: the bubbles keep the right edge to themselves.
+  const [showAskerAvatar] = useSetting(SETTINGS.showAskerAvatar);
   /** The mark for one response: what produced THAT turn. A thread continued on
    *  another model shows both, each against the turn it actually ran. */
   function responseMark(stamp: { provider?: ProviderId; model?: string }) {
@@ -3650,14 +3654,15 @@ This user request requires workspace inspection. Before answering, you MUST call
             // turn carries no text — the way the response mark rides beside an
             // answer's first line, nudged down so it centres on that line
             // rather than on the bubble's padding.
-            const asker = (
+            const asker = showAskerAvatar ? (
               <div style={{ flexShrink: 0, marginTop: hasText || isEditing ? 6 : 0 }}>
                 <AskerMark username={username} avatarUrl={avatarUrl} />
               </div>
-            );
+            ) : null;
             // Everything the mark does not sit beside keeps its right edge in
             // line with the bubble's, so the column stays one edge, not two.
-            const askerGutter = 32;
+            // No mark, no gutter — the bubbles take the edge back.
+            const askerGutter = showAskerAvatar ? 32 : 0;
             const beside = (node: ReactNode) => (
               <div style={{ display: "flex", width: "100%", maxWidth: "88%", gap: 10, alignItems: "flex-start", justifyContent: "flex-end" }}>
                 {node}
