@@ -117,7 +117,12 @@ export function createRunTranscript(opts: {
       }
       dirty.clear();
       const nextFlat: Msg[] = [];
-      for (const msgs of rowMsgs) nextFlat.push(...msgs);
+      // Walk `rows`, not `rowMsgs`: the cache is only ever grown, so if the
+      // fold ever hands back fewer rows than last time, iterating the cache
+      // would flatten rows that no longer exist — and a `for…of` over a sparse
+      // cache yields `undefined` into `push(...)`. `rows` is the authority on
+      // what the region contains; the loop above guarantees an entry for each.
+      for (let i = 0; i < rows.length; i++) nextFlat.push(...rowMsgs[i]);
       const next = [
         ...current.slice(0, opts.regionStart),
         ...nextFlat,

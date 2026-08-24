@@ -94,7 +94,7 @@ import { AttachmentTray } from "./ai/AttachmentTray";
 import { summarizeAndHandoff, generateMemoryNote, detectAndGenerateSkill, summarizeForCompaction } from "./ai/summarize";
 import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
-import { isSilentRunError, replayForAdoption } from "./ai/replayConversation";
+import { isSilentRunError, replayForAdoption, shouldHealFromTranscript } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
 import { decideOnLeavingRun, type RunLeaveDecision } from "./ai/leavingRun";
 import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
@@ -1676,12 +1676,6 @@ This user request requires workspace inspection. Before answering, you MUST call
   const processingQueueRef = useRef(false);
   const queueGenerationRef = useRef(0);
   const activeHarnessRunRef = useRef<string | null>(null);
-  // Why the view is short of the Run's Transcript, when it is. Set by the two
-  // places that stop taking a live Run's events — the region splice detaching
-  // and a retired turn generation — and cleared at the top of every turn. Read
-  // once the Run settles, to decide whether the panel has to re-read the
-  // Transcript to show what the agent actually said.
-  const viewBehindRef = useRef<"region-detached" | "generation-retired" | null>(null);
   // Live subscription to a run that was still going when this panel mounted
   // (see the mount reconnect effect). Held so we can detach on unmount / when
   // the run settles, and so a conversation switch doesn't leave it listening.
@@ -2660,13 +2654,18 @@ This user request requires workspace inspection. Before answering, you MUST call
     // Their action (sending a message) implies "I want to see the reply".
     forceStickToBottom();
 
-    // Two things can stop this turn reaching the screen while the Run keeps
-    // working: the region splice detaching, and events dropped for a retired
-    // turn generation. Both are silent by construction, and both strand the
-    // Run's later turns — its *answer*, usually, since a tool phase comes
-    // first — on disk and nowhere else. Cleared here, set by whichever fires,
-    // read once the Run settles.
-    viewBehindRef.current = null;
+    // Why this turn's view is short of the Run's Transcript, when it is. Two
+    // things can stop a turn reaching the screen while the Run keeps working:
+    // the region splice detaching, and events dropped for a retired turn
+    // generation. Both are silent by construction, and both strand the Run's
+    // later turns — its *answer*, usually, since a tool phase comes first — on
+    // disk and nowhere else. Set by whichever fires, read once the Run settles.
+    //
+    // Turn-local, not a panel ref: a Run keeps streaming after its turn is
+    // retired, so the handler closures of *older* turns are still firing. On a
+    // shared ref, one of them could fabricate a signal for whatever turn is
+    // live now, or a late settle could clear the signal a live turn just set.
+    const viewBehind: { reason: "region-detached" | "generation-retired" | null } = { reason: null };
 
     let harnessError: Error | null = null;
     // Track user-initiated stops so the auto-memory hook can distinguish a
@@ -2699,7 +2698,7 @@ This user request requires workspace inspection. Before answering, you MUST call
       onMeasuredPromptTokens: setMeasuredPromptTokens,
       onMeasuredUsage: setMeasuredUsageTokens,
       onDetached: () => {
-        viewBehindRef.current = "region-detached";
+        viewBehind.reason = "region-detached";
       },
     });
 
@@ -2721,7 +2720,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         // must not land in whatever conversation is adopted next — but the Run
         // is still working, so what we have on screen is now short of the
         // Transcript. Say so, rather than letting the turn look finished.
-        viewBehindRef.current = "generation-retired";
+        viewBehind.reason = "generation-retired";
         return;
       }
       // Transcript events (deltas, finalized messages, tool cards) belong to
@@ -2934,15 +2933,17 @@ This user request requires workspace inspection. Before answering, you MUST call
     // child's Transcript, so the conversation's own Transcript is not the
     // record of what was on screen and adopting it would be a different kind of
     // wrong from the one being fixed.
-    if (driver.isDetached()) viewBehindRef.current ??= "region-detached";
-    const behind = viewBehindRef.current;
-    viewBehindRef.current = null;
+    if (driver.isDetached()) viewBehind.reason ??= "region-detached";
+    const behind = viewBehind.reason;
+    // The conditions — and what is pointedly not one of them — live in
+    // `shouldHealFromTranscript`, where they are tested.
     if (
-      behind &&
-      queueGenerationRef.current === generation &&
-      conversationSessionRef.current.conversationId === currentId &&
-      !turn.subagent &&
-      !(isDelegateProvider(turn.provider) && variant !== "focus")
+      shouldHealFromTranscript({
+        behind,
+        stillOnConversation: conversationSessionRef.current.conversationId === currentId,
+        subagent: Boolean(turn.subagent),
+        delegateWithoutTranscript: isDelegateProvider(turn.provider) && variant !== "focus",
+      })
     ) {
       // Loud on purpose. This is the diagnostic that was missing: the last time
       // a turn went dark, the only evidence was a conversation that looked like

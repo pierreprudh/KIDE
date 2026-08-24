@@ -70,6 +70,41 @@ export function replayForAdoption(
   return replayed.length >= current.length ? replayed : null;
 }
 
+/** Why a turn's view ended up short of its Run's Transcript. */
+export type ViewBehindReason = "region-detached" | "generation-retired";
+
+/**
+ * Whether a settled turn should re-read its Transcript and adopt it.
+ *
+ * The decision is here, not in the panel, because getting it wrong is silent
+ * both ways: heal when you shouldn't and a stale replay lands in whatever
+ * conversation is on screen; don't heal when you should and the Run's answer
+ * stays on disk while the thread looks like it ended on a tool call.
+ *
+ * Note what is deliberately NOT a condition: the turn generation still being
+ * current. Generations are only ever bumped, so a turn whose events were
+ * dropped *because* its generation was retired can never be current again — a
+ * heal gated on that could not fire for the one case it was written for. The
+ * condition that carries the weight is `stillOnConversation`: three of the four
+ * generation bumps (leaving the thread, a new chat, resuming another) change
+ * the conversation, and the fourth (Stop) does not — precisely because the user
+ * is still looking at the turn that went dark.
+ */
+export function shouldHealFromTranscript(state: {
+  behind: ViewBehindReason | null;
+  /** The panel is still showing the conversation this turn belongs to. */
+  stillOnConversation: boolean;
+  /** A subagent turn is its own child Run: its events stream into this panel
+   *  but land in the *child's* Transcript, so this conversation's Transcript is
+   *  not the record of what was on screen. */
+  subagent: boolean;
+  /** A Delegate conversation outside Focus has no Transcript of its own. */
+  delegateWithoutTranscript: boolean;
+}): boolean {
+  if (!state.behind || !state.stillOnConversation) return false;
+  return !state.subagent && !state.delegateWithoutTranscript;
+}
+
 /** Reconstruct a Conversation from events for AiPanel resumption. */
 export function eventsToConversation(
   events: AgentEvent[],
