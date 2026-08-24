@@ -4,7 +4,6 @@ use super::types::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tauri::Manager;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,14 +36,12 @@ pub fn run_id() -> String {
     format!("run_{ts}_{nanos:x}")
 }
 
+/// Where this app's run transcripts live. The folder is configurable
+/// (Settings → Storage), and `crate::storage::runs_dir` is the one place that
+/// resolves it — every caller here goes through this function, so a moved
+/// folder cannot half-apply and leave one writer behind.
 pub fn app_runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Unable to resolve app data dir: {e}"))?
-        .join("runs");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Unable to create runs dir: {e}"))?;
-    Ok(dir)
+    crate::storage::runs_dir(app)
 }
 
 /// A run id must be a single plain path component — no separators, no parent

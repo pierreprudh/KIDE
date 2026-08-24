@@ -17,6 +17,21 @@ export type StorageDir = {
   path: string;
   files: number;
   bytes: number;
+  /** True when this folder is where it is because someone chose it. */
+  custom: boolean;
+  /** Where it sits with no choice made — what "Use default" restores. */
+  defaultPath: string;
+  /** Set when a chosen folder was ignored (missing volume, gone read-only) and
+   *  Klide fell back to the default. */
+  warning?: string;
+};
+
+/** What changed after moving the transcript folder. */
+export type RunsDirChange = {
+  path: string;
+  custom: boolean;
+  movedFiles: number;
+  movedBytes: number;
 };
 
 /** Measure the folders Klide owns. Walks the tree, so treat it as a fetch:
@@ -28,4 +43,19 @@ export function readStorageDirs(): Promise<StorageDir[]> {
 /** Open one of those folders in Finder. */
 export function revealStorageDir(kind: StorageDir["kind"]): Promise<void> {
   return invoke<void>("app_storage_reveal", { kind });
+}
+
+/**
+ * Point run transcripts at `path`. Rust validates the folder (absolute,
+ * writable, not nested inside the current one) before anything moves, and
+ * persists the choice only after a successful move — so a failure leaves every
+ * transcript where the app is still looking for it.
+ */
+export function setRunsDir(path: string, moveExisting: boolean): Promise<RunsDirChange> {
+  return invoke<RunsDirChange>("app_storage_set_runs_dir", { path, moveExisting });
+}
+
+/** Put transcripts back in Klide's own app data folder. */
+export function resetRunsDir(moveExisting: boolean): Promise<RunsDirChange> {
+  return invoke<RunsDirChange>("app_storage_reset_runs_dir", { moveExisting });
 }

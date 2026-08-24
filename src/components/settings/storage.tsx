@@ -14,6 +14,10 @@
 // So the whole section answers one question: what is the cache holding, and
 // what happens if I clear it? (Answer: your history list shortens, your runs
 // don't move.)
+//
+// The transcripts, being the copy that matters, also get to live where you
+// want: the runs folder is choosable, and changing it carries the existing
+// transcripts across. Rust owns validating and moving — this file only asks.
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -25,7 +29,15 @@ import {
   type CachedConversationSize,
 } from "../ai/storedConversations";
 import { deleteKlideConvo } from "../../klideConvos";
-import { readStorageDirs, revealStorageDir, type StorageDir } from "../../ipc/storage";
+import {
+  readStorageDirs,
+  resetRunsDir,
+  revealStorageDir,
+  setRunsDir,
+  type RunsDirChange,
+  type StorageDir,
+} from "../../ipc/storage";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { relativeTime } from "../ai/utils";
 import { errMessage } from "../../errors";
 import { notify } from "../../toast";
@@ -80,26 +92,82 @@ export function StorageSection() {
   const [dirs, setDirs] = useState<StorageDir[] | null>(null);
   const [dirsError, setDirsError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  // A move walks the filesystem; the row says so instead of looking idle.
+  const [movingRuns, setMovingRuns] = useState(false);
 
   const refreshCache = useCallback(() => {
     setSizes(cachedConversationSizes());
     setUsed(localCacheUsage().bytes);
   }, []);
 
+  // One fetch path for the folder rows, used on mount and after every move, so
+  // the measured numbers and the shown path can never come from two readers
+  // that disagree.
+  const refreshDirs = useCallback(async () => {
+    try {
+      setDirs(await readStorageDirs());
+      setDirsError(null);
+    } catch (e) {
+      setDirsError(errMessage(e));
+    }
+  }, []);
+
   useEffect(() => {
     refreshCache();
-    let cancelled = false;
-    readStorageDirs()
-      .then((list) => {
-        if (!cancelled) setDirs(list);
-      })
-      .catch((e) => {
-        if (!cancelled) setDirsError(errMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshCache]);
+    void refreshDirs();
+  }, [refreshCache, refreshDirs]);
+
+  function reportChange(change: RunsDirChange) {
+    notify(
+      change.movedFiles > 0
+        ? `Transcripts now live in ${change.path} — moved ${change.movedFiles} file${
+            change.movedFiles === 1 ? "" : "s"
+          } (${formatBytes(change.movedBytes)}).`
+        : `Transcripts now live in ${change.path}.`,
+      { tone: "success" },
+    );
+  }
+
+  /** Choose a folder, then offer to bring the existing transcripts along.
+   *  Declining is a real choice — pointing Klide at a folder that already holds
+   *  transcripts (a synced drive, a restored backup) should not drag the old
+   *  ones in on top of them. */
+  async function chooseRunsDir(runs: StorageDir) {
+    const picked = await open({
+      directory: true,
+      title: "Choose where Klide keeps run transcripts",
+    });
+    if (typeof picked !== "string") return;
+    const moveExisting =
+      runs.files === 0 ||
+      (await confirm(
+        `Move the ${runs.files} existing transcript file${
+          runs.files === 1 ? "" : "s"
+        } (${formatBytes(runs.bytes)}) into the new folder?`,
+        { title: "Move existing transcripts?", kind: "info" },
+      ));
+    setMovingRuns(true);
+    try {
+      reportChange(await setRunsDir(picked, moveExisting));
+      await refreshDirs();
+    } catch (e) {
+      notify(errMessage(e), { tone: "error" });
+    } finally {
+      setMovingRuns(false);
+    }
+  }
+
+  async function restoreDefaultRunsDir() {
+    setMovingRuns(true);
+    try {
+      reportChange(await resetRunsDir(true));
+      await refreshDirs();
+    } catch (e) {
+      notify(errMessage(e), { tone: "error" });
+    } finally {
+      setMovingRuns(false);
+    }
+  }
 
   const photoBytes = sizes.reduce((sum, s) => sum + s.imageBytes, 0);
   const withPhotos = sizes.filter((s) => s.imageBytes > 0).length;
@@ -215,44 +283,65 @@ export function StorageSection() {
           ) : dirs === null ? (
             <Row title="Measuring…" description="Walking Klide's app data folder." control={null} />
           ) : (
-            dirs.map((dir) => (
-              <Row
-                key={dir.kind}
-                title={dir.label}
-                description={`${dir.detail} — ${dir.files} file${
-                  dir.files === 1 ? "" : "s"
-                }, ${formatBytes(dir.bytes)}.`}
-                control={
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                    <span
-                      title={dir.path}
-                      style={{
-                        color: "var(--fg-subtle)",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11.5,
-                        maxWidth: 260,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        direction: "rtl",
-                        textAlign: "left",
-                      }}
-                    >
-                      {dir.path}
-                    </span>
-                    <GhostButton
-                      onClick={() => {
-                        void revealStorageDir(dir.kind).catch((e) =>
-                          notify(errMessage(e), { tone: "error" }),
-                        );
-                      }}
-                    >
-                      Reveal
-                    </GhostButton>
-                  </div>
-                }
-              />
-            ))
+            dirs.map((dir) => {
+              const movable = dir.kind === "runs";
+              return (
+                <Row
+                  key={dir.kind}
+                  title={dir.label}
+                  description={
+                    // The warning comes first when there is one: a folder that
+                    // was ignored matters more than how big the fallback is.
+                    dir.warning
+                      ? dir.warning
+                      : `${dir.detail} — ${dir.files} file${
+                          dir.files === 1 ? "" : "s"
+                        }, ${formatBytes(dir.bytes)}.${
+                          movable && dir.custom ? " You chose this folder." : ""
+                        }`
+                  }
+                  control={
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                      <span
+                        title={dir.path}
+                        style={{
+                          color: dir.warning ? "var(--warning)" : "var(--fg-subtle)",
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11.5,
+                          maxWidth: movable ? 200 : 300,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          direction: "rtl",
+                          textAlign: "left",
+                        }}
+                      >
+                        {dir.path}
+                      </span>
+                      {movable && (
+                        <LinkButton disabled={movingRuns} onClick={() => void chooseRunsDir(dir)}>
+                          {movingRuns ? "Moving…" : "Change…"}
+                        </LinkButton>
+                      )}
+                      {movable && dir.custom && (
+                        <LinkButton disabled={movingRuns} onClick={() => void restoreDefaultRunsDir()}>
+                          Use default
+                        </LinkButton>
+                      )}
+                      <GhostButton
+                        onClick={() => {
+                          void revealStorageDir(dir.kind).catch((e) =>
+                            notify(errMessage(e), { tone: "error" }),
+                          );
+                        }}
+                      >
+                        Reveal
+                      </GhostButton>
+                    </div>
+                  }
+                />
+              );
+            })
           )}
         </Panel>
       </SettingBlock>
