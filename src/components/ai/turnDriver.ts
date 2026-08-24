@@ -34,6 +34,10 @@ export type TurnDriverOptions = {
   /** Context-gauge feedback from a finalized assistant message. */
   onMeasuredPromptTokens?: (tokens: number) => void;
   onMeasuredUsage?: (usage: { prompt: number; completion: number }) => void;
+  /** The run's region was edited from outside and the transcript stopped
+   *  writing — see `RunTranscript.isDetached`. Everything after this point
+   *  reaches disk and not the screen. */
+  onDetached?: () => void;
   /** Injectable clock/timer — tests pass fakes; the panel omits them. */
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -52,6 +56,9 @@ export type TurnDriver = {
   /** Run settled (done or errored): cancel the batch timer and render any
    *  delta that was still pending. Idempotent. */
   finish(): void;
+  /** True when this turn stopped reaching the screen partway through. The
+   *  panel heals from the Transcript instead of leaving the answer on disk. */
+  isDetached(): boolean;
 };
 
 export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
@@ -68,6 +75,7 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
     seed: seedCandidate?.role === "assistant" ? seedCandidate : null,
     delegate: opts.delegate,
     pricing: opts.pricing,
+    onDetached: opts.onDetached,
   });
 
   // Wall-clock start of the current turn, for the per-message meta footer.
@@ -183,6 +191,9 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
     finish() {
       cancelFlush();
       projectCommit();
+    },
+    isDetached() {
+      return transcript.isDetached();
     },
   };
 }

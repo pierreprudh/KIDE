@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { eventsToConversation, eventsToMsgs, isSilentRunError } from "./replayConversation";
+import {
+  eventsToConversation,
+  eventsToMsgs,
+  isSilentRunError,
+  replayForAdoption,
+  shouldHealFromTranscript,
+} from "./replayConversation";
 import type { AgentEvent } from "../../agent/types";
+import type { Msg } from "./types";
 
 // No `as AgentEvent` anywhere below: the union is the contract, and an
 // unchecked cast is how a fixture ends up describing a wire shape Rust never
@@ -123,5 +130,90 @@ describe("eventsToMsgs", () => {
 
   it("is empty for an empty transcript", () => {
     expect(eventsToMsgs([])).toEqual([]);
+  });
+});
+
+describe("replayForAdoption", () => {
+  const transcript = [runStarted(1), userMessage("hi", 2), assistantMessage("hello", 3)];
+
+  it("heals a view that stopped short of what the run wrote", () => {
+    // The case this exists for: the panel took the user turn and the start of
+    // the answer, then stopped following the run. The Transcript has the whole
+    // exchange, so adopting it puts the answer back on screen.
+    const onScreen: Msg[] = [{ role: "user", content: "hi" }];
+    const healed = replayForAdoption(transcript, onScreen);
+    expect(healed?.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(healed?.[1].content).toBe("hello");
+  });
+
+  it("carries queued turns across the replay", () => {
+    // A turn typed ahead has not been sent, so the Transcript cannot know about
+    // it. Dropping it here would silently swallow what the user just wrote.
+    const queued: Msg = { role: "user", content: "and then?", queueState: "queued" };
+    const healed = replayForAdoption(transcript, [{ role: "user", content: "hi" }, queued]);
+    expect(healed?.[healed.length - 1]).toBe(queued);
+  });
+
+  it("refuses a replay shorter than what is already on screen", () => {
+    // A half-written or truncated read must never eat live rows.
+    const onScreen: Msg[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "assistant", content: "and more" },
+    ];
+    expect(replayForAdoption(transcript, onScreen)).toBeNull();
+    expect(replayForAdoption([], onScreen)).toBeNull();
+  });
+});
+
+describe("shouldHealFromTranscript", () => {
+  const healthy = {
+    behind: null,
+    stillOnConversation: true,
+    subagent: false,
+    delegateWithoutTranscript: false,
+  } as const;
+
+  it("leaves a turn that reached the screen alone", () => {
+    expect(shouldHealFromTranscript(healthy)).toBe(false);
+  });
+
+  it("heals a turn whose region was taken over mid-run", () => {
+    expect(shouldHealFromTranscript({ ...healthy, behind: "region-detached" })).toBe(true);
+  });
+
+  it("heals a turn whose generation was retired under it", () => {
+    // The regression this exists for. The panel used to also require the turn
+    // generation to still be current — but a generation is only ever bumped, so
+    // the one case this branch was written for could never satisfy it. Stop,
+    // pressed mid-run, is exactly that: the generation moves on, the
+    // conversation does not, and the answer already written stays on disk.
+    expect(shouldHealFromTranscript({ ...healthy, behind: "generation-retired" })).toBe(true);
+  });
+
+  it("does not heal a conversation the panel has left", () => {
+    // Leaving, a new chat and resuming another thread all change the
+    // conversation — adopting this Run's replay would land it on someone else's
+    // thread, which is a worse bug than the short view.
+    expect(
+      shouldHealFromTranscript({
+        ...healthy,
+        behind: "generation-retired",
+        stillOnConversation: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not heal a subagent turn or a Delegate without a transcript", () => {
+    expect(
+      shouldHealFromTranscript({ ...healthy, behind: "region-detached", subagent: true }),
+    ).toBe(false);
+    expect(
+      shouldHealFromTranscript({
+        ...healthy,
+        behind: "region-detached",
+        delegateWithoutTranscript: true,
+      }),
+    ).toBe(false);
   });
 });

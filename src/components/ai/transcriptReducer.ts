@@ -49,6 +49,11 @@ export type RunTranscript = {
   /** Index (in the last projected array) of the run's current assistant
    *  bubble — the row the error path replaces with a failure message. */
   assistantIndex(): number;
+  /** True once the region was edited from outside and this transcript stopped
+   *  writing. Everything the run streams from that moment on is on disk but not
+   *  on screen, so the caller must heal from the Transcript rather than trust
+   *  what it last projected. */
+  isDetached(): boolean;
 };
 
 export function createRunTranscript(opts: {
@@ -59,6 +64,11 @@ export function createRunTranscript(opts: {
   seed: Msg | null;
   delegate: TranscriptDelegate;
   pricing: Pricing;
+  /** Called once, the moment the region is found edited from outside. Detaching
+   *  is correct — the shell no longer owns those rows — but it is also silent,
+   *  and a silent stop mid-run reads as an agent that answered nothing. The
+   *  panel uses this to heal from the Transcript when the run settles. */
+  onDetached?: () => void;
 }): RunTranscript {
   const fold = createFold({
     pricing: opts.pricing,
@@ -92,17 +102,27 @@ export function createRunTranscript(opts: {
       for (let i = 0; i < flat.length; i++) {
         if (current[opts.regionStart + i] !== flat[i]) {
           detached = true;
+          opts.onDetached?.();
           return null;
         }
       }
       for (const i of dirty) rowMsgs[i] = foldedRowToMsgs(rows[i], view);
-      // Safety net for rows the step reporting ever misses.
-      for (let i = rowMsgs.length; i < rows.length; i++) {
-        rowMsgs[i] = foldedRowToMsgs(rows[i], view);
+      // Safety net for rows the step reporting ever misses. Written as a scan
+      // over every row rather than an append past `rowMsgs.length`: a dirty set
+      // that skips an index leaves a hole behind it, and the append form walks
+      // straight past that hole into a `push(...undefined)` on the flatten
+      // below. Filling by emptiness covers both the append and the hole.
+      for (let i = 0; i < rows.length; i++) {
+        if (!rowMsgs[i]) rowMsgs[i] = foldedRowToMsgs(rows[i], view);
       }
       dirty.clear();
       const nextFlat: Msg[] = [];
-      for (const msgs of rowMsgs) nextFlat.push(...msgs);
+      // Walk `rows`, not `rowMsgs`: the cache is only ever grown, so if the
+      // fold ever hands back fewer rows than last time, iterating the cache
+      // would flatten rows that no longer exist — and a `for…of` over a sparse
+      // cache yields `undefined` into `push(...)`. `rows` is the authority on
+      // what the region contains; the loop above guarantees an entry for each.
+      for (let i = 0; i < rows.length; i++) nextFlat.push(...rowMsgs[i]);
       const next = [
         ...current.slice(0, opts.regionStart),
         ...nextFlat,
@@ -110,6 +130,10 @@ export function createRunTranscript(opts: {
       ];
       flat = nextFlat;
       return next;
+    },
+
+    isDetached() {
+      return detached;
     },
 
     assistantIndex() {
