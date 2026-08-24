@@ -148,14 +148,27 @@ fn default_runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Why an override cannot be used, if it cannot. Inspection only — it creates
-/// nothing, so Settings can ask the question without the asking making a
-/// missing folder reappear. `runs_dir` does the creating, once it has decided.
+/// nothing and writes nothing, so Settings can ask the question without the
+/// asking making a missing folder reappear, and `runs_dir` can ask it on the
+/// path of every transcript append without that costing a write. `runs_dir`
+/// does the creating, once it has decided.
+///
+/// Being cheap has a limit worth naming: the permission bits catch a folder
+/// that was chmod'd read-only, but not one on a read-only *mount*, whose bits
+/// still read as writable. Proving that needs an actual write, which is what
+/// `write_problem` does — at folder-selection time, and when Settings measures.
 fn override_problem(path: &Path) -> Option<String> {
     if !path.is_absolute() {
         return Some(format!("{} is not an absolute path.", path.display()));
     }
     if path.exists() {
-        return (!path.is_dir()).then(|| format!("{} is a file, not a folder.", path.display()));
+        if !path.is_dir() {
+            return Some(format!("{} is a file, not a folder.", path.display()));
+        }
+        let readonly = std::fs::metadata(path)
+            .map(|meta| meta.permissions().readonly())
+            .unwrap_or(false);
+        return readonly.then(|| format!("{} is read-only.", path.display()));
     }
     // Not there yet — a folder Klide can create is fine (it makes its own on
     // first use); one whose parent is gone is an unplugged drive.
@@ -165,15 +178,38 @@ fn override_problem(path: &Path) -> Option<String> {
     }
 }
 
+/// Prove a folder can actually be written to, by writing in it. The only way
+/// to catch a read-only mount, whose permission bits look fine. Costs a file
+/// create + delete, so it belongs at the moments a person is waiting on an
+/// answer — choosing a folder, opening Settings — never on the append path.
+fn write_problem(path: &Path) -> Option<String> {
+    let probe = path.join(".klide-write-probe");
+    match std::fs::write(&probe, b"klide") {
+        Ok(()) => {
+            std::fs::remove_file(&probe).ok();
+            None
+        }
+        Err(e) => Some(format!("Cannot write in {}: {e}", path.display())),
+    }
+}
+
 /// THE resolution point for run transcripts. An override that no longer works
 /// falls back to the default rather than failing every run — Klide keeps
 /// working on the built-in folder, and Settings says why.
+///
+/// "No longer works" is what `override_problem` can see without writing: gone,
+/// stranded on an unplugged drive, replaced by a file, chmod'd read-only. A
+/// read-only *mount* gets past all of that and is caught where a write is
+/// affordable — `app_storage_dirs` reports it, and `validate_target` refuses to
+/// select one in the first place.
 pub fn runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let default = default_runs_dir(app)?;
     if let Some(chosen) = read_config().runs_dir {
         let path = PathBuf::from(&chosen);
         // Creation is the last word: a folder that inspects clean but cannot be
-        // made (a read-only volume) still falls through to the default.
+        // made still falls through to the default. Note that `create_dir_all`
+        // returns Ok for a directory that already exists, whatever its
+        // permissions — which is exactly why the read-only check sits above.
         if override_problem(&path).is_none() && std::fs::create_dir_all(&path).is_ok() {
             return Ok(path);
         }
@@ -199,53 +235,106 @@ fn validate_target(target: &Path, current: &Path) -> Result<(), String> {
     if target.exists() && !target.is_dir() {
         return Err(format!("{} is a file, not a folder.", target.display()));
     }
+    // Whether the folder was ours to make, so a failed probe can undo it: a
+    // rejected choice must not leave an empty folder where the user browsed.
+    let created = !target.exists();
     std::fs::create_dir_all(target)
         .map_err(|e| format!("Cannot use {}: {e}", target.display()))?;
     // Writability is worth proving now rather than at the first run's first
     // event — a read-only volume looks fine until something needs saving.
-    let probe = target.join(".klide-write-probe");
-    std::fs::write(&probe, b"klide").map_err(|e| {
-        format!("Cannot write in {}: {e}", target.display())
-    })?;
-    std::fs::remove_file(&probe).ok();
+    if let Some(problem) = write_problem(target) {
+        if created {
+            std::fs::remove_dir(target).ok();
+        }
+        return Err(problem);
+    }
     Ok(())
 }
 
-/// Move every transcript from one folder to the other. `rename` first (instant
-/// on the same volume), copy-then-remove across volumes. A file that will not
-/// move stops the move and is reported: half a folder silently left behind is
-/// worse than an error, because the runs it holds would look deleted.
-fn move_runs(from: &Path, to: &Path) -> Result<(usize, u64), String> {
+/// Is this one of Klide's own transcript files? Run ids are minted as
+/// `run_{ts}_{hex}` but also arrive as conversation ids, so the name is no
+/// guide — the suffix is. Anything else in the folder belongs to whoever put it
+/// there: a chosen folder is a place on the user's disk, not Klide's to empty.
+fn is_transcript_file(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else { return false };
+    name.ends_with(".jsonl") || name.ends_with(".summary.json")
+}
+
+/// Is this a run's checkpoint folder? A Run keeps its file checkpoints in
+/// `<runs>/<run id>/checkpoints` (see `agent::mod`), so the runs dir is not
+/// flat after all, and a move that only carried files would leave every
+/// rollback behind — silently, since the transcript it belongs to arrived.
+fn is_run_folder(path: &Path) -> bool {
+    path.join("checkpoints").is_dir()
+}
+
+/// Move one entry, `rename` first (instant on the same volume), copy-then-remove
+/// across volumes. Directories recurse, because `fs::rename` is the only part of
+/// this the standard library does for a whole tree.
+fn move_entry(source: &Path, dest: &Path) -> Result<(), String> {
+    if std::fs::rename(source, dest).is_ok() {
+        return Ok(());
+    }
+    if source.is_dir() {
+        std::fs::create_dir_all(dest)
+            .map_err(|e| format!("Could not create {}: {e}", dest.display()))?;
+        let entries = std::fs::read_dir(source)
+            .map_err(|e| format!("Could not read {}: {e}", source.display()))?;
+        for entry in entries.flatten() {
+            move_entry(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+        std::fs::remove_dir(source).ok();
+        return Ok(());
+    }
+    std::fs::copy(source, dest)
+        .map_err(|e| format!("Could not copy {} to {}: {e}", source.display(), dest.display()))?;
+    std::fs::remove_file(source).ok();
+    Ok(())
+}
+
+/// Move every transcript — and every run's checkpoints — from one folder to the
+/// other. A file that will not move stops the move and is reported: half a
+/// folder silently left behind is worse than an error, because the runs it holds
+/// would look deleted.
+///
+/// Only Klide's own artifacts move. The folder is a place the user chose, and it
+/// may well be one they keep other things in; "Use default" must not sweep those
+/// into Klide's app data. Anything unrecognised is counted and reported so the
+/// caller can say what stayed put, rather than leaving it to be discovered.
+fn move_runs(from: &Path, to: &Path) -> Result<(usize, u64, usize), String> {
     if !from.exists() {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     }
     let entries = std::fs::read_dir(from)
         .map_err(|e| format!("Could not read {}: {e}", from.display()))?;
     let mut moved = 0;
     let mut bytes = 0;
+    let mut left = 0;
     for entry in entries.flatten() {
         let source = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() {
+        let ours = if meta.is_dir() {
+            is_run_folder(&source)
+        } else if meta.is_file() {
+            is_transcript_file(&entry.file_name())
+        } else {
+            false
+        };
+        if !ours {
+            left += 1;
             continue;
         }
-        let Some(name) = source.file_name() else { continue };
-        let dest = to.join(name);
+        let dest = to.join(entry.file_name());
         if dest.exists() {
             // Same run id in both folders: keep the destination, which is the
             // one the app will read from now.
             continue;
         }
-        if std::fs::rename(&source, &dest).is_err() {
-            std::fs::copy(&source, &dest).map_err(|e| {
-                format!("Could not copy {} to {}: {e}", source.display(), dest.display())
-            })?;
-            std::fs::remove_file(&source).ok();
-        }
+        move_entry(&source, &dest)?;
         moved += 1;
-        bytes += meta.len();
+        bytes += if meta.is_dir() { measure(&dest, 0).1 } else { meta.len() };
     }
-    Ok((moved, bytes))
+    Ok((moved, bytes, left))
 }
 
 /// The outcome of changing the folder — what Settings reports back.
@@ -256,6 +345,10 @@ pub struct RunsDirChange {
     pub custom: bool,
     pub moved_files: usize,
     pub moved_bytes: u64,
+    /// Entries in the old folder that were not Klide's to move. Zero for a
+    /// folder Klide made; non-zero when the user pointed it somewhere they
+    /// keep other things, and Settings says so rather than let them wonder.
+    pub left_behind: usize,
 }
 
 #[tauri::command]
@@ -264,25 +357,37 @@ pub async fn app_storage_set_runs_dir(
     path: String,
     move_existing: bool,
 ) -> Result<RunsDirChange, String> {
-    let current = runs_dir(&app)?;
     let target = PathBuf::from(path.trim());
+    // Resolving the current folder touches the filesystem, so it belongs inside
+    // the blocking task with the rest — a Tauri command body runs on the UI
+    // thread until it awaits, and this module's whole point is not to freeze it.
     tokio::task::spawn_blocking(move || {
+        let current = runs_dir(&app)?;
         validate_target(&target, &current)?;
-        let (moved_files, moved_bytes) = if move_existing {
+        let (moved_files, moved_bytes, left_behind) = if move_existing {
             move_runs(&current, &target)?
         } else {
-            (0, 0)
+            (0, 0, 0)
         };
-        // Written only after a successful move, so a failure leaves every
-        // transcript where the app is still looking for it.
-        write_config(&StorageConfig {
+        // Recorded after the move, so a move that fails leaves every transcript
+        // where the app is still looking for it. The other order of that coin:
+        // if the move lands and recording it does not, the transcripts are at
+        // the target while the app still reads the source — so carry them back
+        // before reporting, rather than leave the two halves disagreeing.
+        if let Err(e) = write_config(&StorageConfig {
             runs_dir: Some(target.to_string_lossy().to_string()),
-        })?;
+        }) {
+            if moved_files > 0 {
+                move_runs(&target, &current).ok();
+            }
+            return Err(e);
+        }
         Ok(RunsDirChange {
             path: target.to_string_lossy().to_string(),
             custom: true,
             moved_files,
             moved_bytes,
+            left_behind,
         })
     })
     .await
@@ -294,30 +399,37 @@ pub async fn app_storage_reset_runs_dir(
     app: tauri::AppHandle,
     move_existing: bool,
 ) -> Result<RunsDirChange, String> {
-    let current = runs_dir(&app)?;
-    let default = default_runs_dir(&app)?;
     tokio::task::spawn_blocking(move || {
+        let current = runs_dir(&app)?;
+        let default = default_runs_dir(&app)?;
         if current == default {
             return Ok(RunsDirChange {
                 path: default.to_string_lossy().to_string(),
                 custom: false,
                 moved_files: 0,
                 moved_bytes: 0,
+                left_behind: 0,
             });
         }
         std::fs::create_dir_all(&default)
             .map_err(|e| format!("Unable to create {}: {e}", default.display()))?;
-        let (moved_files, moved_bytes) = if move_existing {
+        let (moved_files, moved_bytes, left_behind) = if move_existing {
             move_runs(&current, &default)?
         } else {
-            (0, 0)
+            (0, 0, 0)
         };
-        write_config(&StorageConfig { runs_dir: None })?;
+        if let Err(e) = write_config(&StorageConfig { runs_dir: None }) {
+            if moved_files > 0 {
+                move_runs(&default, &current).ok();
+            }
+            return Err(e);
+        }
         Ok(RunsDirChange {
             path: default.to_string_lossy().to_string(),
             custom: false,
             moved_files,
             moved_bytes,
+            left_behind,
         })
     })
     .await
@@ -326,16 +438,20 @@ pub async fn app_storage_reset_runs_dir(
 
 #[tauri::command]
 pub async fn app_storage_dirs(app: tauri::AppHandle) -> Result<Vec<StorageDir>, String> {
-    let runs = dir_for(&app, "runs")?;
-    let root = dir_for(&app, "app-data")?;
-    let default_runs = default_runs_dir(&app)?;
-    // A chosen folder that no longer works: `runs_dir` already fell back, so
-    // say which one was skipped and why rather than showing a healthy default.
-    let warning = read_config()
-        .runs_dir
-        .map(PathBuf::from)
-        .and_then(|chosen| override_problem(&chosen).map(|why| format!("{why} Using the default folder.")));
     tokio::task::spawn_blocking(move || {
+        let runs = dir_for(&app, "runs")?;
+        let root = dir_for(&app, "app-data")?;
+        let default_runs = default_runs_dir(&app)?;
+        // A chosen folder that no longer works: `runs_dir` already fell back, so
+        // say which one was skipped and why rather than showing a healthy
+        // default. Settings is also the one place a write probe is affordable,
+        // so this is where a read-only *mount* — invisible to the permission
+        // bits `runs_dir` checks — gets named instead of failing every append.
+        let warning = read_config().runs_dir.map(PathBuf::from).and_then(|chosen| {
+            override_problem(&chosen)
+                .or_else(|| chosen.is_dir().then(|| write_problem(&chosen)).flatten())
+                .map(|why| format!("{why} Using the default folder."))
+        });
         let (run_files, run_bytes) = measure(&runs, 0);
         let (all_files, all_bytes) = measure(&root, 0);
         let custom = runs != default_runs;
@@ -449,14 +565,63 @@ mod tests {
         std::fs::write(from.join("run_b.jsonl"), b"old").unwrap();
         std::fs::write(to.join("run_b.jsonl"), b"kept").unwrap();
 
-        let (moved, bytes) = move_runs(&from, &to).unwrap();
-        assert_eq!((moved, bytes), (2, 8));
+        let (moved, bytes, left) = move_runs(&from, &to).unwrap();
+        assert_eq!((moved, bytes, left), (2, 8, 0));
         assert!(to.join("run_a.jsonl").exists());
         assert!(!from.join("run_a.jsonl").exists());
         assert_eq!(std::fs::read(to.join("run_b.jsonl")).unwrap(), b"kept");
 
         // Moving from a folder that was never created is not an error.
-        assert_eq!(move_runs(&root.join("absent"), &to).unwrap(), (0, 0));
+        assert_eq!(move_runs(&root.join("absent"), &to).unwrap(), (0, 0, 0));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_runs_checkpoint_folder_travels_with_its_transcript() {
+        // The runs dir is not flat: a Run keeps its file checkpoints in
+        // `<runs>/<run id>/checkpoints`. A move that carried only files would
+        // land the transcript and strand every rollback that belongs to it —
+        // and say nothing, because the transcript arrived.
+        let root = scratch("checkpoints");
+        let from = root.join("from");
+        let to = root.join("to");
+        let checkpoints = from.join("run_a").join("checkpoints");
+        std::fs::create_dir_all(&checkpoints).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(from.join("run_a.jsonl"), b"12345").unwrap();
+        std::fs::write(checkpoints.join("src.rs"), b"before").unwrap();
+
+        let (moved, _, left) = move_runs(&from, &to).unwrap();
+        assert_eq!((moved, left), (2, 0));
+        assert_eq!(
+            std::fs::read(to.join("run_a").join("checkpoints").join("src.rs")).unwrap(),
+            b"before",
+        );
+        assert!(!from.join("run_a").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_chosen_folder_keeps_whatever_else_the_user_put_in_it() {
+        // The folder is a place on someone's disk, and "Use default" must not
+        // sweep it into Klide's app data. Only transcripts and run folders move;
+        // the rest is counted so Settings can say what stayed.
+        let root = scratch("theirs");
+        let from = root.join("from");
+        let to = root.join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::create_dir_all(from.join("Photos")).unwrap();
+        std::fs::write(from.join("run_a.jsonl"), b"12345").unwrap();
+        std::fs::write(from.join("taxes.pdf"), b"not klide's").unwrap();
+        std::fs::write(from.join("notes.md"), b"nor this").unwrap();
+
+        let (moved, bytes, left) = move_runs(&from, &to).unwrap();
+        assert_eq!((moved, bytes, left), (1, 5, 3));
+        assert!(from.join("taxes.pdf").exists(), "the user's file stays put");
+        assert!(from.join("notes.md").exists());
+        assert!(from.join("Photos").is_dir(), "a folder with no checkpoints is not ours");
+        assert!(!to.join("taxes.pdf").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -483,6 +648,45 @@ mod tests {
         let existing = root.join("already");
         std::fs::create_dir_all(&existing).unwrap();
         assert!(override_problem(&existing).is_none());
+
+        // `create_dir_all` returns Ok for a directory that already exists,
+        // whatever its permissions — so a read-only folder used to resolve
+        // clean and then fail every single append, with nothing said anywhere.
+        let locked = root.join("read-only");
+        std::fs::create_dir_all(&locked).unwrap();
+        set_readonly(&locked, true);
+        assert!(std::fs::create_dir_all(&locked).is_ok(), "the trap this guards");
+        assert!(override_problem(&locked).unwrap().contains("read-only"));
+        assert!(write_problem(&locked).is_some());
+
+        set_readonly(&locked, false);
+        assert!(write_problem(&locked).is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn set_readonly(path: &Path, readonly: bool) {
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(readonly);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    #[test]
+    fn a_rejected_target_leaves_no_folder_behind() {
+        // Choosing a folder that turns out to be unwritable must not litter the
+        // disk with the empty folder the attempt created.
+        let root = scratch("rejected");
+        let current = root.join("current");
+        std::fs::create_dir_all(&current).unwrap();
+
+        let parent = root.join("locked-parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        set_readonly(&parent, true);
+
+        let target = parent.join("runs");
+        assert!(validate_target(&target, &current).is_err());
+        assert!(!target.exists(), "a refused choice creates nothing lasting");
+
+        set_readonly(&parent, false);
         std::fs::remove_dir_all(&root).ok();
     }
 

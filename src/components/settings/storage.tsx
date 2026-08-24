@@ -118,34 +118,46 @@ export function StorageSection() {
   }, [refreshCache, refreshDirs]);
 
   function reportChange(change: RunsDirChange) {
-    notify(
+    const moved =
       change.movedFiles > 0
-        ? `Transcripts now live in ${change.path} — moved ${change.movedFiles} file${
+        ? ` — moved ${change.movedFiles} item${
             change.movedFiles === 1 ? "" : "s"
-          } (${formatBytes(change.movedBytes)}).`
-        : `Transcripts now live in ${change.path}.`,
-      { tone: "success" },
+          } (${formatBytes(change.movedBytes)})`
+        : "";
+    // Klide only ever moves its own transcripts and run folders. Anything else
+    // in a folder the user chose stays where they put it — said out loud, so
+    // "where did the rest go?" is never the question.
+    const left =
+      change.leftBehind > 0
+        ? `. ${change.leftBehind} item${
+            change.leftBehind === 1 ? "" : "s"
+          } that were not Klide's stayed in the old folder`
+        : "";
+    notify(`Transcripts now live in ${change.path}${moved}${left}.`, { tone: "success" });
+  }
+
+  /** Ask before carrying transcripts across, and say what will not travel.
+   *  Declining is a real choice: pointing Klide at a folder that already holds
+   *  transcripts (a synced drive, a restored backup) should not drag the old
+   *  ones in on top of them. */
+  async function confirmMove(runs: StorageDir, destination: string): Promise<boolean> {
+    if (runs.files === 0) return true;
+    return confirm(
+      `Move the ${runs.files} existing transcript file${
+        runs.files === 1 ? "" : "s"
+      } (${formatBytes(runs.bytes)}) into ${destination}? Anything else in the current folder stays where it is.`,
+      { title: "Move existing transcripts?", kind: "info" },
     );
   }
 
-  /** Choose a folder, then offer to bring the existing transcripts along.
-   *  Declining is a real choice — pointing Klide at a folder that already holds
-   *  transcripts (a synced drive, a restored backup) should not drag the old
-   *  ones in on top of them. */
+  /** Choose a folder, then offer to bring the existing transcripts along. */
   async function chooseRunsDir(runs: StorageDir) {
     const picked = await open({
       directory: true,
       title: "Choose where Klide keeps run transcripts",
     });
     if (typeof picked !== "string") return;
-    const moveExisting =
-      runs.files === 0 ||
-      (await confirm(
-        `Move the ${runs.files} existing transcript file${
-          runs.files === 1 ? "" : "s"
-        } (${formatBytes(runs.bytes)}) into the new folder?`,
-        { title: "Move existing transcripts?", kind: "info" },
-      ));
+    const moveExisting = await confirmMove(runs, "the new folder");
     setMovingRuns(true);
     try {
       reportChange(await setRunsDir(picked, moveExisting));
@@ -157,10 +169,13 @@ export function StorageSection() {
     }
   }
 
-  async function restoreDefaultRunsDir() {
+  async function restoreDefaultRunsDir(runs: StorageDir) {
+    // Asked, exactly as choosing a folder is. This is the direction that empties
+    // a folder the user picked, so doing it unprompted was the wrong default.
+    const moveExisting = await confirmMove(runs, "Klide's own folder");
     setMovingRuns(true);
     try {
-      reportChange(await resetRunsDir(true));
+      reportChange(await resetRunsDir(moveExisting));
       await refreshDirs();
     } catch (e) {
       notify(errMessage(e), { tone: "error" });
@@ -324,7 +339,7 @@ export function StorageSection() {
                         </LinkButton>
                       )}
                       {movable && dir.custom && (
-                        <LinkButton disabled={movingRuns} onClick={() => void restoreDefaultRunsDir()}>
+                        <LinkButton disabled={movingRuns} onClick={() => void restoreDefaultRunsDir(dir)}>
                           Use default
                         </LinkButton>
                       )}

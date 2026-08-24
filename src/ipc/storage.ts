@@ -32,6 +32,9 @@ export type RunsDirChange = {
   custom: boolean;
   movedFiles: number;
   movedBytes: number;
+  /** Entries in the old folder that were not Klide's to move — anything the
+   *  user keeps in a folder they chose. Reported rather than swept along. */
+  leftBehind: number;
 };
 
 /** Measure the folders Klide owns. Walks the tree, so treat it as a fetch:
@@ -55,7 +58,9 @@ export function setRunsDir(path: string, moveExisting: boolean): Promise<RunsDir
   return invoke<RunsDirChange>("app_storage_set_runs_dir", { path, moveExisting });
 }
 
-/** Put transcripts back in Klide's own app data folder. */
+/** Put transcripts back in Klide's own app data folder. `moveExisting` is the
+ *  caller's to decide and worth asking about: the folder being left may be one
+ *  the user picked and still keeps things in. */
 export function resetRunsDir(moveExisting: boolean): Promise<RunsDirChange> {
   return invoke<RunsDirChange>("app_storage_reset_runs_dir", { moveExisting });
 }
