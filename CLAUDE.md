@@ -31,7 +31,7 @@ If a UI element doesn't serve clarity, it doesn't ship.
 
 | Layer | Tech | Notes |
 |---|---|---|
-| Shell | **Tauri 2** | Rust backend, native webview, ~10 MB binary |
+| Shell | **Tauri 2** | Rust backend, native webview, 27 MB app bundle (measured 2026-08-24; re-measure with `du -sh src-tauri/target/release/bundle/macos/Klide.app`) |
 | Editor | **Monaco** via `@monaco-editor/react` | The browser editor core (also used by VS Code) |
 | Terminal | **xterm.js** + Rust **portable-pty** | Real shell, not a sandbox |
 | Frontend | **React 19 + TypeScript + Vite** | |
