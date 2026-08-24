@@ -30,6 +30,15 @@ const FAIL_THRESHOLD: usize = 2;
 /// run beats burning turns to the cap.
 const EARLY_EXIT_FAILURES: usize = 4;
 
+/// Carried into a resample after the model spent its whole reply budget on
+/// private reasoning. Transient: the run loop pushes it, the resample consumes
+/// it, and it never becomes part of the durable conversation — it describes a
+/// turn the user never saw.
+pub(super) const REASONING_RUNAWAY_NUDGE: &str = "\
+Your previous attempt used its entire reply budget on internal reasoning and \
+produced no answer and no tool call. Keep your reasoning short this time and \
+get to a tool call or a written answer quickly.";
+
 /// One executed tool call, as the monitor sees it: its signature plus whether it
 /// failed. The run loop knows `failed` only after the call runs, so it collects
 /// these across a turn and hands the batch to `observe` once the turn settles.

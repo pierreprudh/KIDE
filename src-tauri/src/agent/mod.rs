@@ -1308,6 +1308,17 @@ async fn run_agent_loop(
     // nudge into the next turn's context. See `steering.rs`.
     let mut loop_monitor = steering::LoopMonitor::default();
 
+    // A reasoning model can burn its whole reply budget inside the private
+    // reasoning channel and return a *successful* turn with no answer and no
+    // tool call. Resampling at a smaller budget usually recovers it — an
+    // instruction to be brief only lands if there is room left to be brief in.
+    // Bounded, because a model that does this twice is not going to stop.
+    const MAX_RUNAWAY_RESAMPLES: usize = 2;
+    let mut runaway_resamples = 0usize;
+    // Reduced for the turn after a runaway. `None` means "whatever the request
+    // asked for".
+    let mut reply_budget_override: Option<usize> = None;
+
     for turn in 0..max_turns {
         // Auto-compaction: trim verbose tool results from older turns once the
         // prompt approaches the context window. The recency window inside
@@ -1416,7 +1427,7 @@ async fn run_agent_loop(
                 tools: tools.clone(),
                 workspace_root: request.workspace_root.clone(),
                 num_ctx: request.num_ctx,
-                num_predict: request.num_predict,
+                num_predict: reply_budget_override.or(request.num_predict),
                 reflection_level: request.reflection_level.clone(),
                 stream,
             }) => result,
@@ -1486,7 +1497,44 @@ async fn run_agent_loop(
         }
 
         let tool_calls = match decision {
-            TurnDecision::Final { content } => {
+            TurnDecision::Runaway { .. } if runaway_resamples < MAX_RUNAWAY_RESAMPLES => {
+                runaway_resamples += 1;
+                // Drop the empty assistant turn: it carries no answer and no
+                // call, and leaving it in history invites the model to continue
+                // from its own silence. The nudge is transient for the same
+                // reason — guidance for the resample, not part of the thread.
+                messages.pop();
+                // Half the room it just failed to finish in, floored so there is
+                // still space to answer. Derived from the budget actually in
+                // force so a deliberately small `num_predict` is never raised.
+                let previous = reply_budget_override
+                    .or(request.num_predict)
+                    .or_else(|| {
+                        turn_usage
+                            .as_ref()
+                            .and_then(|u| u.completion_tokens)
+                            .map(|t| t as usize)
+                    })
+                    .unwrap_or(4096);
+                reply_budget_override = Some((previous / 2).max(512));
+                messages.push(steering::steering_system_message(
+                    steering::REASONING_RUNAWAY_NUDGE,
+                ));
+                emit(AgentEvent::SteeringInjected {
+                    run_id: id.clone(),
+                    reason: format!(
+                        "Reply budget spent on reasoning with no answer — resampling at {} tokens",
+                        reply_budget_override.unwrap_or_default()
+                    ),
+                    ts: now_ms(),
+                })?;
+                continue;
+            }
+            // Either a normal answer, or a runaway whose resamples are spent —
+            // in which case `decide_turn` has already attached the notice that
+            // explains the empty reply. A run that cannot get a word out is
+            // finished, not retryable.
+            TurnDecision::Final { content } | TurnDecision::Runaway { content } => {
                 emit(AgentEvent::AssistantMessage {
                     run_id: id.clone(),
                     message_id: assistant_id,
@@ -2828,6 +2876,59 @@ mod turn_decision_tests {
         }
     }
 
+    /// Same `stop_reason`, opposite shapes: text present means the model was
+    /// answering and got cut off; text absent means it never started.
+    #[test]
+    fn a_capped_reply_with_text_is_final_and_without_text_is_a_runaway() {
+        let mut cut_off = response("Here is half an ans", None, vec![]);
+        cut_off.stop_reason = Some("length".into());
+        let TurnDecision::Final { content } = decide_turn(&cut_off, 0, 0).decision else {
+            panic!("text present → the partial answer is worth keeping");
+        };
+        let text = block_text(&content);
+        assert!(text.contains("Here is half an ans"));
+        assert!(text.contains("context limit"), "points at num_ctx: {text}");
+
+        let mut runaway = response("", Some("thinking and thinking"), vec![]);
+        runaway.stop_reason = Some("length".into());
+        let TurnDecision::Runaway { content } = decide_turn(&runaway, 0, 0).decision else {
+            panic!("no visible text → the budget went to reasoning");
+        };
+        let text = block_text(&content);
+        assert!(
+            text.contains("Effort"),
+            "points at the reply budget, not the context window: {text}"
+        );
+        assert!(
+            !text.contains("context limit"),
+            "and not at num_ctx, which is the wrong number to tune: {text}"
+        );
+    }
+
+    /// The guard that keeps the runaway path off LFM2.5's legitimate shape: a
+    /// complete answer routed through the reasoning channel, with the provider
+    /// reporting a normal stop. Only an explicit cap makes it a runaway.
+    #[test]
+    fn an_answer_that_arrives_as_thinking_is_not_a_runaway() {
+        let mut normal = response("", Some("The answer is 42."), vec![]);
+        normal.stop_reason = Some("stop".into());
+        assert!(matches!(
+            decide_turn(&normal, 0, 0).decision,
+            TurnDecision::Final { .. }
+        ));
+    }
+
+    fn block_text(content: &[AgentContentBlock]) -> String {
+        content
+            .iter()
+            .filter_map(|b| match b {
+                AgentContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn structured_call(name: &str, args: serde_json::Value) -> serde_json::Value {
         serde_json::json!({ "function": { "name": name, "arguments": args } })
     }
@@ -3461,6 +3562,18 @@ mod test_support {
         })
     }
 
+    /// A turn that hit the reply cap with nothing visible to show for it —
+    /// the whole budget went into the reasoning channel.
+    pub(super) fn scripted_runaway() -> Result<AiChatResponse, String> {
+        Ok(AiChatResponse {
+            content: String::new(),
+            thinking: Some("let me think about this at length".into()),
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some("length".into()),
+        })
+    }
+
     /// A structured tool call as providers emit it (`function.name` +
     /// `function.arguments`).
     pub(super) fn scripted_tool_call(
@@ -3933,6 +4046,105 @@ mod run_loop_tests {
             e,
             AgentEvent::RunError { error, .. } if error.code == "max_turns" && error.retryable
         )));
+    }
+
+    /// A turn that spends its whole reply budget on reasoning is resampled
+    /// rather than kept: the empty turn leaves the provider history, the user
+    /// sees why, and the run settles on the answer the retry produced.
+    #[tokio::test]
+    async fn a_reasoning_runaway_is_resampled_instead_of_answered() {
+        let (runs_dir, root) = sandbox("runaway");
+        let caller = ScriptedProviderCaller::new(vec![
+            scripted_runaway(),
+            scripted_turn("Sorry — here is the actual answer.", vec![]),
+        ]);
+        let sup = Arc::new(FakeSupervisor::with_run("runaway-run"));
+        drive_loop(
+            sup.clone(),
+            &runs_dir,
+            "runaway-run",
+            test_request(&root, &[]),
+            caller,
+        )
+        .await;
+
+        assert_eq!(
+            with_run_handle(sup.as_ref(), "runaway-run", |h| h.status),
+            Some(AgentRunStatus::Done)
+        );
+        let events = read_events(&runs_dir, "runaway-run").unwrap();
+
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::SteeringInjected { reason, .. }
+                    if reason.contains("spent on reasoning")
+            )),
+            "the discarded attempt is explained, not hidden"
+        );
+
+        // Exactly one assistant message reaches the conversation: the resample.
+        let answers: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::AssistantMessage { content, .. } => Some(
+                    content
+                        .iter()
+                        .filter_map(|b| match b {
+                            AgentContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(""),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers.len(), 1, "the empty turn produced no message: {answers:?}");
+        assert!(answers[0].contains("here is the actual answer"));
+        assert!(
+            !answers[0].contains("reply budget"),
+            "a recovered run carries no failure notice: {}",
+            answers[0]
+        );
+    }
+
+    /// Two runaways in a row exhaust the resamples, and the run settles on the
+    /// notice rather than looping until the turn cap.
+    #[tokio::test]
+    async fn repeated_runaways_settle_with_an_explanation() {
+        let (runs_dir, root) = sandbox("runaway-twice");
+        let caller = ScriptedProviderCaller::new(vec![
+            scripted_runaway(),
+            scripted_runaway(),
+            scripted_runaway(),
+        ]);
+        let sup = Arc::new(FakeSupervisor::with_run("runaway-twice-run"));
+        drive_loop(
+            sup.clone(),
+            &runs_dir,
+            "runaway-twice-run",
+            test_request(&root, &[]),
+            caller,
+        )
+        .await;
+
+        assert_eq!(
+            with_run_handle(sup.as_ref(), "runaway-twice-run", |h| h.status),
+            Some(AgentRunStatus::Done)
+        );
+        let events = read_events(&runs_dir, "runaway-twice-run").unwrap();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::AssistantMessage { content, .. }
+                    if content.iter().any(|b| matches!(
+                        b,
+                        AgentContentBlock::Text { text } if text.contains("Effort")
+                    ))
+            )),
+            "the user is told which knob to turn"
+        );
     }
 }
 

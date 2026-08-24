@@ -179,6 +179,10 @@ pub(super) enum TurnDecision {
     /// answer when `content` was empty (otherwise preserved as its own block),
     /// with the truncation notice appended when the provider cut the reply off.
     Final { content: Vec<AgentContentBlock> },
+    /// The model spent its whole output budget inside the private reasoning
+    /// channel and returned no answer and no tool call. `content` is what to
+    /// show if the loop chooses not to resample (its retries are spent).
+    Runaway { content: Vec<AgentContentBlock> },
     /// The model requested one or more tools. `content` is the assistant body
     /// (thinking + text + tool-call blocks); `tool_calls` are the normalized,
     /// id-stamped calls the loop executes in order.
@@ -194,6 +198,29 @@ pub(super) enum TurnDecision {
 pub(super) struct TurnStep {
     pub(super) assistant_message: serde_json::Value,
     pub(super) decision: TurnDecision,
+}
+
+/// Did this tool-free turn burn its whole reply budget on private reasoning?
+///
+/// Hitting the reply cap has two opposite shapes and they need opposite
+/// handling. *With* visible text the model was answering and got cut off, so
+/// what it wrote is worth keeping. *Without* any, the budget went entirely into
+/// the reasoning channel and the turn carries nothing — resampling at a smaller
+/// cap usually recovers it, where keeping it ends the run on a notice and
+/// nothing else. Reasoning models behind local servers do this routinely.
+///
+/// Deliberately keyed on `stop_reason` alone. FrontierAgent, where this came
+/// from, also infers a runaway from a large completion when a gateway drops the
+/// stop reason — but that heuristic is unsafe here: LFM2.5 and its fine-tunes
+/// route a genuine, complete answer into the reasoning channel (see
+/// `empty_content_promotes_thinking_to_the_answer`), and a long one would be
+/// indistinguishable from a runaway by size. Discarding a real answer is far
+/// worse than missing a runaway, so we only act on the provider saying outright
+/// that it hit the cap.
+///
+/// The caller has already established there are no tool calls.
+fn is_reasoning_runaway(response: &AiChatResponse, content_text: &str) -> bool {
+    content_text.trim().is_empty() && response.stop_reason.as_deref() == Some("length")
 }
 
 /// Interpret one assistant turn purely: normalize tool calls (including the
@@ -282,7 +309,18 @@ pub(super) fn decide_turn(response: &AiChatResponse, prior_turns: usize, turn: u
             }
             content_text.clone()
         };
-        if response.stop_reason.as_deref() == Some("length") {
+        // The two shapes of a capped reply want different words. Cut off
+        // mid-answer, the fix is room to finish. Cut off with nothing visible,
+        // the reply never started — pointing the user at num_ctx there sends
+        // them to tune the wrong number.
+        let runaway = is_reasoning_runaway(response, &content_text);
+        if runaway {
+            answer_text.push_str(
+                "\n\n---\n_⚠ The model spent its entire reply budget on internal reasoning \
+and produced no answer. Lower this model's Effort in Settings → Harness so it reasons more \
+briefly, or switch to a model that gets to the point sooner._",
+            );
+        } else if response.stop_reason.as_deref() == Some("length") {
             answer_text.push_str(
                 "\n\n---\n_⚠ Response cut off — the model hit its context limit (num_ctx) \
 mid-answer. Raise this model's context window in Settings → Harness, or start a fresh \
@@ -292,7 +330,11 @@ conversation, then ask again._",
         content.push(AgentContentBlock::Text { text: answer_text });
         TurnStep {
             assistant_message,
-            decision: TurnDecision::Final { content },
+            decision: if runaway {
+                TurnDecision::Runaway { content }
+            } else {
+                TurnDecision::Final { content }
+            },
         }
     } else {
         let mut content = Vec::new();
