@@ -657,6 +657,7 @@ mod tests {
     fn plan_tool_step_allows_goal_capabilities() {
         for kind in [
             ToolKind::ReadOnly,
+            ToolKind::ConversationHistory,
             ToolKind::Write,
             ToolKind::Command,
             ToolKind::Pause,

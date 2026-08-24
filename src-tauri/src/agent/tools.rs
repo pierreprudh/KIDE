@@ -1,3 +1,4 @@
+use super::conversation_search;
 use super::todo;
 use super::glob_match::wildcard_match;
 use super::types::{AgentMode, DiffProposal, ToolResult};
@@ -102,6 +103,10 @@ pub struct NormalizedToolCall {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolKind {
     ReadOnly,
+    // Reads app-owned durable Transcripts from prior Conversations in the
+    // current Workspace. Distinct from ReadOnly because the audit record must
+    // not claim the Tool read workspace files.
+    ConversationHistory,
     // Mutates only Klide's app-owned planning metadata. It is intentionally
     // available in Plan mode, but is not a workspace read.
     PlanState,
@@ -124,6 +129,7 @@ pub enum ToolKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolCapability {
     ReadWorkspace,
+    ReadConversationHistory,
     UpdatePlanState,
     WriteWorkspace,
     RunCommand,
@@ -135,6 +141,7 @@ impl ToolKind {
     pub fn capability(self) -> ToolCapability {
         match self {
             ToolKind::ReadOnly => ToolCapability::ReadWorkspace,
+            ToolKind::ConversationHistory => ToolCapability::ReadConversationHistory,
             ToolKind::PlanState => ToolCapability::UpdatePlanState,
             ToolKind::Network => ToolCapability::Network,
             ToolKind::Write => ToolCapability::WriteWorkspace,
@@ -147,7 +154,10 @@ impl ToolKind {
 pub fn tool_allowed_in_mode(mode: &AgentMode, kind: ToolKind) -> bool {
     match mode {
         AgentMode::Chat => false,
-        AgentMode::Plan => matches!(kind, ToolKind::ReadOnly | ToolKind::PlanState),
+        AgentMode::Plan => matches!(
+            kind,
+            ToolKind::ReadOnly | ToolKind::ConversationHistory | ToolKind::PlanState
+        ),
         AgentMode::Goal => true,
     }
 }
@@ -159,6 +169,7 @@ pub fn tool_kind_label(kind: ToolKind) -> &'static str {
 pub fn tool_capability_label(capability: ToolCapability) -> &'static str {
     match capability {
         ToolCapability::ReadWorkspace => "read workspace",
+        ToolCapability::ReadConversationHistory => "read conversation history",
         ToolCapability::UpdatePlanState => "update plan state",
         ToolCapability::WriteWorkspace => "write workspace",
         ToolCapability::RunCommand => "run command",
@@ -175,6 +186,7 @@ impl ToolCapability {
     pub fn wire(self) -> &'static str {
         match self {
             ToolCapability::ReadWorkspace => "read_workspace",
+            ToolCapability::ReadConversationHistory => "read_conversation_history",
             ToolCapability::UpdatePlanState => "update_plan_state",
             ToolCapability::WriteWorkspace => "write_workspace",
             ToolCapability::RunCommand => "run_command",
@@ -210,7 +222,12 @@ pub fn interactive_tool_names() -> Vec<String> {
 
 // Tool executions receive a `Workspace`, never a raw root string — resolving
 // a path without going through the Workspace-rooted checks is unrepresentable.
-type ReadToolFn = fn(ws: &Workspace, input: &serde_json::Value, run_id: &str) -> ToolResult;
+type ReadToolFn = fn(
+    ws: &Workspace,
+    input: &serde_json::Value,
+    run_id: &str,
+    runs_dir: Option<&Path>,
+) -> ToolResult;
 type WritePreviewFn =
     fn(ws: &Workspace, input: &serde_json::Value, run_id: &str) -> Result<DiffProposal, ToolResult>;
 
@@ -236,6 +253,72 @@ fn pattern_summary(call: &NormalizedToolCall) -> String {
         .and_then(|v| v.as_str())
         .map(|pattern| format!("{} {}", call.name, pattern))
         .unwrap_or_else(|| call.name.clone())
+}
+
+fn query_summary(call: &NormalizedToolCall) -> String {
+    call.input
+        .get("query")
+        .and_then(|v| v.as_str())
+        .map(|query| format!("{} {}", call.name, query))
+        .unwrap_or_else(|| call.name.clone())
+}
+
+fn run_conversation_search(
+    ws: &Workspace,
+    input: &serde_json::Value,
+    run_id: &str,
+    runs_dir: Option<&Path>,
+) -> ToolResult {
+    let query = input
+        .get("query")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    if query.is_empty() {
+        return err("search_conversations requires a non-empty query.".to_string());
+    }
+    let limit = input
+        .get("maxResults")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(8)
+        .clamp(1, 20) as usize;
+    let Some(runs_dir) = runs_dir else {
+        return err(
+            "Conversation history is unavailable in this Harness environment.".to_string(),
+        );
+    };
+    match conversation_search::search_conversations(runs_dir, ws.root(), run_id, query, limit) {
+        Ok(matches) if matches.is_empty() => ok(format!(
+            "No previous Klide conversations in this workspace matched {query:?}."
+        )),
+        Ok(matches) => {
+            let mut content = format!(
+                "Found {} previous Klide conversation{} in this workspace matching {query:?}:",
+                matches.len(),
+                if matches.len() == 1 { "" } else { "s" },
+            );
+            for (index, item) in matches.iter().enumerate() {
+                content.push_str(&format!(
+                    "\n\n{}. {}\n   conversationId: {}\n   updatedMs: {}\n   match: {} — {}",
+                    index + 1,
+                    item.title,
+                    item.conversation_id,
+                    item.updated_ms,
+                    item.role,
+                    item.snippet,
+                ));
+                if item.match_count > 1 {
+                    content.push_str(&format!("\n   matching messages: {}", item.match_count));
+                }
+            }
+            ToolResult {
+                ok: true,
+                content,
+                metadata: Some(serde_json::json!({ "matches": matches })),
+            }
+        }
+        Err(error) => err(error),
+    }
 }
 
 struct ToolEntry {
@@ -273,7 +356,7 @@ fn registry() -> Vec<ToolEntry> {
             schema: schema("read_file", "Read the full text contents of a file in the workspace.",
                 serde_json::json!({ "path": { "type": "string", "description": "Workspace-relative file path." } }),
                 &["path"]),
-            run_read: Some(|ws, input, _run_id| read_file(ws, &trimmed_arg(input, "path").unwrap_or_else(|| ".".to_string()))),
+            run_read: Some(|ws, input, _run_id, _runs_dir| read_file(ws, &trimmed_arg(input, "path").unwrap_or_else(|| ".".to_string()))),
             run_write_preview: None,
             summary: path_summary,
         },
@@ -282,7 +365,7 @@ fn registry() -> Vec<ToolEntry> {
             schema: schema("list_dir", "List entries in a workspace directory.",
                 serde_json::json!({ "path": { "type": "string", "description": "Workspace-relative directory path. Use . for the root." } }),
                 &["path"]),
-            run_read: Some(|ws, input, _run_id| list_dir(ws, &trimmed_arg(input, "path").unwrap_or_else(|| ".".to_string()))),
+            run_read: Some(|ws, input, _run_id, _runs_dir| list_dir(ws, &trimmed_arg(input, "path").unwrap_or_else(|| ".".to_string()))),
             run_write_preview: None,
             summary: path_summary,
         },
@@ -294,7 +377,7 @@ fn registry() -> Vec<ToolEntry> {
                     "path": { "type": "string", "description": "Optional workspace-relative directory to search from." }
                 }),
                 &["pattern"]),
-            run_read: Some(|ws, input, _run_id| glob(ws, input)),
+            run_read: Some(|ws, input, _run_id, _runs_dir| glob(ws, input)),
             run_write_preview: None,
             summary: pattern_summary,
         },
@@ -307,15 +390,27 @@ fn registry() -> Vec<ToolEntry> {
                     "maxResults": { "type": "number", "description": "Optional cap on returned matches." }
                 }),
                 &["pattern"]),
-            run_read: Some(|ws, input, _run_id| grep(ws, input)),
+            run_read: Some(|ws, input, _run_id, _runs_dir| grep(ws, input)),
             run_write_preview: None,
             summary: pattern_summary,
+        },
+        ToolEntry {
+            kind: ToolKind::ConversationHistory,
+            schema: schema("search_conversations", "Search user and assistant messages from prior Klide Harness conversations in the current workspace. Use this when the user refers to an earlier discussion, decision, or request. Returns one concise match per conversation and excludes the current conversation.",
+                serde_json::json!({
+                    "query": { "type": "string", "description": "Words or phrase to find in previous conversations." },
+                    "maxResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Optional result cap (default 8, maximum 20)." }
+                }),
+                &["query"]),
+            run_read: Some(run_conversation_search),
+            run_write_preview: None,
+            summary: query_summary,
         },
         ToolEntry {
             kind: ToolKind::ReadOnly,
             schema: schema("get_git_status", "Return git branch and changed files for the workspace.",
                 serde_json::json!({}), &[]),
-            run_read: Some(|ws, _input, _run_id| get_git_status(ws.root())),
+            run_read: Some(|ws, _input, _run_id, _runs_dir| get_git_status(ws.root())),
             run_write_preview: None,
             summary: default_summary,
         },
@@ -327,7 +422,7 @@ fn registry() -> Vec<ToolEntry> {
                     "staged": { "type": "boolean", "description": "Whether to read staged diff." }
                 }),
                 &[]),
-            run_read: Some(|ws, input, _run_id| get_git_diff(ws.root(), input)),
+            run_read: Some(|ws, input, _run_id, _runs_dir| get_git_diff(ws.root(), input)),
             run_write_preview: None,
             summary: default_summary,
         },
@@ -339,7 +434,7 @@ fn registry() -> Vec<ToolEntry> {
                     "path": { "type": "string", "description": "Optional workspace-relative path to limit history to one file or folder." }
                 }),
                 &[]),
-            run_read: Some(|ws, input, _run_id| get_git_log(ws.root(), input)),
+            run_read: Some(|ws, input, _run_id, _runs_dir| get_git_log(ws.root(), input)),
             run_write_preview: None,
             summary: default_summary,
         },
@@ -350,7 +445,7 @@ fn registry() -> Vec<ToolEntry> {
                     "ids": { "type": "array", "description": "List of tool_call_ids to clean from the current turn." }
                 }),
                 &["ids"]),
-            run_read: Some(|_ws, input, _run_id| {
+            run_read: Some(|_ws, input, _run_id, _runs_dir| {
                 let ids: Vec<String> = input.get("ids")
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -367,7 +462,7 @@ fn registry() -> Vec<ToolEntry> {
                     "query": { "type": "string", "description": "The search query." }
                 }),
                 &["query"]),
-            run_read: Some(|_ws, input, _run_id| web_search(input)),
+            run_read: Some(|_ws, input, _run_id, _runs_dir| web_search(input)),
             run_write_preview: None,
             summary: default_summary,
         },
@@ -378,7 +473,7 @@ fn registry() -> Vec<ToolEntry> {
                     "url": { "type": "string", "description": "The URL to fetch." }
                 }),
                 &["url"]),
-            run_read: Some(|_ws, input, _run_id| web_fetch(input)),
+            run_read: Some(|_ws, input, _run_id, _runs_dir| web_fetch(input)),
             run_write_preview: None,
             summary: default_summary,
         },
@@ -386,7 +481,7 @@ fn registry() -> Vec<ToolEntry> {
             kind: ToolKind::ReadOnly,
             schema: schema("get_todo_list", "Read the current TODO list. Each item has an id (e.g. T1, T2) and a done/pending status. Returns empty if no todos exist.",
                 serde_json::json!({}), &[]),
-            run_read: Some(|ws, _input, run_id| {
+            run_read: Some(|ws, _input, run_id, _runs_dir| {
                 let root = ws.root().to_string_lossy();
                 match todo::list_todos_text(&root, run_id) {
                     Some(text) => ok(format!("TODO list:\n{text}")),
@@ -409,7 +504,7 @@ fn registry() -> Vec<ToolEntry> {
                     "text": { "type": "string", "description": "Task text. Required for add and edit." }
                 }),
                 &["action"]),
-            run_read: Some(|ws, input, run_id| {
+            run_read: Some(|ws, input, run_id, _runs_dir| {
                 let root = &ws.root().to_string_lossy();
                 let action = match input.get("action").and_then(|v| v.as_str()) {
                     Some(a) => a,
@@ -702,6 +797,26 @@ fn schema_has_name(schema: &serde_json::Value, name: &str) -> bool {
 }
 
 pub fn execute_read_only_tool(root: &str, call: &NormalizedToolCall, run_id: &str) -> ToolResult {
+    execute_non_mutating_tool(root, call, run_id, None)
+}
+
+/// Production read dispatch with access to Klide's app-owned Run store.
+/// Workspace tools ignore `runs_dir`; conversation-history tools require it.
+pub fn execute_read_only_tool_with_runs_dir(
+    root: &str,
+    call: &NormalizedToolCall,
+    run_id: &str,
+    runs_dir: &Path,
+) -> ToolResult {
+    execute_non_mutating_tool(root, call, run_id, Some(runs_dir))
+}
+
+fn execute_non_mutating_tool(
+    root: &str,
+    call: &NormalizedToolCall,
+    run_id: &str,
+    runs_dir: Option<&Path>,
+) -> ToolResult {
     let ws = match Workspace::new(root) {
         Ok(ws) => ws,
         Err(e) => return err(e),
@@ -710,7 +825,7 @@ pub fn execute_read_only_tool(root: &str, call: &NormalizedToolCall, run_id: &st
         .into_iter()
         .find(|e| schema_has_name(&e.schema, &call.name));
     let result = match entry.and_then(|e| e.run_read) {
-        Some(f) => f(&ws, &call.input, run_id),
+        Some(f) => f(&ws, &call.input, run_id, runs_dir),
         None if find_dynamic_tool_def(&call.name, Some(root)).is_some() => err(format!(
             "Dynamic tool '{}' is a command-capability tool. It is available only through the Goal-mode permission gate, not read-only dispatch.",
             call.name
@@ -3341,6 +3456,15 @@ mod tests {
             Some(ToolKind::ReadOnly)
         );
         assert_eq!(
+            find_tool_kind_for_workspace("search_conversations", None),
+            Some(ToolKind::ConversationHistory)
+        );
+        assert_eq!(
+            find_tool_kind_for_workspace("search_conversations", None)
+                .map(|kind| kind.capability().wire()),
+            Some("read_conversation_history")
+        );
+        assert_eq!(
             find_tool_kind_for_workspace("web_search", None),
             Some(ToolKind::Network)
         );
@@ -3359,11 +3483,20 @@ mod tests {
         assert!(tool_allowed_in_mode(&AgentMode::Goal, ToolKind::Network));
         assert!(!tool_allowed_in_mode(&AgentMode::Plan, ToolKind::Network));
         assert!(tool_allowed_in_mode(&AgentMode::Plan, ToolKind::PlanState));
+        assert!(tool_allowed_in_mode(
+            &AgentMode::Plan,
+            ToolKind::ConversationHistory
+        ));
         let plan = list_tools_for_workspace(&AgentMode::Plan, &[], Some(&root));
         assert!(
             plan.iter()
                 .any(|schema| schema["function"]["name"] == "update_todo_list"),
             "Plan mode may update app-owned plan state"
+        );
+        assert!(
+            plan.iter()
+                .any(|schema| schema["function"]["name"] == "search_conversations"),
+            "Plan mode must advertise conversation-history search"
         );
         assert!(
             !plan
@@ -3517,6 +3650,38 @@ mod tests {
             !dir.join("marker").exists(),
             "read-only dispatch must not run the dynamic shell command"
         );
+    }
+
+    #[test]
+    fn conversation_search_tool_reads_the_app_run_store() {
+        let base = std::env::temp_dir().join(format!(
+            "klide-search-tool-store-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("workspace");
+        let runs = base.join("runs");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&runs).unwrap();
+        let call = NormalizedToolCall {
+            id: "search-1".to_string(),
+            name: "search_conversations".to_string(),
+            input: serde_json::json!({ "query": "authentication" }),
+        };
+
+        let unavailable = execute_read_only_tool(root.to_str().unwrap(), &call, "current");
+        assert!(!unavailable.ok);
+        assert!(unavailable.content.contains("unavailable"));
+
+        let result = execute_read_only_tool_with_runs_dir(
+            root.to_str().unwrap(),
+            &call,
+            "current",
+            &runs,
+        );
+        assert!(result.ok, "{}", result.content);
+        assert!(result.content.contains("No previous Klide conversations"));
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
@@ -3765,6 +3930,7 @@ mod tests {
         // every past run's Validation contract reads.
         let all = [
             ToolCapability::ReadWorkspace,
+            ToolCapability::ReadConversationHistory,
             ToolCapability::UpdatePlanState,
             ToolCapability::WriteWorkspace,
             ToolCapability::RunCommand,
@@ -3777,5 +3943,9 @@ mod tests {
         wires.dedup();
         assert_eq!(wires.len(), count, "wire spellings must be distinct");
         assert_eq!(ToolCapability::RunCommand.wire(), "run_command");
+        assert_eq!(
+            ToolCapability::ReadConversationHistory.wire(),
+            "read_conversation_history"
+        );
     }
 }

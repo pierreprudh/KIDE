@@ -535,6 +535,13 @@ const TOOL_ICON_PATHS: Record<string, ReactElement> = {
       <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
     </>
   ),
+  search_conversations: (
+    <>
+      <path d="M13.5 18H6l-4 3V6a3 3 0 0 1 3-3h11a3 3 0 0 1 3 3v4" />
+      <circle cx="17" cy="15" r="4" />
+      <path d="m20 18 2 2" />
+    </>
+  ),
   get_todo_list: (
     <>
       <path d="M9 6h12M9 12h12M9 18h12" />
