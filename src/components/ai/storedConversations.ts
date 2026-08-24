@@ -6,8 +6,7 @@
 // message list. Live-session navigation lives in `conversationSession.ts`;
 // genuinely misc helpers (token estimates, ids) stay in `utils.ts`.
 
-import type { ProviderId } from "../../agent/types";
-import type { AgentAttachment as Attachment } from "../../agent/types";
+import type { AgentAttachment as Attachment, ProviderId } from "../../agent/types";
 import type { Conversation, Msg } from "./types";
 import { notify as notifyUser } from "../../toast";
 import { canOpenSettings, openSettingsSection } from "../../settingsNavigation";

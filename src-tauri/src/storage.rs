@@ -147,19 +147,22 @@ fn default_runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app_data(app)?.join("runs"))
 }
 
-/// Why an override was ignored, if it was. Surfaced by `app_storage_dirs` so a
-/// folder that went missing (an unplugged drive) is visible rather than silent.
+/// Why an override cannot be used, if it cannot. Inspection only — it creates
+/// nothing, so Settings can ask the question without the asking making a
+/// missing folder reappear. `runs_dir` does the creating, once it has decided.
 fn override_problem(path: &Path) -> Option<String> {
     if !path.is_absolute() {
         return Some(format!("{} is not an absolute path.", path.display()));
     }
-    if path.exists() && !path.is_dir() {
-        return Some(format!("{} is a file, not a folder.", path.display()));
+    if path.exists() {
+        return (!path.is_dir()).then(|| format!("{} is a file, not a folder.", path.display()));
     }
-    if let Err(e) = std::fs::create_dir_all(path) {
-        return Some(format!("{} is unreachable: {e}", path.display()));
+    // Not there yet — a folder Klide can create is fine (it makes its own on
+    // first use); one whose parent is gone is an unplugged drive.
+    match path.parent() {
+        Some(parent) if parent.is_dir() => None,
+        _ => Some(format!("{} is unreachable — the folder above it is missing.", path.display())),
     }
-    None
 }
 
 /// THE resolution point for run transcripts. An override that no longer works
@@ -169,7 +172,9 @@ pub fn runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let default = default_runs_dir(app)?;
     if let Some(chosen) = read_config().runs_dir {
         let path = PathBuf::from(&chosen);
-        if override_problem(&path).is_none() {
+        // Creation is the last word: a folder that inspects clean but cannot be
+        // made (a read-only volume) still falls through to the default.
+        if override_problem(&path).is_none() && std::fs::create_dir_all(&path).is_ok() {
             return Ok(path);
         }
     }
@@ -458,14 +463,26 @@ mod tests {
     #[test]
     fn an_unusable_override_is_reported_rather_than_obeyed() {
         let root = scratch("override");
-        let missing = root.join("gone").join("deeper");
-        // Creatable, so no problem to report.
-        assert!(override_problem(&missing).is_none());
+
+        // A folder Klide would create on first use is fine…
+        let fresh = root.join("not-yet");
+        assert!(override_problem(&fresh).is_none());
+        // …and asking must not have created it: a probe that repairs what it is
+        // inspecting can never report a missing folder.
+        assert!(!fresh.exists(), "inspection must not create anything");
+
+        // …but one whose parent is gone is an unplugged drive.
+        let stranded = root.join("gone").join("deeper");
+        assert!(override_problem(&stranded).unwrap().contains("unreachable"));
 
         let file = root.join("not-a-folder");
         std::fs::write(&file, b"x").unwrap();
         assert!(override_problem(&file).unwrap().contains("is a file"));
         assert!(override_problem(Path::new("runs")).unwrap().contains("absolute"));
+
+        let existing = root.join("already");
+        std::fs::create_dir_all(&existing).unwrap();
+        assert!(override_problem(&existing).is_none());
         std::fs::remove_dir_all(&root).ok();
     }
 
