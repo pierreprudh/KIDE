@@ -230,6 +230,7 @@ Klide/
     │       ├── mod.rs             Agent supervisor + run loop
     │       ├── run_core.rs        Tauri-free turn prep — provider quirks, message assembly, compaction
     │       ├── tools.rs           Tool registry (schema + capability + execution)
+    │       ├── conversation_search.rs Workspace-scoped search over prior Harness transcripts
     │       ├── glob_match.rs      Shared */? matcher (glob tool + command allowlist)
     │       ├── permission.rs      Permission engine — classify, prompt, remember, persist
     │       ├── approval_store.rs  HEAD-fingerprinted persisted project approvals

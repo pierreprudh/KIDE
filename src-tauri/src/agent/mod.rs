@@ -1,5 +1,6 @@
 mod approval_store;
 mod command_allowlist;
+mod conversation_search;
 mod glob_match;
 #[cfg(test)]
 mod eval;
@@ -33,9 +34,10 @@ use self::run_core::{
 };
 use self::tools::{
     apply_write, clear_run_snapshots, execute_read_only_tool,
-    execute_write_tool_preview, find_tool_kind_for_workspace, preflight_command,
-    run_command_capture, run_command_capture_in, schemas_for_mode, tool_summary_for_workspace,
-    NormalizedToolCall, ToolKind,
+    execute_read_only_tool_with_runs_dir, execute_write_tool_preview,
+    find_tool_kind_for_workspace, preflight_command, run_command_capture,
+    run_command_capture_in, schemas_for_mode, tool_summary_for_workspace, NormalizedToolCall,
+    ToolKind,
 };
 use self::transcripts::{
     app_runs_dir, append_event, list_summaries, now_ms, read_events, read_run_origin, run_id,
@@ -1610,14 +1612,21 @@ async fn run_agent_loop(
                 Some(ToolKind::Command) => process_command_tool(&ctx, &call, &mut emit).await?,
                 Some(ToolKind::Network) => process_network_tool(&ctx, &call, &mut emit).await?,
                 Some(ToolKind::Write) => process_write_tool(&ctx, &call, &mut emit).await?,
-                // Read-only tools: serve the concurrently-computed result when
-                // present (cap > 1); otherwise execute inline (sequential
-                // default, or a write tool that slipped the filter — it can't,
-                // but be safe).
+                // Non-mutating tools: serve workspace reads from the parallel
+                // batch when present; otherwise execute inline. Conversation
+                // history uses the same registry executor but also receives
+                // the app-owned Run store below.
                 _ => ToolOutcome::Produced(match request.workspace_root.as_deref() {
                     Some(root) => precomputed
                         .remove(&call.id)
-                        .unwrap_or_else(|| execute_read_only_tool(root, &call, &id)),
+                        .unwrap_or_else(|| {
+                            execute_read_only_tool_with_runs_dir(
+                                root,
+                                &call,
+                                &id,
+                                runs_dir.as_path(),
+                            )
+                        }),
                     None => no_workspace_result(),
                 }),
             };
