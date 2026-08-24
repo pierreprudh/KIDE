@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { memoryStorage } from "../../testStorage";
-import type { Conversation } from "./types";
+import type { Conversation, Msg } from "./types";
 import {
   CONVERSATIONS_CHANGED_EVENT,
+  SNAPSHOT_IMAGE_BUDGET,
+  cacheableMessages,
+  cachedConversationSizes,
+  clearStoredConversations,
+  conversationBytes,
+  conversationImageBytes,
+  dropCachedImages,
+  forgetStoredConversation,
+  localCacheUsage,
   conversationDuration,
   conversationStartedAt,
   deriveTitle,
@@ -384,5 +393,69 @@ describe("a panel restores only its own Provider's thread", () => {
       conversation({ id: "delegate-thread", provider: "claude-code", updatedAt: 9 }),
     ]);
     expect(latestRestorableConversationId("/workspace")).toBe("delegate-thread");
+  });
+});
+
+describe("what a snapshot may cache", () => {
+  const photo = (kb: number) => ({
+    path: "shot.png",
+    content: "",
+    mime: "image/png",
+    dataUri: `data:image/png;base64,${"A".repeat(kb * 1000)}`,
+  });
+
+  it("leaves a small photo alone", () => {
+    const msgs: Msg[] = [{ role: "user", content: "look", attachments: [photo(20)] }];
+    expect(cacheableMessages(msgs)).toBe(msgs); // same identity: nothing copied
+  });
+
+  it("strips a photo past the budget but keeps its name", () => {
+    const msgs: Msg[] = [{ role: "user", content: "look", attachments: [photo(400)] }];
+    const capped = cacheableMessages(msgs);
+    const attachment = (capped[0] as { attachments: { path: string; mime?: string; dataUri?: string }[] }).attachments[0];
+    expect(attachment.dataUri).toBeUndefined();
+    expect(attachment).toMatchObject({ path: "shot.png", mime: "image/png" });
+  });
+
+  it("keeps the newest photo and strips the older one", () => {
+    const msgs: Msg[] = [
+      { role: "user", content: "first", attachments: [photo(100)] },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "second", attachments: [photo(100)] },
+    ];
+    const capped = cacheableMessages(msgs, 120_000);
+    const at = (i: number) =>
+      (capped[i] as { attachments?: { dataUri?: string }[] }).attachments?.[0];
+    expect(at(0)?.dataUri).toBeUndefined();
+    expect(at(2)?.dataUri).toBeDefined();
+    expect(capped[1]).toBe(msgs[1]); // untouched messages keep their identity
+  });
+
+  it("caps what persistConversation writes, so one screenshot cannot fill the quota", () => {
+    const saved = persistConversation(
+      conversation({
+        id: "photo-thread",
+        msgs: [{ role: "user", content: "describe this", attachments: [photo(2_000)] }],
+      }),
+    );
+    expect(conversationImageBytes(saved[0].msgs)).toBe(0);
+    expect(conversationBytes(saved[0])).toBeLessThan(SNAPSHOT_IMAGE_BUDGET);
+  });
+
+  it("measures and manages what is cached", () => {
+    persistConversation(conversation({ id: "a", updatedAt: 2 }));
+    persistConversation(conversation({ id: "b", updatedAt: 1, msgs: [{ role: "user", content: "b", attachments: [photo(20)] }] }));
+
+    const sizes = cachedConversationSizes();
+    expect(sizes.map((s) => s.id)).toEqual(["b", "a"]); // biggest first
+    expect(sizes[0].imageBytes).toBeGreaterThan(0);
+    expect(localCacheUsage().bytes).toBeGreaterThan(0);
+
+    expect(dropCachedImages()).toBeGreaterThan(0);
+    expect(cachedConversationSizes().every((s) => s.imageBytes === 0)).toBe(true);
+
+    expect(forgetStoredConversation("a").map((c) => c.id)).toEqual(["b"]);
+    expect(clearStoredConversations()).toEqual([]);
+    expect(loadConversations()).toEqual([]);
   });
 });

@@ -108,6 +108,7 @@ import {
   type WorktreeSetupDone,
 } from "./worktrees";
 import { createListenerScope } from "./tauriEvents";
+import { registerSettingsOpener } from "./settingsNavigation";
 import {
   canonicalWorkspaceRoot,
   legacyAutoRunWorkspace,
@@ -432,6 +433,16 @@ function App() {
     loadGridLayouts()
   );
   const [settingsInitial, setSettingsInitial] = useState<string | null>(null);
+  // Let a background module (the conversation-cache quota toast) send the user
+  // to a Settings section, without reaching into this component's state.
+  useEffect(() => {
+    registerSettingsOpener((section) => {
+      setSettingsInitial(section);
+      openOverlay("settings");
+    });
+    return () => registerSettingsOpener(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [theme, setTheme] = useSetting(SETTINGS.theme);
   const [autoTheme] = useSetting(SETTINGS.autoTheme);
   const [lightTheme] = useSetting(SETTINGS.lightTheme);

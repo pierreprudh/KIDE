@@ -73,6 +73,7 @@ import { enabledSkillsPrompt, type Skill } from "../skills";
 
 import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
 import { AttachIcon } from "../icons";
+import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
@@ -3646,7 +3647,14 @@ This user request requires workspace inspection. Before answering, you MUST call
             // dropped or pasted file. An `@mention` attachment already shows
             // in the message itself, so repeating it here would be noise.
             const docAtts = (m.attachments ?? []).filter(
-              (a) => !a.dataUri && !m.content.includes(a.path),
+              (a) => !a.dataUri && !a.mime?.startsWith("image/") && !m.content.includes(a.path),
+            );
+            // A photo whose bytes the local cache dropped, so that one
+            // screenshot could not evict a month of history (see
+            // SNAPSHOT_IMAGE_BUDGET). Name it rather than let it vanish: the
+            // full image is still in this run's transcript on disk.
+            const omittedAtts = (m.attachments ?? []).filter(
+              (a) => !a.dataUri && a.mime?.startsWith("image/"),
             );
             const hasText = m.content.trim().length > 0;
             // The mark belongs to the message, not to the top of the turn. It
@@ -3685,6 +3693,22 @@ This user request requires workspace inspection. Before answering, you MUST call
                 ))}
               </div>
             );
+            const omittedBlock = omittedAtts.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end", maxWidth: hasText ? "88%" : "100%", paddingRight: hasText ? askerGutter : 0, marginBottom: hasText || docAtts.length > 0 ? 6 : 0 }}>
+                {omittedAtts.map((a, gi) => (
+                  <div
+                    key={gi}
+                    title={`${a.path} — kept in this run's transcript, not in local history`}
+                    style={{ width: 92, height: 92, display: "grid", placeContent: "center", justifyItems: "center", gap: 5, padding: 8, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elevated)", color: "var(--fg-subtle)", fontSize: 10.5, lineHeight: 1.3, textAlign: "center", overflow: "hidden", flexShrink: 0 }}
+                  >
+                    <FileTypeIcon name={a.path} size={18} />
+                    <span style={{ maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {a.path.split("/").pop() || a.path}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
             const docsBlock = docAtts.length > 0 && (
               <div
                 style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end", maxWidth: hasText ? "88%" : "100%", paddingRight: hasText ? askerGutter : 0, marginBottom: hasText ? 6 : 0, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-subtle)" }}>
@@ -3720,6 +3744,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 ) : (
                   <>
                     {hasText ? imagesBlock : null}
+                    {hasText ? omittedBlock : null}
                     {hasText ? docsBlock : null}
                     {hasText ? (
                       beside(
@@ -3732,6 +3757,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                       beside(
                         <div style={{ minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
                           {imagesBlock}
+                          {omittedBlock}
                           {docsBlock}
                         </div>,
                       )

@@ -7,8 +7,10 @@
 // genuinely misc helpers (token estimates, ids) stay in `utils.ts`.
 
 import type { ProviderId } from "../../agent/types";
+import type { AgentAttachment as Attachment } from "../../agent/types";
 import type { Conversation, Msg } from "./types";
 import { notify as notifyUser } from "../../toast";
+import { canOpenSettings, openSettingsSection } from "../../settingsNavigation";
 
 const CONVOS_KEY = "klide-conversations";
 export const CONVERSATIONS_CHANGED_EVENT = "klide:conversations-changed";
@@ -101,7 +103,14 @@ export function saveConversations<T>(
         if (!conversationStoragePressureNotified) {
           notifyUser(
             `Local conversation history was full, so Klide removed ${pruned} older snapshot${pruned === 1 ? "" : "s"}. Durable Run transcripts remain in Mission Control.`,
-            { tone: "warn" },
+            {
+              tone: "warn",
+              // This is the moment the cache's size matters, so offer the place
+              // that shows it — but only when Settings is actually reachable.
+              action: canOpenSettings()
+                ? { label: "Manage storage", run: () => openSettingsSection("storage") }
+                : undefined,
+            },
           );
         }
         conversationStoragePressureNotified = true;
@@ -224,7 +233,11 @@ export function persistConversation(
     previous && sameMessages(previous.msgs, conv.msgs)
       ? { ...conv, updatedAt: previous.updatedAt }
       : conv;
-  const next = upsertConversation(stamped, current);
+  // The cache may not carry an unbounded photo (see SNAPSHOT_IMAGE_BUDGET).
+  // Applied here, at the one write boundary, so no caller can bypass it — and
+  // applied to the *snapshot only*: the mounted panel keeps the full image it
+  // is rendering, and the transcript on disk keeps it for good.
+  const next = upsertConversation(cacheableConversation(stamped), current);
   // Streaming persists on every token. Avoid making Focus rebuild its rail on
   // every text delta; the first snapshot already contains the selected model,
   // so notify only when navigation-visible metadata or ordering changes.
@@ -333,4 +346,151 @@ export function savePanelSession(panelId: string, session: PanelSession) {
   } catch {
     /* storage full or unavailable */
   }
+}
+
+// ── The cache's size, and what it may hold ────────────────────────────────
+//
+// A Stored conversation is a *reader cache*; the durable record is the Run
+// transcript on disk. localStorage gives the whole app about 5 MB, and one
+// pasted screenshot is base64 — a 2 MB photo becomes ~2.7 MB of string, over
+// half the quota inside a single message. When that write failed, the quota
+// loop below did what it was told: it evicted 33 older threads to fit one
+// photo, and stopped at the newest record because it may never drop that.
+// Losing a month of history to one screenshot is the wrong trade, so a
+// snapshot now carries images only while they are small.
+
+/** How much base64 image one conversation snapshot may keep. Beyond this the
+ *  `dataUri` is dropped (the `path`/`mime` stay, so the bubble can still say a
+ *  photo was there) and the full image is read back from the Run transcript. */
+export const SNAPSHOT_IMAGE_BUDGET = 150_000;
+
+/** Attachments ride the user variant of `Msg`, so reading them off any message
+ *  needs one narrow accessor rather than a role check at every call site. */
+type MaybeAttached = { attachments?: Attachment[] };
+
+function attachmentsOf(msg: Msg): Attachment[] {
+  return (msg as MaybeAttached).attachments ?? [];
+}
+
+function imageBytesOf(msg: Msg): number {
+  return attachmentsOf(msg).reduce((sum, a) => sum + (a.dataUri?.length ?? 0), 0);
+}
+
+/** Total base64 image bytes a message list is carrying. */
+export function conversationImageBytes(msgs: Msg[] | undefined): number {
+  return Array.isArray(msgs) ? msgs.reduce((sum, m) => sum + imageBytesOf(m), 0) : 0;
+}
+
+/** What a conversation costs in the cache, in bytes of serialized JSON. */
+export function conversationBytes(conv: unknown): number {
+  try {
+    return JSON.stringify(conv).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The snapshot as it may be cached: newest messages keep their images while the
+ * running total fits `budget`; older ones are stripped to `path` + `mime`.
+ *
+ * Newest-first because the photo you are looking at is the one worth caching.
+ * Returns the input untouched when nothing needs dropping, so the common path
+ * allocates nothing and `sameMessages` comparisons stay stable.
+ */
+export function cacheableMessages(msgs: Msg[], budget = SNAPSHOT_IMAGE_BUDGET): Msg[] {
+  if (!Array.isArray(msgs) || conversationImageBytes(msgs) <= budget) return msgs;
+  let spent = 0;
+  const kept: Msg[] = new Array(msgs.length);
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const msg = msgs[i];
+    const bytes = imageBytesOf(msg);
+    if (bytes === 0) {
+      kept[i] = msg;
+      continue;
+    }
+    if (spent + bytes <= budget) {
+      spent += bytes;
+      kept[i] = msg;
+      continue;
+    }
+    // Keep `path` and `mime`: the bubble still says a photo was here, and the
+    // full image is read back from the Run transcript.
+    kept[i] = {
+      ...msg,
+      attachments: attachmentsOf(msg).map(({ dataUri: _dropped, ...rest }) => rest),
+    } as Msg;
+  }
+  return kept;
+}
+
+/** The same rule applied to a whole conversation record. */
+export function cacheableConversation<C extends { msgs: Msg[] }>(
+  conv: C,
+  budget = SNAPSHOT_IMAGE_BUDGET,
+): C {
+  const msgs = cacheableMessages(conv.msgs, budget);
+  return msgs === conv.msgs ? conv : { ...conv, msgs };
+}
+
+/** One row per cached conversation, biggest first — what Settings shows. */
+export type CachedConversationSize = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  bytes: number;
+  imageBytes: number;
+  messages: number;
+};
+
+export function cachedConversationSizes(): CachedConversationSize[] {
+  return loadConversations<Conversation>()
+    .map((conv) => ({
+      id: conv.id,
+      title: conv.title || deriveTitle(conv.msgs ?? []),
+      updatedAt: conv.updatedAt,
+      bytes: conversationBytes(conv),
+      imageBytes: conversationImageBytes(conv.msgs),
+      messages: conv.msgs?.length ?? 0,
+    }))
+    .sort((a, b) => b.bytes - a.bytes);
+}
+
+/** What Klide is holding in this browser store, key by key. Every key counts:
+ *  the quota is shared, so a big skills or mission cache squeezes history too. */
+export function localCacheUsage(): { bytes: number; keys: { key: string; bytes: number }[] } {
+  const keys: { key: string; bytes: number }[] = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key === null) continue;
+      keys.push({ key, bytes: (key.length + (localStorage.getItem(key)?.length ?? 0)) });
+    }
+  } catch {
+    return { bytes: 0, keys: [] };
+  }
+  keys.sort((a, b) => b.bytes - a.bytes);
+  return { bytes: keys.reduce((sum, k) => sum + k.bytes, 0), keys };
+}
+
+/** Drop every cached image from the whole index, retroactively. Returns the
+ *  bytes freed. The photos remain in the Run transcripts on disk. */
+export function dropCachedImages(): number {
+  const current = loadConversations<Conversation>();
+  const before = conversationBytes(current);
+  const next = current.map((conv) => cacheableConversation(conv, 0));
+  saveConversations(next);
+  return Math.max(0, before - conversationBytes(next));
+}
+
+/** Forget one cached conversation. The Run transcript stays on disk. */
+export function forgetStoredConversation(id: string): Conversation[] {
+  return saveConversations(
+    loadConversations<Conversation>().filter((conv) => conv.id !== id),
+  );
+}
+
+/** Forget the whole local index. */
+export function clearStoredConversations(): Conversation[] {
+  return saveConversations<Conversation>([]);
 }

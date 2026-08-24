@@ -66,7 +66,8 @@ export type SettingsSectionId =
   | "subscription"
   | "editor"
   | "terminal"
-  | "stats";
+  | "stats"
+  | "storage";
 
 /** One row in the Settings "Look for a setting" search index: the visible
  *  label, the section the row jumps to, and the words a user is likely to
