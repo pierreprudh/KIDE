@@ -1851,6 +1851,7 @@ function FocusComposer({
               model={model}
               availableModels={models}
               disabled={false}
+              bareHover
               onChange={onModelChange}
             />
             <InlineMenu
