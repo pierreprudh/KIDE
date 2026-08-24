@@ -22,6 +22,7 @@ mod pty_host;
 mod pty_spawn;
 mod search;
 mod skills;
+mod storage;
 mod workspace;
 mod worktree_setup;
 
@@ -771,6 +772,10 @@ pub fn run() {
             rename_entry,
             delete_entry,
             reveal_entry,
+            storage::app_storage_dirs,
+            storage::app_storage_reveal,
+            storage::app_storage_set_runs_dir,
+            storage::app_storage_reset_runs_dir,
             git::git_status,
             git::git_stage,
             git::git_unstage,

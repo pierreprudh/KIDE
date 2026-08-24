@@ -59,7 +59,9 @@ import { GatewayBlock } from "./settings/gateway";
 import { LocalServerRow } from "./settings/localServers";
 import { AccountControl, GitHubAccountRow } from "./settings/accounts";
 import { StatsSection } from "./settings/stats";
+import { StorageSection } from "./settings/storage";
 import {
+  ArchiveIcon,
   ArrowLeftIcon,
   BarChartIcon,
   CloudIcon,
@@ -178,6 +180,7 @@ const sections: { id: SectionId; label: string; icon: ReactNode }[] = [
   { id: "editor", label: "Editor", icon: <CodeIcon /> },
   { id: "terminal", label: "Terminal", icon: <TerminalIcon /> },
   { id: "stats", label: "Stats", icon: <BarChartIcon /> },
+  { id: "storage", label: "Storage", icon: <ArchiveIcon /> },
 ];
 
 // One orienting line per section, shown under the page title. Keeps each pane
@@ -193,6 +196,7 @@ const SECTION_SUBTITLES: Record<SectionId, string> = {
   editor: "Monaco editor preferences — font, gutter, and wrapping.",
   terminal: "The built-in shell's appearance and behaviour.",
   stats: "Token usage and cost across your agent runs.",
+  storage: "What the local conversation cache is holding, and where Klide keeps your run transcripts.",
 };
 
 // Searchable index for the "Look for a setting" box. Each entry points at the
@@ -215,6 +219,7 @@ const panelOnlyIndex: SettingIndexEntry[] = [
   { label: "GitHub account", section: "subscription", keywords: "github account gh avatar profile picture identity work personal switch pin push pr" },
   { label: "Terminal", section: "terminal", keywords: "terminal shell font xterm" },
   { label: "Usage & stats", section: "stats", keywords: "stats usage tokens cost transcripts runs" },
+  { label: "Conversation cache & disk usage", section: "storage", keywords: "storage cache quota full history conversations size photos images delete clear folder path transcripts runs disk localstorage reveal finder" },
 ];
 // Merged and shown in section order, so derived and hand rows interleave the
 // way the section rail reads.
@@ -1954,6 +1959,11 @@ export function SettingsPanel({
           {activeSection === "stats" && (
             <Section id="stats" active={activeSection}>
               <StatsSection />
+            </Section>
+          )}
+          {activeSection === "storage" && (
+            <Section id="storage" active={activeSection}>
+              <StorageSection />
             </Section>
           )}
         </div>
