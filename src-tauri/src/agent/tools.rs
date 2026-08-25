@@ -1432,6 +1432,76 @@ fn err(content: String) -> ToolResult {
     }
 }
 
+/// Cut the middle out of an oversized tool result, keeping both ends.
+///
+/// A head-only cut removes exactly the lines the command was run for: a test
+/// run states its verdict in the last few lines, a build in its last error, a
+/// script in its exit status. The model then has to re-run the command to see
+/// how it ended — a wasted turn on output we already had. Keeping both ends
+/// costs nothing and gives up the middle, which is the part a caller is least
+/// likely to have run the command for.
+///
+/// The elision marker is charged to `max_bytes` rather than appended after it,
+/// so the result never exceeds the budget the caller set. Cuts snap to a line
+/// boundary when one is close, so neither end starts or stops mid-line.
+fn truncate_middle(body: &str, max_bytes: usize) -> String {
+    if body.len() <= max_bytes {
+        return body.to_string();
+    }
+    // Upper bound on the marker: the elided count can never exceed the whole
+    // body, and its digit count grows monotonically, so formatting with
+    // `body.len()` reserves at least as many bytes as the real marker needs.
+    let marker_reserve = format!("\n…({} bytes elided)…\n", body.len()).len();
+    let Some(keep) = max_bytes.checked_sub(marker_reserve).filter(|k| *k > 0) else {
+        // Budget too small to say anything about what was dropped. Fall back to
+        // a plain head cut rather than return a string that is all marker.
+        let mut cut = max_bytes.min(body.len());
+        while cut > 0 && !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return body[..cut].to_string();
+    };
+
+    let head_budget = keep / 2;
+    let tail_budget = keep - head_budget;
+
+    // How far a cut may travel to land on a newline. Bounded so a single very
+    // long line (minified JS, a one-line JSON body) can't collapse either end.
+    const SNAP: usize = 200;
+
+    let mut head_end = head_budget;
+    while head_end > 0 && !body.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut snap_from = head_end.saturating_sub(SNAP);
+    while snap_from < head_end && !body.is_char_boundary(snap_from) {
+        snap_from += 1;
+    }
+    if let Some(nl) = body[snap_from..head_end].rfind('\n') {
+        head_end = snap_from + nl;
+    }
+
+    let mut tail_start = body.len() - tail_budget;
+    while tail_start < body.len() && !body.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let mut snap_to = (tail_start + SNAP).min(body.len());
+    while snap_to > tail_start && !body.is_char_boundary(snap_to) {
+        snap_to -= 1;
+    }
+    if let Some(nl) = body[tail_start..snap_to].find('\n') {
+        tail_start += nl + 1;
+    }
+
+    // Snapping only ever shrinks the kept ends, so the total stays under budget.
+    let elided = tail_start.saturating_sub(head_end);
+    format!(
+        "{}\n…({elided} bytes elided)…\n{}",
+        &body[..head_end],
+        &body[tail_start..]
+    )
+}
+
 /// Run an approved shell command from the workspace root and capture its
 /// output. Called by the harness's Command arm only *after* the user approves
 /// the permission request — never directly from the tool registry. stdout and
@@ -1513,12 +1583,7 @@ pub async fn run_command_capture_in(
         body.push_str("(no output)");
     }
     if body.len() > MAX_OUTPUT {
-        let mut cut = MAX_OUTPUT;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
-        body.push_str("\n…(output truncated)");
+        body = truncate_middle(&body, MAX_OUTPUT);
     }
     let header = match code {
         Some(0) => "Command succeeded (exit 0).".to_string(),
@@ -3411,6 +3476,57 @@ mod tests {
             "timeout surfaced: {}",
             slow.content
         );
+    }
+
+    /// The verdict of a command lives at the end of its output. A head-only cut
+    /// dropped it, which cost the model a turn re-running the command to see how
+    /// it ended.
+    #[test]
+    fn truncate_middle_keeps_both_ends_within_budget() {
+        let body = format!(
+            "FIRST LINE\n{}\nVERDICT: 3 failed",
+            "filler line\n".repeat(2000)
+        );
+        let cut = truncate_middle(&body, 1_000);
+
+        assert!(cut.contains("FIRST LINE"), "head survives: {cut}");
+        assert!(cut.contains("VERDICT: 3 failed"), "tail survives: {cut}");
+        assert!(cut.contains("bytes elided"), "the gap is marked: {cut}");
+        assert!(
+            cut.len() <= 1_000,
+            "marker is charged to the budget, not appended past it: {} > 1000",
+            cut.len()
+        );
+    }
+
+    /// Under the cap the body is returned verbatim — no marker, no reshaping.
+    #[test]
+    fn truncate_middle_leaves_short_output_alone() {
+        let body = "all of it\n";
+        assert_eq!(truncate_middle(body, 1_000), body);
+    }
+
+    /// Cuts land on char boundaries even when the output is multi-byte and has
+    /// no newline to snap to — a minified body or a one-line JSON payload.
+    #[test]
+    fn truncate_middle_survives_multibyte_output_without_newlines() {
+        let body = "é".repeat(5_000);
+        let cut = truncate_middle(&body, 400);
+        assert!(cut.len() <= 400, "within budget: {}", cut.len());
+        assert!(cut.contains("bytes elided"));
+        // Slicing mid-character would have panicked above; this asserts the
+        // result is still readable rather than a run of replacement chars.
+        assert!(cut.starts_with('é'), "head is intact: {cut}");
+        assert!(cut.ends_with('é'), "tail is intact: {cut}");
+    }
+
+    /// A budget too small to describe the elision degrades to a plain head cut
+    /// instead of returning a string that is all marker.
+    #[test]
+    fn truncate_middle_degrades_to_a_head_cut_on_a_tiny_budget() {
+        let body = "x".repeat(1_000);
+        let cut = truncate_middle(&body, 10);
+        assert_eq!(cut, "x".repeat(10));
     }
 
     fn dynamic_tool_sandbox(name: &str, tools_json: &str) -> (String, PathBuf) {

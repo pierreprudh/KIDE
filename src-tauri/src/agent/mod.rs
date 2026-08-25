@@ -1308,6 +1308,21 @@ async fn run_agent_loop(
     // nudge into the next turn's context. See `steering.rs`.
     let mut loop_monitor = steering::LoopMonitor::default();
 
+    // Turn-cap endgame. Reaching `max_turns` used to be a cliff: the run spent
+    // its last turn starting new work, ended on a tool result, and handed back
+    // an apology instead of the work. Two steps spend the tail of the budget
+    // finishing instead — a nudge to wrap up, then a turn with no tools at all,
+    // which is the floor: the only reply the model can produce is a written one.
+    const RESERVE_TURNS: usize = 3;
+    // Withholding tools is only meaningful once the run has had a tool-enabled
+    // turn. At `max_turns == 1` it would mean a run that can never call a tool.
+    let forced_answer_turn = (max_turns >= 2).then(|| max_turns - 1);
+    // Skipped when the reserve would land on the first turn (nothing to wrap up
+    // yet) or on the forced turn itself, which carries its own firmer wording.
+    let finalization_turn = max_turns
+        .checked_sub(RESERVE_TURNS)
+        .filter(|t| *t >= 1 && Some(*t) != forced_answer_turn);
+
     for turn in 0..max_turns {
         // Auto-compaction: trim verbose tool results from older turns once the
         // prompt approaches the context window. The recency window inside
@@ -1315,6 +1330,32 @@ async fn run_agent_loop(
         if estimate_prompt_tokens(&messages) > compact_threshold {
             compact_old_tool_results(&mut messages);
         }
+
+        // Both steps ride the existing steering seam: a system message the model
+        // sees, plus a `SteeringInjected` marker so the transcript says why the
+        // run changed shape near its cap rather than appearing to just stop.
+        if Some(turn) == finalization_turn {
+            messages.push(steering::steering_system_message(steering::FINALIZATION_RESERVE_NUDGE));
+            emit(AgentEvent::SteeringInjected {
+                run_id: id.clone(),
+                reason: format!(
+                    "Finalization reserve — {} of {max_turns} tool turns left",
+                    max_turns - turn
+                ),
+                ts: now_ms(),
+            })?;
+        }
+        let turn_tools = if Some(turn) == forced_answer_turn {
+            messages.push(steering::steering_system_message(steering::LAST_TURN_NUDGE));
+            emit(AgentEvent::SteeringInjected {
+                run_id: id.clone(),
+                reason: format!("Last of {max_turns} tool turns — answering without tools"),
+                ts: now_ms(),
+            })?;
+            None
+        } else {
+            tools.clone()
+        };
         let assistant_id = message_id("assistant");
         let stream_run_id = id.clone();
         let stream_assistant_id = assistant_id.clone();
@@ -1413,7 +1454,7 @@ async fn run_agent_loop(
                 provider: request.provider.clone(),
                 model: request.model.clone(),
                 messages: messages.clone(),
-                tools: tools.clone(),
+                tools: turn_tools.clone(),
                 workspace_root: request.workspace_root.clone(),
                 num_ctx: request.num_ctx,
                 num_predict: request.num_predict,
@@ -3405,6 +3446,9 @@ mod test_support {
     pub(super) struct ScriptedProviderCaller {
         pub(super) script: Arc<Mutex<VecDeque<Result<AiChatResponse, String>>>>,
         pub(super) seen_roles: Arc<Mutex<Vec<Vec<String>>>>,
+        /// Whether each turn was offered tool schemas. The turn-cap endgame
+        /// withholds them on the final turn, and that is only observable here.
+        pub(super) seen_tools: Arc<Mutex<Vec<bool>>>,
     }
 
     impl ScriptedProviderCaller {
@@ -3412,6 +3456,7 @@ mod test_support {
             Self {
                 script: Arc::new(Mutex::new(turns.into())),
                 seen_roles: Arc::new(Mutex::new(Vec::new())),
+                seen_tools: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -3423,7 +3468,9 @@ mod test_support {
         ) -> Pin<Box<dyn Future<Output = Result<AiChatResponse, String>> + Send + 'a>> {
             let script = self.script.clone();
             let seen = self.seen_roles.clone();
+            let seen_tools = self.seen_tools.clone();
             Box::pin(async move {
+                seen_tools.lock().unwrap().push(request.tools.is_some());
                 seen.lock().unwrap().push(
                     request
                         .messages
@@ -3933,6 +3980,97 @@ mod run_loop_tests {
             e,
             AgentEvent::RunError { error, .. } if error.code == "max_turns" && error.retryable
         )));
+    }
+
+    /// The turn-cap endgame: a run that would otherwise spend its last turn
+    /// starting new work is asked to wrap up, then has its tools withheld so
+    /// the final turn can only be a written answer. Scripted with a cap of 4 —
+    /// turn 1 carries the reserve nudge, turn 3 is the forced answer.
+    #[tokio::test]
+    async fn the_last_turn_withholds_tools_so_the_run_ends_in_an_answer() {
+        let (runs_dir, root) = sandbox("endgame");
+        std::fs::write(format!("{root}/greeting.txt"), "hello world\n").unwrap();
+        let reading = || {
+            scripted_turn(
+                "Reading.",
+                vec![scripted_tool_call(
+                    "call_read",
+                    "read_file",
+                    serde_json::json!({ "path": "greeting.txt" }),
+                )],
+            )
+        };
+        // Three tool turns, then a tool-free answer on the turn that has no
+        // tools to call — which is what the forcer is there to produce.
+        let caller = ScriptedProviderCaller::new(vec![
+            reading(),
+            reading(),
+            reading(),
+            scripted_turn("Here is what I found.", vec![]),
+        ]);
+        let mut request = test_request(&root, &[]);
+        request.max_turns = Some(4);
+        let sup = Arc::new(FakeSupervisor::with_run("endgame-run"));
+        drive_loop(sup.clone(), &runs_dir, "endgame-run", request, caller.clone()).await;
+
+        let offered = caller.seen_tools.lock().unwrap().clone();
+        assert_eq!(
+            offered,
+            vec![true, true, true, false],
+            "tools are withheld on the final turn only"
+        );
+
+        let events = read_events(&runs_dir, "endgame-run").unwrap();
+        let reasons: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::SteeringInjected { reason, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            reasons.iter().any(|r| r.contains("Finalization reserve")),
+            "the wrap-up nudge is recorded, not silent: {reasons:?}"
+        );
+        assert!(
+            reasons.iter().any(|r| r.contains("answering without tools")),
+            "so is the forced turn: {reasons:?}"
+        );
+
+        // The run ends on the model's own answer, so there is no turn-cap error.
+        assert_eq!(
+            with_run_handle(sup.as_ref(), "endgame-run", |h| h.status),
+            Some(AgentRunStatus::Done)
+        );
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                AgentEvent::RunError { error, .. } if error.code == "max_turns"
+            )),
+            "a run that answered did not hit the cap"
+        );
+    }
+
+    /// At `max_turns == 1` the forcer would leave a run that can never call a
+    /// tool, so it stands down and the cap behaves as it always did.
+    #[tokio::test]
+    async fn a_one_turn_run_still_gets_its_tools() {
+        let (runs_dir, root) = sandbox("endgame-one");
+        std::fs::write(format!("{root}/greeting.txt"), "hello world\n").unwrap();
+        let caller = ScriptedProviderCaller::new(vec![scripted_turn(
+            "Reading.",
+            vec![scripted_tool_call(
+                "call_read",
+                "read_file",
+                serde_json::json!({ "path": "greeting.txt" }),
+            )],
+        )]);
+        let mut request = test_request(&root, &[]);
+        request.max_turns = Some(1);
+        let sup = Arc::new(FakeSupervisor::with_run("one-run"));
+        drive_loop(sup.clone(), &runs_dir, "one-run", request, caller.clone()).await;
+
+        assert_eq!(caller.seen_tools.lock().unwrap().clone(), vec![true]);
     }
 }
 
