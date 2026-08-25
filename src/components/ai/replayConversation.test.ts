@@ -4,6 +4,7 @@ import {
   eventsToMsgs,
   isSilentRunError,
   replayForAdoption,
+  runMessagesToMsgs,
   shouldHealFromTranscript,
 } from "./replayConversation";
 import type { AgentEvent } from "../../agent/types";
@@ -215,5 +216,69 @@ describe("shouldHealFromTranscript", () => {
         delegateWithoutTranscript: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("runMessagesToMsgs", () => {
+  const session = [
+    { role: "user" as const, text: "check the tree" },
+    {
+      role: "assistant" as const,
+      text: "Looking.",
+      tools: [
+        {
+          id: "t1",
+          name: "Bash",
+          input: { command: "git status" },
+          result: "On branch main",
+          ok: true,
+        },
+      ],
+    },
+  ];
+
+  it("carries a call's arguments, so the row can say more than its tool's name", () => {
+    const [, assistant] = runMessagesToMsgs(session);
+
+    expect(assistant.role).toBe("assistant");
+    expect(assistant.role === "assistant" && assistant.toolCalls).toEqual([
+      { id: "t1", name: "Bash", args: { command: "git status" } },
+    ]);
+  });
+
+  it("puts what a call returned in its own row under it", () => {
+    const result = runMessagesToMsgs(session)[2];
+
+    expect(result).toEqual({
+      role: "tool",
+      content: "On branch main",
+      toolName: "Bash",
+      toolCallId: "t1",
+    });
+  });
+
+  it("says which delegate ran a tool, because Klide gated none of it", () => {
+    const result = runMessagesToMsgs(session, "claude-code")[2];
+
+    expect(result.role === "tool" && result.observedBy).toBe("claude-code");
+  });
+
+  it("marks a failed result as an error and omits a call that never answered", () => {
+    const msgs = runMessagesToMsgs([
+      {
+        role: "assistant",
+        text: "",
+        tools: [
+          { id: "a", name: "Bash", input: { command: "false" }, result: "exit 1", ok: false },
+          { id: "b", name: "Read", input: { file_path: "/gone.rs" } },
+        ],
+      },
+    ]);
+
+    // Two calls on the assistant row, one result row — an unanswered call has
+    // nothing to show, and an empty row would read as a tool that returned
+    // nothing rather than one still unaccounted for.
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1]).toMatchObject({ role: "tool", content: "Error: exit 1" });
   });
 });

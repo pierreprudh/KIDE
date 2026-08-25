@@ -125,15 +125,80 @@ pub struct RunMessage {
     pub images: Vec<String>,
 }
 
-/// One tool call in a delegate run's conversation. The adapters know the tool's
-/// name (and sometimes a short argument summary); the richer fields the frontend
-/// `RunToolCall` allows are populated by the Klide-native fold path, not here.
-#[derive(serde::Serialize)]
+/// One tool call in a delegate run's conversation, with as much of the call as
+/// a résumé view can honestly carry: what it was asked to do, and what came
+/// back. A name on its own reads as eight identical "Bash" rows — true, and
+/// useless.
+///
+/// `input` and `result` are *bounded* on the way in (`bounded_tool_input`,
+/// `bounded_tool_result`). A Claude transcript inlines whole files and whole
+/// command outputs; a reader needs the first line and the shape, and paying
+/// tens of megabytes to show them would repeat the mistake `parse_run`'s
+/// oversized-line guard exists to prevent.
+#[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunToolCall {
     pub name: String,
+    /// The CLI's own id for the call (`tool_use_id`), used to match a result
+    /// that arrives in a later message — and to key the rendered row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The call's arguments, as the CLI recorded them. The reader derives the
+    /// row's one-line summary from this (`command`, `file_path`, `pattern`, …),
+    /// so it is the raw object rather than a pre-rendered string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The head of what the tool returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// False when the CLI marked the result an error (`is_error`). Absent when
+    /// no result was found — unknown is not success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+}
+
+/// How much of one tool's arguments to carry. Long string values are cut with
+/// an ellipsis rather than dropped: the reader's summary comes from the *head*
+/// of `command` or `file_path`, and a truncated path still identifies the file.
+const MAX_TOOL_INPUT_VALUE: usize = 400;
+
+/// How much of one tool's output to carry — enough for the collapsed first
+/// line and a short expansion, not the whole file a `Read` returned.
+const MAX_TOOL_RESULT: usize = 2000;
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    format!("{head}…")
+}
+
+/// Bound a tool input for the wire: every string value is truncated, nested
+/// objects and arrays are walked, everything else passes through. The shape is
+/// preserved so the reader can still find `command` / `file_path` / `pattern`.
+pub fn bounded_tool_input(input: &serde_json::Value) -> serde_json::Value {
+    match input {
+        serde_json::Value::String(s) => {
+            serde_json::Value::String(truncate_chars(s, MAX_TOOL_INPUT_VALUE))
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(bounded_tool_input).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), bounded_tool_input(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Bound a tool result for the wire.
+pub fn bounded_tool_result(result: &str) -> String {
+    truncate_chars(result.trim(), MAX_TOOL_RESULT)
 }
 
 /// A run a delegate left on disk, before parsing: just enough to sort and
