@@ -51,6 +51,8 @@ type Props = {
   direction?: "up" | "down";
   /** Fill the row instead of the composer's compact 112px slot. */
   fluid?: boolean;
+  /** Keep hover feedback to the label/chevron instead of drawing a surface. */
+  bareHover?: boolean;
 };
 
 /** Merged list: available models first, the current model pinned at the top
@@ -133,6 +135,7 @@ export function ModelPicker({
   onChange,
   direction = "up",
   fluid = false,
+  bareHover = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
@@ -371,7 +374,7 @@ export function ModelPicker({
         }}
         onMouseEnter={(e) => {
           if (disabled || open) return;
-          e.currentTarget.style.background = "var(--bg-hover)";
+          if (!bareHover) e.currentTarget.style.background = "var(--bg-hover)";
           e.currentTarget.style.color = "var(--fg-strong)";
         }}
         onMouseLeave={(e) => {

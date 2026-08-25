@@ -39,6 +39,25 @@ Your previous attempt used its entire reply budget on internal reasoning and \
 produced no answer and no tool call. Keep your reasoning short this time and \
 get to a tool call or a written answer quickly.";
 
+/// Asked once, a few turns short of the tool-turn cap, so the run spends what
+/// is left finishing rather than opening new threads of work. It is deliberately
+/// permissive about incompleteness: a partial result the user can build on beats
+/// a reverted workspace and an apology.
+pub(super) const FINALIZATION_RESERVE_NUDGE: &str = "\
+You are close to this run's tool-turn limit. Stop starting new work. Use the \
+turns that are left to finish and save what you already have — apply the edits \
+that are ready, run only the checks that matter, then reply in plain text. If \
+part of the task can't be finished, leave the completed work in place and say \
+what remains; do not undo it to end tidily.";
+
+/// Carried into the final turn, where the harness also withholds the tool
+/// schemas. The instruction and the missing tools say the same thing twice, on
+/// purpose: a model that ignores the words still has no tool to call.
+pub(super) const LAST_TURN_NUDGE: &str = "\
+This is the final turn of this run and no tools are available. Reply in plain \
+text with what you changed, what you verified, and what is still outstanding, \
+so the next message can pick the work up from here.";
+
 /// One executed tool call, as the monitor sees it: its signature plus whether it
 /// failed. The run loop knows `failed` only after the call runs, so it collects
 /// these across a turn and hands the batch to `observe` once the turn settles.
