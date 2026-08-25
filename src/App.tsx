@@ -51,11 +51,11 @@ import {
   loadPanelSession,
 } from "./components/ai/storedConversations";
 import type { AgentAttachment, AgentEvent, ProviderId } from "./agent/types";
-import { defaultModelForProvider } from "./agent/providers";
+import { defaultModelForProvider, providerName } from "./agent/providers";
 import type { Conversation, Msg } from "./components/ai/types";
 import { summarizeAndHandoff } from "./components/ai/summarize";
 import { fetchRunMessages, type Run, type RunMessage as MissionRunMessage } from "./runs";
-import type { DelegateId } from "./delegates";
+import { isDelegateId, type DelegateId } from "./delegates";
 import type { GitStatus } from "./gitTypes";
 import { ProfileModal } from "./components/ProfileModal";
 import { getNextThemeId } from "./theme";
@@ -92,11 +92,16 @@ import { useArtifactInspector } from "./hooks/useArtifactInspector";
 import { listCheckpoints, readAgentRunEvents } from "./agent/client";
 import {
   DEFAULT_AI_PANEL_ID,
+  admissionBase,
+  admissionNeedsWorkbench,
+  admissionSurface,
   conversationSessionKey,
   initialHandoffFor,
   panelWorkspace,
   resumeConversationFor,
+  surfaceShowsOneAiPanel,
   type AiPanelRenderOptions,
+  type AiSurface,
 } from "./components/ai/panelHost";
 import { readWorkspaceTextFile } from "./workspaceFs";
 import { modelLabel } from "./components/ai/ModelPicker";
@@ -315,6 +320,17 @@ function App() {
   useEffect(() => {
     applyPanelsModeRef.current = setAnchoredLayout;
   });
+  // Which of the four AI surfaces is on screen, and which workbench an
+  // admission forced off Focus would land on. Both feed the fleet's slot
+  // question below: only free (floating) mode renders more than one AI panel.
+  const workbenchKind: "anchored" | "free" =
+    panelLayout.anchored !== false ? "anchored" : "free";
+  const aiSurfaceBase: AiSurface =
+    surfaceCore.base.kind === "focus"
+      ? "focus"
+      : surfaceCore.base.kind === "grid"
+        ? "grid"
+        : workbenchKind;
   // Fleet membership + lifecycle: which Conversation sessions are live, and
   // every queue keyed by panel id (handoffs, targeted resumes, race tabs,
   // follow-ups, per-panel settings). `admit` is the one way a session enters
@@ -331,6 +347,7 @@ function App() {
     release,
     endRaceWatch,
     pendingForPanel,
+    seatFor,
     consumeHandoff,
     targetResume,
     consumeResume,
@@ -349,10 +366,59 @@ function App() {
     // surface without toggling it off when it's already up. A race split
     // manages its own visibility instead — Focus swaps to tabs, free mode
     // unanchors (see watchRace).
-    revealSurface: (kind) => {
+    revealSurface: (intent) => {
       back();
-      if (kind === "race-watch") return;
+      if (intent.kind === "race-watch") return;
+      if (intent.kind === "focus-resume") {
+        // The one admission that names its surface: it goes to Focus from
+        // wherever the user is, and Focus shows a start stage until a
+        // conversation is active.
+        enterFocus();
+        setFocusChatActive(true);
+        return;
+      }
+      if (aiSurfaceBase === "focus") {
+        const provider = "provider" in intent ? intent.provider : undefined;
+        if (admissionNeedsWorkbench(intent)) {
+          // The CLI's interactive session is a terminal, and Focus does not
+          // host one — it runs the same delegate one-shot and headless. Left
+          // in Focus this admission spawns a session nothing renders, which
+          // is exactly what "Resume in Claude Code" used to feel like.
+          exitFocus();
+          notify(
+            provider
+              ? `${providerName(provider)}'s live session opens in the workbench.`
+              : "This session opens in the workbench.",
+          );
+        } else {
+          // Focus shows its start stage until a conversation is active; a
+          // resumed run has to switch it on or the canvas stays a start page.
+          setFocusChatActive(true);
+        }
+      }
       if (!aiVisible) togglePanel("ai");
+    },
+    // Where a single-session admission lands. On a one-slot surface that is
+    // the panel already on screen — appending there is what made Resume look
+    // like a no-op. `race-watch` and `fresh` mean "another panel" by
+    // definition, and an empty fleet has no slot to reuse.
+    slotForAdmission: (intent) => {
+      if (intent.kind === "race-watch" || intent.kind === "fresh") return null;
+      if (aiPanels.length === 0) return null;
+      const surface = admissionSurface(
+        admissionNeedsWorkbench(intent),
+        admissionBase(intent.kind, aiSurfaceBase),
+        workbenchKind,
+      );
+      return surfaceShowsOneAiPanel(surface) ? primaryPanelId : null;
+    },
+    reseatPanel: (panelId, seed) => {
+      if (seed.provider) setAiPanelProvider(panelId, seed.provider);
+      if (seed.model) setAiPanelModel(panelId, seed.model);
+      // Always written, never only when set: a panel still pinned to the last
+      // admission's worktree must follow this one back to the Workspace.
+      setAiPanelCwd(panelId, seed.cwd);
+      focusPanel(panelId);
     },
     openPanelIds: () => aiPanels.map((panel) => panel.id),
     // The panel already bound to a conversation (the one that spawned its PTY,
@@ -1024,7 +1090,7 @@ function App() {
     );
     return (
       <AiPanel
-        key={conversationSessionKey(panelId, root, opts?.key)}
+        key={conversationSessionKey(panelId, root, opts?.key, seatFor(panelId))}
         fill
         visible
         width={opts?.width ?? panel?.rect.w ?? 360}
@@ -1033,6 +1099,7 @@ function App() {
         initialConversationId={handoff.initialConversationId}
         initialResumeSessionId={handoff.initialResumeSessionId}
         initialTask={handoff.initialTask}
+        initialStartFresh={handoff.initialStartFresh}
         onInitialConsumed={
           handoff.matched ? () => consumeHandoff(panelId) : undefined
         }
@@ -1391,6 +1458,46 @@ function App() {
         worktree: run.worktree,
       }));
       setFileNotice(`Forked "${run.title}" into a new Klide conversation.`);
+    } catch (e) {
+      setFileNotice(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // "Continue in Focus" — the chat-first answer to a delegate CLI's own
+  // `/resume`. The interactive session is a terminal and Focus hosts none, so
+  // this carries the *conversation* across instead: the run's transcript
+  // becomes a Klide thread pinned to the same agent, and the next turn runs
+  // that CLI headless with the whole history folded into its prompt
+  // (`delegate/chat.rs`). Continuity of the transcript, not of the CLI's own
+  // session — the agent starts fresh underneath and reads the thread.
+  async function continueRunInFocus(run: Run, preloadedMessages?: MissionRunMessage[]) {
+    try {
+      const messages = preloadedMessages ?? await fetchRunMessages(run);
+      if (messages.length === 0) {
+        setFileNotice("Run has no readable messages to continue.");
+        return;
+      }
+      // The agent that produced the run keeps producing it: a CLI run
+      // continues on its own delegate, a Klide run on the provider it ran on.
+      const provider =
+        run.source === "klide"
+          ? (run.provider as ProviderId | undefined)
+          : isDelegateId(run.source)
+            ? (run.source as ProviderId)
+            : undefined;
+      admit({
+        kind: "focus-resume",
+        convo: {
+          ...forkConversationFromRun(run, messages, run.cwd, {
+            branch: run.branch,
+            worktree: run.worktree,
+          }),
+          // Not a fork: this thread *is* the run, carried to another surface.
+          title: run.title,
+          forkedFrom: null,
+          provider,
+        },
+      });
     } catch (e) {
       setFileNotice(e instanceof Error ? e.message : String(e));
     }
@@ -2341,6 +2448,7 @@ function App() {
                   onWatchRace={watchRace}
                   onSaveMemory={saveMemoryFromRun}
                   onForkRun={forkRun}
+                  onContinueRunInFocus={continueRunInFocus}
                   onForkRunInWorktree={forkRunInWorktree}
                   onMergeWorktreeRun={mergeWorktreeRun}
                   summarizingFromRunId={summarizingFromRun}

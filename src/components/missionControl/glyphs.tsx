@@ -9,6 +9,7 @@ import { BRAND_LOGO_PATHS, BrandImage, KlideMark, ProviderLogo } from "../ai/ico
 import { ProviderModelMark, resolveModelLogo } from "../../modelIdentity";
 import type { ProviderId } from "../../agent/types";
 import type { RunKind, RunSource } from "../../runs";
+import { Tooltip } from "../Tooltip";
 
 /* ────────────────────────────── brand + source marks ─────────────────────── */
 
@@ -273,52 +274,61 @@ export function ActionButton({
 export function IconActionButton({
   icon,
   label,
+  description,
   tone = "default",
   disabled,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
+  /** A muted second tooltip line — what the action does, when its name alone
+   *  doesn't say (an agent's own mark names the agent, not the verb). */
+  description?: React.ReactNode;
   tone?: "default" | "primary" | "success";
   disabled?: boolean;
   onClick?: () => void;
 }) {
   const accent = tone === "primary" || tone === "success";
+  // These buttons are icon-only: the label is the only thing that says which
+  // agent a mark belongs to, or whether a glyph forks, merges, or archives.
+  // A themed tooltip carries it — the native `title=` waited half a second,
+  // ignored the design system, and floated wherever the OS put it.
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      style={{
-        width: 28,
-        height: 28,
-        flexShrink: 0,
-        display: "grid",
-        placeItems: "center",
-        border: "none",
-        color: accent ? "var(--accent)" : "var(--fg-subtle)",
-        background: "transparent",
-        opacity: disabled ? 0.45 : 1,
-        cursor: disabled ? "default" : "pointer",
-        transform: "scale(1)",
-        transformOrigin: "center bottom",
-        transition:
-          "transform 220ms cubic-bezier(0.22, 1, 0.36, 1), color 160ms var(--ease-out)",
-      }}
-      onMouseEnter={(e) => {
-        if (disabled) return;
-        e.currentTarget.style.transform = "scale(1.45)";
-        if (!accent) e.currentTarget.style.color = "var(--fg)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.transform = "scale(1)";
-        if (!accent) e.currentTarget.style.color = "var(--fg-subtle)";
-      }}
-    >
-      {icon}
-    </button>
+    <Tooltip label={label} description={description}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        aria-label={label}
+        style={{
+          width: 28,
+          height: 28,
+          flexShrink: 0,
+          display: "grid",
+          placeItems: "center",
+          border: "none",
+          color: accent ? "var(--accent)" : "var(--fg-subtle)",
+          background: "transparent",
+          opacity: disabled ? 0.45 : 1,
+          cursor: disabled ? "default" : "pointer",
+          transform: "scale(1)",
+          transformOrigin: "center bottom",
+          transition:
+            "transform 220ms cubic-bezier(0.22, 1, 0.36, 1), color 160ms var(--ease-out)",
+        }}
+        onMouseEnter={(e) => {
+          if (disabled) return;
+          e.currentTarget.style.transform = "scale(1.45)";
+          if (!accent) e.currentTarget.style.color = "var(--fg)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = "scale(1)";
+          if (!accent) e.currentTarget.style.color = "var(--fg-subtle)";
+        }}
+      >
+        {icon}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -419,25 +429,6 @@ export function DismissIcon() {
     >
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
-    </svg>
-  );
-}
-
-export function ResumeIcon({ size = 12 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 12h15" />
-      <path d="M13 6l6 6-6 6" />
     </svg>
   );
 }

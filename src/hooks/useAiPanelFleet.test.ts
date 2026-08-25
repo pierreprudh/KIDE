@@ -5,6 +5,7 @@ import {
   aiPanelFleetReducer,
   createFleetController,
   initialAiPanelFleetState,
+  type AdmitIntent,
   type AiPanelFleetAction,
   type AiPanelFleetState,
   type PanelSeed,
@@ -88,6 +89,19 @@ describe("AI panel fleet reducer", () => {
     });
   });
 
+  it("keeps a panel's seat until it closes — only a reseat moves it", () => {
+    const seated = reduceAll(
+      initialAiPanelFleetState,
+      { type: "seat-bumped", panelId: "ai-main" },
+      { type: "isolated-start-consumed", panelId: "ai-main" },
+      { type: "handoff-consumed", panelId: "ai-main" },
+    );
+
+    // A consumed queue entry must not rotate the React key back and remount
+    // the panel that just adopted the session.
+    expect(seated.seatByPanel["ai-main"]).toBe(1);
+  });
+
   it("closes every queue for a panel and advances the active race tab atomically", () => {
     const state: AiPanelFleetState = {
       pendingByPanel: { "ai-a": handoff("ai-a"), "ai-b": handoff("ai-b") },
@@ -105,6 +119,7 @@ describe("AI panel fleet reducer", () => {
       modelsByPanel: { "ai-a": ["llama3.1:8b"], "ai-b": ["qwen2.5:7b"] },
       reviewOverrideByPanel: { "ai-a": false },
       isolatedStartByPanel: { "ai-a": { text: "go", attachments: [] } },
+      seatByPanel: { "ai-a": 2, "ai-b": 1 },
     };
 
     const closed = reduce(state, { type: "panel-closed", panelId: "ai-a" });
@@ -118,6 +133,7 @@ describe("AI panel fleet reducer", () => {
     expect(closed.modelsByPanel).toEqual({ "ai-b": ["qwen2.5:7b"] });
     expect(closed.reviewOverrideByPanel).toEqual({});
     expect(closed.isolatedStartByPanel).toEqual({});
+    expect(closed.seatByPanel).toEqual({ "ai-b": 1 });
   });
 });
 
@@ -230,6 +246,10 @@ describe("resuming a conversation with a continuation", () => {
  *  panels are ids in an array, geometry doesn't exist here. */
 function makeFleet(opts?: {
   panelBoundToConversation?: (conversationId: string) => string | null;
+  /** A one-slot surface (Focus, the anchored column, a grid cell) answers
+   *  with the panel it is already rendering; the default is free mode, which
+   *  renders the whole fleet and always opens a new panel. */
+  slotForAdmission?: (intent: AdmitIntent) => string | null;
 }) {
   let state = initialAiPanelFleetState;
   const open: string[] = [];
@@ -237,6 +257,7 @@ function makeFleet(opts?: {
   const revealed: string[] = [];
   const focused: string[] = [];
   const seeds: (PanelSeed | undefined)[] = [];
+  const reseated: { panelId: string; seed: PanelSeed }[] = [];
   const dispatch = (action: AiPanelFleetAction) => {
     state = aiPanelFleetReducer(state, action);
   };
@@ -253,7 +274,11 @@ function makeFleet(opts?: {
         if (idx >= 0) open.splice(idx, 1);
       },
       focusPanel: (panelId) => focused.push(panelId),
-      revealSurface: (kind) => revealed.push(kind),
+      slotForAdmission: (intent) => opts?.slotForAdmission?.(intent) ?? null,
+      reseatPanel: (panelId, seed) => {
+        reseated.push({ panelId, seed });
+      },
+      revealSurface: (intent) => revealed.push(intent.kind),
       openPanelIds: () => [...open],
       panelBoundToConversation: opts?.panelBoundToConversation ?? (() => null),
     },
@@ -267,6 +292,7 @@ function makeFleet(opts?: {
     revealed,
     focused,
     seeds,
+    reseated,
     get state() {
       return state;
     },
@@ -344,6 +370,113 @@ describe("fleet admission", () => {
       cwd: "/wt/fork-1",
     });
     expect(fleet.state.resumeTarget?.panelId).toBe(panelId);
+  });
+});
+
+// ── one-slot surfaces ──────────────────────────────────────────────────
+// Focus, the anchored column and a grid cell each render exactly one AI
+// panel. Appending there opened a session nothing drew — the "Resume in
+// Claude Code does nothing" bug.
+
+describe("admission into a surface with one AI slot", () => {
+  const oneSlot = () => makeFleet({ slotForAdmission: () => "ai-main" });
+
+  it("lands the handoff in the slot on screen instead of a panel nobody renders", () => {
+    const fleet = oneSlot();
+
+    const panelId = fleet.admit({
+      kind: "handoff",
+      provider: "claude-code",
+      resumeSessionId: "sess-1",
+    });
+
+    expect(panelId).toBe("ai-main");
+    expect(fleet.open).toEqual([]);
+    expect(fleet.reseated).toEqual([
+      { panelId: "ai-main", seed: { provider: "claude-code", cwd: undefined } },
+    ]);
+    expect(fleet.state.pendingByPanel["ai-main"]?.resumeSessionId).toBe("sess-1");
+  });
+
+  it("bumps the reused panel's seat, because a handoff arrives on mount", () => {
+    const fleet = oneSlot();
+
+    fleet.admit({ kind: "handoff", provider: "codex", resumeSessionId: "sess-1" });
+    fleet.admit({ kind: "reattach", provider: "claude-code", conversationId: "convo-live" });
+
+    expect(fleet.state.seatByPanel["ai-main"]).toBe(2);
+  });
+
+  it("leaves the seat alone for a resumed run, which repoints a mounted panel", () => {
+    const fleet = oneSlot();
+
+    fleet.admit({ kind: "resume-run", runId: "run-1", convo: convo("run-1") });
+
+    expect(fleet.state.seatByPanel["ai-main"]).toBeUndefined();
+    expect(fleet.state.resumeTarget?.panelId).toBe("ai-main");
+  });
+
+  it("reseats a fork to its worktree only — the conversation configures the rest", () => {
+    const fleet = oneSlot();
+
+    fleet.admit({
+      kind: "fork",
+      convo: { ...convo("c1"), provider: "ollama", model: "llama3.1:8b", cwd: "/wt/fork-1" },
+    });
+
+    expect(fleet.reseated).toEqual([{ panelId: "ai-main", seed: { cwd: "/wt/fork-1" } }]);
+  });
+
+  it("drops the identity a reused slot no longer holds", () => {
+    const fleet = oneSlot();
+
+    const first = fleet.admit({ kind: "handoff", provider: "codex", resumeSessionId: "sess-1" });
+    fleet.admit({ kind: "handoff", provider: "codex", resumeSessionId: "sess-2" });
+    // Re-clicking the first run must re-admit it, not focus a slot that has
+    // since been handed to sess-2.
+    fleet.admit({ kind: "handoff", provider: "codex", resumeSessionId: "sess-1" });
+
+    expect(first).toBe("ai-main");
+    expect(fleet.state.pendingByPanel["ai-main"]?.resumeSessionId).toBe("sess-1");
+    expect(fleet.state.seatByPanel["ai-main"]).toBe(3);
+  });
+
+  it("carries a Continue in Focus into the slot Focus renders", () => {
+    const fleet = makeFleet({
+      // Focus is one slot wherever the admission started from.
+      slotForAdmission: (intent) => (intent.kind === "focus-resume" ? "ai-main" : null),
+    });
+
+    const panelId = fleet.admit({
+      kind: "focus-resume",
+      convo: { ...convo("run-1"), provider: "claude-code", cwd: "/repo" },
+    });
+
+    expect(panelId).toBe("ai-main");
+    expect(fleet.open).toEqual([]);
+    // The conversation configures the panel as it loads; only the worktree
+    // pin is applied ahead of it.
+    expect(fleet.reseated).toEqual([{ panelId: "ai-main", seed: { cwd: "/repo" } }]);
+    expect(fleet.state.resumeTarget?.convo.id).toBe("run-1");
+    // It repoints a mounted panel — no remount, so no seat bump.
+    expect(fleet.state.seatByPanel["ai-main"]).toBeUndefined();
+  });
+
+  it("still opens a new panel for a race and a duplicate", () => {
+    const fleet = oneSlot();
+
+    fleet.admit({ kind: "fresh", provider: "ollama" });
+    fleet.admit({
+      kind: "race-watch",
+      focusActive: true,
+      racers: [
+        { runId: "r1", provider: "ollama", label: "A" },
+        { runId: "r2", provider: "ollama", label: "B" },
+      ],
+    });
+
+    expect(fleet.open).toEqual(["panel-1", "panel-2", "panel-3"]);
+    expect(fleet.reseated).toEqual([]);
   });
 });
 

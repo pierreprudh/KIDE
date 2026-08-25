@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AI_PANEL_ID,
+  admissionBase,
+  admissionNeedsWorkbench,
+  admissionSurface,
   conversationSessionKey,
   initialHandoffFor,
   modificationAcceptanceMode,
   panelWorkspace,
   resumeConversationFor,
+  surfaceShowsOneAiPanel,
   type PendingAiPanel,
 } from "./panelHost";
 
@@ -27,6 +31,57 @@ describe("conversationSessionKey", () => {
       "focus-ai-racer::/workspace",
     );
   });
+
+  it("spells seat 0 the old way, so a panel nobody reseated never remounts", () => {
+    expect(conversationSessionKey("ai-main", "/workspace", undefined, 0)).toBe(
+      conversationSessionKey("ai-main", "/workspace"),
+    );
+  });
+
+  it("rotates identity when a one-slot surface reuses the panel for another session", () => {
+    expect(conversationSessionKey("ai-main", "/workspace", undefined, 1)).not.toBe(
+      conversationSessionKey("ai-main", "/workspace", undefined, 2),
+    );
+  });
+});
+
+describe("where an admission can be rendered", () => {
+  it("counts every surface but free (floating) mode as a single AI slot", () => {
+    expect(surfaceShowsOneAiPanel("focus")).toBe(true);
+    expect(surfaceShowsOneAiPanel("anchored")).toBe(true);
+    expect(surfaceShowsOneAiPanel("grid")).toBe(true);
+    expect(surfaceShowsOneAiPanel("free")).toBe(false);
+  });
+
+  it("sends an interactive delegate session to the workbench — Focus hosts no terminal", () => {
+    expect(
+      admissionNeedsWorkbench({ kind: "handoff", provider: "claude-code" }),
+    ).toBe(true);
+    expect(
+      admissionNeedsWorkbench({ kind: "reattach", provider: "codex" }),
+    ).toBe(true);
+  });
+
+  it("leaves a Klide conversation where it is — Focus renders it as chat", () => {
+    expect(admissionNeedsWorkbench({ kind: "resume-run" })).toBe(false);
+    expect(admissionNeedsWorkbench({ kind: "fork" })).toBe(false);
+    expect(admissionNeedsWorkbench({ kind: "handoff", provider: "ollama" })).toBe(false);
+  });
+
+  it("lets Continue in Focus name its surface from anywhere", () => {
+    expect(admissionBase("focus-resume", "anchored")).toBe("focus");
+    expect(admissionBase("focus-resume", "free")).toBe("focus");
+    expect(admissionBase("handoff", "anchored")).toBe("anchored");
+  });
+
+  it("resolves the slot question against the surface the admission lands on", () => {
+    // A delegate resume started from Focus is decided by the workbench it
+    // moves to, not by Focus.
+    expect(admissionSurface(true, "focus", "free")).toBe("free");
+    expect(admissionSurface(true, "focus", "anchored")).toBe("anchored");
+    expect(admissionSurface(false, "focus", "free")).toBe("focus");
+    expect(admissionSurface(true, "grid", "free")).toBe("grid");
+  });
 });
 
 const pendingFor = (panelId: string, extra?: Partial<PendingAiPanel>): PendingAiPanel => ({
@@ -39,6 +94,17 @@ const pendingFor = (panelId: string, extra?: Partial<PendingAiPanel>): PendingAi
 });
 
 describe("initialHandoffFor", () => {
+  it("opens a handoff on a new thread, so a reused panel cannot keep the old one", () => {
+    const resume = initialHandoffFor(
+      "ai-main",
+      "ollama",
+      pendingFor("ai-main", { resumeSessionId: "sess-1" }),
+    );
+    expect(resume.initialStartFresh).toBe(true);
+    // A panel nobody handed anything to restores as it always did.
+    expect(initialHandoffFor("ai-main", "ollama", null).initialStartFresh).toBe(false);
+  });
+
   it("targets only the panel the pending handoff names", () => {
     const pending = pendingFor("ai-2", {
       resumeSessionId: "sess-1",
@@ -52,6 +118,8 @@ describe("initialHandoffFor", () => {
     expect(matched.initialResumeSessionId).toBe("sess-1");
     expect(matched.initialTask).toBe("fix the tests");
     expect(matched.initialConversationId).toBe("convo-9");
+    // A reattach names its conversation — restoring it is the whole point.
+    expect(matched.initialStartFresh).toBe(false);
 
     // Another mounted panel in the same render must NOT adopt the handoff —
     // it keeps its own provider and receives no resume/task/conversation.

@@ -31,6 +31,11 @@ export type AiPanelFleetState = {
   modelsByPanel: Record<string, string[]>;
   reviewOverrideByPanel: Record<string, boolean>;
   isolatedStartByPanel: Record<string, IsolatedRunStart>;
+  /** How many times a panel has been reseated — reused by a one-slot surface
+   *  for a new admission. It is the remount lever: `conversationSessionKey`
+   *  folds it into the React key so a reused panel picks up mount-time
+   *  handoff props instead of keeping the thread it already held. */
+  seatByPanel: Record<string, number>;
 };
 
 export const initialAiPanelFleetState: AiPanelFleetState = {
@@ -43,6 +48,7 @@ export const initialAiPanelFleetState: AiPanelFleetState = {
   modelsByPanel: {},
   reviewOverrideByPanel: {},
   isolatedStartByPanel: {},
+  seatByPanel: {},
 };
 
 export type AiPanelFleetAction =
@@ -69,7 +75,8 @@ export type AiPanelFleetAction =
   | { type: "panel-models-reported"; panelId: string; models: string[] }
   | { type: "review-override-set"; panelId: string; required: boolean }
   | { type: "isolated-start-queued"; panelId: string; start: IsolatedRunStart }
-  | { type: "isolated-start-consumed"; panelId: string };
+  | { type: "isolated-start-consumed"; panelId: string }
+  | { type: "seat-bumped"; panelId: string };
 
 function indexHandoffs(
   current: Record<string, PendingAiPanel>,
@@ -187,6 +194,7 @@ export function aiPanelFleetReducer(
         modelsByPanel: omitPanel(state.modelsByPanel, action.panelId),
         reviewOverrideByPanel: omitPanel(state.reviewOverrideByPanel, action.panelId),
         isolatedStartByPanel: omitPanel(state.isolatedStartByPanel, action.panelId),
+        seatByPanel: omitPanel(state.seatByPanel, action.panelId),
       };
     }
     case "race-watch-cleared":
@@ -225,6 +233,14 @@ export function aiPanelFleetReducer(
           [action.panelId]: action.start,
         },
       };
+    case "seat-bumped":
+      return {
+        ...state,
+        seatByPanel: {
+          ...state.seatByPanel,
+          [action.panelId]: (state.seatByPanel[action.panelId] ?? 0) + 1,
+        },
+      };
     case "isolated-start-consumed":
       return {
         ...state,
@@ -260,6 +276,10 @@ export type RaceAdmitMember = {
  *  - `resume-run`    — resume an on-disk Klide run as a panel conversation.
  *  - `fork`          — open a forked/branched Conversation (the convo carries
  *                      its provider, model, and worktree pin).
+ *  - `focus-resume`  — continue a Run's conversation on the Focus canvas,
+ *                      wherever the user currently is. A delegate CLI's own
+ *                      `/resume`, answered chat-first: the transcript comes
+ *                      across and the next turn runs the same CLI headless.
  *  - `handoff`       — Mission Control "Open in {CLI}" / "Resume in {CLI}".
  *  - `reattach`      — bind a panel to a live delegate PTY's conversation.
  *  - `race-watch`    — one panel per racer plus the race tab strip.
@@ -268,6 +288,7 @@ export type RaceAdmitMember = {
 export type AdmitIntent =
   | { kind: "resume-run"; runId: string; convo: Conversation }
   | { kind: "fork"; convo: Conversation }
+  | { kind: "focus-resume"; convo: Conversation }
   | {
       kind: "handoff";
       provider: ProviderId;
@@ -292,13 +313,27 @@ export type AdmitIntent =
 export type AiPanelFleetDeps = {
   /** Layout's appendAiPanel: create the panel record + rect, return its id. */
   createPanel: (seed?: PanelSeed) => string;
+  /** The panel a single-session admission should land in, or `null` to open a
+   *  new one. Three of the four AI surfaces render exactly one panel (Focus,
+   *  the anchored column, a grid cell), so appending there opens a session
+   *  nobody sees; the host answers with its slot instead. Free (floating)
+   *  mode renders the whole fleet and answers `null`. */
+  slotForAdmission: (intent: AdmitIntent) => string | null;
+  /** Point an existing panel at what this admission needs — the provider and
+   *  worktree a fresh panel would have been seeded with. The displaced
+   *  Conversation is not lost: it stays in the store and in the panel's
+   *  history. */
+  reseatPanel: (panelId: string, seed: PanelSeed) => void;
   /** Layout's closeAiPanel: drop the panel record + rect. */
   removePanel: (panelId: string) => void;
   focusPanel: (panelId: string) => void;
   /** Bring the AI surface on screen for this admission (setView + reveal the
    *  panel if hidden). Called for every admit, before de-dupe — matching the
-   *  old rituals, which switched views even when focusing an existing panel. */
-  revealSurface: (kind: AdmitIntent["kind"]) => void;
+   *  old rituals, which switched views even when focusing an existing panel.
+   *  It takes the whole intent because the surface an admission needs is not
+   *  a function of its kind alone: an interactive delegate session cannot be
+   *  rendered in Focus (`admissionNeedsWorkbench`). */
+  revealSurface: (intent: AdmitIntent) => void;
   /** Live panel ids, so a remembered identity → panel binding is validated
    *  before de-duping onto a panel that has since closed. */
   openPanelIds: () => string[];
@@ -342,8 +377,33 @@ export function createFleetController(
   // identity → panelId. Session-only: after a reload nothing is admitted yet.
   const registry = new Map<string, string>();
 
+  /** The panel this admission lands in. A one-slot surface hands back the
+   *  panel it is already rendering, so the session appears where the user is
+   *  looking instead of in a panel that surface will never draw; anything
+   *  else opens a fresh one. `reseat` is what the reused panel is repointed
+   *  at when that differs from a new panel's seed — a resumed Conversation
+   *  carries its own provider and model and pushes them up on load, so
+   *  writing them here too would race it.
+   *
+   *  A reused seat also drops every identity that pointed at it: the panel no
+   *  longer holds that run, and de-duping a later click onto it would focus a
+   *  panel showing something else entirely. */
+  const takeSeat = (
+    intent: AdmitIntent,
+    seed: PanelSeed,
+    reseat: PanelSeed = seed,
+  ): { panelId: string; reused: boolean } => {
+    const slot = deps.slotForAdmission(intent);
+    if (!slot) return { panelId: deps.createPanel(seed), reused: false };
+    for (const [identity, id] of registry) {
+      if (id === slot) registry.delete(identity);
+    }
+    deps.reseatPanel(slot, reseat);
+    return { panelId: slot, reused: true };
+  };
+
   const admit = (intent: AdmitIntent): string => {
-    deps.revealSurface(intent.kind);
+    deps.revealSurface(intent);
     const identity = admitIdentity(intent);
     if (identity) {
       const existing = registry.get(identity);
@@ -368,22 +428,35 @@ export function createFleetController(
     }
     switch (intent.kind) {
       case "resume-run": {
-        const panelId = deps.createPanel({ cwd: intent.convo.cwd ?? undefined });
+        const { panelId } = takeSeat(intent, { cwd: intent.convo.cwd ?? undefined });
         registry.set(`run:${intent.runId}`, panelId);
         dispatch({ type: "resume-targeted", panelId, convo: intent.convo });
         return panelId;
       }
+      case "focus-resume":
       case "fork": {
-        const panelId = deps.createPanel({
-          provider: intent.convo.provider,
-          model: intent.convo.model ?? undefined,
-          cwd: intent.convo.cwd ?? undefined,
-        });
+        const { panelId } = takeSeat(
+          intent,
+          {
+            provider: intent.convo.provider,
+            model: intent.convo.model ?? undefined,
+            cwd: intent.convo.cwd ?? undefined,
+          },
+          // The forked Conversation configures the panel itself as it loads;
+          // only its worktree pin has to be applied ahead of that.
+          { cwd: intent.convo.cwd ?? undefined },
+        );
         dispatch({ type: "resume-targeted", panelId, convo: intent.convo });
         return panelId;
       }
       case "handoff": {
-        const panelId = deps.createPanel({ provider: intent.provider, cwd: intent.cwd });
+        const { panelId, reused } = takeSeat(intent, {
+          provider: intent.provider,
+          cwd: intent.cwd,
+        });
+        // A handoff is delivered through mount-time props, so a reused panel
+        // has to remount to receive it.
+        if (reused) dispatch({ type: "seat-bumped", panelId });
         if (identity) registry.set(identity, panelId);
         dispatch({
           type: "handoffs-queued",
@@ -398,7 +471,11 @@ export function createFleetController(
         return panelId;
       }
       case "reattach": {
-        const panelId = deps.createPanel({ provider: intent.provider, cwd: intent.cwd });
+        const { panelId, reused } = takeSeat(intent, {
+          provider: intent.provider,
+          cwd: intent.cwd,
+        });
+        if (reused) dispatch({ type: "seat-bumped", panelId });
         registry.set(`convo:${intent.conversationId}`, panelId);
         dispatch({
           type: "handoffs-queued",
@@ -488,9 +565,11 @@ export function useAiPanelFleet(deps: AiPanelFleetDeps) {
     controllerRef.current = createFleetController(
       {
         createPanel: (seed) => depsRef.current.createPanel(seed),
+        slotForAdmission: (intent) => depsRef.current.slotForAdmission(intent),
+        reseatPanel: (panelId, seed) => depsRef.current.reseatPanel(panelId, seed),
         removePanel: (panelId) => depsRef.current.removePanel(panelId),
         focusPanel: (panelId) => depsRef.current.focusPanel(panelId),
-        revealSurface: (kind) => depsRef.current.revealSurface(kind),
+        revealSurface: (intent) => depsRef.current.revealSurface(intent),
         openPanelIds: () => depsRef.current.openPanelIds(),
         panelBoundToConversation: (conversationId) =>
           depsRef.current.panelBoundToConversation(conversationId),
@@ -511,6 +590,9 @@ export function useAiPanelFleet(deps: AiPanelFleetDeps) {
     release,
     endRaceWatch,
     pendingForPanel: (panelId: string) => state.pendingByPanel[panelId] ?? null,
+    /** How many times this panel has been reused for another admission — the
+     *  host folds it into the panel's React key. */
+    seatFor: (panelId: string) => state.seatByPanel[panelId] ?? 0,
     consumeHandoff: (panelId: string) =>
       dispatch({ type: "handoff-consumed", panelId }),
     /** `continueWith` carries the history reader's composed text: the panel

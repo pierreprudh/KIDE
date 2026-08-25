@@ -115,7 +115,6 @@ import {
   PencilGlyph,
   providerMark,
   RefreshIcon,
-  ResumeIcon,
   RunAvatar,
   SearchIcon,
   SendIcon,
@@ -125,6 +124,7 @@ import {
   TurnsGlyph,
   WorktreeGlyph,
 } from "./missionControl/glyphs";
+import { FocusLayoutIcon } from "../icons";
 import { CheckpointPanel } from "./CheckpointPanel";
 import { listCheckpoints } from "../agent/client";
 import type { ArtifactRequest } from "./ArtifactInspector";
@@ -422,9 +422,11 @@ function RunRow({
     setDragX(x);
   };
   // The row stays quiet: just the passive attention badge, or a single
-  // contextual action (resume / quick-send / sub-agent count) that swaps in
-  // on hover. Per-run actions (review diff, save memory, resume) live in the
-  // detail pane, not on the row.
+  // contextual action (quick-send / sub-agent count) that swaps in on hover.
+  // Continuing a run is *not* one of them. There are two ways to continue —
+  // the CLI's interactive session in the workbench, or its conversation on
+  // the Focus canvas — and one unlabelled arrow cannot ask which. Both live
+  // in the detail pane, next to review diff and save memory.
   const rightRail = action ? (
     <span
       style={{
@@ -747,80 +749,6 @@ function writeDismissedBoardRuns(ids: Set<string>) {
   writeStringSet(DISMISSED_BOARD_KEY, ids);
 }
 
-
-// One-click resume for a Klide on-disk run: re-opens the AI panel with the
-// prior transcript loaded. Same hover-revealed slot as QuickSend so the row
-// stays quiet until the user reaches for it.
-function ResumeKlide({ runId, onResume }: { runId: string; onResume: (id: string) => void }) {
-  return (
-    <span
-      role="button"
-      aria-label="Resume in Klide"
-      title="Resume in Klide"
-      onClick={(e) => {
-        e.stopPropagation();
-        onResume(runId);
-      }}
-      style={{
-        width: 22,
-        height: 22,
-        flexShrink: 0,
-        display: "grid",
-        placeItems: "center",
-        border: "none",
-        background: "transparent",
-        color: "var(--accent)",
-        cursor: "pointer",
-        transform: "scale(1)",
-        transition: "transform 200ms var(--ease-out)",
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.18)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
-    >
-      <ResumeIcon size={14} />
-    </span>
-  );
-}
-
-// One-click resume for a CLI run (claude-code, codex, opencode): spawns the
-// same delegate TUI with --resume <run-id> and selects the row so the live
-// terminal lands in the detail pane. Same visual treatment as ResumeKlide.
-function ResumeCli({
-  source,
-  onResume,
-}: {
-  source: RunSource;
-  onResume: () => void;
-}) {
-  return (
-    <span
-      role="button"
-      aria-label={`Resume in ${SOURCE_LABEL[source]}`}
-      title={`Resume in ${SOURCE_LABEL[source]}`}
-      onClick={(e) => {
-        e.stopPropagation();
-        onResume();
-      }}
-      style={{
-        width: 22,
-        height: 22,
-        flexShrink: 0,
-        display: "grid",
-        placeItems: "center",
-        border: "none",
-        background: "transparent",
-        color: "var(--accent)",
-        cursor: "pointer",
-        transform: "scale(1)",
-        transition: "transform 200ms var(--ease-out)",
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.18)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
-    >
-      <ResumeIcon size={14} />
-    </span>
-  );
-}
 
 // One-click dispatch on a todo row: sends the last-used agent and selects the
 // task so its terminal is in view as the agent lands. Nested inside the row's
@@ -2818,6 +2746,7 @@ function RunDetail({
   onArchive,
   onFork,
   onForkInWorktree,
+  onContinueInFocus,
   onMergeWorktree,
   forkParent,
   forkChildren = [],
@@ -2840,6 +2769,9 @@ function RunDetail({
   onArchive?: (run: RunLedgerEntry, archived: boolean) => void;
   onFork?: (run: RunLedgerEntry, messages?: RunMessage[]) => void;
   onForkInWorktree?: (run: RunLedgerEntry, messages?: RunMessage[]) => void;
+  /** Carry this run's conversation into the Focus canvas and keep talking
+   *  there — the chat-first answer to the delegate CLI's own `/resume`. */
+  onContinueInFocus?: (run: RunLedgerEntry, messages?: RunMessage[]) => void;
   onMergeWorktree?: (run: RunLedgerEntry) => void;
   forkParent?: RunLedgerEntry | null;
   forkChildren?: RunLedgerEntry[];
@@ -3188,6 +3120,7 @@ function RunDetail({
             <IconActionButton
               tone="primary"
               label={`Resume in ${SOURCE_LABEL[run.source]}`}
+              description="Its live session, as a terminal in the workbench."
               icon={<SourceLogo source={run.source} size={16} />}
               onClick={() =>
                 onOpenInAiPanel({
@@ -3206,6 +3139,19 @@ function RunDetail({
               onClick={() => onResumeKlide(run.id)}
             />
           )}
+          {/* The other way to continue: carry the transcript into Focus and
+              keep talking there. The CLI's interactive session is a terminal
+              and Focus hosts none — this replays the conversation instead, so
+              the next turn runs the same delegate headless with the whole
+              thread behind it. */}
+          {onContinueInFocus && run.capabilities.canFork && (
+            <IconActionButton
+              label="Continue in Focus"
+              description="Its conversation, carried onto the Focus canvas."
+              icon={<FocusLayoutIcon size={16} />}
+              onClick={() => onContinueInFocus(run, messages)}
+            />
+          )}
           {/* "Open in {other CLI}" hands the run off to a fresh delegate TUI in
               a new AI panel — each wears that CLI's provider logo. Klide runs
               pass compact task state so the session starts with context. */}
@@ -3215,6 +3161,7 @@ function RunDetail({
               <IconActionButton
                 key={s}
                 label={`Open in ${SOURCE_LABEL[s]}`}
+                description="Hand this run to another agent, in a fresh session."
                 icon={<SourceLogo source={s} size={16} />}
                 onClick={() =>
                   onOpenInAiPanel({
@@ -4077,6 +4024,7 @@ export function MissionControl({
   onSaveMemory,
   onForkRun,
   onForkRunInWorktree,
+  onContinueRunInFocus,
   onMergeWorktreeRun,
   summarizingFromRunId,
 }: {
@@ -4112,6 +4060,8 @@ export function MissionControl({
   onSaveMemory?: (run: { id: string; source: string; provider?: string | null; model: string | null; cwd: string | null }) => void;
   onForkRun?: (run: Run, messages?: RunMessage[]) => void;
   onForkRunInWorktree?: (run: Run, messages?: RunMessage[]) => void;
+  /** Continue this run as a Focus conversation (see RunDetail). */
+  onContinueRunInFocus?: (run: Run, messages?: RunMessage[]) => void;
   onMergeWorktreeRun?: (run: Run) => void;
   /** runId currently being summarised by `onSaveMemory`. Used to show a
    *  subtle spinner on the row so the user knows the model call is in
@@ -4822,12 +4772,6 @@ export function MissionControl({
                     const task = tasks.find((t) => t.id === run.id);
                     const sendable =
                       task && (task.status === "queued" || task.status === "error");
-                    // When a resume is possible is `capabilities.canResume`;
-                    // `source` only picks which affordance it routes to.
-                    const resumable =
-                      run.source === "klide" && run.capabilities.canResume && onResumeKlideRun;
-                    const cliResumable =
-                      isDelegateId(run.source) && run.capabilities.canResume && onOpenInAiPanel;
                     const children = childIndex.childrenOf(run.id);
                     const expanded = children.length > 0 && expandedSubagentParents.has(run.id);
                     const parentSelected = run.id === selectedId;
@@ -4918,22 +4862,6 @@ export function MissionControl({
                                   taskId={run.id}
                                   onSent={() => setSelectedId(run.id)}
                                 />
-                              ) : resumable ? (
-                                <ResumeKlide
-                                  runId={run.id}
-                                  onResume={(id) => onResumeKlideRun?.(id)}
-                                />
-                              ) : cliResumable ? (
-                                <ResumeCli
-                                  source={run.source}
-                                  onResume={() =>
-                                    onOpenInAiPanel?.({
-                                      provider: run.source as TaskSource,
-                                      workspaceRoot: run.cwd,
-                                      resumeSessionId: run.id,
-                                    })
-                                  }
-                                />
                               ) : undefined
                             }
                           />
@@ -5010,8 +4938,6 @@ export function MissionControl({
                                   const childTask = tasks.find((t) => t.id === child.id);
                                   const childSendable =
                                     childTask && (childTask.status === "queued" || childTask.status === "error");
-                                  const childCliResumable =
-                                    isDelegateId(child.source) && child.capabilities.canResume && onOpenInAiPanel;
                                   const childDismissible =
                                     boardSectionForRun(child) === "blocked" || runAttentionReason(child) !== null;
                                   const isLast = ci === children.length - 1;
@@ -5092,17 +5018,6 @@ export function MissionControl({
                                               <QuickSend
                                                 taskId={child.id}
                                                 onSent={() => setSelectedId(child.id)}
-                                              />
-                                            ) : childCliResumable ? (
-                                              <ResumeCli
-                                                source={child.source}
-                                                onResume={() =>
-                                                  onOpenInAiPanel?.({
-                                                    provider: child.source as TaskSource,
-                                                    workspaceRoot: child.cwd,
-                                                    resumeSessionId: child.id,
-                                                  })
-                                                }
                                               />
                                             ) : undefined
                                           }
@@ -5191,6 +5106,7 @@ export function MissionControl({
             onArchive={archiveLedgerRun}
             onFork={onForkRun}
             onForkInWorktree={onForkRunInWorktree}
+            onContinueInFocus={onContinueRunInFocus}
             onMergeWorktree={onMergeWorktreeRun}
             forkParent={selectedForkParent}
             forkChildren={selectedForkChildren}

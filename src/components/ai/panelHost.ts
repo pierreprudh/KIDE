@@ -10,6 +10,7 @@
 import type { ReactNode } from "react";
 import type { AgentAttachment, ProviderId } from "../../agent/types";
 import type { AiPanelInstance } from "../../hooks/usePanelLayout";
+import { isDelegateProvider } from "../../agent/providers";
 import { normalizeProjectPath } from "../../projectPaths";
 
 /** The id of the first/default AI panel slot. Everything that addresses "the"
@@ -19,13 +20,70 @@ export const DEFAULT_AI_PANEL_ID = "ai-main";
 /** React identity for one rendered Conversation session. A panel keeps its
  * state while moving between surfaces in the same Workspace, but changing the
  * effective Workspace remounts it so messages and Run identity cannot migrate
- * into another checkout. */
+ * into another checkout.
+ *
+ * `seat` is the second reason to remount: a surface with one AI slot reuses
+ * its panel for the next admission (see `surfaceShowsOneAiPanel`), and a
+ * handoff arrives through mount-time props — `initialConversationId` is read
+ * by the Conversation session's initializer and nowhere else. Bumping the
+ * seat is how the reused panel picks the handoff up instead of silently
+ * keeping the identity of the thread it was already holding. Seat 0 is
+ * spelled the old way so a panel nobody reseated never remounts. */
 export function conversationSessionKey(
   panelId: string,
   workspaceRoot: string | null,
   surfaceKey?: string,
+  seat?: number,
 ): string {
-  return `${surfaceKey ?? panelId}::${workspaceRoot ?? "no-workspace"}`;
+  const base = `${surfaceKey ?? panelId}::${workspaceRoot ?? "no-workspace"}`;
+  return seat ? `${base}::seat-${seat}` : base;
+}
+
+/** The four things that can render an AI panel. Three of them show exactly
+ *  one — Focus renders the centered conversation, the anchored column has a
+ *  single AI slot, a grid cell holds one panel — and only free (floating)
+ *  mode renders the whole fleet. */
+export type AiSurface = "focus" | "anchored" | "grid" | "free";
+
+/** Whether this surface renders one AI panel or all of them. An admission
+ *  that appends a panel to a one-slot surface opens a session nobody can
+ *  see: it spawns, streams, and stays invisible until the layout changes. */
+export function surfaceShowsOneAiPanel(surface: AiSurface): boolean {
+  return surface !== "free";
+}
+
+/** Whether an admission has to land on the workbench rather than in Focus.
+ *  An interactive delegate session — the CLI's own terminal, resumed or
+ *  reattached — is a workbench surface by construction: Focus runs the same
+ *  delegate one-shot and headless (`delegate/chat.rs`) and renders its answer
+ *  as an ordinary Klide message, so `AiPanel` deliberately withholds the
+ *  terminal there. Landing such an admission in Focus is the "nothing
+ *  happened" bug; it has to move. */
+export function admissionNeedsWorkbench(intent: {
+  kind: string;
+  provider?: ProviderId;
+}): boolean {
+  if (intent.kind !== "handoff" && intent.kind !== "reattach") return false;
+  return !!intent.provider && isDelegateProvider(intent.provider);
+}
+
+/** The base an admission asks for. Focus is usually just where the user
+ *  happens to be, but "Continue in Focus" names it: the admission carries the
+ *  surface with it and switches to it from anywhere. */
+export function admissionBase(kind: string, base: AiSurface): AiSurface {
+  return kind === "focus-resume" ? "focus" : base;
+}
+
+/** The surface an admission will actually be rendered on, after any forced
+ *  move off Focus. The slot decision reads this, not the current base: a
+ *  delegate resume started from Focus lands on the workbench, and it is the
+ *  workbench's slot count that decides whether it reuses a panel. */
+export function admissionSurface(
+  needsWorkbench: boolean,
+  base: AiSurface,
+  workbench: "anchored" | "free",
+): AiSurface {
+  return needsWorkbench && base === "focus" ? workbench : base;
 }
 
 /** A queued Mission Control → AI panel handoff: open panel `panelId` pinned to
@@ -51,6 +109,14 @@ export type PanelHandoff = {
   initialConversationId: string | undefined;
   initialResumeSessionId: string | undefined;
   initialTask: string | undefined;
+  /** Start this panel on a new Conversation identity rather than restoring
+   *  what it last held. A handoff names a Provider and no conversation, so
+   *  the thread it opens is new by definition — which a brand-new panel got
+   *  for free (nothing bound to restore) and a *reused* one would not: its
+   *  durable binding outranks a requested Provider, so the CLI session would
+   *  arrive and the panel would go on showing the chat it already had. A
+   *  reattach is the opposite and names its conversation. */
+  initialStartFresh: boolean;
 };
 
 /** Resolve which initial* props a panel gets: the pending handoff applies only
@@ -67,6 +133,7 @@ export function initialHandoffFor(
       initialConversationId: undefined,
       initialResumeSessionId: undefined,
       initialTask: undefined,
+      initialStartFresh: false,
     };
   }
   return {
@@ -75,6 +142,7 @@ export function initialHandoffFor(
     initialConversationId: pending.conversationId ?? undefined,
     initialResumeSessionId: pending.resumeSessionId ?? undefined,
     initialTask: pending.initialTask ?? undefined,
+    initialStartFresh: pending.conversationId === null,
   };
 }
 

@@ -346,6 +346,11 @@ type Props = {
   initialResumeSessionId?: string | null;
   /** First prompt pre-baked into the TUI's spawn — used for Klide handoff. */
   initialTask?: string | null;
+  /** Open on a new Conversation identity instead of restoring what this panel
+   *  last held. Set by a handoff, which names a Provider and no conversation:
+   *  on a panel a one-slot surface is reusing, the durable binding would
+   *  otherwise outrank the handoff and the CLI session would never appear. */
+  initialStartFresh?: boolean;
   /** A message to send through the normal composer path as soon as the panel
    *  is ready — the Focus home's hero composer hands its text over with this.
    *  Starts a fresh conversation first if the restored session already has
@@ -632,6 +637,7 @@ export function AiPanel({
   initialConversationId,
   initialResumeSessionId,
   initialTask,
+  initialStartFresh,
   onInitialConsumed,
   initialMessage,
   initialAttachments,
@@ -666,7 +672,8 @@ export function AiPanel({
         // The Focus hero is a new-task surface. Its first message must start
         // from the Provider/model displayed in that composer, never from this
         // panel's previous durable binding (which may belong to OpenRouter).
-        startFresh: !!initialMessage?.trim(),
+        // A handoff says the same thing for the same reason.
+        startFresh: !!initialMessage?.trim() || !!initialStartFresh,
       }),
   );
   // Async Run callbacks need the latest identity even before React commits the
