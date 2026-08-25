@@ -90,7 +90,7 @@ import { ModelPicker, modelLabel } from "./ai/ModelPicker";
 import { favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
 import { buildSystemPrompt } from "./ai/system-prompt";
-import { isPhotoAttachment, stageFiles } from "./ai/attachments";
+import { ATTACH_ACCEPT, isPhotoAttachment, stageFiles, stagedImageBytes } from "./ai/attachments";
 import { AttachmentTray } from "./ai/AttachmentTray";
 import { summarizeAndHandoff, generateMemoryNote, detectAndGenerateSkill, summarizeForCompaction } from "./ai/summarize";
 import { addMemoryDraft } from "../memoryDrafts";
@@ -1422,6 +1422,7 @@ export function AiPanel({
     const { attachments, notices } = await stageFiles(files, {
       allowPhotos: modelSupportsVision,
       alreadyStaged: pendingAttachments.length,
+      alreadyImageBytes: stagedImageBytes(pendingAttachments),
     });
     for (const notice of notices) notify(notice.text, { tone: notice.tone });
     if (attachments.length) setPendingAttachments((prev) => [...prev, ...attachments]);
@@ -4311,6 +4312,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             ref={filePickerRef}
             type="file"
             multiple
+            accept={ATTACH_ACCEPT}
             hidden
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);

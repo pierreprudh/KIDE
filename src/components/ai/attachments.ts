@@ -17,8 +17,14 @@
 // stay testable.
 import type { AgentAttachment as Attachment } from "../../agent/types";
 
-/** Per-image ceiling, matching the harness's own per-image guard. */
+/** Per-image ceiling. The harness clamps to the same number at run ingress
+ *  (`run_core::clamp_attachments`); this one exists so a composer can refuse a
+ *  photo by name instead of letting it disappear on the way out. */
 export const MAX_IMAGE_BYTES = 6_000_000;
+/** Total image bytes one turn may carry, across every staged photo. The
+ *  per-image cap alone lets 12 photos add up to a 70 MB request body (and a
+ *  transcript line to match), which no provider accepts. */
+export const MAX_TOTAL_IMAGE_BYTES = 12_000_000;
 /** Per-document ceiling. Read whole, then truncated to MAX_DOC_CHARS. */
 export const MAX_DOC_BYTES = 2_000_000;
 /** Same text budget an `@mention` attachment gets. */
@@ -27,6 +33,21 @@ export const MAX_DOC_CHARS = 12_000;
 export const MAX_FILES_PER_DROP = 8;
 /** How many attachments may sit staged on a composer. */
 export const MAX_STAGED = 12;
+
+/** The image formats every wire Klide speaks accepts — the same set
+ *  `forwardable_image_media_type` enforces in `adapters.rs`. A photo outside
+ *  it is refused at staging rather than dropped in silence on the way out
+ *  (the harness clamp refuses it again, one layer later):
+ *  HEIC (what an iPhone photo dropped from Finder actually is), TIFF, BMP,
+ *  AVIF and ICO all render fine in the webview, so a staged thumbnail would
+ *  otherwise promise a picture the model never receives. */
+const FORWARDABLE_IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+]);
 
 /** Text-ish MIME types that carry no `text/` prefix. */
 const TEXT_MIMES = new Set([
@@ -54,6 +75,16 @@ const TEXT_EXTENSIONS = new Set([
   "sh", "bash", "zsh", "fish", "sql", "graphql", "gql", "lua", "vim",
   "dockerfile", "gitignore", "diff", "patch", "srt", "vtt",
 ]);
+
+/** What an OS file picker should offer, derived from the same two sets
+ *  `classifyFile` decides with — so the dialog can't hand back a file the
+ *  composer is only going to refuse by name. A filter, not a guarantee: a
+ *  picker set to "All Files" still routes through `stageFiles`. */
+export const ATTACH_ACCEPT = [
+  ...FORWARDABLE_IMAGE_MIMES,
+  "text/*",
+  ...[...TEXT_EXTENSIONS].map((ext) => `.${ext}`),
+].join(",");
 
 /** The file kinds a composer can stage. `"other"` is refused. */
 export type AttachmentKind = "photo" | "document" | "other";
@@ -84,10 +115,19 @@ function extensionOf(name: string): string {
 }
 
 export function classifyFile(file: Pick<StageableFile, "name" | "type">): AttachmentKind {
-  if (file.type.startsWith("image/") && file.type !== "image/svg+xml") return "photo";
+  if (FORWARDABLE_IMAGE_MIMES.has(file.type)) return "photo";
   if (file.type.startsWith("text/") || TEXT_MIMES.has(file.type)) return "document";
   if (!file.type && TEXT_EXTENSIONS.has(extensionOf(file.name))) return "document";
   return "other";
+}
+
+/** Roughly how many image bytes a staged set is holding. Base64 carries 3
+ *  bytes in every 4 characters, which is close enough for a budget check. */
+export function stagedImageBytes(attachments: readonly Attachment[]): number {
+  return attachments.reduce(
+    (sum, a) => sum + (a.dataUri ? Math.floor((a.dataUri.length * 3) / 4) : 0),
+    0,
+  );
 }
 
 /** True when this attachment is a photo rather than a document. The `dataUri`
@@ -122,7 +162,7 @@ function humanSize(bytes: number): string {
  */
 export async function stageFiles(
   files: readonly StageableFile[],
-  opts: { allowPhotos: boolean; alreadyStaged?: number },
+  opts: { allowPhotos: boolean; alreadyStaged?: number; alreadyImageBytes?: number },
 ): Promise<StagingResult> {
   const notices: StagingNotice[] = [];
   const room = Math.max(0, MAX_STAGED - (opts.alreadyStaged ?? 0));
@@ -135,11 +175,17 @@ export async function stageFiles(
   }
 
   const staged: Attachment[] = [];
+  let imageBytes = opts.alreadyImageBytes ?? 0;
   for (const file of considered) {
     const name = file.name || "attachment";
     const kind = classifyFile(file);
     if (kind === "other") {
-      notices.push({ text: `Klide can't read ${name} yet — attach an image or a text document.`, tone: "warn" });
+      notices.push({
+        text: file.type.startsWith("image/")
+          ? `${name} isn't a format the models accept — convert it to PNG, JPEG, GIF or WebP first.`
+          : `Klide can't read ${name} yet — attach an image or a text document.`,
+        tone: "warn",
+      });
       continue;
     }
     if (kind === "photo" && !opts.allowPhotos) {
@@ -151,11 +197,19 @@ export async function stageFiles(
       notices.push({ text: `${name} is too large to attach (max ${humanSize(limit)}).`, tone: "warn" });
       continue;
     }
+    if (kind === "photo" && imageBytes + file.size > MAX_TOTAL_IMAGE_BYTES) {
+      notices.push({
+        text: `${name} doesn't fit — one turn carries at most ${humanSize(MAX_TOTAL_IMAGE_BYTES)} of images.`,
+        tone: "warn",
+      });
+      continue;
+    }
     try {
       if (kind === "photo") {
         const mime = file.type || "image/png";
         const dataUri = `data:${mime};base64,${base64Of(await file.arrayBuffer())}`;
         staged.push({ path: name, content: "", mime, dataUri });
+        imageBytes += file.size;
       } else {
         let content = await file.text();
         if (content.length > MAX_DOC_CHARS) content = content.slice(0, MAX_DOC_CHARS) + "\n…(truncated)";

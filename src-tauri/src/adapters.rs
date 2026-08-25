@@ -870,7 +870,11 @@ fn anthropic_push(
 /// fails the *whole turn*, so an unsupported image is dropped at this seam
 /// instead of being forwarded to sink the request. Ollama is not gated: it
 /// decodes locally and reports its own per-model errors.
-fn forwardable_image_media_type(media_type: &str) -> bool {
+/// The image formats every wire Klide speaks accepts. The one owner of that
+/// fact: the OpenAI and Anthropic translations below filter on it, and the
+/// harness's attachment clamp refuses anything outside it up front rather than
+/// letting a translation drop it in silence.
+pub(crate) fn forwardable_image_media_type(media_type: &str) -> bool {
     matches!(
         media_type.trim().to_ascii_lowercase().as_str(),
         "image/jpeg" | "image/jpg" | "image/png" | "image/gif" | "image/webp"

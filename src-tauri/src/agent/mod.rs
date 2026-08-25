@@ -1034,6 +1034,27 @@ async fn start_run(
     // Never accept renderer-supplied trust. Only the private, fingerprint-bound
     // approval store may populate this field.
     request.command_allowlist.clear();
+    // Hold this turn's attachments to what the wires and the transcript can
+    // take, before either sees them. Every producer enters here, so the
+    // composers' own rules stay UX and this stays the invariant (see
+    // `run_core::clamp_attachments`). Drops are recorded in the context
+    // snapshot's `omitted`, which is where the panel already looks.
+    let clamped = run_core::clamp_attachments(std::mem::take(&mut request.attachments));
+    request.attachments = clamped.kept;
+    if !clamped.omitted.is_empty() {
+        let mut snapshot = request.context.take().unwrap_or_else(|| AgentContextSnapshot {
+            workspace_root: request.workspace_root.clone(),
+            attachments: request.attachments.clone(),
+            lens_items: Vec::new(),
+            estimated_tokens: 0,
+            omitted: Vec::new(),
+        });
+        // The snapshot the renderer sent describes what it *offered*; the run
+        // is about to proceed on what survived.
+        snapshot.attachments = request.attachments.clone();
+        snapshot.omitted.extend(clamped.omitted);
+        request.context = Some(snapshot);
+    }
     if let Some(root) = request.workspace_root.as_deref() {
         for command in command_allowlist::list(&runs_dir, root)? {
             if !request.command_allowlist.iter().any(|c| c == &command) {
