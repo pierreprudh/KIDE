@@ -285,6 +285,71 @@ describe("foldAgentEvents", () => {
       expect(toolMsg).toMatchObject({ toolName: "Edit", observedBy: "claude-code" });
     });
 
+    it("does not repeat text the rows above a delegate's tool card already show", () => {
+      // Reproduces a duplicated preamble seen in Focus with Claude Code. A
+      // delegate interleaves its own tool calls with its prose inside ONE turn,
+      // so the closing assistant_message carries the whole turn's text — while
+      // the pre-tool sentence is already sitting in the row above the card.
+      const rows = foldAgentEvents([
+        delta("I'll check the actual state rather than guess."),
+        {
+          type: "observed_tool_call",
+          runId: RUN,
+          toolCallId: "toolu_1",
+          provider: "claude-code",
+          name: "Bash",
+          input: { command: "git status --short" },
+          summary: "Bash git status --short",
+          ts: at(),
+        },
+        {
+          type: "observed_tool_result",
+          runId: RUN,
+          toolCallId: "toolu_1",
+          ok: true,
+          content: "M src/App.tsx",
+          ts: at(),
+        },
+        delta("You're on fix/attachment-guardrails."),
+        assistantMessage(
+          "I'll check the actual state rather than guess.You're on fix/attachment-guardrails.",
+        ),
+      ]);
+
+      expect(rows).toHaveLength(2);
+      const [before, after] = rows;
+      if (before.kind !== "assistant" || after.kind !== "assistant") {
+        throw new Error("expected two assistant rows");
+      }
+      expect(before.text).toBe("I'll check the actual state rather than guess.");
+      expect(before.toolCalls[0]).toMatchObject({ id: "toolu_1", observedBy: "claude-code" });
+      // The tail only — not the whole turn pasted under its own tool card.
+      expect(after.text).toBe("You're on fix/attachment-guardrails.");
+    });
+
+    it("keeps the whole final text when it is not what was streamed", () => {
+      // A provider that returns cleaned-up text rather than its own stream must
+      // not have a chunk sliced off it: showing a line twice is a blemish,
+      // dropping one is a lie.
+      const rows = foldAgentEvents([
+        delta("thinking out loud"),
+        {
+          type: "observed_tool_call",
+          runId: RUN,
+          toolCallId: "t",
+          provider: "claude-code",
+          name: "Read",
+          input: {},
+          summary: "Read",
+          ts: at(),
+        },
+        assistantMessage("A completely rewritten answer."),
+      ]);
+      const last = rows[rows.length - 1];
+      if (last.kind !== "assistant") throw new Error("expected an assistant row");
+      expect(last.text).toBe("A completely rewritten answer.");
+    });
+
     it("keeps observed calls distinguishable from dispatched ones", () => {
       // The whole point of the separate event: a dispatched call carries no
       // `observedBy`, so a reader can tell "Klide ran this under a capability"
