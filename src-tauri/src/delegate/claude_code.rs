@@ -57,7 +57,12 @@ impl Delegate for ClaudeCode {
     /// Claude Code reports every step of a headless turn as JSONL — assistant
     /// text, its own `tool_use` calls, the matching `tool_result`s, a closing
     /// cost line. `--verbose` is required for `stream-json` under `-p`.
-    fn chat_stream_args(&self, cwd: &str, model: &str) -> Option<Vec<String>> {
+    fn chat_stream_args(
+        &self,
+        cwd: &str,
+        model: &str,
+        resume: Option<&str>,
+    ) -> Option<Vec<String>> {
         let mut args = self.chat_args(cwd, model).ok()?;
         // Same invocation, structured output: replace the *value* of the
         // existing `--output-format` rather than appending a second, conflicting
@@ -73,7 +78,20 @@ impl Delegate for ClaudeCode {
         // a Focus turn sat silent and then landed in one lump — and time-to-first
         // token measured the whole block, not the first token.
         args.push("--include-partial-messages".into());
+        // Continue the session this conversation already opened instead of
+        // starting a new one. Without it every turn is a stranger: Claude Code
+        // re-reads a whole transcript pasted onto stdin, keeps none of its own
+        // context or prompt cache, and files a separate run on disk per message.
+        if let Some(session) = resume.map(str::trim).filter(|s| !s.is_empty()) {
+            args.extend(["--resume".to_string(), session.to_string()]);
+        }
         Some(args)
+    }
+
+    /// `--resume <id>` continues the named session, so the runner may send just
+    /// the newest message.
+    fn resumes_sessions(&self) -> bool {
+        true
     }
 
     /// Claude Code's dialect is Anthropic's, wrapped one object per line:
@@ -750,7 +768,7 @@ mod tests {
 
     #[test]
     fn stream_args_swap_the_format_value_and_add_verbose() {
-        let args = ClaudeCode.chat_stream_args("/tmp/ws", "claude-sonnet-5").unwrap();
+        let args = ClaudeCode.chat_stream_args("/tmp/ws", "claude-sonnet-5", None).unwrap();
         assert_eq!(
             args.join(" "),
             "-p --model claude-sonnet-5 --permission-mode acceptEdits \
@@ -765,12 +783,26 @@ mod tests {
     fn stream_args_rewrite_the_flag_value_not_a_model_named_text() {
         // The value is found via `--output-format`, so a model argument that
         // happens to be the word "text" survives untouched.
-        let args = ClaudeCode.chat_stream_args("/tmp/ws", "text").unwrap();
+        let args = ClaudeCode.chat_stream_args("/tmp/ws", "text", None).unwrap();
         assert_eq!(
             args.join(" "),
             "-p --model text --permission-mode acceptEdits \
              --output-format stream-json --verbose --include-partial-messages"
         );
+    }
+
+    #[test]
+    fn stream_args_resume_the_named_session() {
+        let args = ClaudeCode
+            .chat_stream_args("/tmp/ws", "claude-sonnet-5", Some("abc-123"))
+            .unwrap();
+        assert!(args.windows(2).any(|w| w == ["--resume", "abc-123"]));
+        // A blank id is not a session — it must not produce a bare `--resume`,
+        // which would make the CLI open its interactive picker.
+        let args = ClaudeCode
+            .chat_stream_args("/tmp/ws", "claude-sonnet-5", Some("  "))
+            .unwrap();
+        assert!(!args.contains(&"--resume".to_string()));
     }
 
     #[test]

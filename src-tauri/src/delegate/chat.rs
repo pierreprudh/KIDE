@@ -8,7 +8,10 @@
 //! Keeping it here means the whole one-shot-chat operation lives behind the
 //! Delegate seam instead of being split across the lib.rs IPC glue.
 
+use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::ipc::Channel;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -21,6 +24,47 @@ use crate::providers::{text_from_message, AiChatResponse, ObservedToolActivity, 
 /// Hard ceiling for one headless delegate turn. See `run_cli_with_stdin`.
 const CHAT_TURN_CEILING: Duration = Duration::from_secs(30 * 60);
 
+/// The CLI session each conversation is talking to, keyed by run id + provider.
+///
+/// A headless turn used to be self-contained: spawn the CLI, paste the whole
+/// transcript on stdin, read the answer, exit. That made every message a cold
+/// start — the CLI re-read the entire conversation, kept none of its own
+/// context or prompt cache between turns, and filed a separate run on disk each
+/// time. Remembering the session id it reports lets the next turn continue it
+/// (`claude --resume`, `opencode run -s`) and send only what is new.
+///
+/// In memory on purpose: losing it costs one cold turn, which is exactly the
+/// old behaviour, whereas a stale id persisted across a restart would point at
+/// a session the CLI may already have collected.
+static SESSIONS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn sessions() -> &'static Mutex<HashMap<String, String>> {
+    SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One conversation with one delegate. The provider is part of the key because
+/// switching a thread from Claude Code to OpenCode must not hand OpenCode a
+/// Claude session id.
+fn session_key(run_id: &str, provider: &str) -> String {
+    format!("{run_id}:{provider}")
+}
+
+fn remembered_session(key: &str) -> Option<String> {
+    sessions().lock().ok()?.get(key).cloned()
+}
+
+fn remember_session(key: &str, session: &str) {
+    if let Ok(mut map) = sessions().lock() {
+        map.insert(key.to_string(), session.to_string());
+    }
+}
+
+fn forget_session(key: &str) {
+    if let Ok(mut map) = sessions().lock() {
+        map.remove(key);
+    }
+}
+
 /// Run one headless chat turn against a subscription delegate CLI: fold the
 /// conversation into a prompt, spawn the adapter's chat invocation, stream its
 /// output back, and wrap the result. The single entry the `ai_chat` dispatcher
@@ -31,9 +75,9 @@ pub async fn run_subscription_chat(
     model: String,
     messages: Vec<serde_json::Value>,
     workspace_root: Option<String>,
+    run_id: Option<String>,
     on_chunk: &Channel<StreamChunk>,
 ) -> Result<AiChatResponse, String> {
-    let prompt = prompt_from_messages(&messages);
     let cwd = workspace_root.unwrap_or_else(|| ".".to_string());
     // The "default" sentinel means "no model picked" — hand the adapter an
     // empty model so it omits its model flag and the CLI uses its own default.
@@ -43,12 +87,70 @@ pub async fn run_subscription_chat(
     } else {
         model
     };
+    // Which conversation this turn belongs to. Without a run id there is
+    // nothing to key a session on, so the turn stays a cold start.
+    let key = run_id
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| session_key(&id, adapter.id()));
+    // Resume only when this adapter actually honours the id — claiming to and
+    // then ignoring it would silently drop every earlier turn, since a resuming
+    // turn deliberately sends just the newest message.
+    let resume = key
+        .as_deref()
+        .filter(|_| adapter.resumes_sessions())
+        .and_then(remembered_session)
+        // A resumed session already holds the history, so re-sending it would
+        // say everything twice. Send what is new — and if there is no new user
+        // message to send, fall back to the full fold rather than an empty turn.
+        .filter(|_| !latest_user_message(&messages).is_empty());
+    let prompt = match resume {
+        Some(_) => latest_user_message(&messages),
+        None => prompt_from_messages(&messages),
+    };
+
     // Prefer the CLI's structured stream when it has one: the prose-only mode
     // reports an answer with no visible work behind it, and a delegate's work
     // is most of what the user wants to see.
-    let content = match adapter.chat_stream_invocation(&cwd, model) {
+    let content = match adapter.chat_stream_invocation(&cwd, model, resume.as_deref()) {
         Some(command) => {
-            run_cli_streaming(adapter, command?, prompt, label, on_chunk).await?
+            let emitted = AtomicBool::new(false);
+            match run_cli_streaming(
+                adapter,
+                command?,
+                prompt,
+                label,
+                key.as_deref(),
+                &emitted,
+                on_chunk,
+            )
+            .await
+            {
+                Ok(answer) => answer,
+                // A remembered session the CLI no longer has fails the spawn,
+                // and would keep failing every turn from here on. Forget it and
+                // take the cold path once — but only while the failed attempt
+                // said nothing, or the retry would repeat text already on screen.
+                Err(err) if resume.is_some() && !emitted.load(Ordering::Relaxed) => {
+                    if let Some(key) = key.as_deref() {
+                        forget_session(key);
+                    }
+                    let _ = err;
+                    let command = adapter
+                        .chat_stream_invocation(&cwd, model, None)
+                        .ok_or_else(|| format!("{label} has no structured mode"))??;
+                    run_cli_streaming(
+                        adapter,
+                        command,
+                        prompt_from_messages(&messages),
+                        label,
+                        key.as_deref(),
+                        &emitted,
+                        on_chunk,
+                    )
+                    .await?
+                }
+                Err(err) => return Err(err),
+            }
         }
         None => run_cli_with_stdin(adapter.chat_invocation(&cwd, model)?, prompt, label, on_chunk)
             .await?
@@ -77,6 +179,8 @@ async fn run_cli_streaming(
     mut command: TokioCommand,
     prompt: String,
     label: &str,
+    session_key: Option<&str>,
+    emitted: &AtomicBool,
     on_chunk: &Channel<StreamChunk>,
 ) -> Result<String, String> {
     let provider_id = adapter.id();
@@ -135,6 +239,7 @@ async fn run_cli_streaming(
                     StreamItem::TextDelta(text) => {
                         saw_delta = true;
                         answer.push_str(&text);
+                        emitted.store(true, Ordering::Relaxed);
                         let _ = on_chunk.send(StreamChunk::text(text));
                     }
                     StreamItem::TextPart { id, text } => {
@@ -151,6 +256,7 @@ async fn run_cli_streaming(
                         };
                         if !suffix.is_empty() {
                             answer.push_str(suffix);
+                            emitted.store(true, Ordering::Relaxed);
                             let _ = on_chunk.send(StreamChunk::text(suffix.to_string()));
                         }
                         emitted_parts.insert(id, text.len());
@@ -162,10 +268,12 @@ async fn run_cli_streaming(
                     StreamItem::Text(text) => {
                         answer.push_str(&text);
                         answer.push('\n');
+                        emitted.store(true, Ordering::Relaxed);
                         let _ = on_chunk.send(StreamChunk::text(format!("{text}\n")));
                     }
                     StreamItem::ToolCall { id, name, input } => {
                         let summary = summarize_call(&name, &input);
+                        emitted.store(true, Ordering::Relaxed);
                         let _ = on_chunk.send(StreamChunk {
                             observed: Some(ObservedToolActivity::Call {
                                 id,
@@ -183,9 +291,17 @@ async fn run_cli_streaming(
                             ..Default::default()
                         });
                     }
-                    // Session id and cost are not shown yet; the parser reports
-                    // them so wiring `--resume` later needs no protocol change.
-                    StreamItem::Session(_) | StreamItem::Finished { .. } => {}
+                    // Remember what to continue next turn. Recorded even on a
+                    // turn that was itself a resume: a CLI may answer with a new
+                    // id (a fork, a compaction), and the newest one is the live
+                    // session.
+                    StreamItem::Session(session) => {
+                        if let Some(key) = session_key {
+                            remember_session(key, &session);
+                        }
+                    }
+                    // Cost is not shown here; the harness reports run cost.
+                    StreamItem::Finished { .. } => {}
                 }
             }
         }
@@ -221,6 +337,24 @@ async fn run_cli_streaming(
     })??;
 
     Ok(answer)
+}
+
+/// The newest user message, which is all a resumed session still needs — it
+/// already holds everything before it.
+///
+/// Note what this deliberately does not carry: a system message. A mode change
+/// made mid-conversation (Chat → Goal) is announced in the system message, and
+/// a resumed session never sees it. That is the known edge of session reuse;
+/// the fresh-start path still folds the system message in.
+fn latest_user_message(messages: &[serde_json::Value]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .map(text_from_message)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 fn prompt_from_messages(messages: &[serde_json::Value]) -> String {
@@ -350,5 +484,58 @@ async fn run_cli_with_stdin(
         Err(format!("{label} exited with {status}"))
     } else {
         Err(format!("{label} exited with {status}: {stderr}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str, text: &str) -> serde_json::Value {
+        serde_json::json!({ "role": role, "content": text })
+    }
+
+    #[test]
+    fn a_resumed_turn_sends_only_the_newest_user_message() {
+        let messages = vec![
+            msg("system", "You are in Goal mode."),
+            msg("user", "first ask"),
+            msg("assistant", "first answer"),
+            msg("user", "second ask"),
+        ];
+        assert_eq!(latest_user_message(&messages), "second ask");
+        // The cold path still carries everything, so a fresh session is not
+        // handed a conversation with no history.
+        let full = prompt_from_messages(&messages);
+        assert!(full.contains("first ask"));
+        assert!(full.contains("second ask"));
+    }
+
+    #[test]
+    fn no_user_message_means_nothing_to_resume_with() {
+        // Empty rather than the assistant's last turn — the caller reads this
+        // as "fall back to the full fold", never as a prompt to send.
+        assert_eq!(latest_user_message(&[msg("assistant", "hi")]), "");
+        assert_eq!(latest_user_message(&[]), "");
+        assert_eq!(latest_user_message(&[msg("user", "   ")]), "");
+    }
+
+    #[test]
+    fn sessions_are_remembered_per_conversation_and_provider() {
+        let a = session_key("run-1", "claude-code");
+        let b = session_key("run-1", "opencode");
+        let c = session_key("run-2", "claude-code");
+        remember_session(&a, "sess-a");
+        remember_session(&b, "sess-b");
+        // Switching a thread's provider must not hand the new CLI the old
+        // CLI's session id, and two conversations must not share one session.
+        assert_eq!(remembered_session(&a).as_deref(), Some("sess-a"));
+        assert_eq!(remembered_session(&b).as_deref(), Some("sess-b"));
+        assert_eq!(remembered_session(&c), None);
+
+        // A session the CLI no longer has is forgotten, so the next turn is a
+        // cold start rather than a permanent failure.
+        forget_session(&a);
+        assert_eq!(remembered_session(&a), None);
     }
 }

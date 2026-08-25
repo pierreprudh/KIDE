@@ -250,6 +250,9 @@ async fn ai_chat(
             messages,
             tools,
             workspace_root,
+            // A bare `ai_chat` is a one-shot (the summarizer); it has no
+            // conversation to continue.
+            run_id: None,
             num_ctx,
             num_predict,
             reflection_level,

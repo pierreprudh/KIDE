@@ -131,6 +131,9 @@ struct ProviderTurnRequest {
     messages: Vec<serde_json::Value>,
     tools: Option<Vec<serde_json::Value>>,
     workspace_root: Option<String>,
+    /// This run's id, so a subscription CLI can continue the session it opened
+    /// for this conversation instead of starting a new one per turn.
+    run_id: Option<String>,
     num_ctx: Option<usize>,
     num_predict: Option<usize>,
     reflection_level: Option<String>,
@@ -160,6 +163,7 @@ impl AgentProviderCaller for RealProviderCaller {
                     messages: request.messages,
                     tools: request.tools,
                     workspace_root: request.workspace_root,
+                    run_id: request.run_id,
                     num_ctx: request.num_ctx,
                     num_predict: request.num_predict,
                     reflection_level: request.reflection_level,
@@ -1488,6 +1492,7 @@ async fn run_agent_loop(
                 messages: messages.clone(),
                 tools: turn_tools.clone(),
                 workspace_root: request.workspace_root.clone(),
+                run_id: Some(id.clone()),
                 num_ctx: request.num_ctx,
                 num_predict: reply_budget_override.or(request.num_predict),
                 reflection_level: request.reflection_level.clone(),
@@ -3424,6 +3429,7 @@ mod provider_caller_tests {
                 messages: vec![serde_json::json!({ "role": "user", "content": "hello" })],
                 tools: Some(Vec::new()),
                 workspace_root: Some("/tmp".to_string()),
+                run_id: None,
                 num_ctx: Some(1024),
                 num_predict: Some(128),
                 reflection_level: Some("low".to_string()),

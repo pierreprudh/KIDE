@@ -147,8 +147,30 @@ pub trait Delegate: Sync {
     /// this CLI can (`claude --output-format stream-json`). `None` means "prose
     /// only" and the caller falls back to [`Delegate::chat_args`], so a CLI
     /// without a structured mode keeps working — it just shows no tool rows.
-    fn chat_stream_args(&self, _cwd: &str, _model: &str) -> Option<Vec<String>> {
+    ///
+    /// `resume` is a session id this CLI reported earlier (as
+    /// [`StreamItem::Session`](chat_stream::StreamItem::Session)) for the same
+    /// conversation. When it is `Some`, the adapter must continue that session
+    /// rather than open a new one — that is what lets the caller send only the
+    /// newest message instead of re-folding the whole transcript into every
+    /// turn. An adapter that cannot resume ignores it and keeps working; the
+    /// caller re-sends the full history whenever no adapter took the id.
+    fn chat_stream_args(
+        &self,
+        _cwd: &str,
+        _model: &str,
+        _resume: Option<&str>,
+    ) -> Option<Vec<String>> {
         None
+    }
+
+    /// Whether [`Delegate::chat_stream_args`] honours a `resume` id. The runner
+    /// asks *before* building the prompt, because the answer decides what the
+    /// prompt is: a resuming turn sends one message, a fresh one sends the
+    /// whole conversation. Answering `true` while ignoring the id would drop
+    /// every earlier turn on the floor.
+    fn resumes_sessions(&self) -> bool {
+        false
     }
 
     /// Read one line of this CLI's structured stream into the shared
@@ -174,8 +196,9 @@ pub trait Delegate: Sync {
         &self,
         cwd: &str,
         model: &str,
+        resume: Option<&str>,
     ) -> Option<Result<tokio::process::Command, String>> {
-        let args = self.chat_stream_args(cwd, model)?;
+        let args = self.chat_stream_args(cwd, model, resume)?;
         Some(crate::cli::resolve_command(self.binary()).map(|cli| {
             let mut command = tokio::process::Command::new(cli);
             command.current_dir(cwd).args(args);

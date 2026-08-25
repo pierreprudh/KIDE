@@ -85,10 +85,27 @@ impl Delegate for OpenCode {
     /// stops a turn reading as a wall of `stderr:` chrome, since the human
     /// format writes its banner, its `→ Read README.md` progress and the full
     /// output of every command it runs to stderr.
-    fn chat_stream_args(&self, cwd: &str, model: &str) -> Option<Vec<String>> {
+    fn chat_stream_args(
+        &self,
+        cwd: &str,
+        model: &str,
+        resume: Option<&str>,
+    ) -> Option<Vec<String>> {
         let mut args = self.chat_args(cwd, model).ok()?;
         args.extend(["--format".to_string(), "json".to_string()]);
+        // `-s <id>` continues an existing session (`--continue` would take the
+        // last one, which is the wrong session as soon as two conversations run
+        // side by side). Named explicitly, so a second Focus thread never
+        // resumes the first one's work.
+        if let Some(session) = resume.map(str::trim).filter(|s| !s.is_empty()) {
+            args.extend(["-s".to_string(), session.to_string()]);
+        }
         Some(args)
+    }
+
+    /// `opencode run -s <id>` continues the named session.
+    fn resumes_sessions(&self) -> bool {
+        true
     }
 
     /// OpenCode's dialect is its own: one event object per line, each wrapping a
@@ -721,8 +738,19 @@ mod tests {
     }
 
     #[test]
+    fn stream_args_continue_the_named_session() {
+        let args = OpenCode
+            .chat_stream_args("/tmp/ws", "", Some("ses_fef0"))
+            .unwrap();
+        // `-s <id>`, never `--continue`: the last session is the wrong one as
+        // soon as two conversations run side by side.
+        assert!(args.windows(2).any(|w| w == ["-s", "ses_fef0"]));
+        assert!(!args.contains(&"--continue".to_string()));
+    }
+
+    #[test]
     fn stream_args_ask_for_json_on_stdout() {
-        let args = OpenCode.chat_stream_args("/tmp/ws", "minimax/minimax-m3").unwrap();
+        let args = OpenCode.chat_stream_args("/tmp/ws", "minimax/minimax-m3", None).unwrap();
         assert_eq!(
             args.join(" "),
             "run --model minimax/minimax-m3 --auto --format json"
