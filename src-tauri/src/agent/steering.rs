@@ -30,6 +30,15 @@ const FAIL_THRESHOLD: usize = 2;
 /// run beats burning turns to the cap.
 const EARLY_EXIT_FAILURES: usize = 4;
 
+/// Carried into a resample after the model spent its whole reply budget on
+/// private reasoning. Transient: the run loop pushes it, the resample consumes
+/// it, and it never becomes part of the durable conversation — it describes a
+/// turn the user never saw.
+pub(super) const REASONING_RUNAWAY_NUDGE: &str = "\
+Your previous attempt used its entire reply budget on internal reasoning and \
+produced no answer and no tool call. Keep your reasoning short this time and \
+get to a tool call or a written answer quickly.";
+
 /// Asked once, a few turns short of the tool-turn cap, so the run spends what
 /// is left finishing rather than opening new threads of work. It is deliberately
 /// permissive about incompleteness: a partial result the user can build on beats
