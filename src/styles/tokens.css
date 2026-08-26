@@ -2113,6 +2113,62 @@ textarea.klide-diff-comment-input:focus-visible {
   opacity: 1;
 }
 
+/* A folded run of tool work opens by growing to whatever height its rows
+   need. `grid-template-rows: 0fr → 1fr` is what makes that animatable: a
+   height transition needs two known numbers, and the rows are measured, not
+   guessed — no max-height sized by hope, which either clips a long run or
+   spends the first half of the animation on empty space.
+
+   The rows stay mounted while closed. They were already built by the message
+   loop, so keeping them costs the DOM it always cost, and it buys a close
+   that animates instead of vanishing. */
+.klide-tool-run-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--motion-slow) var(--ease-out);
+}
+
+.klide-tool-run-body[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+/* The inner track is what actually clips. It also stops the rows' own margins
+   collapsing out through the grid and leaving a gap behind a closed run.
+
+   It carries the second half of the motion: the box makes room, and the rows
+   settle into it a beat later. One property doing both jobs reads as a panel
+   sliding out; two, offset, read as content arriving — which is what actually
+   happened. The lift is 2px, enough to be felt and not enough to be seen as
+   travel. */
+.klide-tool-run-body > * {
+  overflow: hidden;
+  min-height: 0;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition:
+    opacity var(--motion-fast) var(--ease-out),
+    transform var(--motion-slow) var(--ease-out);
+}
+
+.klide-tool-run-body[data-open="true"] > * {
+  opacity: 1;
+  transform: none;
+  /* Opening only: the fade waits for the space to exist, so rows never
+     brighten against a box still growing under them. Closing keeps the
+     symmetrical rule above — content leaves first, then the gap closes. */
+  transition:
+    opacity var(--motion-med) var(--ease-out) 70ms,
+    transform var(--motion-slow) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-tool-run-body,
+  .klide-tool-run-body > *,
+  .klide-tool-run-body[data-open="true"] > * {
+    transition: none;
+  }
+}
+
 .klide-tool-result-row > summary::-webkit-details-marker,
 .klide-tool-result-row > summary::marker {
   display: none;

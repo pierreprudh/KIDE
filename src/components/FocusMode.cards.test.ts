@@ -9,12 +9,11 @@ import { resumeMark } from "./FocusMode";
 
 describe("resume card mark", () => {
   it("lets the delegate lead, and names the maker beside it", () => {
-    // The CLI stores the `default` sentinel far more often than a model id, and
-    // there is no second fact to add when it does.
-    expect(resumeMark("default", "claude-code")).toMatchObject({
-      label: "Claude Code",
-      bare: true,
-    });
+    // The CLI stores the `default` sentinel far more often than a model id —
+    // and the maker is still knowable when it does, because Claude Code runs
+    // nothing but Anthropic's models. Drawing the pair only for the turns that
+    // happened to pin an id made one agent wear two different marks.
+    expect(resumeMark("default", "claude-code").label).toBe("Claude Code · Anthropic");
     // When the id does name a maker, the CLI no longer erases it: OpenCode
     // drives ~30 other makers' models, so "an OpenCode conversation" alone
     // leaves out what actually replied.

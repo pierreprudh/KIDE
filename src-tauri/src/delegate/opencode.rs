@@ -616,7 +616,7 @@ fn message_text(parts: &[serde_json::Value]) -> Option<(String, Vec<RunToolCall>
                 let name = part.get("tool").and_then(|n| n.as_str()).unwrap_or("tool");
                 tools.push(RunToolCall {
                     name: name.to_string(),
-                    summary: None,
+                    ..Default::default()
                 });
             }
             _ => {}

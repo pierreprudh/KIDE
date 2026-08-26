@@ -11,6 +11,7 @@
 
 import type { AgentEvent } from "../../agent/types";
 import { foldAgentEvents, foldedToMsgs } from "../../agent/foldEvents";
+import type { RunMessage } from "../../runs";
 import type { Conversation, Msg } from "./types";
 
 /**
@@ -150,4 +151,56 @@ export function eventsToConversation(
     updatedAt: typeof last?.ts === "number" ? last.ts : Date.now(),
     createdAt: typeof first?.ts === "number" ? first.ts : undefined,
   };
+}
+
+/**
+ * A *delegate* run's transcript → panel messages.
+ *
+ * The other direction in this file replays Klide's own events; this one
+ * replays what another CLI wrote about itself, and the rule is the same: show
+ * the work, not a summary of it. A tool call arrives with the arguments it was
+ * given, and its result — which the CLI recorded one message later — comes
+ * back as its own row underneath, exactly as a live observed call folds. A
+ * name on its own renders as a column of identical "Bash" rows.
+ *
+ * `observedBy` is the honest half. A delegate ran these itself, under its own
+ * permission mode: no capability, no prompt, no diff review from Klide. The
+ * rows say so, and must, or a reader — human, or a validation counter — takes
+ * a delegate's Bash for a command Klide verified.
+ */
+export function runMessagesToMsgs(messages: RunMessage[], observedBy?: string): Msg[] {
+  const out: Msg[] = [];
+  for (const m of messages) {
+    if (m.role === "user") {
+      out.push({ role: "user", content: m.text });
+      continue;
+    }
+    const tools = (m.tools ?? []).filter((t) => Boolean(t.name));
+    out.push({
+      role: "assistant",
+      content: m.text,
+      ...(tools.length > 0
+        ? {
+            toolCalls: tools.map((t) => ({
+              id: t.id,
+              name: t.name,
+              // The row derives its own one-line label from these. The
+              // transcript carries arguments, never a rendered string.
+              args: t.input,
+            })),
+          }
+        : {}),
+    });
+    for (const t of tools) {
+      if (!t.result) continue;
+      out.push({
+        role: "tool",
+        content: t.ok === false ? `Error: ${t.result}` : t.result,
+        toolName: t.name,
+        ...(t.id ? { toolCallId: t.id } : {}),
+        ...(observedBy ? { observedBy } : {}),
+      });
+    }
+  }
+  return out;
 }

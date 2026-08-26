@@ -1,0 +1,102 @@
+// Consecutive tool work, folded into one row you can open.
+//
+// A delegate CLI writes one message per tool call, so a stretch of work that
+// reads as a single step — "look around, then answer" — arrives as fifteen
+// separate messages. Rendered one per line they push the actual conversation
+// off the screen: the answer is what the reader came for, and it sits under a
+// column of `Bash` rows that are only interesting when something went wrong.
+//
+// So a run of them collapses to a single line, and opening it gives back
+// exactly the rows that were there before. The rule for what belongs to a run
+// is deliberately narrow: a message counts only if it carries tool work and
+// *no prose*. The moment the agent says something, the run ends — a sentence
+// between two tool calls is the agent explaining itself, and burying it would
+// cost more than the tidiness is worth.
+
+import type { Msg } from "./types";
+
+/** One stretch of uninterrupted tool work. `end` is exclusive. */
+export type ToolRun = {
+  start: number;
+  end: number;
+  /** How many tool calls it made — not how many messages it took. */
+  calls: number;
+  /** Distinct tool names, in the order they first appear. */
+  names: string[];
+};
+
+/** Below this a run is left alone: two rows are not a wall, and hiding them
+ *  behind a summary costs a click to learn less than the rows already said. */
+export const MIN_STACKED_CALLS = 3;
+
+/** Whether a message is tool work and nothing else. An assistant turn that
+ *  also speaks is prose with tool rows attached, not part of a run. */
+function isToolWork(m: Msg): boolean {
+  if (m.role === "tool") return true;
+  return m.role === "assistant" && !!m.toolCalls?.length && m.content.trim() === "";
+}
+
+function callsIn(m: Msg): number {
+  return m.role === "assistant" ? m.toolCalls?.length ?? 0 : 0;
+}
+
+function namesIn(m: Msg): string[] {
+  if (m.role === "assistant") return (m.toolCalls ?? []).map((t) => t.name);
+  return m.role === "tool" && m.toolName ? [m.toolName] : [];
+}
+
+/**
+ * The stackable runs in a conversation, in order. Runs shorter than
+ * `MIN_STACKED_CALLS` are not returned at all — the caller renders those
+ * messages exactly as it always did.
+ */
+export function groupToolRuns(msgs: Msg[]): ToolRun[] {
+  const runs: ToolRun[] = [];
+  let start = -1;
+  const flush = (end: number) => {
+    if (start < 0) return;
+    let calls = 0;
+    const names: string[] = [];
+    for (let i = start; i < end; i++) {
+      calls += callsIn(msgs[i]);
+      for (const name of namesIn(msgs[i])) {
+        if (!names.includes(name)) names.push(name);
+      }
+    }
+    // A run of results with no calls in view (the calls were compacted away)
+    // is still a run — count the rows so the summary is never "0 tool calls".
+    if (calls === 0) calls = end - start;
+    if (calls >= MIN_STACKED_CALLS) runs.push({ start, end, calls, names });
+    start = -1;
+  };
+  for (let i = 0; i < msgs.length; i++) {
+    if (isToolWork(msgs[i])) {
+      if (start < 0) start = i;
+      continue;
+    }
+    flush(i);
+  }
+  flush(msgs.length);
+  return runs;
+}
+
+/** The run a message index falls in, or null. Built once per render so the
+ *  message loop can answer the question in constant time. */
+export function toolRunIndex(runs: ToolRun[]): (index: number) => ToolRun | null {
+  const byIndex = new Map<number, ToolRun>();
+  for (const run of runs) {
+    for (let i = run.start; i < run.end; i++) byIndex.set(i, run);
+  }
+  return (index) => byIndex.get(index) ?? null;
+}
+
+/** What the collapsed row says. Three names is enough to tell one run from
+ *  another; past that the count is the information. */
+export function toolRunLabel(run: ToolRun): { count: string; names: string } {
+  const shown = run.names.slice(0, 3);
+  const rest = run.names.length - shown.length;
+  return {
+    count: `${run.calls} tool call${run.calls === 1 ? "" : "s"}`,
+    names: rest > 0 ? `${shown.join(", ")} +${rest}` : shown.join(", "),
+  };
+}

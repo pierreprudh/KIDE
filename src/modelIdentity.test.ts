@@ -80,7 +80,6 @@ describe("conversationMark", () => {
   });
 
   it("leads with the CLI for a delegate thread, whatever it ran", () => {
-    expect(conversationMark("default", "claude-code", 24)?.label).toBe("Claude Code");
     expect(conversationMark("opencode-go/kimi-k3", "opencode", 24)?.label).toBe(
       "OpenCode · Kimi",
     );
@@ -89,5 +88,27 @@ describe("conversationMark", () => {
   it("has nothing to draw when neither the model nor the provider is known", () => {
     expect(conversationMark("unknown-model", null, 15)).toBeNull();
     expect(conversationMark(null, undefined, 15)).toBeNull();
+  });
+});
+
+describe("a delegate whose catalogue is one house", () => {
+  it("names its maker even when the run pinned no model", () => {
+    // `default` is "no --model flag, let the CLI choose" — an ordinary way to
+    // run one, and it names no model. The maker is still knowable from the CLI.
+    expect(conversationMark("default", "claude-code", 22)?.label).toBe("Claude Code · Anthropic");
+    expect(conversationMark(null, "codex", 22)?.label).toBe("Codex · OpenAI");
+  });
+
+  it("still prefers what the turn actually recorded", () => {
+    expect(conversationMark("claude-opus-5", "claude-code", 22)?.label).toBe(
+      "Claude Code · Anthropic",
+    );
+  });
+
+  it("leaves a multi-house delegate alone, having nothing true to draw", () => {
+    // OpenCode's catalogue is other makers' models: with no model id there is
+    // no maker to name, and inventing one would be a claim about the run.
+    expect(conversationMark("default", "opencode", 22)?.label).toBe("OpenCode");
+    expect(conversationMark("kimi-k2", "opencode", 22)?.label).toBe("OpenCode · Kimi");
   });
 });
