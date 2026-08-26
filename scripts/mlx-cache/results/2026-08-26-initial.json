@@ -1,0 +1,92 @@
+{
+  "model_request": "default_model",
+  "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+  "repeats": 3,
+  "samples": [
+    {
+      "policy": "rewrite",
+      "iteration": 1,
+      "warm": {
+        "ttft_ms": null,
+        "request_ms": 5945.76,
+        "prompt_tokens": 5637,
+        "cached_tokens": 3,
+        "completion_tokens": 8,
+        "text": ""
+      },
+      "next": {
+        "ttft_ms": 3759.02,
+        "request_ms": 4028.94,
+        "prompt_tokens": 5697,
+        "cached_tokens": 2649,
+        "completion_tokens": 8,
+        "text": "The task \"Inspect fixture.txt\" ("
+      }
+    },
+    {
+      "policy": "append",
+      "iteration": 1,
+      "warm": {
+        "ttft_ms": null,
+        "request_ms": 6067.31,
+        "prompt_tokens": 5638,
+        "cached_tokens": 6,
+        "completion_tokens": 8,
+        "text": ""
+      },
+      "next": {
+        "ttft_ms": 549.5,
+        "request_ms": 845.51,
+        "prompt_tokens": 5716,
+        "cached_tokens": 5634,
+        "completion_tokens": 8,
+        "text": "The task \"Inspect fixture.txt\" has"
+      }
+    },
+    {
+      "policy": "append",
+      "iteration": 2,
+      "warm": {
+        "ttft_ms": null,
+        "request_ms": 6407.71,
+        "prompt_tokens": 5638,
+        "cached_tokens": 5,
+        "completion_tokens": 8,
+        "text": ""
+      },
+      "next": {
+        "ttft_ms": 568.02,
+        "request_ms": 836.9,
+        "prompt_tokens": 5716,
+        "cached_tokens": 5634,
+        "completion_tokens": 8,
+        "text": "The task \"Inspect fixture.txt\" has"
+      }
+    },
+    {
+      "policy": "rewrite",
+      "iteration": 2,
+      "warm": {
+        "ttft_ms": null,
+        "request_ms": 6949.37,
+        "prompt_tokens": 5637,
+        "cached_tokens": 5,
+        "completion_tokens": 8,
+        "text": ""
+      },
+      "next": {
+        "ttft_ms": 5612.41,
+        "request_ms": 6137.63,
+        "prompt_tokens": 5697,
+        "cached_tokens": 2649,
+        "completion_tokens": 8,
+        "text": "The task \"Inspect fixture.txt\" ("
+      }
+    }
+  ],
+  "status_smoke": {},
+  "scope": "Synthetic Harness replay; not a coding-quality or end-to-end task benchmark",
+  "complete": false,
+  "stop_reason": "Stopped during trial 3 after server logs reported 10 cache entries totaling 7.54 GB and requests slowed sharply. Status smoke checks did not run.",
+  "launch_cache_budget_applied": false
+}

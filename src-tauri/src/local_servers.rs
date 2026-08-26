@@ -56,7 +56,20 @@ fn local_server_command(provider: &str, model: &str) -> Result<(String, Vec<Stri
                 return mlx_server_command("mlx_vlm.server", args);
             }
             // Llama / Qwen / gemma-2 presets load fine in the lighter mlx_lm.
-            mlx_server_command("mlx_lm.server", vec!["--model".to_string(), model])
+            // Its default cache retains up to ten conversation prefixes, which
+            // exceeded 7 GB in a short replay on a 16 GB Mac. Budget reuse
+            // separately from the active context: this evicts cached prefixes,
+            // not tokens from the model's current conversation. mlx-lm 0.31.3
+            // supports this flag; do not forward it to mlx-vlm.
+            mlx_server_command(
+                "mlx_lm.server",
+                vec![
+                    "--model".to_string(),
+                    model,
+                    "--prompt-cache-bytes".to_string(),
+                    "1GB".to_string(),
+                ],
+            )
         }
         _ => Err(format!("{provider} is not a local server provider")),
     }
@@ -441,15 +454,18 @@ mod tests {
         ] {
             let (cmd, args) = local_server_command("mlx", model).unwrap();
             assert!(cmd.contains("mlx_vlm.server") || args.contains(&"mlx_vlm.server".to_string()));
+            assert!(!args.contains(&"--prompt-cache-bytes".to_string()));
         }
 
         // Llama / gemma-2 load fine in the lighter mlx_lm.server.
         for model in [
             "mlx-community/Llama-3.1-8B-Instruct-4bit",
+            "Qwen/Qwen3-4B-MLX-4bit",
             "mlx-community/gemma-2-9b-it-4bit",
         ] {
             let (cmd, args) = local_server_command("mlx", model).unwrap();
             assert!(cmd.contains("mlx_lm.server") || args.contains(&"mlx_lm.server".to_string()));
+            assert!(args.windows(2).any(|pair| pair == ["--prompt-cache-bytes", "1GB"]));
         }
     }
 
