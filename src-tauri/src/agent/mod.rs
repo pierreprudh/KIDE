@@ -125,6 +125,28 @@ pub(crate) fn run_is_active(app: &tauri::AppHandle, run_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The project's approved commands, but only for a provider that needs them.
+///
+/// A delegate CLI runs its own permission layer and a headless turn cannot
+/// answer it, so it gets the approvals the user already granted. Every other
+/// provider has its tools dispatched by Klide, which asks properly — handing it
+/// an allowlist would mean nothing, so the disk is not even read.
+fn delegate_allowed_commands(
+    provider: &str,
+    runs_dir: &std::path::Path,
+    workspace_root: Option<&str>,
+) -> Vec<String> {
+    if !crate::providers::is_subscription_provider(provider) {
+        return Vec::new();
+    }
+    let Some(root) = workspace_root else {
+        return Vec::new();
+    };
+    // A missing or unreadable allowlist is "nothing approved yet", not a failed
+    // turn: the delegate still runs, just limited to its own safe set.
+    command_allowlist::list(runs_dir, root).unwrap_or_default()
+}
+
 struct ProviderTurnRequest {
     provider: String,
     model: String,
@@ -134,6 +156,10 @@ struct ProviderTurnRequest {
     /// This run's id, so a subscription CLI can continue the session it opened
     /// for this conversation instead of starting a new one per turn.
     run_id: Option<String>,
+    /// Commands the project has already approved, read once per turn and handed
+    /// to a delegate CLI so a headless turn can run what the user already said
+    /// yes to. Empty for every provider whose tools Klide dispatches itself.
+    allowed_commands: Vec<String>,
     num_ctx: Option<usize>,
     num_predict: Option<usize>,
     reflection_level: Option<String>,
@@ -164,6 +190,7 @@ impl AgentProviderCaller for RealProviderCaller {
                     tools: request.tools,
                     workspace_root: request.workspace_root,
                     run_id: request.run_id,
+                    allowed_commands: request.allowed_commands,
                     num_ctx: request.num_ctx,
                     num_predict: request.num_predict,
                     reflection_level: request.reflection_level,
@@ -1493,6 +1520,11 @@ async fn run_agent_loop(
                 tools: turn_tools.clone(),
                 workspace_root: request.workspace_root.clone(),
                 run_id: Some(id.clone()),
+                allowed_commands: delegate_allowed_commands(
+                    &request.provider,
+                    &runs_dir,
+                    request.workspace_root.as_deref(),
+                ),
                 num_ctx: request.num_ctx,
                 num_predict: reply_budget_override.or(request.num_predict),
                 reflection_level: request.reflection_level.clone(),
@@ -3430,6 +3462,7 @@ mod provider_caller_tests {
                 tools: Some(Vec::new()),
                 workspace_root: Some("/tmp".to_string()),
                 run_id: None,
+                allowed_commands: Vec::new(),
                 num_ctx: Some(1024),
                 num_predict: Some(128),
                 reflection_level: Some("low".to_string()),

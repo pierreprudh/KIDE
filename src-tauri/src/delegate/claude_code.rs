@@ -3,13 +3,37 @@ use super::runs::{
     tool_file_path, AgentRun, RunMessage, RunToolCall,
 };
 use super::chat_stream::{message_blocks, result_text, StreamItem};
-use super::{shell_quote, Delegate, RunCandidate, RunParser};
+use super::{shell_quote, ChatSpec, Delegate, RunCandidate, RunParser};
 use std::collections::HashSet;
 
 /// Claude Code — Anthropic's CLI. Its TUI accepts the task as the first
 /// positional arg directly, so no subcommand is needed. Sessions land in
 /// `~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`.
 pub struct ClaudeCode;
+
+/// Klide's approved commands as Claude Code tool permissions.
+///
+/// A pattern is passed through as the Bash tool's argument — `gh *` becomes
+/// `Bash(gh *)`, an exact `npm test` becomes `Bash(npm test)` — because the two
+/// wildcard vocabularies already agree on `*`. An empty list adds no flag at
+/// all rather than an empty one, which the CLI would read as "allow nothing".
+fn allowed_tools_args(commands: &[String]) -> Vec<String> {
+    let specs: Vec<String> = commands
+        .iter()
+        .map(|c| c.trim())
+        .filter(|c| !c.is_empty())
+        // A `)` in a pattern would close the permission spec early and change
+        // what it means, so such a pattern is dropped rather than reinterpreted.
+        .filter(|c| !c.contains(')'))
+        .map(|c| format!("Bash({c})"))
+        .collect();
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec!["--allowedTools".to_string()];
+    args.extend(specs);
+    args
+}
 
 impl Delegate for ClaudeCode {
     fn id(&self) -> &'static str {
@@ -57,13 +81,8 @@ impl Delegate for ClaudeCode {
     /// Claude Code reports every step of a headless turn as JSONL — assistant
     /// text, its own `tool_use` calls, the matching `tool_result`s, a closing
     /// cost line. `--verbose` is required for `stream-json` under `-p`.
-    fn chat_stream_args(
-        &self,
-        cwd: &str,
-        model: &str,
-        resume: Option<&str>,
-    ) -> Option<Vec<String>> {
-        let mut args = self.chat_args(cwd, model).ok()?;
+    fn chat_stream_args(&self, cwd: &str, spec: &ChatSpec) -> Option<Vec<String>> {
+        let mut args = self.chat_args(cwd, spec.model).ok()?;
         // Same invocation, structured output: replace the *value* of the
         // existing `--output-format` rather than appending a second, conflicting
         // one. Located by its flag, not by searching for the string "text" —
@@ -82,9 +101,16 @@ impl Delegate for ClaudeCode {
         // starting a new one. Without it every turn is a stranger: Claude Code
         // re-reads a whole transcript pasted onto stdin, keeps none of its own
         // context or prompt cache, and files a separate run on disk per message.
-        if let Some(session) = resume.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(session) = spec.resume.map(str::trim).filter(|s| !s.is_empty()) {
             args.extend(["--resume".to_string(), session.to_string()]);
         }
+        // Claude Code auto-allows a small safe set of commands and refuses the
+        // rest — `echo` runs, `gh pr list` comes back "This command requires
+        // approval" — and a headless turn has no terminal to approve it in, so
+        // the delegate could not run anything real. `--allowedTools` carries
+        // over the approvals the project already granted in Klide, which is
+        // narrower than the alternative of dropping the permission mode.
+        args.extend(allowed_tools_args(spec.allowed_commands));
         Some(args)
     }
 
@@ -766,9 +792,14 @@ mod tests {
         );
     }
 
+    /// One turn's terms, with only what a test cares about spelled out.
+    fn spec<'a>(model: &'a str, resume: Option<&'a str>, allowed: &'a [String]) -> ChatSpec<'a> {
+        ChatSpec { model, resume, allowed_commands: allowed }
+    }
+
     #[test]
     fn stream_args_swap_the_format_value_and_add_verbose() {
-        let args = ClaudeCode.chat_stream_args("/tmp/ws", "claude-sonnet-5", None).unwrap();
+        let args = ClaudeCode.chat_stream_args("/tmp/ws", &spec("claude-sonnet-5", None, &[])).unwrap();
         assert_eq!(
             args.join(" "),
             "-p --model claude-sonnet-5 --permission-mode acceptEdits \
@@ -783,7 +814,7 @@ mod tests {
     fn stream_args_rewrite_the_flag_value_not_a_model_named_text() {
         // The value is found via `--output-format`, so a model argument that
         // happens to be the word "text" survives untouched.
-        let args = ClaudeCode.chat_stream_args("/tmp/ws", "text", None).unwrap();
+        let args = ClaudeCode.chat_stream_args("/tmp/ws", &spec("text", None, &[])).unwrap();
         assert_eq!(
             args.join(" "),
             "-p --model text --permission-mode acceptEdits \
@@ -794,15 +825,53 @@ mod tests {
     #[test]
     fn stream_args_resume_the_named_session() {
         let args = ClaudeCode
-            .chat_stream_args("/tmp/ws", "claude-sonnet-5", Some("abc-123"))
+            .chat_stream_args("/tmp/ws", &spec("claude-sonnet-5", Some("abc-123"), &[]))
             .unwrap();
         assert!(args.windows(2).any(|w| w == ["--resume", "abc-123"]));
         // A blank id is not a session — it must not produce a bare `--resume`,
         // which would make the CLI open its interactive picker.
         let args = ClaudeCode
-            .chat_stream_args("/tmp/ws", "claude-sonnet-5", Some("  "))
+            .chat_stream_args("/tmp/ws", &spec("claude-sonnet-5", Some("  "), &[]))
             .unwrap();
         assert!(!args.contains(&"--resume".to_string()));
+    }
+
+    #[test]
+    fn approved_commands_become_bash_tool_permissions() {
+        let allowed = vec!["gh *".to_string(), "npm test".to_string()];
+        let args = ClaudeCode
+            .chat_stream_args("/tmp/ws", &spec("", None, &allowed))
+            .unwrap();
+        let at = args.iter().position(|a| a == "--allowedTools").expect("flag");
+        assert_eq!(&args[at + 1..at + 3], ["Bash(gh *)", "Bash(npm test)"]);
+    }
+
+    #[test]
+    fn nothing_approved_adds_no_permission_flag() {
+        // An empty `--allowedTools` reads as "allow nothing", which is worse
+        // than leaving the CLI on its own default set.
+        let args = ClaudeCode
+            .chat_stream_args("/tmp/ws", &spec("", None, &[]))
+            .unwrap();
+        assert!(!args.contains(&"--allowedTools".to_string()));
+        // Blank entries are not approvals either.
+        let blank = vec!["  ".to_string()];
+        let args = ClaudeCode
+            .chat_stream_args("/tmp/ws", &spec("", None, &blank))
+            .unwrap();
+        assert!(!args.contains(&"--allowedTools".to_string()));
+    }
+
+    #[test]
+    fn a_pattern_that_would_close_the_spec_early_is_dropped() {
+        // `Bash(gh pr list)`)` would mean something other than the approval the
+        // user gave, so the pattern is refused rather than reinterpreted.
+        let allowed = vec!["gh pr) --hack".to_string(), "cargo *".to_string()];
+        let args = ClaudeCode
+            .chat_stream_args("/tmp/ws", &spec("", None, &allowed))
+            .unwrap();
+        let at = args.iter().position(|a| a == "--allowedTools").expect("flag");
+        assert_eq!(&args[at + 1..], ["Bash(cargo *)"]);
     }
 
     #[test]

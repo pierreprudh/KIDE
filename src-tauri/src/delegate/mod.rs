@@ -36,6 +36,31 @@ pub use runs::{AgentRun, RunCandidate, RunMessage};
 /// CLI itself (e.g. Claude Code sessions always opening on Sonnet).
 pub const CLI_DEFAULT_MODEL: &str = "default";
 
+/// What one headless turn needs beyond its working directory.
+///
+/// These arrived one at a time — a model, then a session to resume, then the
+/// commands the project has already approved — and a fourth positional
+/// argument is where an argument list stops being readable. Grouping them also
+/// says the right thing: they are one turn's terms, decided by the caller, and
+/// an adapter takes what its CLI can express and ignores the rest.
+pub struct ChatSpec<'a> {
+    /// Empty means "no model picked" — the adapter omits its model flag so the
+    /// CLI uses its own default.
+    pub model: &'a str,
+    /// A session this conversation already opened, to continue instead of
+    /// replacing. See [`Delegate::resumes_sessions`].
+    pub resume: Option<&'a str>,
+    /// Commands this project has already approved in Klide
+    /// (`agent::command_allowlist`), exact or wildcard.
+    ///
+    /// A delegate runs its own permission layer, and a headless turn has no
+    /// terminal to answer it in — so anything outside the CLI's own safe set is
+    /// refused outright, with no prompt and no way to say yes. Handing over the
+    /// approvals the user already granted is what makes the turn able to work
+    /// without widening the posture to "allow everything".
+    pub allowed_commands: &'a [String],
+}
+
 pub trait Delegate: Sync {
     /// Klide's provider id for this delegate, e.g. "claude-code". This is the
     /// `source` field on every Run the adapter parses.
@@ -148,19 +173,14 @@ pub trait Delegate: Sync {
     /// only" and the caller falls back to [`Delegate::chat_args`], so a CLI
     /// without a structured mode keeps working — it just shows no tool rows.
     ///
-    /// `resume` is a session id this CLI reported earlier (as
+    /// `spec.resume` is a session id this CLI reported earlier (as
     /// [`StreamItem::Session`](chat_stream::StreamItem::Session)) for the same
     /// conversation. When it is `Some`, the adapter must continue that session
     /// rather than open a new one — that is what lets the caller send only the
     /// newest message instead of re-folding the whole transcript into every
     /// turn. An adapter that cannot resume ignores it and keeps working; the
     /// caller re-sends the full history whenever no adapter took the id.
-    fn chat_stream_args(
-        &self,
-        _cwd: &str,
-        _model: &str,
-        _resume: Option<&str>,
-    ) -> Option<Vec<String>> {
+    fn chat_stream_args(&self, _cwd: &str, _spec: &ChatSpec) -> Option<Vec<String>> {
         None
     }
 
@@ -195,10 +215,9 @@ pub trait Delegate: Sync {
     fn chat_stream_invocation(
         &self,
         cwd: &str,
-        model: &str,
-        resume: Option<&str>,
+        spec: &ChatSpec,
     ) -> Option<Result<tokio::process::Command, String>> {
-        let args = self.chat_stream_args(cwd, model, resume)?;
+        let args = self.chat_stream_args(cwd, spec)?;
         Some(crate::cli::resolve_command(self.binary()).map(|cli| {
             let mut command = tokio::process::Command::new(cli);
             command.current_dir(cwd).args(args);

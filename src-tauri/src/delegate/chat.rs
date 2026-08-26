@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
-use super::Delegate;
+use super::{ChatSpec, Delegate};
 use crate::providers::{text_from_message, AiChatResponse, ObservedToolActivity, StreamChunk};
 
 /// Hard ceiling for one headless delegate turn. See `run_cli_with_stdin`.
@@ -76,6 +76,7 @@ pub async fn run_subscription_chat(
     messages: Vec<serde_json::Value>,
     workspace_root: Option<String>,
     run_id: Option<String>,
+    allowed_commands: Vec<String>,
     on_chunk: &Channel<StreamChunk>,
 ) -> Result<AiChatResponse, String> {
     let cwd = workspace_root.unwrap_or_else(|| ".".to_string());
@@ -111,7 +112,12 @@ pub async fn run_subscription_chat(
     // Prefer the CLI's structured stream when it has one: the prose-only mode
     // reports an answer with no visible work behind it, and a delegate's work
     // is most of what the user wants to see.
-    let content = match adapter.chat_stream_invocation(&cwd, model, resume.as_deref()) {
+    let spec = ChatSpec {
+        model,
+        resume: resume.as_deref(),
+        allowed_commands: &allowed_commands,
+    };
+    let content = match adapter.chat_stream_invocation(&cwd, &spec) {
         Some(command) => {
             let emitted = AtomicBool::new(false);
             match run_cli_streaming(
@@ -135,8 +141,9 @@ pub async fn run_subscription_chat(
                         forget_session(key);
                     }
                     let _ = err;
+                    let cold = ChatSpec { resume: None, ..spec };
                     let command = adapter
-                        .chat_stream_invocation(&cwd, model, None)
+                        .chat_stream_invocation(&cwd, &cold)
                         .ok_or_else(|| format!("{label} has no structured mode"))??;
                     run_cli_streaming(
                         adapter,
