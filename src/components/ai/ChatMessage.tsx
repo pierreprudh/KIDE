@@ -245,6 +245,112 @@ function ToolCallRow({ name, args, repeated = false }: { name: string; args: unk
   );
 }
 
+// The one row a stretch of tool work collapses to. It wears the same icon and
+// mono type as the rows it stands in for, so opening it changes the amount on
+// screen and nothing else — a summary that looked like a different kind of
+// object would read as a new concept rather than as the same rows, folded.
+export function ToolRunRow({
+  count,
+  names,
+  expanded,
+  onToggle,
+}: {
+  count: string;
+  names: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        width: "100%",
+        // The row that hosts this owns its spacing and its gutter — a margin
+        // here would push the text off the mark sitting beside it. The 22px
+        // box matches that mark so the two centre on the same line.
+        margin: 0,
+        minHeight: 22,
+        padding: 0,
+        border: "none",
+        background: "transparent",
+        cursor: "pointer",
+        textAlign: "left",
+        minWidth: 0,
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.opacity = "0.82";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.opacity = "1";
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          display: "grid",
+          placeItems: "center",
+          color: "var(--fg-subtle)",
+          flexShrink: 0,
+          // Closed points down, at the rows it will bring; open points up, at
+          // the row that will put them away — and it gets there by flipping,
+          // never by turning. Down and up are 180° apart, so a rotation sweeps
+          // the tip through pointing-right on every click: a lateral arc, on a
+          // control that has not moved. Interpolating scaleY from 1 to -1
+          // passes through a flat line instead, so the mark changes direction
+          // without travelling.
+          transform: expanded ? "rotate(90deg) scaleY(-1)" : "rotate(90deg) scaleY(1)",
+          // The same duration and curve as the box it opens: a chevron that
+          // finishes before the rows do reads as two separate events.
+          transition: "transform var(--motion-slow) var(--ease-out)",
+        }}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+      </span>
+      <span
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 11.5,
+          color: "var(--fg-strong)",
+          fontWeight: 500,
+          flexShrink: 0,
+        }}
+      >
+        {count}
+      </span>
+      {names && (
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 11.5,
+            color: "var(--fg-subtle)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {names}
+        </span>
+      )}
+    </button>
+  );
+}
+
 function stripToolNarration(content: string, hasToolCalls: boolean): string {
   if (!hasToolCalls) return content;
   return content

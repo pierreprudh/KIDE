@@ -75,7 +75,8 @@ import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } fr
 import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
-import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
+import { renderMessageBody, CompactionRow, ToolRunRow } from "./ai/ChatMessage";
+import { groupToolRuns, toolRunLabel } from "./ai/toolRuns";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
 import { mayActivateModel } from "./ai/modelActivationPolicy";
@@ -3696,7 +3697,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             )}
           </div>
         )}
-        {msgs.map((m, i) => {
+        {stackToolRuns(msgs.map((m, i) => {
           // "Last" means the tail of the *exchange*, not of the array. Turns
           // typed ahead sit below the answer they're waiting on, and counting
           // them here would take the caret off a streaming answer, stop a
@@ -3907,7 +3908,12 @@ This user request requires workspace inspection. Before answering, you MUST call
           // message after a user message carries Kit's K mark; the rest get a
           // 22px spacer so bodies stay column-aligned with tool rows.
           const prevMsg = msgs[i - 1];
-          const isResponseStart = !prevMsg || (prevMsg.role !== "assistant" && prevMsg.role !== "tool");
+          const isResponseStart =
+            (!prevMsg || (prevMsg.role !== "assistant" && prevMsg.role !== "tool")) &&
+            // …unless a folded run's header is already wearing this turn's
+            // mark, in which case this row draws the spacer and keeps the
+            // column aligned without a second one.
+            !toolRunMarkOwners.has(i);
           // Per-message actions belong on the *final* answer of a response, not
           // on intermediate narration turns ("OK, let me look…") that are
           // followed by more tool calls — otherwise the icon row appears in the
@@ -3985,7 +3991,7 @@ This user request requires workspace inspection. Before answering, you MUST call
               </div>
             </div>
           );
-        })}
+        }))}
         {/* "Working" heartbeat — shown while a run is in progress but nothing
             else is animating. Covers the gap where the model is generating the
             next turn (esp. providers that don't stream token deltas, so there's
