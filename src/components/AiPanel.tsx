@@ -723,11 +723,6 @@ export function AiPanel({
   // best available answer there, and it is a better one than the picker's
   // current pair: relabelling every old turn each time the model changes is
   // precisely what this stopped doing.
-  const threadMark = conversationMark(
-    conversationSession.originModel ?? model,
-    conversationSession.originProvider ?? provider,
-    22,
-  );
   // Who asked, drawn once so it can sit against every user turn: a thread with
   // a mark on one side only reads as a log of answers, and this is a
   // discussion — two participants, each turn attributed to the one who made it.
@@ -736,10 +731,26 @@ export function AiPanel({
   // both go: the bubbles keep the right edge to themselves.
   const [showAskerAvatar] = useSetting(SETTINGS.showAskerAvatar);
   /** The mark for one response: what produced THAT turn. A thread continued on
-   *  another model shows both, each against the turn it actually ran. */
+   *  another model shows both, each against the turn it actually ran.
+   *
+   *  Each half falls back on its own. The rule used to be all-or-nothing —
+   *  a turn missing *both* halves borrowed the thread's, a turn missing one
+   *  got a null in its place — so a turn stamped with a runner and no model
+   *  drew the runner alone while the turn under it drew the pair. Same
+   *  conversation, same agent, two different marks; nothing about the run had
+   *  changed, only what that turn happened to record. Replayed CLI transcripts
+   *  are the common case: they know which delegate produced them and never a
+   *  per-turn model.
+   *
+   *  The thread's origin is the right filler, and a better one than the
+   *  picker's current pair: relabelling every old turn each time the model
+   *  changes is precisely what stamping stopped doing. */
   function responseMark(stamp: { provider?: ProviderId; model?: string }) {
-    if (!stamp.model && !stamp.provider) return threadMark;
-    return conversationMark(stamp.model ?? null, stamp.provider ?? provider, 22);
+    return conversationMark(
+      stamp.model ?? conversationSession.originModel ?? model,
+      stamp.provider ?? conversationSession.originProvider ?? provider,
+      22,
+    );
   }
   const conversationGitMeta = useMemo(
     () => ({
@@ -1090,6 +1101,113 @@ export function AiPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panelId, delegateSession, currentId]);
+  // A stretch of uninterrupted tool work folds into one row (see toolRuns.ts).
+  // The message loop below is untouched: this rewrites its *output*, dropping a
+  // closed run's nodes and putting a summary in their place. Doing it there
+  // rather than inside the loop keeps one renderer for a tool row — the rows
+  // you get back on open are the very same elements, not a second drawing of
+  // them.
+  const toolRuns = useMemo(() => groupToolRuns(msgs), [msgs]);
+  // Which messages have handed their mark to a folded row's header. A turn
+  // that opens with tool work keeps its mark on the header in *both* states —
+  // a mark that appears and disappears as you click reads as the row moving,
+  // and the eye follows the mark, not the text. The message underneath must
+  // therefore not draw a second one when the run opens.
+  const toolRunMarkOwners = useMemo(() => {
+    const owners = new Set<number>();
+    for (const run of toolRuns) {
+      const first = msgs[run.start];
+      const before = msgs[run.start - 1];
+      if (
+        first?.role === "assistant" &&
+        (!before || (before.role !== "assistant" && before.role !== "tool"))
+      ) {
+        owners.add(run.start);
+      }
+    }
+    return owners;
+  }, [toolRuns, msgs]);
+  const [openToolRuns, setOpenToolRuns] = useState<Set<number>>(() => new Set());
+  function toggleToolRun(start: number) {
+    setOpenToolRuns((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(start)) next.add(start);
+      return next;
+    });
+  }
+  function stackToolRuns(nodes: ReactNode[]): ReactNode[] {
+    if (toolRuns.length === 0) return nodes;
+    const out: ReactNode[] = [];
+    let cursor = 0;
+    for (const run of toolRuns) {
+      for (; cursor < run.start; cursor++) out.push(nodes[cursor]);
+      // Work still happening stays open. Collapsing a run the agent is in the
+      // middle of would hide the only thing moving on screen; it folds itself
+      // once the answer it was gathering for arrives.
+      const working = streaming && run.end === msgs.length;
+      const open = openToolRuns.has(run.start) || working;
+      const { count, names } = toolRunLabel(run);
+      // When a turn opens with tool work, the message wearing the agent's mark
+      // is the one this row folds away — and a response with no mark reads as
+      // nobody's. The row wears it instead, open or closed, and the message
+      // underneath stands down (`toolRunMarkOwners`).
+      const first = msgs[run.start];
+      const startsResponse = toolRunMarkOwners.has(run.start);
+      const mark = startsResponse && first.role === "assistant" ? responseMark(first) : null;
+      out.push(
+        <div
+          key={`tool-run-${run.start}`}
+          style={{ display: "flex", gap: 10, margin: startsResponse ? "14px 0 0" : "6px 0 0" }}
+        >
+          <div
+            aria-hidden="true"
+            style={{
+              flexShrink: 0,
+              width: 22,
+              height: 22,
+              marginTop: 1,
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            {startsResponse ? mark?.node ?? <KlideMark size={20} /> : null}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <ToolRunRow
+              count={count}
+              names={names}
+              expanded={open}
+              onToggle={() => toggleToolRun(run.start)}
+            />
+          </div>
+        </div>,
+      );
+      // The rows stay mounted either way and the wrapper animates its height
+      // (see `.klide-tool-run-body`). Mounting them only when open would make
+      // the close instant — there is nothing left to animate once the content
+      // is gone — and it saves nothing: the loop above already built them.
+      out.push(
+        <div
+          key={`tool-run-body-${run.start}`}
+          className="klide-tool-run-body"
+          data-open={open ? "true" : "false"}
+          // Not `aria-hidden`: the rows it hides hold focusable disclosure
+          // controls, and hiding a focusable element from assistive tech
+          // without taking it out of the tab order strands the keyboard on a
+          // control nobody can see. `inert` does both.
+          inert={!open}
+        >
+          <div>
+            {nodes.slice(run.start, run.end)}
+          </div>
+        </div>,
+      );
+      cursor = run.end;
+    }
+    for (; cursor < nodes.length; cursor++) out.push(nodes[cursor]);
+    return out;
+  }
+
   // Portalled to <body> like the composer popovers: the menu is taller than
   // the panel's clip region (`.floating-panel` is overflow: hidden), so an
   // in-tree absolute menu gets cut off and its own scrollbar never engages.
