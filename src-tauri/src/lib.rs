@@ -250,6 +250,12 @@ async fn ai_chat(
             messages,
             tools,
             workspace_root,
+            // A bare `ai_chat` is a one-shot (the summarizer); it has no
+            // conversation to continue.
+            run_id: None,
+            // A one-shot has no project approvals to carry: it is the
+            // summarizer, which asks the model for prose and runs no tools.
+            allowed_commands: Vec::new(),
             num_ctx,
             num_predict,
             reflection_level,

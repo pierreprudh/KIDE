@@ -240,6 +240,34 @@ Caveats baked in: old chatgpt-mode snapshots may hold stale refresh tokens → "
 - [x] Make Mission Control useful as a read-only transcript/log inspector.
 - [x] Shelve `gemini-cli` — dead stubs removed.
 
+## Focus delegate turns (shipped 2026-08-26, one gap parked)
+
+Focus runs a delegate CLI headless and renders it as ordinary Klide messages.
+Three fixes landed (`6c28a74`, `2e49d0a`, `adbcbf4`):
+
+- Session reuse — the session id the CLI reports is remembered per run id and
+  passed back as `claude --resume` / `opencode run -s`, so a turn sends only the
+  newest message instead of re-folding the transcript. Verified against the real
+  CLI: two turns, one session file, memory carried across.
+- The fold no longer repeats text a delegate's own tool card already split off.
+- The project command allowlist is carried into `--allowedTools Bash(<pattern>)`,
+  so a headless turn may run what the user already approved. Verified: `gh pr
+  list` was refused before, runs after.
+
+- [ ] **Parked gap** — nothing on the delegate path writes the command
+  allowlist; only an inline approval during a Klide Harness run does. A project
+  that has only ever used delegates therefore has an empty allowlist, and the
+  `--allowedTools` fix cannot be triggered. The closer is to surface a *blocked
+  delegate command* as an approval card writing to the same store this already
+  reads. Small, and it is what makes that commit reachable.
+- [ ] Codex and omp still have no `parse_stream_line`, so Focus shows their
+  prose with no tool rows. Claude Code and OpenCode have one.
+- [ ] Approvals are granted upfront for a turn rather than asked per call. The
+  per-call answer is Claude Code's `can_use_tool` control protocol (the "VS Code
+  extension design" idea in `Ideas.md` #8), not a widening of this flag.
+- [ ] A mode change made mid-conversation (Chat → Goal) lives in the system
+  message, which a resumed session never receives.
+
 ## Parking Lot
 
 - The earlier "Context Lens" idea (heuristic auto-injection of folder

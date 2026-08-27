@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ATTACH_ACCEPT,
   MAX_DOC_CHARS,
   MAX_IMAGE_BYTES,
   MAX_STAGED,
+  MAX_TOTAL_IMAGE_BYTES,
   classifyFile,
   isPhotoAttachment,
   stageFiles,
@@ -35,9 +37,30 @@ describe("classifyFile", () => {
     expect(classifyFile({ name: ".gitignore", type: "" })).toBe("document");
   });
 
+  it("refuses an image format no provider wire accepts", () => {
+    // A photo dropped from Finder on a Mac is routinely HEIC.
+    expect(classifyFile({ name: "IMG_4210.heic", type: "image/heic" })).toBe("other");
+    expect(classifyFile({ name: "scan.tiff", type: "image/tiff" })).toBe("other");
+    expect(classifyFile({ name: "icon.avif", type: "image/avif" })).toBe("other");
+    expect(classifyFile({ name: "shot.webp", type: "image/webp" })).toBe("photo");
+  });
+
   it("refuses what Klide has no wire for", () => {
     expect(classifyFile({ name: "spec.pdf", type: "application/pdf" })).toBe("other");
     expect(classifyFile({ name: "bundle.zip", type: "application/zip" })).toBe("other");
+  });
+});
+
+describe("ATTACH_ACCEPT", () => {
+  it("offers the picker exactly what staging accepts", () => {
+    const accept = ATTACH_ACCEPT.split(",");
+    expect(accept).toContain("image/png");
+    expect(accept).toContain("image/webp");
+    expect(accept).toContain(".md");
+    expect(accept).toContain(".rs");
+    // The formats no wire forwards must not be offered in the first place.
+    expect(ATTACH_ACCEPT).not.toContain("image/heic");
+    expect(ATTACH_ACCEPT).not.toContain("application/pdf");
   });
 });
 
@@ -95,6 +118,40 @@ describe("stageFiles", () => {
     );
     expect(attachments).toEqual([]);
     expect(notices[0].text).toContain("too large");
+  });
+
+  it("names the format when an image is the wrong kind of image", async () => {
+    const { attachments, notices } = await stageFiles(
+      [fake("IMG_4210.heic", "image/heic", "HEICDATA")],
+      { allowPhotos: true },
+    );
+    expect(attachments).toEqual([]);
+    expect(notices[0].text).toContain("PNG, JPEG, GIF or WebP");
+  });
+
+  it("caps the total image bytes one turn may carry", async () => {
+    // Each one clears the per-image cap; the third is what breaks the turn's
+    // total, so the cap has to be more than a per-file check.
+    const each = 5_000_000;
+    const { attachments, notices } = await stageFiles(
+      [
+        fake("a.png", "image/png", "A", each),
+        fake("b.png", "image/png", "B", each),
+        fake("c.png", "image/png", "C", each),
+      ],
+      { allowPhotos: true },
+    );
+    expect(attachments.map((a) => a.path)).toEqual(["a.png", "b.png"]);
+    expect(notices[0].text).toContain("of images");
+  });
+
+  it("counts images the composer already holds against that cap", async () => {
+    const { attachments, notices } = await stageFiles(
+      [fake("late.png", "image/png", "L", 1_000_000)],
+      { allowPhotos: true, alreadyImageBytes: MAX_TOTAL_IMAGE_BYTES },
+    );
+    expect(attachments).toEqual([]);
+    expect(notices[0].text).toContain("late.png");
   });
 
   it("stops at the staged ceiling, counting what the composer already holds", async () => {

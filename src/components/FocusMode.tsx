@@ -55,7 +55,7 @@ import {
 import { relativeTime, isSubsequence } from "./ai/utils";
 import type { Conversation } from "./ai/types";
 import type { AgentAttachment as Attachment, AgentMode, ProviderId } from "../agent/types";
-import { stageFiles } from "./ai/attachments";
+import { stageFiles, stagedImageBytes } from "./ai/attachments";
 import { AttachmentTray } from "./ai/AttachmentTray";
 import { notify } from "../toast";
 import { AUTONOMY_RUNGS, effectiveMode as effectiveModeFor } from "./ai/autonomyLadder";
@@ -1714,6 +1714,7 @@ function FocusComposer({
     const staged = await stageFiles(files, {
       allowPhotos: supportsVision,
       alreadyStaged: attachments.length,
+      alreadyImageBytes: stagedImageBytes(attachments),
     });
     for (const notice of staged.notices) notify(notice.text, { tone: notice.tone });
     if (staged.attachments.length) setAttachments((prev) => [...prev, ...staged.attachments]);

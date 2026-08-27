@@ -49,11 +49,22 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.7);
 }
 
+/** What one attached image costs in context. The real number is geometric
+ *  (Anthropic bills roughly `width * height / 750`, OpenAI tiles similarly),
+ *  and a data URI carries no dimensions — so a screenshot-sized flat estimate
+ *  stands in. Zero, which is what a photo used to cost here, made a vision
+ *  turn look free: the context meter under-read and auto-compaction waited
+ *  too long. */
+export const IMAGE_TOKEN_ESTIMATE = 1_300;
+
 export function messageTokenEstimate(m: Msg): number {
   let total = estimateTokens(m.content);
   if (m.role === "user" && m.attachments) {
     total += m.attachments.reduce(
-      (sum, a) => sum + estimateTokens(a.path) + estimateTokens(a.content),
+      (sum, a) =>
+        sum +
+        estimateTokens(a.path) +
+        (a.dataUri ? IMAGE_TOKEN_ESTIMATE : estimateTokens(a.content)),
       0
     );
   }

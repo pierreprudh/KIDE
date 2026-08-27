@@ -10,7 +10,9 @@ use super::tools::{
     tool_kind_label, NormalizedToolCall, ToolKind,
 };
 use super::types::{AgentAttachment, AgentContentBlock, AgentMode, StartRunRequest, ToolResult};
+use crate::adapters::forwardable_image_media_type;
 use crate::providers::AiChatResponse;
+use crate::workspace;
 
 /// The handful of provider quirks the run loop's behavior depends on, gathered
 /// in one place so the loop asks about a capability instead of comparing
@@ -40,6 +42,116 @@ impl ProviderCaps {
             append_todo_updates: provider == "mlx",
         }
     }
+}
+
+
+// ── Attachment clamp ──
+
+/// The most attachments one turn may carry. Well above what a composer stages
+/// (12) — this is a backstop against a producer with no UI, not a second
+/// opinion about what a user may attach.
+pub(super) const MAX_ATTACHMENTS: usize = 16;
+/// The most one image may weigh, decoded.
+pub(super) const MAX_IMAGE_BYTES: usize = 6_000_000;
+/// The most every image on a turn may weigh together. The per-image cap alone
+/// admits a 70 MB request body, which no provider accepts and which lands in
+/// the transcript either way.
+pub(super) const MAX_TOTAL_IMAGE_BYTES: usize = 12_000_000;
+
+/// What survived the clamp, and a note for everything that didn't.
+pub(super) struct ClampedAttachments {
+    pub(super) kept: Vec<AgentAttachment>,
+    /// `AgentContextSnapshot::omitted` rows — `{ reason, path?, count? }`, the
+    /// vocabulary the panel already reads for "this didn't reach the model".
+    pub(super) omitted: Vec<serde_json::Value>,
+}
+
+fn omission(reason: &str, path: &str) -> serde_json::Value {
+    serde_json::json!({ "reason": reason, "path": path })
+}
+
+/// Hold a turn's attachments to what the wires and the transcript can actually
+/// take, before either sees them.
+///
+/// The composers apply richer rules and say so in the UI (see
+/// `src/components/ai/attachments.ts`); those are taste, and they only bind the
+/// two surfaces that run them. This is the invariant, and it binds every
+/// producer — a race, a Mission, a subagent, Mission Control's recovered
+/// Claude Code images — because they all enter through `start_run`:
+///
+///  · an image must be a base64 data URI in a format the adapters forward,
+///    or it is dropped here rather than dropped silently mid-translation;
+///  · images are bounded per-image and per-turn, so no run can post a body a
+///    provider refuses or append a transcript line nothing can reopen;
+///  · a text attachment is truncated, not dropped — the same ceiling the read
+///    tool applies to one file, since that is the same question.
+///
+/// Nothing is refused as an error: a run losing one attachment should still
+/// run, and the drop is recorded where the UI can name it.
+pub(super) fn clamp_attachments(attachments: Vec<AgentAttachment>) -> ClampedAttachments {
+    let offered = attachments.len();
+    let mut kept: Vec<AgentAttachment> = Vec::with_capacity(offered.min(MAX_ATTACHMENTS));
+    let mut omitted: Vec<serde_json::Value> = Vec::new();
+    let mut image_bytes: usize = 0;
+
+    for attachment in attachments.into_iter().take(MAX_ATTACHMENTS) {
+        let Some(uri) = attachment.data_uri.clone() else {
+            kept.push(clamp_document(attachment, &mut omitted));
+            continue;
+        };
+        let Some((media_type, data)) = uri
+            .strip_prefix("data:")
+            .and_then(|rest| rest.split_once(";base64,"))
+        else {
+            omitted.push(omission("not a base64 image data URI", &attachment.path));
+            continue;
+        };
+        if data.is_empty() || !forwardable_image_media_type(media_type) {
+            omitted.push(omission(
+                "image format no provider wire accepts",
+                &attachment.path,
+            ));
+            continue;
+        }
+        // Base64 carries three bytes in every four characters.
+        let bytes = data.len() / 4 * 3;
+        if bytes > MAX_IMAGE_BYTES {
+            omitted.push(omission("image too large", &attachment.path));
+            continue;
+        }
+        if image_bytes + bytes > MAX_TOTAL_IMAGE_BYTES {
+            omitted.push(omission("turn already full of images", &attachment.path));
+            continue;
+        }
+        image_bytes += bytes;
+        kept.push(attachment);
+    }
+
+    if offered > MAX_ATTACHMENTS {
+        omitted.push(serde_json::json!({
+            "reason": "more attachments than one turn carries",
+            "count": offered - MAX_ATTACHMENTS,
+        }));
+    }
+    ClampedAttachments { kept, omitted }
+}
+
+fn clamp_document(
+    mut attachment: AgentAttachment,
+    omitted: &mut Vec<serde_json::Value>,
+) -> AgentAttachment {
+    let limit = workspace::AGENT_MAX_READ_BYTES as usize;
+    if attachment.content.len() <= limit {
+        return attachment;
+    }
+    let mut cut = limit;
+    while cut > 0 && !attachment.content.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    attachment.content.truncate(cut);
+    attachment.content.push_str("\n…(truncated)");
+    omitted.push(omission("document truncated", &attachment.path));
+    attachment
 }
 
 /// Fold text attachments into a message's text — the "[Files attached for
@@ -622,6 +734,114 @@ fn compacted_tool_summary(name: &str, content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn photo(path: &str, mime: &str, chars: usize) -> AgentAttachment {
+        AgentAttachment {
+            path: path.to_string(),
+            content: String::new(),
+            mime: Some(mime.to_string()),
+            data_uri: Some(format!("data:{mime};base64,{}", "A".repeat(chars))),
+        }
+    }
+
+    fn document(path: &str, content: &str) -> AgentAttachment {
+        AgentAttachment {
+            path: path.to_string(),
+            content: content.to_string(),
+            mime: None,
+            data_uri: None,
+        }
+    }
+
+    fn reasons(omitted: &[serde_json::Value]) -> Vec<String> {
+        omitted
+            .iter()
+            .map(|o| o["reason"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn clamp_keeps_a_forwardable_photo_and_a_document() {
+        let clamped = clamp_attachments(vec![
+            photo("shot.png", "image/png", 64),
+            document("notes.md", "hi"),
+        ]);
+        assert_eq!(clamped.omitted.len(), 0);
+        assert_eq!(
+            clamped.kept.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(),
+            vec!["shot.png", "notes.md"]
+        );
+    }
+
+    #[test]
+    fn clamp_drops_an_image_format_no_wire_accepts() {
+        // The adapters would drop this mid-translation and say nothing; the
+        // clamp is where it becomes visible.
+        let clamped = clamp_attachments(vec![photo("IMG_1.heic", "image/heic", 64)]);
+        assert!(clamped.kept.is_empty());
+        assert_eq!(reasons(&clamped.omitted), vec!["image format no provider wire accepts"]);
+        assert_eq!(clamped.omitted[0]["path"], "IMG_1.heic");
+    }
+
+    #[test]
+    fn clamp_drops_a_data_uri_that_is_not_base64() {
+        let mut broken = photo("odd.png", "image/png", 8);
+        broken.data_uri = Some("https://example.com/shot.png".to_string());
+        let clamped = clamp_attachments(vec![broken]);
+        assert!(clamped.kept.is_empty());
+        assert_eq!(reasons(&clamped.omitted), vec!["not a base64 image data URI"]);
+    }
+
+    #[test]
+    fn clamp_bounds_one_image_and_the_whole_turn() {
+        let per_image_chars = (MAX_IMAGE_BYTES / 3 * 4) + 8;
+        let clamped = clamp_attachments(vec![photo("huge.png", "image/png", per_image_chars)]);
+        assert!(clamped.kept.is_empty());
+        assert_eq!(reasons(&clamped.omitted), vec!["image too large"]);
+
+        // Three images that each clear the per-image cap but together do not.
+        let each = 5_000_000 / 3 * 4;
+        let clamped = clamp_attachments(vec![
+            photo("a.png", "image/png", each),
+            photo("b.png", "image/png", each),
+            photo("c.png", "image/png", each),
+        ]);
+        assert_eq!(
+            clamped.kept.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(),
+            vec!["a.png", "b.png"]
+        );
+        assert_eq!(reasons(&clamped.omitted), vec!["turn already full of images"]);
+    }
+
+    #[test]
+    fn clamp_truncates_a_document_rather_than_dropping_it() {
+        let long = "x".repeat(workspace::AGENT_MAX_READ_BYTES as usize + 500);
+        let clamped = clamp_attachments(vec![document("log.txt", &long)]);
+        assert_eq!(clamped.kept.len(), 1);
+        assert!(clamped.kept[0].content.len() < long.len());
+        assert!(clamped.kept[0].content.ends_with("…(truncated)"));
+        assert_eq!(reasons(&clamped.omitted), vec!["document truncated"]);
+    }
+
+    #[test]
+    fn clamp_truncates_a_document_on_a_char_boundary() {
+        // A multi-byte char straddling the ceiling must not be cut in half —
+        // `String::truncate` panics on a non-boundary index.
+        let long = "é".repeat(workspace::AGENT_MAX_READ_BYTES as usize);
+        let clamped = clamp_attachments(vec![document("accents.txt", &long)]);
+        assert_eq!(clamped.kept.len(), 1);
+        assert!(clamped.kept[0].content.ends_with("…(truncated)"));
+    }
+
+    #[test]
+    fn clamp_caps_how_many_attachments_a_turn_carries() {
+        let offered: Vec<AgentAttachment> = (0..MAX_ATTACHMENTS + 3)
+            .map(|i| document(&format!("f{i}.md"), "x"))
+            .collect();
+        let clamped = clamp_attachments(offered);
+        assert_eq!(clamped.kept.len(), MAX_ATTACHMENTS);
+        assert_eq!(clamped.omitted[0]["count"], 3);
+    }
 
     #[test]
     fn refresh_todo_context_updates_existing_message() {

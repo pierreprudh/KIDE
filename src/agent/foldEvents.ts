@@ -152,6 +152,20 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
   // belongs below me" (tool card, steering marker, user turn) — mirroring how
   // the live view splits a turn's text around its tool cards.
   let open: { row: AssistantRow; idx: number } | null = null;
+  // Text this turn has already committed to rows *above* the one still open.
+  //
+  // A turn's text is split into several rows when work interrupts it — a tool
+  // card, a steering marker. The closing `assistant_message` then carries the
+  // turn's text *whole*, which is right for one row and wrong for several: it
+  // would repeat, in the last row, everything the earlier rows already show.
+  // A delegate CLI makes this the normal case rather than an edge one, since
+  // its own tool calls interleave with its prose inside a single turn.
+  let turnRendered = "";
+  // Bank an interrupted row's text and start a new bubble below the card.
+  const splitRow = () => {
+    if (open) turnRendered += open.row.text;
+    open = null;
+  };
   // The pair the harness last said it was dispatching with. Every assistant row
   // is stamped with whatever this holds when the row opens, so the stamp is a
   // fact about that turn rather than about the conversation.
@@ -238,6 +252,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
     if (event.type === "user_message") {
       turnStartTs = event.ts;
       open = null;
+      turnRendered = "";
       rows.push({
         kind: "user",
         text: event.text,
@@ -259,7 +274,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
     }
 
     if (event.type === "assistant_message") {
-      const text = extractAssistantText(event.content);
+      const text = remainingText(extractAssistantText(event.content), turnRendered);
       const eventThinking = event.content
         .filter(isThinkingBlock)
         .map((b) => b.text)
@@ -304,6 +319,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
       });
       row.meta = meta ?? undefined;
       row.ts = event.ts;
+      turnRendered = "";
       return { changed: [idx], finalizedMeta: meta ?? undefined };
     }
 
@@ -316,7 +332,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
       });
       // A tool card sits below the turn's text; whatever streams next belongs
       // in a new bubble under the card, not merged above it.
-      open = null;
+      splitRow();
       return { changed: [idx] };
     }
 
@@ -339,7 +355,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
         t.status = "started";
         t.observedBy = event.provider;
       });
-      open = null;
+      splitRow();
       return { changed: [idx] };
     }
 
@@ -365,7 +381,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
     }
 
     if (event.type === "steering_injected") {
-      open = null;
+      splitRow();
       rows.push({ kind: "steering", reason: event.reason });
       return { changed: [rows.length - 1] };
     }
@@ -381,6 +397,23 @@ export function foldAgentEvents(events: AgentEvent[]): FoldedRow[] {
   const fold = createFold();
   for (const event of events) fold.apply(event);
   return fold.rows();
+}
+
+/** What is left of a turn's whole text once the rows above have had their say.
+ *
+ *  `already` is the text banked from rows this turn split off. When the whole
+ *  text still begins with it — the normal case, since both are built from the
+ *  same stream — only the remainder belongs in the last row. When it does not
+ *  (a provider that returns cleaned-up text rather than what it streamed), the
+ *  whole text is kept: showing a line twice is a blemish, dropping one is a
+ *  lie.
+ */
+function remainingText(text: string, already: string): string {
+  if (!already) return text;
+  for (const prefix of [already, already.trimStart(), already.trim()]) {
+    if (prefix && text.startsWith(prefix)) return text.slice(prefix.length);
+  }
+  return text;
 }
 
 /** The one "text of an assistant message" rule: concatenated text blocks.
