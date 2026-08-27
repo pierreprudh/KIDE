@@ -3676,9 +3676,10 @@ const RECENT_SESSION_MAX_ROWS = 4;
 // Live-strip status rendering comes from the one vocabulary in
 // `runPresentation.ts`. Note a live Delegate's `waiting` is **Waiting** (its
 // turn finished, the output is on you), where a board row's `RunStatus.waiting`
-// is **Blocked** (a Harness run parked on a gate). Both are correct; see the
-// note in that module before touching either. No chips, no dots — the word and
-// its color carry the state; precise phrasing lives in the row tooltip.
+// is **Blocked** (a run parked on a gate or a Delegate's blocked hook). Both are
+// correct; see the note in that module before touching either. No chips, no dots
+// — the word and its color carry the state; precise phrasing lives in the row
+// tooltip.
 
 // "Live now" strip — the delegate sessions still running *in this Klide
 // process*, which we can reconnect to in-process and replay (Slice 1/2,

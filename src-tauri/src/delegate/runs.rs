@@ -27,7 +27,7 @@ pub struct AgentRun {
     // record usage). Input excludes cache reads — they'd dwarf everything else.
     pub input_tokens: i64,
     pub output_tokens: i64,
-    pub status: String, // "running" (touched <2min ago) | "done"
+    pub status: String, // "running" | "waiting" (blocked on user) | "done"
     /// Count of unique file paths the agent touched in tool calls (Read,
     /// Edit, Write, apply_patch, etc.). 0 when the source doesn't record
     /// tool calls or the session had no file-touching tools.
@@ -297,11 +297,12 @@ pub(crate) fn clean_title(s: &str) -> String {
 }
 
 /// How long a Delegate transcript may go without a write before the board reads
-/// the run as finished.
+/// an otherwise-active run as finished.
 ///
-/// A Delegate CLI reports no lifecycle of its own, so "is it still going?" is
-/// inferred from the session log's mtime. That makes this the **only** staleness
-/// authority for Delegate runs, and it silently bounds the frontend's:
+/// Provider-specific transcript markers settle a completed turn immediately,
+/// and Klide-hosted PTYs contribute hook/exit state at the aggregation seam.
+/// Runs launched outside Klide still need a conservative fallback, so an active
+/// transcript marker expires here. This window silently bounds the frontend's:
 /// `STALE_RUNNING_MS` in `src/runs.ts` flags a *running* run as idle after five
 /// minutes, which a Delegate can never reach — it has been relabelled `done`
 /// here after two. `delegate_recency_window_bounds_the_frontend_idle_signal`
@@ -309,12 +310,30 @@ pub(crate) fn clean_title(s: &str) -> String {
 /// other one.
 pub(crate) const DELEGATE_RECENCY_MS: i64 = 120_000;
 
-pub(crate) fn recency_status(updated_ms: i64) -> String {
-    if now_ms() - updated_ms < DELEGATE_RECENCY_MS {
+/// The last provider-specific lifecycle fact found while reducing a transcript.
+/// `Unknown` preserves the mtime fallback for formats/records we do not know;
+/// `Working` is still bounded by recency so an interrupted external CLI cannot
+/// remain active forever; `TurnComplete` settles immediately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptState {
+    Unknown,
+    Working,
+    TurnComplete,
+}
+
+fn transcript_status_at(now_ms: i64, updated_ms: i64, state: TranscriptState) -> String {
+    if state == TranscriptState::TurnComplete {
+        return "done".to_string();
+    }
+    if now_ms - updated_ms < DELEGATE_RECENCY_MS {
         "running".to_string()
     } else {
         "done".to_string()
     }
+}
+
+pub(crate) fn transcript_status(updated_ms: i64, state: TranscriptState) -> String {
+    transcript_status_at(now_ms(), updated_ms, state)
 }
 
 // The first genuine user prompt becomes the run's title. Skips system/tool
@@ -569,12 +588,11 @@ mod tests {
 
     #[test]
     fn delegate_recency_window_bounds_the_frontend_idle_signal() {
-        // A Delegate reports no lifecycle, so its status is inferred from
-        // transcript mtime — making this the only staleness authority for one.
-        // The frontend has a second: STALE_RUNNING_MS flags a *running* run as
-        // idle. Because a Delegate is relabelled `done` here first, that signal
-        // can only ever fire for a Klide Harness run — never for a Delegate,
-        // which is presumably what it was written for.
+        // Provider markers and hosted-PTY signals now settle known states, but
+        // an otherwise-active Delegate transcript still expires here. The
+        // frontend has a second authority: STALE_RUNNING_MS flags a *running*
+        // run as idle. Because the fallback is relabelled `done` here first,
+        // that signal remains unreachable for such a Delegate row.
         //
         // This test does not pretend that is fixed. It pins both numbers and the
         // relationship between them, so changing either one surfaces the other:
@@ -590,6 +608,32 @@ frontend's {stale_running}ms idle signal is unreachable for one. If this \
 assertion now fails, the idle signal has become reachable for Delegates — \
 which is the fix, not a regression: update this test and the comments on both \
 constants."
+        );
+    }
+
+    #[test]
+    fn transcript_markers_settle_turns_but_bound_abandoned_work() {
+        let now = 1_000_000;
+        let fresh = now - 1_000;
+        let stale = now - DELEGATE_RECENCY_MS;
+
+        assert_eq!(
+            transcript_status_at(now, fresh, TranscriptState::Working),
+            "running"
+        );
+        assert_eq!(
+            transcript_status_at(now, fresh, TranscriptState::TurnComplete),
+            "done"
+        );
+        assert_eq!(
+            transcript_status_at(now, stale, TranscriptState::Working),
+            "done",
+            "an external CLI interrupted mid-turn must not stay active forever"
+        );
+        assert_eq!(
+            transcript_status_at(now, fresh, TranscriptState::Unknown),
+            "running",
+            "unknown formats preserve the prior recency fallback"
         );
     }
 }

@@ -20,21 +20,22 @@
 // Two different types spell a state `"waiting"`, and they mean opposite things:
 //
 //   RunStatus.waiting          → **Blocked**  (amber)
-//     A Klide Harness run parked on a permission prompt, a diff gate, or an
-//     explicit pause. `toStatus` folds all three wire values into this one.
-//     The agent cannot proceed. Blocked is correct.
+//     A run parked on a permission prompt, a diff gate, or an explicit pause.
+//     Harness wire values fold into this state; a hosted Delegate reaches it
+//     only from a real `blocked` hook. The agent cannot proceed. Blocked is
+//     correct.
 //
 //   LiveDelegateStatus.waiting → **Waiting**  (green)
 //     A Delegate CLI whose turn has finished and is idle at its composer —
 //     `delegate/status.rs` documents it as exactly that. The output is sitting
 //     on you. Waiting is correct.
 //
-// Both are right for their own vocabulary, and they do not collide in front of
-// a user: Rust only ever reports `running` or `done` for a Delegate row, so a
-// board row is never `RunStatus.waiting` for a Delegate. **Do not "fix" one
-// side to agree with the other** — that would make one of the two surfaces
-// lie. They are separated here by taking the vocabulary as a parameter, so the
-// distinction is visible in one file instead of implied across two.
+// Both are right for their own vocabulary. Rust translates a live Delegate's
+// `blocked` hook to board `waiting`, while live `waiting` settles its historical
+// transcript row as `done`; the green Live strip remains the place that says
+// its finished output is waiting on you. They are separated here by taking the
+// vocabulary as a parameter, so the distinction is visible in one file instead
+// of implied across two.
 
 import type { RunStatus, RunLifecycleStatus, RunBoardSection, RunBoardReasonTone } from "./runs";
 import type { LiveDelegateSession } from "./ipc/delegatePty";

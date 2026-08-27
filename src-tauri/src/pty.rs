@@ -613,6 +613,79 @@ pub(crate) fn delegate_attempt_recovery(
         .unwrap_or(DelegateAttemptRecovery::Missing)
 }
 
+/// Translate the hosting vocabulary into the historical board's wire status.
+/// A completed live turn remains available in the green Live strip, while its
+/// transcript row is settled. Only a real blocked hook becomes board
+/// `waiting`, whose established meaning is "cannot proceed without you".
+fn historical_board_status(
+    live: bool,
+    hook: Option<crate::delegate::status::AgentStatus>,
+    outcome: Option<&PtyExitOutcome>,
+) -> &'static str {
+    if live {
+        return match hook {
+            Some(crate::delegate::status::AgentStatus::Blocked) => "waiting",
+            Some(crate::delegate::status::AgentStatus::Waiting) => "done",
+            Some(crate::delegate::status::AgentStatus::Working) | None => "running",
+        };
+    }
+    match outcome {
+        Some(outcome) if outcome.exit_code != 0 && !outcome.stop_requested => "error",
+        _ => "done",
+    }
+}
+
+/// Provider transcript id → authoritative status for sessions Klide hosted.
+///
+/// The adapter parsers still cover CLI sessions launched in another terminal.
+/// For Klide-owned PTYs this index wins: live hook state distinguishes blocked
+/// from working, and durable exit metadata settles the row immediately instead
+/// of waiting for a transcript-mtime timeout. Multiple PTYs may have resumed
+/// the same CLI thread; the newest spawn is the relevant one.
+pub(crate) fn historical_delegate_statuses(
+    app: &tauri::AppHandle,
+) -> HashMap<(String, String), String> {
+    let Some(dir) = scrollback_dir(app) else {
+        return HashMap::new();
+    };
+    let daemon = daemon_live_rows(app);
+    let live_ids = all_live_ids(app.state::<SessionHost>().live_ids(), &daemon);
+    let hooks = app
+        .state::<crate::delegate::status::DelegateStatusState>()
+        .statuses
+        .lock()
+        .unwrap()
+        .clone();
+    let mut newest: HashMap<(String, String), (i64, String)> = HashMap::new();
+    for meta in pty_host::scan_scrollback_metas(&dir) {
+        let Some(external_id) = meta
+            .resume_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let status = historical_board_status(
+            live_ids.contains(&meta.session_id),
+            hooks.get(&meta.session_id).map(|(status, _)| *status),
+            meta.exit_outcome.as_ref(),
+        )
+        .to_string();
+        let key = (meta.provider.clone(), external_id.to_string());
+        match newest.get(&key) {
+            Some((started_ms, _)) if *started_ms > meta.started_ms => {}
+            _ => {
+                newest.insert(key, (meta.started_ms, status));
+            }
+        }
+    }
+    newest
+        .into_iter()
+        .map(|(key, (_, status))| (key, status))
+        .collect()
+}
+
 fn scrollback_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path()
         .app_data_dir()
@@ -1273,11 +1346,20 @@ pub fn set_delegate_external_id(
     delegate_id: &str,
     external_id: &str,
 ) -> Result<(), String> {
+    // This link is useful even when the session has no parent-run mapping:
+    // recent-session resume and historical lifecycle enrichment both read the
+    // durable PTY metadata.
+    if let Some(dir) = scrollback_dir(app) {
+        pty_host::update_scrollback_resume_id(&dir, delegate_id, external_id);
+    }
     let mut mappings = read_delegate_sessions(app);
     if let Some(m) = mappings.get_mut(delegate_id) {
-        m.external_id = Some(external_id.to_string());
+        if m.external_id.as_deref() != Some(external_id) {
+            m.external_id = Some(external_id.to_string());
+            write_delegate_sessions(app, &mappings)?;
+        }
     }
-    write_delegate_sessions(app, &mappings)
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -1307,6 +1389,36 @@ mod tests {
             updated_ms: 0,
             buffered_bytes: 0,
         }
+    }
+
+    #[test]
+    fn hosted_lifecycle_overrides_transcript_recency_for_the_board() {
+        use crate::delegate::status::AgentStatus;
+
+        assert_eq!(
+            historical_board_status(true, Some(AgentStatus::Working), None),
+            "running"
+        );
+        assert_eq!(
+            historical_board_status(true, Some(AgentStatus::Blocked), None),
+            "waiting"
+        );
+        assert_eq!(
+            historical_board_status(true, Some(AgentStatus::Waiting), None),
+            "done",
+            "turn-complete waiting stays green in the Live strip; the transcript is settled"
+        );
+        let failed = PtyExitOutcome {
+            exit_code: 1,
+            signal: None,
+            stop_requested: false,
+        };
+        assert_eq!(historical_board_status(false, None, Some(&failed)), "error");
+        let stopped = PtyExitOutcome {
+            stop_requested: true,
+            ..failed
+        };
+        assert_eq!(historical_board_status(false, None, Some(&stopped)), "done");
     }
 
     #[test]

@@ -213,6 +213,28 @@ pub fn read_scrollback_meta(dir: &Path, session_id: &str) -> Option<ScrollbackMe
     serde_json::from_str(&text).ok()
 }
 
+/// Every intact persisted Delegate session record. The app uses this small
+/// metadata index to join a CLI transcript id back to the PTY that hosted it;
+/// no scrollback bytes are read here.
+pub fn scan_scrollback_metas(dir: &Path) -> Vec<ScrollbackMeta> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !name.ends_with(".meta.json") || name.ends_with(".tmp") {
+                return None;
+            }
+            fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+        })
+        .collect()
+}
+
 /// Persist a session's spawn/exit facts.
 ///
 /// Atomic, because this file is load-bearing for Mission recovery: a reader that
@@ -259,8 +281,11 @@ fn stamp_scrollback_ended(dir: &Path, session_id: &str, outcome: PtyExitOutcome)
     }
 }
 
-fn update_scrollback_resume_id(dir: &Path, session_id: &str, resume_id: &str) {
+pub fn update_scrollback_resume_id(dir: &Path, session_id: &str, resume_id: &str) {
     if let Some(mut meta) = read_scrollback_meta(dir, session_id) {
+        if meta.resume_session_id.as_deref() == Some(resume_id) {
+            return;
+        }
         meta.resume_session_id = Some(resume_id.to_string());
         write_scrollback_meta(dir, &meta);
     }

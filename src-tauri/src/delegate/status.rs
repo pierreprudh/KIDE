@@ -92,22 +92,16 @@ impl DelegateStatusState {
         let mut server = self.server.lock().unwrap();
         if server.is_none() {
             let app = app.clone();
-            // Sessions whose external id is already on disk — hooks fire many
-            // times a turn and the mapping is a JSON file; record once.
-            let recorded: Mutex<std::collections::HashSet<String>> = Mutex::new(Default::default());
             let on_change = move |signal: HookSignal| {
-                if signal.status == "end" {
-                    // A fresh conversation in the same PTY gets a fresh id —
-                    // let it re-record.
-                    recorded.lock().unwrap().remove(&signal.session_id);
-                } else if let Some(external) = &signal.external_id {
-                    if recorded.lock().unwrap().insert(signal.session_id.clone()) {
-                        let _ = crate::pty::set_delegate_external_id(
-                            &app,
-                            &signal.session_id,
-                            external,
-                        );
-                    }
+                if let Some(external) = &signal.external_id {
+                    // Hooks can beat the PTY host's metadata write at process
+                    // startup, so retry this idempotent persistence on later
+                    // lifecycle events instead of remembering the first try.
+                    let _ = crate::pty::set_delegate_external_id(
+                        &app,
+                        &signal.session_id,
+                        external,
+                    );
                 }
                 let _ = app.emit(
                     "delegate-status:changed",
@@ -171,8 +165,8 @@ pub fn start_hook_server(statuses: StatusMap, on_change: OnChange) -> Result<Hoo
     std::thread::spawn(move || {
         for mut request in server.incoming_requests() {
             let method = request.method().to_string();
-            // The body is the CLI's own event JSON (Claude pipes it through
-            // curl --data-binary @-; the Codex shim sends none). Capped read:
+            // The body is the CLI's own event JSON (Claude pipes stdin through
+            // curl; the Codex shim forwards its JSON argv value). Capped read:
             // a hook body is a few KB, anything huge is not for us.
             let mut body = String::new();
             use std::io::Read;
@@ -196,10 +190,18 @@ pub fn start_hook_server(statuses: StatusMap, on_change: OnChange) -> Result<Hoo
 }
 
 /// Pull the CLI's own session id out of a hook body. Key names vary per CLI
-/// (Claude: `session_id`); accept the common spellings, top-level only.
+/// (Claude: `session_id`, Codex: `thread-id`); accept the common spellings,
+/// top-level only.
 fn extract_external_session_id(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    for key in ["session_id", "sessionId", "sessionID", "conversationId"] {
+    for key in [
+        "session_id",
+        "sessionId",
+        "sessionID",
+        "conversationId",
+        "thread-id",
+        "thread_id",
+    ] {
         if let Some(id) = value.get(key).and_then(|v| v.as_str()) {
             let id = id.trim();
             if !id.is_empty() {
@@ -390,13 +392,15 @@ pub fn install_claude_hooks(home: &str) -> Result<bool, String> {
 // ── Codex hook installer ────────────────────────────────────────────────
 //
 // Codex has no hooks system, but `~/.codex/config.toml` takes a `notify`
-// program invoked with one JSON argument per event (agent-turn-complete,
-// approval requests). Klide writes its own shim script under
+// program invoked with one JSON argument per event (currently
+// agent-turn-complete; the approval branch is forward-compatible). Klide
+// writes its own shim script under
 // `~/.klide/hooks/` — wholly Klide-owned, always safe to rewrite — and
 // points `notify` at it only when the user hasn't configured a notifier of
-// their own. Codex only announces turn ends and approvals (no turn-start
-// event), so "working" comes from the keystroke-clear in delegate_pty_write
-// plus the PTY activity timer, not from a hook.
+// their own. Codex currently announces turn ends but no turn-start event, so
+// "working" comes from the keystroke-clear in delegate_pty_write plus the PTY
+// activity timer, not from a hook. The approval arm is ready if that notifier
+// event becomes available.
 
 fn codex_shim_source() -> &'static str {
     concat!(
@@ -410,7 +414,7 @@ fn codex_shim_source() -> &'static str {
         "  *approval*) state=blocked ;;\n",
         "  *) exit 0 ;;\n",
         "esac\n",
-        "curl -sS --max-time 2 -X POST \"$KLIDE_HOOK_URL/$state\" >/dev/null 2>&1 || true\n",
+        "curl -sS --max-time 2 -X POST \"$KLIDE_HOOK_URL/$state\" --data-binary \"$1\" >/dev/null 2>&1 || true\n",
     )
 }
 
@@ -605,7 +609,16 @@ mod tests {
             Some("cc-uuid-42"),
             "external id extracted from the body"
         );
-        // No body (Codex shim), junk body, or unknown keys → None, still 204.
+        // Codex appends its event as one argv JSON value and names the
+        // resumable session `thread-id`.
+        assert_eq!(
+            extract_external_session_id(
+                r#"{"type":"agent-turn-complete","thread-id":"codex-thread-7"}"#
+            )
+            .as_deref(),
+            Some("codex-thread-7")
+        );
+        // No body, junk body, or unknown keys → None, still 204.
         for body in ["", "not json", r#"{"other":"x"}"#, r#"{"session_id":"  "}"#] {
             let before = seen.lock().unwrap().len();
             assert_eq!(
@@ -741,9 +754,12 @@ mod tests {
 
         assert_eq!(install_codex_hooks(home_s), Ok(true));
         let shim = home.join(".klide/hooks/codex-status.sh");
-        assert!(std::fs::read_to_string(&shim)
-            .unwrap()
-            .contains("KLIDE_HOOK_URL"));
+        let shim_source = std::fs::read_to_string(&shim).unwrap();
+        assert!(shim_source.contains("KLIDE_HOOK_URL"));
+        assert!(
+            shim_source.contains("--data-binary \"$1\""),
+            "the Codex payload carries thread-id back to Klide"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
