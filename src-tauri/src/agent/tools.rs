@@ -274,6 +274,14 @@ fn query_summary(call: &NormalizedToolCall) -> String {
         .unwrap_or_else(|| call.name.clone())
 }
 
+fn peek_summary(call: &NormalizedToolCall) -> String {
+    let id = call.input.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+    match call.input.get("query").and_then(|v| v.as_str()) {
+        Some(query) => format!("{} #{id} \"{query}\"", call.name),
+        None => format!("{} #{id}", call.name),
+    }
+}
+
 fn run_conversation_search(
     ws: &Workspace,
     input: &serde_json::Value,
@@ -603,6 +611,28 @@ fn registry() -> Vec<ToolEntry> {
             summary: |call| call.input.get("memoryId").and_then(|value| value.as_str())
                 .map(|id| format!("memory_read {id}"))
                 .unwrap_or_else(|| "memory_read".to_string()),
+        },
+        ToolEntry {
+            // Reads this run's own retained tool outputs — app-owned run data,
+            // never workspace files, so it shares the conversation-history
+            // capability rather than claiming a workspace read.
+            kind: ToolKind::ConversationHistory,
+            schema: schema("peek_value", "Read part of a large retained tool output from earlier in this conversation. When a tool result is too large to keep in context it is replaced by a [retained #id] stub; this tool reads the full stored output. Give start_line/end_line for a slice (up to 400 lines), or query to search all lines for a substring.",
+                serde_json::json!({
+                    "id": { "type": "string", "description": "The retained output id from a [retained #id] stub." },
+                    "start_line": { "type": "integer", "minimum": 1, "description": "First line to read, 1-based (default 1)." },
+                    "end_line": { "type": "integer", "minimum": 1, "description": "Last line to read, inclusive (default start_line + 199, capped at 400 lines per call)." },
+                    "query": { "type": "string", "description": "Case-insensitive substring to search for instead of reading a range. Returns matching lines with their line numbers." }
+                }),
+                &["id"]),
+            run_read: Some(|_ws, input, run_id, runs_dir| {
+                match super::retained::peek(runs_dir, run_id, input) {
+                    Ok(content) => ok(content),
+                    Err(error) => err(error),
+                }
+            }),
+            run_write_preview: None,
+            summary: peek_summary,
         },
         ToolEntry {
             kind: ToolKind::ReadOnly,

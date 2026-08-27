@@ -8,6 +8,7 @@ pub mod evidence;
 pub mod failure_budget;
 mod network_allowlist;
 mod permission;
+mod retained;
 mod run_core;
 mod steering;
 pub mod subagents;
@@ -693,8 +694,18 @@ fn reconstruct_prior_messages(
                 flush_tool_results(&mut pending_tool_results, &mut text, "[tool_result]\n");
                 out.push(serde_json::json!({ "role": "assistant", "content": text }));
             }
-            AgentEvent::ToolCallFinished { result, .. } => {
-                pending_tool_results.push(result.content.clone());
+            AgentEvent::ToolCallFinished {
+                tool_call_id,
+                result,
+                ..
+            } => {
+                // Replay mirrors the live loop: a result large enough to have
+                // been retained folds in as the same stub, not the full text.
+                pending_tool_results.push(retained::stub_for_replay(
+                    "tool",
+                    tool_call_id,
+                    &result.content,
+                ));
             }
             AgentEvent::ContextCompacted { summary, .. } => {
                 // Collapse everything before the marker into one system
@@ -796,9 +807,13 @@ fn reconstruct_structured_messages(prior_events: &[AgentEvent]) -> Vec<serde_jso
                 // the originating call (shouldn't happen — finished implies
                 // started), fall back to an empty name.
                 let name = call_names.get(tool_call_id).cloned().unwrap_or_default();
+                // Replay mirrors the live loop: a retained result comes back
+                // as its stub — the full text stays on disk behind peek_value.
+                let content =
+                    retained::stub_for_replay(&name, tool_call_id, &result.content);
                 out.push(serde_json::json!({
                     "role": "tool",
-                    "content": result.content,
+                    "content": content,
                     "name": name,
                     "tool_call_id": tool_call_id,
                 }));
@@ -1825,7 +1840,20 @@ async fn run_agent_loop(
                 result: tool_result.clone(),
                 ts: now_ms(),
             })?;
-            messages.push(tool_provider_message(&call, &tool_result));
+            // The transcript (event above) keeps the full result; the provider
+            // carries a stub when the result is large enough to retain. The
+            // full text stays addressable through `peek_value`.
+            let mut provider_result = tool_result.clone();
+            if let Some(stub) = retained::retain_large_result(
+                runs_dir.as_path(),
+                &id,
+                &call.id,
+                &call.name,
+                &tool_result.content,
+            ) {
+                provider_result.content = stub;
+            }
+            messages.push(tool_provider_message(&call, &provider_result));
 
             apply_clean_context_if_requested(&call, &mut messages);
         }
@@ -2738,6 +2766,35 @@ mod replay_tests {
         // No `tool_calls` array — the replay never emits the OpenAI
         // shape that Ollama's chat API rejects.
         assert!(out[0].get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn a_large_prior_tool_result_replays_as_its_retained_stub_in_both_shapes() {
+        // Mirrors the live loop: a result big enough to have been retained
+        // must fold back in as the same [retained #id] stub, never as the
+        // full text — otherwise one resume re-poisons the context the
+        // retention just saved.
+        let big = "x".repeat(30_000);
+        let events = [
+            user_msg("run the tests"),
+            assistant_with_tool_call(),
+            tool_result("tc1", &big),
+            assistant_text("done"),
+        ];
+
+        let folded = reconstruct_prior_messages(&events, false);
+        let last = folded.last().unwrap()["content"].as_str().unwrap();
+        assert!(last.contains("[retained #tc1]"), "text-fold stub missing");
+        assert!(last.len() < 10_000, "full text leaked into the text fold");
+
+        let structured = reconstruct_prior_messages(&events, true);
+        let tool_msg = structured
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .expect("structured replay keeps the tool message");
+        let content = tool_msg["content"].as_str().unwrap();
+        assert!(content.contains("[retained #tc1]"), "structured stub missing");
+        assert!(content.len() < 10_000, "full text leaked into structured replay");
     }
 
     #[test]
