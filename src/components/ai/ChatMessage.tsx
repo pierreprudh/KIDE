@@ -15,7 +15,7 @@ function normalizeThinking(text: string): string {
   return text.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }) {
+export function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }) {
   return (
     <details open={streaming} className={`klide-think${streaming ? " is-streaming" : ""}`} style={{ margin: "2px 0 6px" }}>
       <summary
@@ -73,6 +73,20 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
   );
 }
 
+// Every flavour of "the model is thinking out loud" a message can carry,
+// merged in arrival order: the structured block the adapter captured
+// (Anthropic / Ollama), an inline `<think>…</think>` leak, and the bare
+// plan-JSON fallback smaller local models emit. AiPanel uses this to hoist a
+// folded tool run's reasoning out of the fold — the thought process reads as
+// the agent's voice, not as tool work, so it must not disappear into the
+// "N tool calls" row.
+export function extractThinking(m: Msg): string {
+  if (m.role !== "assistant") return "";
+  const { thinking: inlineThinking, content: cleaned } = splitThinking(m.content);
+  const { thinking: planThinking } = stripPlanJson(cleaned);
+  return [m.thinking, inlineThinking, planThinking].filter(Boolean).join("\n\n");
+}
+
 // Pull the most human-meaningful value out of a tool's args for the inline
 // summary — `read_file README.md`, not a JSON block. Live events pass the
 // input object; transcript replay passes it JSON-stringified.
@@ -128,12 +142,34 @@ function SubagentCallRow({ args }: { args: unknown }) {
   );
 }
 
+// A shell call's only interesting arg is the command line itself — expanded,
+// it reads as a command, not as the JSON envelope it travelled in. Covers the
+// harness tool and the delegate CLIs' names for the same thing.
+function commandArg(name: string, args: unknown): string | null {
+  if (!/^(run_command|bash|shell)$/i.test(name)) return null;
+  let v: unknown = args;
+  if (typeof v === "string") {
+    const raw: string = v;
+    try {
+      v = JSON.parse(raw);
+    } catch {
+      return raw.trim() || null;
+    }
+  }
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    const cmd = (v as Record<string, unknown>).command;
+    if (typeof cmd === "string" && cmd.trim()) return cmd;
+  }
+  return null;
+}
+
 // Minimalist tool-call line, à la Claude Code's `⏺ Read(file)`: one slim
 // mono row — tool glyph, tool name, primary arg — expandable to the full
-// args JSON.
+// args JSON (or, for a shell call, the bare command line).
 function ToolCallRow({ name, args, repeated = false }: { name: string; args: unknown; repeated?: boolean }) {
   if (name === "spawn_subagent") return <SubagentCallRow args={args} />;
-  const argsText = formatJson(args);
+  const command = commandArg(name, args);
+  const argsText = command ?? formatJson(args);
   const summary = summarizeArgs(args);
   return (
     <details style={{ margin: repeated ? "3px 0 -3px" : "5px 0 -3px" }}>
@@ -147,7 +183,9 @@ function ToolCallRow({ name, args, repeated = false }: { name: string; args: unk
           listStyle: "none",
           userSelect: "none",
           minWidth: 0,
-          paddingLeft: repeated ? 9 : 0,
+          // Tool machinery sits one indent step (14px) inside the prose /
+          // thought-process edge, so the hierarchy is spatial, not just tonal.
+          paddingLeft: repeated ? 23 : 14,
         }}
       >
         {repeated ? (
@@ -189,14 +227,17 @@ function ToolCallRow({ name, args, repeated = false }: { name: string; args: unk
           </span>
         ) : (
           <>
-            <span aria-hidden style={{ display: "grid", placeItems: "center", color: "var(--fg-subtle)", flexShrink: 0 }}>
+            {/* One token step dimmer than prose across the whole row: tool
+                work is machinery, and it should recede next to the thought
+                process and the answer rather than compete with them. */}
+            <span aria-hidden style={{ display: "grid", placeItems: "center", color: "var(--fg-dim)", flexShrink: 0 }}>
               <ToolIcon name={name} />
             </span>
             <span
               style={{
                 fontFamily: "var(--font-mono)",
                 fontSize: 11.5,
-                color: "var(--fg-strong)",
+                color: "var(--fg-subtle)",
                 fontWeight: 500,
                 flexShrink: 0,
               }}
@@ -210,7 +251,7 @@ function ToolCallRow({ name, args, repeated = false }: { name: string; args: unk
             style={{
               fontFamily: "var(--font-mono)",
               fontSize: 11.5,
-              color: repeated ? "var(--fg-dim)" : "var(--fg-subtle)",
+              color: "var(--fg-dim)",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -223,7 +264,7 @@ function ToolCallRow({ name, args, repeated = false }: { name: string; args: unk
       {argsText && (
         <pre
           style={{
-            margin: "3px 0 3px 20px",
+            margin: "3px 0 3px 34px",
             padding: "6px 10px",
             fontSize: 11,
             fontFamily: "var(--font-mono)",
@@ -232,9 +273,12 @@ function ToolCallRow({ name, args, repeated = false }: { name: string; args: unk
             border: "1px solid var(--border)",
             borderRadius: "var(--radius-sm)",
             overflowX: "auto",
-            whiteSpace: "pre",
+            // A command is one long line — wrap it. JSON keeps its shape and
+            // scrolls instead.
+            whiteSpace: command ? "pre-wrap" : "pre",
+            wordBreak: command ? "break-word" : undefined,
             lineHeight: 1.5,
-            maxWidth: "calc(100% - 20px)",
+            maxWidth: "calc(100% - 34px)",
             boxSizing: "border-box",
           }}
         >
@@ -326,7 +370,9 @@ export function ToolRunRow({
         style={{
           fontFamily: "var(--font-mono)",
           fontSize: 11.5,
-          color: "var(--fg-strong)",
+          // Same one-step-dimmer recipe as the rows it folds away (see
+          // ToolCallRow): the summary is still tool machinery, not prose.
+          color: "var(--fg-subtle)",
           fontWeight: 500,
           flexShrink: 0,
         }}
@@ -338,7 +384,7 @@ export function ToolRunRow({
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: 11.5,
-            color: "var(--fg-subtle)",
+            color: "var(--fg-dim)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -399,7 +445,9 @@ function ToolResultRow({
     ? (pending ? "subagent working…" : "subagent report")
     : toolName || (pending ? content.replace(/^Running\s+/, "").replace(/\.\.\.$/, "") : "tool");
   return (
-    <details className="klide-tool-result-row" style={{ margin: pending ? "0 0 5px" : "-2px 0 6px", paddingLeft: 34 }}>
+    // 48 = the call rows' 14px machinery indent + the 34px elbow offset,
+    // so results keep their nesting depth under the calls above them.
+    <details className="klide-tool-result-row" style={{ margin: pending ? "0 0 5px" : "-2px 0 6px", paddingLeft: 48 }}>
       <summary
         style={{
           display: "flex",
@@ -517,7 +565,27 @@ function ToolResultRow({
             borderRadius: "var(--radius-sm)",
           }}
         >
-          {renderMarkdown(content)}
+          {/* A subagent report is written *as* markdown — render it. Every
+              other tool result is raw program output (grep hits, file
+              contents, command stdout): markdown-rendering it mangles the
+              text it's supposed to show — `**` turns italic, backticks turn
+              into code chips, asterisks vanish. */}
+          {isSubagent ? (
+            renderMarkdown(content)
+          ) : (
+            <pre
+              style={{
+                margin: 0,
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                lineHeight: 1.5,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {content}
+            </pre>
+          )}
         </div>
       )}
     </details>
@@ -763,7 +831,15 @@ export function SteeringRow({ reason }: { reason: string }) {
   );
 }
 
-export function renderMessageBody(m: Msg, active = false): ReactElement {
+export function renderMessageBody(
+  m: Msg,
+  active = false,
+  opts?: {
+    /** Skip the ThinkingBlock — the caller renders it elsewhere (AiPanel
+     *  hoists a folded tool run's reasoning above the "N tool calls" row). */
+    hideThinking?: boolean;
+  },
+): ReactElement {
   if (m.role === "system" && m.steering) {
     return <SteeringRow reason={m.steering.reason} />;
   }
@@ -818,17 +894,12 @@ export function renderMessageBody(m: Msg, active = false): ReactElement {
         </div>
       );
     }
-    const { thinking: inlineThinking, content: cleanedContent } =
-      splitThinking(m.content);
-    const { thinking: planThinking, content } =
-      stripPlanJson(cleanedContent);
+    const { content: cleanedContent } = splitThinking(m.content);
+    const { content } = stripPlanJson(cleanedContent);
     const visibleContent = stripToolNarration(content, !!m.toolCalls?.length);
-    // Preserve any structured thinking block the adapter already
-    // captured (Anthropic / Ollama) and append what we lifted from
-    // the text, so nothing is lost.
-    const mergedThinking = [m.thinking, inlineThinking, planThinking]
-      .filter(Boolean)
-      .join("\n\n");
+    // Everything the model thought out loud, however it arrived — structured
+    // block, inline <think> leak, or plan-JSON fallback (see extractThinking).
+    const mergedThinking = extractThinking(m);
     // Streaming: no content yet → show thinking open. After arrival: closed.
     const streaming =
       active &&
@@ -837,7 +908,7 @@ export function renderMessageBody(m: Msg, active = false): ReactElement {
       !!mergedThinking;
     return (
       <>
-        {mergedThinking && (
+        {mergedThinking && !opts?.hideThinking && (
           <ThinkingBlock text={mergedThinking} streaming={streaming} />
         )}
         {visibleContent && (

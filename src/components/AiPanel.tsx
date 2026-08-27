@@ -75,8 +75,8 @@ import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } fr
 import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
-import { renderMessageBody, CompactionRow, ToolRunRow } from "./ai/ChatMessage";
-import { groupToolRuns, toolRunLabel } from "./ai/toolRuns";
+import { renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
+import { groupToolRuns, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
 import { mayActivateModel } from "./ai/modelActivationPolicy";
@@ -1108,6 +1108,11 @@ export function AiPanel({
   // you get back on open are the very same elements, not a second drawing of
   // them.
   const toolRuns = useMemo(() => groupToolRuns(msgs), [msgs]);
+  // Constant-time "is this message inside a folded run?" for the message loop:
+  // a message in a run hands its thought process to the run's header
+  // (`stackToolRuns` hoists it above the "N tool calls" row) and must not draw
+  // a second copy inside the fold.
+  const toolRunAt = useMemo(() => toolRunIndex(toolRuns), [toolRuns]);
   // Which messages have handed their mark to a folded row's header. A turn
   // that opens with tool work keeps its mark on the header in *both* states —
   // a mark that appears and disappears as you click reads as the row moving,
@@ -1141,6 +1146,16 @@ export function AiPanel({
     let cursor = 0;
     for (const run of toolRuns) {
       for (; cursor < run.start; cursor++) out.push(nodes[cursor]);
+      // The runs are computed from *messages*, but this function rewrites the
+      // loop's *output* — and the loop sometimes draws nothing for a message
+      // (results after a same-name burst render null; their calls are already
+      // on screen as ⎿ rows). A run whose rows were all withheld folds
+      // nothing: emitting its header would put a "3 tool calls" row over an
+      // empty body.
+      if (nodes.slice(run.start, run.end).every((n) => n == null)) {
+        cursor = run.end;
+        continue;
+      }
       // Work still happening stays open. Collapsing a run the agent is in the
       // middle of would hide the only thing moving on screen; it folds itself
       // once the answer it was gathering for arrives.
@@ -1154,6 +1169,15 @@ export function AiPanel({
       const first = msgs[run.start];
       const startsResponse = toolRunMarkOwners.has(run.start);
       const mark = startsResponse && first.role === "assistant" ? responseMark(first) : null;
+      // The reasoning that drove this stretch of tool work is the agent's
+      // voice, not tool machinery — it stays visible above the fold, in
+      // arrival order, whether the run is open or closed. The messages inside
+      // render with `hideThinking` so opening the run never shows it twice.
+      const thinkingNodes: ReactNode[] = [];
+      for (let i = run.start; i < run.end; i++) {
+        const t = extractThinking(msgs[i]);
+        if (t) thinkingNodes.push(<ThinkingBlock key={`think-${i}`} text={t} streaming={false} />);
+      }
       out.push(
         <div
           key={`tool-run-${run.start}`}
@@ -1173,6 +1197,7 @@ export function AiPanel({
             {startsResponse ? mark?.node ?? <KlideMark size={20} /> : null}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
+            {thinkingNodes}
             <ToolRunRow
               count={count}
               names={names}
@@ -4059,7 +4084,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 <div aria-hidden="true" style={{ flexShrink: 0, width: 22 }} />
               )}
               <div style={{ flex: 1, minWidth: 0, color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.6 }}>
-                {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive)}{isStreamingActive && <span className="ai-caret" />}</>}
+                {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive, { hideThinking: toolRunAt(i) !== null })}{isStreamingActive && <span className="ai-caret" />}</>}
                 {!isStreamingActive && !isAssistantPlaceholder && isResponseEnd && m.content?.trim() && (
                   <>
                     <MessageActions

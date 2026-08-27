@@ -14,6 +14,7 @@
 // cost more than the tidiness is worth.
 
 import type { Msg } from "./types";
+import { splitThinking, stripPlanJson } from "../markdown";
 
 /** One stretch of uninterrupted tool work. `end` is exclusive. */
 export type ToolRun = {
@@ -33,7 +34,16 @@ export const MIN_STACKED_CALLS = 3;
  *  also speaks is prose with tool rows attached, not part of a run. */
 function isToolWork(m: Msg): boolean {
   if (m.role === "tool") return true;
-  return m.role === "assistant" && !!m.toolCalls?.length && m.content.trim() === "";
+  if (m.role !== "assistant" || !m.toolCalls?.length) return false;
+
+  // Reasoning-only payloads are still tool work. Providers encode them three
+  // ways: a structured `thinking` field (already absent from `content`), an
+  // inline <think> block, or the conservative plan-JSON fallback. Classify on
+  // what would remain visible to the reader so those formats share the same
+  // folding and hoisting path without burying actual prose.
+  const { content: withoutInlineThinking } = splitThinking(m.content);
+  const { content: visibleContent } = stripPlanJson(withoutInlineThinking);
+  return visibleContent.trim() === "";
 }
 
 function callsIn(m: Msg): number {

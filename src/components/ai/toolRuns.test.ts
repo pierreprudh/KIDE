@@ -7,6 +7,12 @@ const call = (name: string): Msg => ({
   content: "",
   toolCalls: [{ name, args: {} }],
 });
+const reasoningCall = (name: string, content: string, thinking?: string): Msg => ({
+  role: "assistant",
+  content,
+  thinking,
+  toolCalls: [{ name, args: {} }],
+});
 const result = (name: string): Msg => ({
   role: "tool",
   content: "ok",
@@ -47,6 +53,35 @@ describe("groupToolRuns", () => {
     const speaking: Msg = { role: "assistant", content: "Reading it now.", toolCalls: [{ name: "Read", args: {} }] };
 
     expect(groupToolRuns([speaking, result("Read")])).toEqual([]);
+  });
+
+  it("folds every reasoning-only encoding without treating it as prose", () => {
+    const msgs = [
+      reasoningCall("Read", "", "Inspect the workspace."),
+      result("Read"),
+      reasoningCall("Grep", "<think>Find the relevant symbol.</think>"),
+      result("Grep"),
+      reasoningCall("Bash", JSON.stringify({
+        analysis: "Verify the change.",
+        plan: "Run the focused tests.",
+        commands: [{ tool_name: "Bash", arguments: { command: "npm test" } }],
+      })),
+      result("Bash"),
+    ];
+
+    expect(groupToolRuns(msgs)).toEqual([
+      { start: 0, end: 6, calls: 3, names: ["Read", "Grep", "Bash"] },
+    ]);
+  });
+
+  it("still ends a run when inline thinking is followed by visible prose", () => {
+    const speaking = reasoningCall(
+      "Read",
+      "<think>Choose the next file.</think>Reading the implementation now.",
+    );
+    const msgs = [...burst("Bash", 3), speaking, result("Read"), ...burst("Grep", 3)];
+
+    expect(groupToolRuns(msgs).map((run) => run.calls)).toEqual([3, 3]);
   });
 
   it("does not stack what was never a wall", () => {
