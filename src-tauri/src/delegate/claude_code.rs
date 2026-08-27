@@ -1,6 +1,7 @@
 use super::runs::{
     bounded_tool_input, bounded_tool_result, cap_messages, clean_title, extract_user_text,
-    mtime_ms, project_name, recency_status, tool_file_path, AgentRun, RunMessage, RunToolCall,
+    mtime_ms, project_name, tool_file_path, transcript_status, AgentRun, RunMessage, RunToolCall,
+    TranscriptState,
 };
 use super::chat_stream::{message_blocks, result_text, StreamItem};
 use super::{shell_quote, Delegate, RunCandidate, RunParser};
@@ -331,6 +332,7 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     let mut files: HashSet<String> = HashSet::new();
     let mut subagent_count: u32 = 0;
     let mut last_event: Option<String> = None;
+    let mut transcript_state = TranscriptState::Unknown;
     for line in std::io::BufRead::lines(reader) {
         let line = match line {
             Ok(l) => l,
@@ -379,6 +381,8 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
         match v.get("type").and_then(|t| t.as_str()) {
             Some("user") if counts_as_main => {
                 count += 1;
+                // A prompt or a tool result hands work back to Claude.
+                transcript_state = TranscriptState::Working;
                 if title.is_none() {
                     if let Some(t) = v.get("message").and_then(extract_user_text) {
                         title = Some(clean_title(&t));
@@ -388,6 +392,23 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
             Some("assistant") => {
                 if counts_as_main {
                     count += 1;
+                    // An assistant response that requests a tool is still in
+                    // flight. A response without one is a completed turn,
+                    // waiting at Claude's composer for the next user prompt.
+                    let uses_tool = v
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                            })
+                        });
+                    transcript_state = if uses_tool {
+                        TranscriptState::Working
+                    } else {
+                        TranscriptState::TurnComplete
+                    };
                     // Newest assistant turn wins — "what the run last did".
                     if let Some((t, _, _)) = v.get("message").and_then(message_text) {
                         last_event = Some(clean_title(&t));
@@ -434,6 +455,12 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
                     }
                 }
             }
+            // Headless Claude runs append an explicit result record. Interactive
+            // sessions do not, which is why assistant/tool markers above remain
+            // necessary for historical runs created outside Klide.
+            Some("result") if counts_as_main => {
+                transcript_state = TranscriptState::TurnComplete;
+            }
             _ => {}
         }
     }
@@ -447,7 +474,7 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     let cost_usd =
         crate::pricing::cost_for_run(model.as_deref().unwrap_or(""), input_tokens, output_tokens);
     Some(AgentRun {
-        status: recency_status(updated_ms),
+        status: transcript_status(updated_ms, transcript_state),
         project: cwd.as_deref().and_then(project_name),
         id,
         path: path.to_string_lossy().to_string(),
@@ -993,6 +1020,7 @@ mod tests {
         assert_eq!(run.git_branch.as_deref(), Some("main"));
         assert_eq!(run.created_ms, 1000);
         assert_eq!(run.message_count, 2);
+        assert_eq!(run.status, "running", "the last assistant turn requested a tool");
         // Last assistant turn, first line — "what the run last did".
         assert_eq!(run.last_event.as_deref(), Some("On it."));
         // Cache reads excluded, cache creation counted.
@@ -1005,6 +1033,30 @@ mod tests {
         // Claude Sonnet 4.6 at 100+50=150 input + 20 output = 0.00045 + 0.0003.
         let c = run.cost_usd.expect("sonnet has a known price");
         assert!((c - 0.00075).abs() < 1e-6, "got {c}");
+    }
+
+    #[test]
+    fn final_assistant_text_and_result_records_settle_the_turn() {
+        let home = temp_home("lifecycle");
+        let p = home.join("session.jsonl");
+        std::fs::write(
+            &p,
+            concat!(
+                r#"{"type":"user","message":{"content":"finish it"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Done and verified."}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(parse_run(&p).unwrap().status, "done");
+
+        std::fs::write(&p, format!("{FIXTURE}{FINISHED}\n")).unwrap();
+        assert_eq!(
+            parse_run(&p).unwrap().status,
+            "done",
+            "the headless result marker wins over an earlier tool request"
+        );
     }
 
     #[test]

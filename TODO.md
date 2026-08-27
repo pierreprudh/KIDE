@@ -35,7 +35,12 @@ them.
   before starting the Harness or delegate CLI; the worktree pin survives layout
   switches, failed delegate spawns clean up untouched checkouts, and only
   non-Git folders fall back to local execution.
-- [ ] Complete provider-aware waiting/exit markers for historical delegate runs.
+- [x] Complete provider-aware waiting/exit markers for historical delegate runs.
+  Claude Code and omp reduce user/tool/final-assistant turns, Codex consumes
+  task-start/task-complete markers, and OpenCode bounds an unfinished user turn
+  by recency. For Klide-hosted sessions, live blocked hooks and durable PTY exit
+  outcomes override transcript guesses; Codex's notifier now carries its thread
+  id so that join survives restart.
 
 ## v0.6 — Dependable orchestration
 

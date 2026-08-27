@@ -1,4 +1,7 @@
-use super::runs::{cap_messages, clean_title, project_name, tool_file_path, RunToolCall};
+use super::runs::{
+    cap_messages, clean_title, project_name, tool_file_path, transcript_status, RunToolCall,
+    TranscriptState,
+};
 use super::chat_stream::{result_text, StreamItem};
 use super::{shell_quote, AgentRun, Delegate, RunCandidate, RunMessage, RunParser};
 use std::collections::HashSet;
@@ -435,14 +438,11 @@ fn parse_run(conn: &rusqlite::Connection, session_id: &str) -> Option<AgentRun> 
     let input_tokens: i64 = row.get(8).unwrap_or(0);
     let output_tokens: i64 = row.get(9).unwrap_or(0);
 
-    // Status is determined by the *role of the latest message*, not the
-    // recency of the session row. The opencode TUI/server touches the
-    // session row in the background (auto-save, etc.), so time_updated is
-    // a heartbeat signal that says nothing about whether the user is
-    // actively engaged. The latest message is what tells us:
-    //   • role == "user"      → user is waiting on the agent → "running"
-    //   • role == "assistant" → agent has finished its last turn → "done"
-    //   • no messages at all   → fresh/unused session → "done"
+    // The latest message is OpenCode's provider-specific turn marker. A user
+    // message starts work; an assistant message settles the turn. Recency only
+    // bounds the active case so an abandoned/crashed external process cannot
+    // leave a historical row "running" forever. A fresh session with no
+    // messages has no work and is already done.
     let status = {
         let latest_role: Option<String> = (|| -> Option<String> {
             let mut stmt = conn
@@ -466,7 +466,7 @@ fn parse_run(conn: &rusqlite::Connection, session_id: &str) -> Option<AgentRun> 
             rows.next().and_then(|r| r.ok())
         })();
         match latest_role.as_deref() {
-            Some("user") => "running".to_string(),
+            Some("user") => transcript_status(time_updated, TranscriptState::Working),
             _ => "done".to_string(),
         }
     };
@@ -830,8 +830,34 @@ mod tests {
             [],
         )
         .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        conn.execute("UPDATE session SET time_updated = ?1 WHERE id = 'oss-1'", [now])
+            .unwrap();
         let parser = OpenCode.run_parser(home.to_str().unwrap());
         assert_eq!(parser.parse("oss-1").unwrap().status, "running");
+    }
+
+    #[test]
+    fn stale_user_message_does_not_stay_running_forever() {
+        let home = temp_home("stale-status");
+        seed_db(&home);
+        let conn =
+            rusqlite::Connection::open(home.join(".local/share/opencode/opencode.db")).unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('m3', 'oss-1', '{\"role\":\"user\"}', 3)",
+            [],
+        )
+        .unwrap();
+
+        let parser = OpenCode.run_parser(home.to_str().unwrap());
+        assert_eq!(
+            parser.parse("oss-1").unwrap().status,
+            "done",
+            "the fixture's ancient time_updated bounds an interrupted turn"
+        );
     }
 
     #[test]

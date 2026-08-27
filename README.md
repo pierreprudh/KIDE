@@ -160,7 +160,7 @@ v0.6.1 is the current release: Focus reaches every provider Klide supports, dele
 
 Current priorities:
 
-- v0.5.1: dogfood race/restart/merge behavior and default worktree isolation, plus historical Delegate lifecycle signals
+- v0.5.1: dogfood the full race/restart/permission/merge/cleanup path
 - v0.5.1: publish a signed/notarized macOS build, then validate Windows and Linux
 - v0.6: make Missions, budgets, capacity, routing, and validation contracts one dependable orchestration layer
 
