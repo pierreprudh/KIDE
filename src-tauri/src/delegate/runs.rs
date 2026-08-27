@@ -27,7 +27,7 @@ pub struct AgentRun {
     // record usage). Input excludes cache reads — they'd dwarf everything else.
     pub input_tokens: i64,
     pub output_tokens: i64,
-    pub status: String, // "running" (touched <2min ago) | "done"
+    pub status: String, // "running" | "waiting" (blocked on user) | "done"
     /// Count of unique file paths the agent touched in tool calls (Read,
     /// Edit, Write, apply_patch, etc.). 0 when the source doesn't record
     /// tool calls or the session had no file-touching tools.
@@ -125,15 +125,80 @@ pub struct RunMessage {
     pub images: Vec<String>,
 }
 
-/// One tool call in a delegate run's conversation. The adapters know the tool's
-/// name (and sometimes a short argument summary); the richer fields the frontend
-/// `RunToolCall` allows are populated by the Klide-native fold path, not here.
-#[derive(serde::Serialize)]
+/// One tool call in a delegate run's conversation, with as much of the call as
+/// a résumé view can honestly carry: what it was asked to do, and what came
+/// back. A name on its own reads as eight identical "Bash" rows — true, and
+/// useless.
+///
+/// `input` and `result` are *bounded* on the way in (`bounded_tool_input`,
+/// `bounded_tool_result`). A Claude transcript inlines whole files and whole
+/// command outputs; a reader needs the first line and the shape, and paying
+/// tens of megabytes to show them would repeat the mistake `parse_run`'s
+/// oversized-line guard exists to prevent.
+#[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunToolCall {
     pub name: String,
+    /// The CLI's own id for the call (`tool_use_id`), used to match a result
+    /// that arrives in a later message — and to key the rendered row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The call's arguments, as the CLI recorded them. The reader derives the
+    /// row's one-line summary from this (`command`, `file_path`, `pattern`, …),
+    /// so it is the raw object rather than a pre-rendered string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The head of what the tool returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// False when the CLI marked the result an error (`is_error`). Absent when
+    /// no result was found — unknown is not success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+}
+
+/// How much of one tool's arguments to carry. Long string values are cut with
+/// an ellipsis rather than dropped: the reader's summary comes from the *head*
+/// of `command` or `file_path`, and a truncated path still identifies the file.
+const MAX_TOOL_INPUT_VALUE: usize = 400;
+
+/// How much of one tool's output to carry — enough for the collapsed first
+/// line and a short expansion, not the whole file a `Read` returned.
+const MAX_TOOL_RESULT: usize = 2000;
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    format!("{head}…")
+}
+
+/// Bound a tool input for the wire: every string value is truncated, nested
+/// objects and arrays are walked, everything else passes through. The shape is
+/// preserved so the reader can still find `command` / `file_path` / `pattern`.
+pub fn bounded_tool_input(input: &serde_json::Value) -> serde_json::Value {
+    match input {
+        serde_json::Value::String(s) => {
+            serde_json::Value::String(truncate_chars(s, MAX_TOOL_INPUT_VALUE))
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(bounded_tool_input).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), bounded_tool_input(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Bound a tool result for the wire.
+pub fn bounded_tool_result(result: &str) -> String {
+    truncate_chars(result.trim(), MAX_TOOL_RESULT)
 }
 
 /// A run a delegate left on disk, before parsing: just enough to sort and
@@ -232,11 +297,12 @@ pub(crate) fn clean_title(s: &str) -> String {
 }
 
 /// How long a Delegate transcript may go without a write before the board reads
-/// the run as finished.
+/// an otherwise-active run as finished.
 ///
-/// A Delegate CLI reports no lifecycle of its own, so "is it still going?" is
-/// inferred from the session log's mtime. That makes this the **only** staleness
-/// authority for Delegate runs, and it silently bounds the frontend's:
+/// Provider-specific transcript markers settle a completed turn immediately,
+/// and Klide-hosted PTYs contribute hook/exit state at the aggregation seam.
+/// Runs launched outside Klide still need a conservative fallback, so an active
+/// transcript marker expires here. This window silently bounds the frontend's:
 /// `STALE_RUNNING_MS` in `src/runs.ts` flags a *running* run as idle after five
 /// minutes, which a Delegate can never reach — it has been relabelled `done`
 /// here after two. `delegate_recency_window_bounds_the_frontend_idle_signal`
@@ -244,12 +310,30 @@ pub(crate) fn clean_title(s: &str) -> String {
 /// other one.
 pub(crate) const DELEGATE_RECENCY_MS: i64 = 120_000;
 
-pub(crate) fn recency_status(updated_ms: i64) -> String {
-    if now_ms() - updated_ms < DELEGATE_RECENCY_MS {
+/// The last provider-specific lifecycle fact found while reducing a transcript.
+/// `Unknown` preserves the mtime fallback for formats/records we do not know;
+/// `Working` is still bounded by recency so an interrupted external CLI cannot
+/// remain active forever; `TurnComplete` settles immediately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptState {
+    Unknown,
+    Working,
+    TurnComplete,
+}
+
+fn transcript_status_at(now_ms: i64, updated_ms: i64, state: TranscriptState) -> String {
+    if state == TranscriptState::TurnComplete {
+        return "done".to_string();
+    }
+    if now_ms - updated_ms < DELEGATE_RECENCY_MS {
         "running".to_string()
     } else {
         "done".to_string()
     }
+}
+
+pub(crate) fn transcript_status(updated_ms: i64, state: TranscriptState) -> String {
+    transcript_status_at(now_ms(), updated_ms, state)
 }
 
 // The first genuine user prompt becomes the run's title. Skips system/tool
@@ -504,12 +588,11 @@ mod tests {
 
     #[test]
     fn delegate_recency_window_bounds_the_frontend_idle_signal() {
-        // A Delegate reports no lifecycle, so its status is inferred from
-        // transcript mtime — making this the only staleness authority for one.
-        // The frontend has a second: STALE_RUNNING_MS flags a *running* run as
-        // idle. Because a Delegate is relabelled `done` here first, that signal
-        // can only ever fire for a Klide Harness run — never for a Delegate,
-        // which is presumably what it was written for.
+        // Provider markers and hosted-PTY signals now settle known states, but
+        // an otherwise-active Delegate transcript still expires here. The
+        // frontend has a second authority: STALE_RUNNING_MS flags a *running*
+        // run as idle. Because the fallback is relabelled `done` here first,
+        // that signal remains unreachable for such a Delegate row.
         //
         // This test does not pretend that is fixed. It pins both numbers and the
         // relationship between them, so changing either one surfaces the other:
@@ -525,6 +608,32 @@ frontend's {stale_running}ms idle signal is unreachable for one. If this \
 assertion now fails, the idle signal has become reachable for Delegates — \
 which is the fix, not a regression: update this test and the comments on both \
 constants."
+        );
+    }
+
+    #[test]
+    fn transcript_markers_settle_turns_but_bound_abandoned_work() {
+        let now = 1_000_000;
+        let fresh = now - 1_000;
+        let stale = now - DELEGATE_RECENCY_MS;
+
+        assert_eq!(
+            transcript_status_at(now, fresh, TranscriptState::Working),
+            "running"
+        );
+        assert_eq!(
+            transcript_status_at(now, fresh, TranscriptState::TurnComplete),
+            "done"
+        );
+        assert_eq!(
+            transcript_status_at(now, stale, TranscriptState::Working),
+            "done",
+            "an external CLI interrupted mid-turn must not stay active forever"
+        );
+        assert_eq!(
+            transcript_status_at(now, fresh, TranscriptState::Unknown),
+            "running",
+            "unknown formats preserve the prior recency fallback"
         );
     }
 }

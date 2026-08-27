@@ -44,7 +44,7 @@ import {
   gitWorktreeRemove,
   createPr,
 } from "./ipc/git";
-import { eventsToConversation } from "./components/ai/replayConversation";
+import { eventsToConversation, runMessagesToMsgs } from "./components/ai/replayConversation";
 import {
   CONVERSATIONS_CHANGED_EVENT,
   loadConversations,
@@ -52,7 +52,7 @@ import {
 } from "./components/ai/storedConversations";
 import type { AgentAttachment, AgentEvent, ProviderId } from "./agent/types";
 import { defaultModelForProvider, providerName } from "./agent/providers";
-import type { Conversation, Msg } from "./components/ai/types";
+import type { Conversation } from "./components/ai/types";
 import { summarizeAndHandoff } from "./components/ai/summarize";
 import { fetchRunMessages, type Run, type RunMessage as MissionRunMessage } from "./runs";
 import { isDelegateId, type DelegateId } from "./delegates";
@@ -1373,35 +1373,6 @@ function App() {
     return "Resumed run";
   }
 
-  // Convert MissionControl's `RunMessage` (a read-back of the on-disk
-  // transcript) into the AI panel's `Msg` shape so we can hand it to
-  // `summarizeAndHandoff`, which expects Msg[]. The two shapes diverge
-  // because MissionControl carries `tools: RunToolCall[]` per message
-  // while the AI panel uses `toolCalls: ToolCall[]` (different types).
-  // We do a best-effort conversion: the name + input are preserved, the
-  // result and status are dropped (the summary doesn't need them).
-  function runMessagesToAiMsgs(messages: MissionRunMessage[]): Msg[] {
-    const out: Msg[] = [];
-    for (const m of messages) {
-      if (m.role === "user") {
-        out.push({ role: "user", content: m.text });
-      } else {
-        const toolCalls = (m.tools ?? [])
-          .map((t) => ({
-            name: t.name,
-            args: t.input,
-          }))
-          .filter((t) => Boolean(t.name));
-        out.push({
-          role: "assistant",
-          content: m.text,
-          ...(toolCalls.length > 0 ? { toolCalls: toolCalls as any } : {}),
-        });
-      }
-    }
-    return out;
-  }
-
   async function resumeKlideRun(runId: string) {
     try {
       const events = await readAgentRunEvents(runId);
@@ -1430,7 +1401,9 @@ function App() {
     return {
       id,
       title: `Fork: ${run.title}`,
-      msgs: runMessagesToAiMsgs(messages),
+      // A delegate's tool rows say which CLI ran them; a Klide run's tools
+      // went through the harness and carry no such disclaimer.
+      msgs: runMessagesToMsgs(messages, isDelegateId(run.source) ? run.source : undefined),
       updatedAt: Date.now(),
       provider,
       model: run.model,
@@ -1778,7 +1751,7 @@ function App() {
         setFileNotice("Run has no messages to summarise.");
         return;
       }
-      const msgs = runMessagesToAiMsgs(messages);
+      const msgs = runMessagesToMsgs(messages);
       const entry = await summarizeAndHandoff({
         workspaceRoot: run.cwd,
         provider: run.provider,

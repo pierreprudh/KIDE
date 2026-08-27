@@ -682,7 +682,7 @@ impl StreamingProvider for OpenAiAdapter {
     }
 }
 
-fn openai_chat_body(
+pub(crate) fn openai_chat_body(
     model: &str,
     messages: Vec<serde_json::Value>,
     tools: Option<Vec<serde_json::Value>>,

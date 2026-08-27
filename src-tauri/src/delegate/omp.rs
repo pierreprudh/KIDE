@@ -1,6 +1,6 @@
 use super::runs::{
-    cap_messages, clean_title, extract_user_text, mtime_ms, project_name, recency_status,
-    tool_file_path, AgentRun, RunMessage, RunToolCall,
+    cap_messages, clean_title, extract_user_text, mtime_ms, project_name, tool_file_path,
+    transcript_status, AgentRun, RunMessage, RunToolCall, TranscriptState,
 };
 use super::{shell_quote, Delegate, RunCandidate, RunParser};
 use std::collections::HashSet;
@@ -151,6 +151,7 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     let mut cost_sum: f64 = 0.0;
     let mut files: HashSet<String> = HashSet::new();
     let mut last_event: Option<String> = None;
+    let mut transcript_state = TranscriptState::Unknown;
     for line in content.lines() {
         let v: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -186,12 +187,28 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
                 };
                 let role = message.get("role").and_then(|r| r.as_str()).unwrap_or("");
                 count += 1;
+                if role == "user" {
+                    transcript_state = TranscriptState::Working;
+                }
                 if role == "user" && title.is_none() {
                     if let Some(t) = extract_user_text(message) {
                         title = Some(clean_title(&t));
                     }
                 }
                 if role == "assistant" {
+                    let uses_tool = message
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                            })
+                        });
+                    transcript_state = if uses_tool {
+                        TranscriptState::Working
+                    } else {
+                        TranscriptState::TurnComplete
+                    };
                     // Newest assistant turn wins — "what the run last did".
                     if let Some((t, _)) = message_text(message) {
                         last_event = Some(clean_title(&t));
@@ -260,7 +277,7 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
         crate::pricing::cost_for_run(model.as_deref().unwrap_or(""), input_tokens, output_tokens)
     };
     Some(AgentRun {
-        status: recency_status(updated_ms),
+        status: transcript_status(updated_ms, transcript_state),
         project: cwd.as_deref().and_then(project_name),
         id,
         path: path.to_string_lossy().to_string(),
@@ -326,7 +343,7 @@ fn message_text(message: &serde_json::Value) -> Option<(String, Vec<RunToolCall>
                     let name = part.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                     tools.push(RunToolCall {
                         name: name.to_string(),
-                        summary: None,
+                        ..Default::default()
                     });
                 }
                 _ => {}
@@ -397,6 +414,7 @@ mod tests {
         assert_eq!(run.project.as_deref(), Some("proj"));
         assert_eq!(run.created_ms, 1781530086376); // ISO parsed to epoch ms
         assert_eq!(run.message_count, 2);
+        assert_eq!(run.status, "running", "the assistant's tool request is still active");
         // input (100) + cacheWrite (50); cacheRead excluded. output = 20.
         assert_eq!(run.input_tokens, 150);
         assert_eq!(run.output_tokens, 20);
@@ -424,6 +442,7 @@ mod tests {
         let run = parse_run(&p).unwrap();
         assert_eq!(run.model.as_deref(), Some("llama3.1:8b"));
         assert!(run.cost_usd.is_none(), "local model has no cost");
+        assert_eq!(run.status, "done", "plain assistant text completes the turn");
     }
 
     #[test]

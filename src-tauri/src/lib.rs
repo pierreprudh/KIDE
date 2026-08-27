@@ -427,10 +427,17 @@ async fn list_agent_runs(
     // cases where the CLI created its own session id different from the one
     // we passed to delegate_pty_spawn).
     let (by_delegate, by_external) = crate::pty::read_delegate_sessions_by_id(&app);
+    let hosted_statuses = crate::pty::historical_delegate_statuses(&app);
     for run in runs.iter_mut() {
         // Evidence: surface the linked git worktree a run executed in (when its
         // cwd is one), so the board can answer "where did this happen?".
         crate::delegate::fill_worktree_evidence(&mut run.worktree, run.cwd.as_deref());
+        // Adapter transcripts cover sessions launched anywhere. When Klide
+        // hosted this exact provider thread, its hook/PTY exit record is the
+        // higher-fidelity lifecycle source and settles stale rows immediately.
+        if let Some(status) = hosted_statuses.get(&(run.source.clone(), run.id.clone())) {
+            run.status = status.clone();
+        }
         if run.parent_id.is_none() {
             if let Some(mapping) = by_delegate
                 .get(&run.id)

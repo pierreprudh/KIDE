@@ -45,7 +45,7 @@ use self::transcripts::{
 };
 use self::types::error_code;
 use self::types::{
-    AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentRunStatus,
+    AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentMode, AgentRunStatus,
     AgentRunSummary, AgentTurnTiming, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest,
     PermissionOption,
     PermissionRequest, StartRunRequest, StartRunResponse, SubmitUserTurnRequest, ToolResult,
@@ -1499,10 +1499,15 @@ async fn run_agent_loop(
         });
 
         // Refresh the TODO list context before every turn so the model always
-        // sees the latest task state (tools may have modified it).
-        if let Some(cwd) = &request.workspace_root {
-            let todo_text = todo::list_todos_text(cwd, &id);
-            refresh_todo_context(&mut messages, todo_text.as_deref());
+        // sees the latest task state (tools may have modified it). MLX appends
+        // changed snapshots to preserve its processed prefix; local Chat stays
+        // free of project TODO context, as it is in provider_messages.
+        let caps = ProviderCaps::for_provider(&request.provider);
+        if !(caps.minimal_chat_context && matches!(request.mode, AgentMode::Chat)) {
+            if let Some(cwd) = &request.workspace_root {
+                let todo_text = todo::list_todos_text(cwd, &id);
+                refresh_todo_context(&mut messages, todo_text.as_deref(), caps.append_todo_updates);
+            }
         }
 
         // Race the provider stream against user cancellation so abort takes
@@ -3607,6 +3612,7 @@ mod test_support {
     pub(super) struct ScriptedProviderCaller {
         pub(super) script: Arc<Mutex<VecDeque<Result<AiChatResponse, String>>>>,
         pub(super) seen_roles: Arc<Mutex<Vec<Vec<String>>>>,
+        pub(super) seen_messages: Arc<Mutex<Vec<Vec<serde_json::Value>>>>,
         /// Whether each turn was offered tool schemas. The turn-cap endgame
         /// withholds them on the final turn, and that is only observable here.
         pub(super) seen_tools: Arc<Mutex<Vec<bool>>>,
@@ -3617,6 +3623,7 @@ mod test_support {
             Self {
                 script: Arc::new(Mutex::new(turns.into())),
                 seen_roles: Arc::new(Mutex::new(Vec::new())),
+                seen_messages: Arc::new(Mutex::new(Vec::new())),
                 seen_tools: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -3629,8 +3636,10 @@ mod test_support {
         ) -> Pin<Box<dyn Future<Output = Result<AiChatResponse, String>> + Send + 'a>> {
             let script = self.script.clone();
             let seen = self.seen_roles.clone();
+            let seen_messages = self.seen_messages.clone();
             let seen_tools = self.seen_tools.clone();
             Box::pin(async move {
+                seen_messages.lock().unwrap().push(request.messages.clone());
                 seen_tools.lock().unwrap().push(request.tools.is_some());
                 seen.lock().unwrap().push(
                     request
@@ -3974,6 +3983,127 @@ mod run_loop_tests {
         )
         .await
         .expect("run loop settles without an infrastructure error");
+    }
+
+    /// Exercise the real TODO refresh call site after a file read, where
+    /// rewriting an early system message would discard the expensive prefix.
+    #[tokio::test]
+    async fn mlx_todo_updates_preserve_the_processed_prefix() {
+        let (runs_dir, root) = sandbox("mlx-todo-prefix");
+        let id = "mlx-prefix-run";
+        todo::add_todo(&root, id, "Inspect fixture.txt".into()).unwrap();
+        let fixture = (0..160)
+            .map(|n| format!("pub const FIXTURE_{n}: usize = {n};\n"))
+            .collect::<String>();
+        std::fs::write(format!("{root}/fixture.txt"), fixture).unwrap();
+        let caller = ScriptedProviderCaller::new(vec![
+            scripted_turn(
+                "",
+                vec![scripted_tool_call(
+                    "read", "read_file", serde_json::json!({ "path": "fixture.txt" }),
+                )],
+            ),
+            scripted_turn(
+                "",
+                vec![scripted_tool_call(
+                    "complete", "update_todo_list",
+                    serde_json::json!({ "action": "complete", "id": "T1" }),
+                )],
+            ),
+            scripted_turn("The fixture has been inspected.", vec![]),
+        ]);
+        let mut request = test_request(&root, &[]);
+        request.provider = "mlx".into();
+        request.system_prompt =
+            Some("You are a coding assistant. Follow the latest TODO state.".into());
+        request.initial_text = "Read fixture.txt, mark T1 complete, then report its status.".into();
+        drive_loop(
+            Arc::new(FakeSupervisor::with_run(id)),
+            &runs_dir, id, request, caller.clone(),
+        )
+        .await;
+
+        let seen = caller.seen_messages.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        // Optional export feeds scripts/mlx-cache/bench.py with actual Harness
+        // requests; no model or HTTP service is needed for this regression.
+        if let Some(path) = std::env::var_os("KLIDE_MLX_CACHE_FIXTURE") {
+            let wire = |messages: Vec<serde_json::Value>| {
+                crate::adapters::openai_chat_body(
+                    "default_model", messages,
+                    schemas_for_mode(&AgentMode::Goal, &[], Some(&root)), true,
+                )
+            };
+            let warm = wire(seen[1].clone());
+            let next = wire(seen[2].clone());
+            let fixture = serde_json::json!({
+                "warm": warm["messages"],
+                "next": next["messages"],
+                "tools": warm["tools"],
+            });
+            std::fs::write(path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
+        }
+        assert_eq!(
+            &seen[2][..seen[1].len()], seen[1].as_slice(),
+            "TODO changes must not rewrite already-processed messages",
+        );
+        let latest = seen[2].last().unwrap()["content"].as_str().unwrap();
+        assert!(latest.starts_with("[TODO list]"));
+        assert!(latest.contains("[x] T1: Inspect fixture.txt"));
+        let snapshots = seen[1].iter().filter(|m| {
+            m["role"] == "system"
+                && m["content"].as_str().is_some_and(|s| s.starts_with("[TODO list]"))
+        }).count();
+        assert_eq!(snapshots, 1, "unchanged TODO state must not grow the prompt");
+    }
+
+    #[tokio::test]
+    async fn mlx_todo_updates_notice_the_first_added_item() {
+        let (runs_dir, root) = sandbox("mlx-first-todo");
+        let id = "mlx-first-todo-run";
+        let caller = ScriptedProviderCaller::new(vec![
+            scripted_turn(
+                "",
+                vec![scripted_tool_call(
+                    "add", "update_todo_list",
+                    serde_json::json!({ "action": "add", "text": "Check the tests" }),
+                )],
+            ),
+            scripted_turn("The task is recorded.", vec![]),
+        ]);
+        let mut request = test_request(&root, &[]);
+        request.provider = "mlx".into();
+        drive_loop(
+            Arc::new(FakeSupervisor::with_run(id)),
+            &runs_dir, id, request, caller.clone(),
+        )
+        .await;
+        let seen = caller.seen_messages.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(&seen[1][..seen[0].len()], seen[0].as_slice());
+        assert_eq!(seen[1].last().unwrap()["role"], "system");
+        assert_eq!(
+            seen[1].last().unwrap()["content"], "[TODO list]\n[ ] T1: Check the tests",
+        );
+    }
+
+    #[tokio::test]
+    async fn mlx_chat_does_not_inject_project_todos() {
+        let (runs_dir, root) = sandbox("mlx-chat-todos");
+        let id = "mlx-chat-run";
+        todo::add_todo(&root, id, "This belongs to a tool-capable turn".into()).unwrap();
+        let caller = ScriptedProviderCaller::new(vec![scripted_turn("Hello.", vec![])]);
+        let mut request = test_request(&root, &[]);
+        request.provider = "mlx".into();
+        request.mode = AgentMode::Chat;
+        drive_loop(
+            Arc::new(FakeSupervisor::with_run(id)),
+            &runs_dir, id, request, caller.clone(),
+        )
+        .await;
+        let seen = caller.seen_messages.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].len(), 2, "local Chat only sends system and user messages");
     }
 
     /// Ports the scripted-model eval: read → edit → verify → final answer, now

@@ -58,7 +58,7 @@ describe("the one status vocabulary", () => {
   it("keeps a board row's waiting distinct from a live delegate's", () => {
     // The overlap that looks like a bug and is not. Both surfaces are correct
     // for their own vocabulary; see the note at the top of runPresentation.ts.
-    // A Harness run parked on a gate cannot proceed → Blocked.
+    // A run parked on a gate cannot proceed → Blocked.
     expect(presentRunStatus("waiting")).toEqual({ word: "Blocked", tone: "attention" });
     // A Delegate whose turn finished is idle at its composer, output on you →
     // Waiting.

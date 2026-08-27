@@ -29,6 +29,9 @@ pub(super) struct ProviderCaps {
     /// Small local backends (MLX, Ollama) made a bare "hello" feel broken when
     /// handed project metadata, so their chat turns stay tiny.
     pub(super) minimal_chat_context: bool,
+    /// MLX prefix caches can reuse history only up to the first changed token.
+    /// Keep old TODO snapshots stable and append changes for this provider.
+    pub(super) append_todo_updates: bool,
 }
 
 impl ProviderCaps {
@@ -36,6 +39,7 @@ impl ProviderCaps {
         Self {
             structured_replay: provider != "ollama",
             minimal_chat_context: matches!(provider, "mlx" | "ollama"),
+            append_todo_updates: provider == "mlx",
         }
     }
 }
@@ -262,21 +266,34 @@ fn todo_context_message(todo_text: Option<&str>) -> serde_json::Value {
     })
 }
 
-/// Refresh the existing TODO context message in-place. The run loop computes
-/// the latest TODO text with I/O; this helper is pure over the provider message
-/// array so the update rules are testable.
-pub(super) fn refresh_todo_context(messages: &mut [serde_json::Value], todo_text: Option<&str>) {
-    for msg in messages.iter_mut() {
-        if msg.get("role").and_then(|v| v.as_str()) == Some("system")
-            && msg
-                .get("content")
-                .and_then(|v| v.as_str())
-                .map(|c| c.starts_with("[TODO list]"))
-                .unwrap_or(false)
-        {
-            msg["content"] = todo_context_message(todo_text)["content"].clone();
-            break;
+/// Refresh TODO state before a provider turn. MLX gets a new snapshot only
+/// when state changes, after all completed tool results, so an update doesn't
+/// invalidate the cached conversation prefix. Other providers keep their
+/// existing single-message policy. The caller excludes minimal local Chat.
+///
+/// These snapshots are run-local, like the old TODO injection: transcript
+/// replay rebuilds the initial state on resume. This preserves the prefix
+/// between tool turns; it does not promise cache hits across resumed runs.
+pub(super) fn refresh_todo_context(
+    messages: &mut Vec<serde_json::Value>,
+    todo_text: Option<&str>,
+    append_updates: bool,
+) {
+    let is_todo = |msg: &serde_json::Value| {
+        msg["role"] == "system"
+            && msg["content"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("[TODO list]"))
+    };
+    let next = todo_context_message(todo_text);
+    if append_updates {
+        let previous = messages.iter().rev().find(|msg| is_todo(msg));
+        if previous == Some(&next) || (previous.is_none() && todo_text.is_none()) {
+            return;
         }
+        messages.push(next);
+    } else if let Some(msg) = messages.iter_mut().find(|msg| is_todo(msg)) {
+        msg["content"] = next["content"].clone();
     }
 }
 
@@ -833,17 +850,33 @@ mod tests {
             serde_json::json!({ "role": "system", "content": "[TODO list]\nold" }),
             serde_json::json!({ "role": "user", "content": "go" }),
         ];
-        refresh_todo_context(&mut messages, Some("- [ ] new"));
+        refresh_todo_context(&mut messages, Some("- [ ] new"), false);
         assert_eq!(messages[1]["content"], "[TODO list]\n- [ ] new");
-        refresh_todo_context(&mut messages, None);
+        refresh_todo_context(&mut messages, None, false);
         assert_eq!(messages[1]["content"], "[TODO list]\nNo todos.");
     }
 
     #[test]
     fn refresh_todo_context_is_noop_without_todo_message() {
         let mut messages = vec![serde_json::json!({ "role": "system", "content": "base" })];
-        refresh_todo_context(&mut messages, Some("- [ ] ignored"));
+        refresh_todo_context(&mut messages, Some("- [ ] ignored"), false);
         assert_eq!(messages[0]["content"], "base");
+    }
+
+    #[test]
+    fn appended_todo_context_deduplicates_and_records_clearing() {
+        let mut messages = vec![serde_json::json!({ "role": "system", "content": "base" })];
+        refresh_todo_context(&mut messages, None, true);
+        assert_eq!(messages.len(), 1, "an empty list needs no initial snapshot");
+        refresh_todo_context(&mut messages, Some("[ ] T1: test"), true);
+        let prefix = messages.clone();
+        refresh_todo_context(&mut messages, Some("[ ] T1: test"), true);
+        assert_eq!(messages, prefix, "unchanged snapshots must not accumulate");
+        refresh_todo_context(&mut messages, None, true);
+        assert_eq!(&messages[..prefix.len()], prefix.as_slice());
+        assert_eq!(messages.last().unwrap()["content"], "[TODO list]\nNo todos.");
+        refresh_todo_context(&mut messages, None, true);
+        assert_eq!(messages.len(), prefix.len() + 1);
     }
 
     #[test]
@@ -855,11 +888,14 @@ mod tests {
         let mlx = ProviderCaps::for_provider("mlx");
         assert!(mlx.structured_replay);
         assert!(mlx.minimal_chat_context);
+        assert!(mlx.append_todo_updates);
+        assert!(!ollama.append_todo_updates);
 
         for id in ["anthropic", "openai", "my-self-hosted-endpoint"] {
             let caps = ProviderCaps::for_provider(id);
             assert!(caps.structured_replay, "{id}");
             assert!(!caps.minimal_chat_context, "{id}");
+            assert!(!caps.append_todo_updates, "{id}");
         }
     }
 

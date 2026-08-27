@@ -1,10 +1,11 @@
 use super::runs::{
-    cap_messages, clean_title, extract_user_text, mtime_ms, project_name, recency_status,
-    tool_file_path, AgentRun, RunMessage, RunToolCall,
+    bounded_tool_input, bounded_tool_result, cap_messages, clean_title, extract_user_text,
+    mtime_ms, project_name, tool_file_path, transcript_status, AgentRun, RunMessage, RunToolCall,
+    TranscriptState,
 };
 use super::chat_stream::{message_blocks, result_text, StreamItem};
 use super::{shell_quote, ChatSpec, Delegate, RunCandidate, RunParser};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Claude Code — Anthropic's CLI. Its TUI accepts the task as the first
 /// positional arg directly, so no subcommand is needed. Sessions land in
@@ -281,10 +282,31 @@ impl Delegate for ClaudeCode {
     }
 
     fn read_run(&self, _home: &str, key: &str) -> Result<Vec<RunMessage>, String> {
-        let content = std::fs::read_to_string(key).map_err(|e| e.to_string())?;
+        use std::io::BufRead;
+        // Streamed, with the same oversized-line guard `parse_run` carries and
+        // for the same reason: Claude inlines whole tool outputs, so a long
+        // session is tens of megabytes of which one line can be most of it.
+        // Slurping the file and building a `Value` per line is what made a
+        // single transcript dominate a page. A skipped line is a giant tool
+        // result in practice — its call keeps its name and arguments and simply
+        // reports no output, which is the same trade `parse_run` already makes.
+        let file = std::fs::File::open(key).map_err(|e| e.to_string())?;
+        let reader = std::io::BufReader::new(file);
         let mut msgs: Vec<RunMessage> = Vec::new();
-        for line in content.lines() {
-            let v: serde_json::Value = match serde_json::from_str(line) {
+        // tool_use_id → where that call landed. A CLI records the call in one
+        // message and its result in a later one, so the result has to be folded
+        // back onto the row it belongs to rather than shown as a turn of its
+        // own (which is why they used to be dropped as noise).
+        let mut placed: HashMap<String, (usize, usize)> = HashMap::new();
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => break,
+            };
+            if line.len() > MAX_PARSE_LINE {
+                continue;
+            }
+            let v: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -293,7 +315,20 @@ impl Delegate for ClaudeCode {
                 Some("assistant") => "assistant",
                 _ => continue,
             };
-            if let Some((text, tools, images)) = v.get("message").and_then(message_text) {
+            let Some(message) = v.get("message") else {
+                continue;
+            };
+            // Results first, and independently of whether this message shows:
+            // a turn that is *only* tool results still has something to say —
+            // just not on a line of its own.
+            fold_tool_results(message, &mut msgs, &placed);
+            if let Some((text, tools, images)) = message_text(message) {
+                let index = msgs.len();
+                for (slot, call) in tools.iter().enumerate() {
+                    if let Some(id) = &call.id {
+                        placed.insert(id.clone(), (index, slot));
+                    }
+                }
                 msgs.push(RunMessage {
                     role: role.to_string(),
                     text,
@@ -315,6 +350,10 @@ impl RunParser for ClaudeRunParser {
     }
 }
 
+/// The line length past which a transcript line is skipped rather than parsed.
+/// Shared by both readers — one number, one reason (see `parse_run`).
+const MAX_PARSE_LINE: usize = 32 * 1024;
+
 fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     // Claude transcripts inline full tool output, so a long session runs to tens
     // of megabytes on one line apiece. Slurping the file and building a
@@ -325,7 +364,6 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     // An oversized line is a tool-result blob in practice, so it still counts as
     // a turn (read off the raw bytes) but contributes no tokens, tool paths, or
     // title. That trade is deliberate: those live on the small metadata lines.
-    const MAX_PARSE_LINE: usize = 32 * 1024;
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
     let id = path.file_stem()?.to_string_lossy().to_string();
@@ -338,6 +376,7 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     let mut files: HashSet<String> = HashSet::new();
     let mut subagent_count: u32 = 0;
     let mut last_event: Option<String> = None;
+    let mut transcript_state = TranscriptState::Unknown;
     for line in std::io::BufRead::lines(reader) {
         let line = match line {
             Ok(l) => l,
@@ -386,6 +425,8 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
         match v.get("type").and_then(|t| t.as_str()) {
             Some("user") if counts_as_main => {
                 count += 1;
+                // A prompt or a tool result hands work back to Claude.
+                transcript_state = TranscriptState::Working;
                 if title.is_none() {
                     if let Some(t) = v.get("message").and_then(extract_user_text) {
                         title = Some(clean_title(&t));
@@ -395,6 +436,23 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
             Some("assistant") => {
                 if counts_as_main {
                     count += 1;
+                    // An assistant response that requests a tool is still in
+                    // flight. A response without one is a completed turn,
+                    // waiting at Claude's composer for the next user prompt.
+                    let uses_tool = v
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                            })
+                        });
+                    transcript_state = if uses_tool {
+                        TranscriptState::Working
+                    } else {
+                        TranscriptState::TurnComplete
+                    };
                     // Newest assistant turn wins — "what the run last did".
                     if let Some((t, _, _)) = v.get("message").and_then(message_text) {
                         last_event = Some(clean_title(&t));
@@ -441,6 +499,12 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
                     }
                 }
             }
+            // Headless Claude runs append an explicit result record. Interactive
+            // sessions do not, which is why assistant/tool markers above remain
+            // necessary for historical runs created outside Klide.
+            Some("result") if counts_as_main => {
+                transcript_state = TranscriptState::TurnComplete;
+            }
             _ => {}
         }
     }
@@ -454,7 +518,7 @@ fn parse_run(path: &std::path::Path) -> Option<AgentRun> {
     let cost_usd =
         crate::pricing::cost_for_run(model.as_deref().unwrap_or(""), input_tokens, output_tokens);
     Some(AgentRun {
-        status: recency_status(updated_ms),
+        status: transcript_status(updated_ms, transcript_state),
         project: cwd.as_deref().and_then(project_name),
         id,
         path: path.to_string_lossy().to_string(),
@@ -575,9 +639,23 @@ fn message_text(message: &serde_json::Value) -> Option<(String, Vec<RunToolCall>
                 }
                 Some("tool_use") => {
                     let name = part.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                    let input = part.get("input").cloned();
                     tools.push(RunToolCall {
                         name: name.to_string(),
+                        id: part
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        // Deliberately not a pre-rendered label. The row draws
+                        // its own one-line summary from these arguments, and a
+                        // second summariser here would be a second answer to
+                        // "what did this call do" — `summarize_call`'s output
+                        // already carries the tool name, which the row renders
+                        // separately.
                         summary: None,
+                        input: input.as_ref().map(bounded_tool_input),
+                        result: None,
+                        ok: None,
                     });
                 }
                 Some("image") => {
@@ -594,6 +672,48 @@ fn message_text(message: &serde_json::Value) -> Option<(String, Vec<RunToolCall>
         }
     }
     None
+}
+
+/// Fold a message's `tool_result` blocks onto the calls they answer. A result
+/// is not a turn: it belongs under the row that made the call, which is
+/// somewhere above in the conversation already. Unmatched ids are ignored —
+/// a result whose call was skipped (oversized line, capped transcript) has
+/// nothing to attach to, and inventing a row for it would read as a tool
+/// nobody called.
+fn fold_tool_results(
+    message: &serde_json::Value,
+    msgs: &mut [RunMessage],
+    placed: &HashMap<String, (usize, usize)>,
+) {
+    let Some(parts) = message.get("content").and_then(|c| c.as_array()) else {
+        return;
+    };
+    for part in parts {
+        if part.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+        let Some(id) = part.get("tool_use_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(&(index, slot)) = placed.get(id) else {
+            continue;
+        };
+        let Some(call) = msgs.get_mut(index).and_then(|m| m.tools.get_mut(slot)) else {
+            continue;
+        };
+        // `is_error` absent means it worked — the CLI only writes the flag to
+        // say otherwise.
+        call.ok = Some(
+            !part
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        );
+        let text = bounded_tool_result(&result_text(part.get("content")));
+        if !text.is_empty() {
+            call.result = Some(text);
+        }
+    }
 }
 
 /// One `assistant` content block → an item. Text and tool calls only; other
@@ -731,6 +851,110 @@ mod tests {
                 content: "line one\nline two".into(),
             }]
         );
+    }
+
+    /// A tool row that says only "Bash" is true and useless — eight of them in
+    /// a row say nothing at all. The call carries what it was asked to do, and
+    /// the result that arrives one message later is folded back onto it rather
+    /// than dropped as plumbing.
+    #[test]
+    fn a_replayed_tool_call_carries_its_arguments_and_its_result() {
+        let home = temp_home("tool-detail");
+        let path = home.join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","message":{"content":"check the tree"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"git status"}}]}}"#,
+                "\n",
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"On branch main\nnothing to commit"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let msgs = ClaudeCode.read_run("", path.to_str().unwrap()).unwrap();
+
+        // The result is not a turn of its own — it belongs to the call above.
+        assert_eq!(msgs.len(), 2);
+        let call = &msgs[1].tools[0];
+        assert_eq!(call.name, "Bash");
+        assert_eq!(
+            call.input.as_ref().and_then(|i| i.get("command")),
+            Some(&serde_json::Value::String("git status".into()))
+        );
+        assert_eq!(
+            call.result.as_deref(),
+            Some("On branch main\nnothing to commit")
+        );
+        assert_eq!(call.ok, Some(true));
+    }
+
+    /// `is_error` is the only thing that says a tool failed; absent means it
+    /// worked, and *no result at all* means unknown — never success.
+    #[test]
+    fn a_failed_result_is_marked_and_an_unanswered_call_stays_unknown() {
+        let home = temp_home("tool-error");
+        let path = home.join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"false"}},{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/ws/gone.rs"}}]}}"#,
+                "
+",
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"exit 1"}]}}"#,
+                "
+",
+            ),
+        )
+        .unwrap();
+
+        let msgs = ClaudeCode.read_run("", path.to_str().unwrap()).unwrap();
+        let tools = &msgs[0].tools;
+
+        assert_eq!(tools[0].ok, Some(false));
+        assert_eq!(tools[0].result.as_deref(), Some("exit 1"));
+        // No result line ever arrived for the second call.
+        assert_eq!(tools[1].ok, None);
+        assert_eq!(tools[1].result, None);
+        assert_eq!(
+            tools[1].input.as_ref().and_then(|i| i.get("file_path")),
+            Some(&serde_json::Value::String("/ws/gone.rs".into()))
+        );
+    }
+
+    /// The reader skips a line too big to parse, exactly as `parse_run` does.
+    /// Its call keeps its name and arguments and simply reports no output.
+    #[test]
+    fn an_oversized_result_line_leaves_its_call_intact() {
+        let home = temp_home("tool-oversized");
+        let path = home.join("session.jsonl");
+        let blob = "x".repeat(64 * 1024);
+        std::fs::write(
+            &path,
+            format!(
+                concat!(
+                    r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t1","name":"Read","input":{{"file_path":"/ws/huge.log"}}}}]}}}}"#,
+                    "
+",
+                    r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":"{blob}"}}]}}}}"#,
+                    "
+",
+                ),
+                blob = blob
+            ),
+        )
+        .unwrap();
+
+        let msgs = ClaudeCode.read_run("", path.to_str().unwrap()).unwrap();
+
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0].tools[0].input.as_ref().and_then(|i| i.get("file_path")),
+            Some(&serde_json::Value::String("/ws/huge.log".into()))
+        );
+        assert_eq!(msgs[0].tools[0].result, None);
     }
 
     fn temp_home(name: &str) -> std::path::PathBuf {
@@ -897,6 +1121,7 @@ mod tests {
         assert_eq!(run.git_branch.as_deref(), Some("main"));
         assert_eq!(run.created_ms, 1000);
         assert_eq!(run.message_count, 2);
+        assert_eq!(run.status, "running", "the last assistant turn requested a tool");
         // Last assistant turn, first line — "what the run last did".
         assert_eq!(run.last_event.as_deref(), Some("On it."));
         // Cache reads excluded, cache creation counted.
@@ -909,6 +1134,30 @@ mod tests {
         // Claude Sonnet 4.6 at 100+50=150 input + 20 output = 0.00045 + 0.0003.
         let c = run.cost_usd.expect("sonnet has a known price");
         assert!((c - 0.00075).abs() < 1e-6, "got {c}");
+    }
+
+    #[test]
+    fn final_assistant_text_and_result_records_settle_the_turn() {
+        let home = temp_home("lifecycle");
+        let p = home.join("session.jsonl");
+        std::fs::write(
+            &p,
+            concat!(
+                r#"{"type":"user","message":{"content":"finish it"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Done and verified."}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(parse_run(&p).unwrap().status, "done");
+
+        std::fs::write(&p, format!("{FIXTURE}{FINISHED}\n")).unwrap();
+        assert_eq!(
+            parse_run(&p).unwrap().status,
+            "done",
+            "the headless result marker wins over an earlier tool request"
+        );
     }
 
     #[test]

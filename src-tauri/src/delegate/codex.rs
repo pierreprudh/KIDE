@@ -1,5 +1,6 @@
 use super::runs::{
-    cap_messages, clean_title, mtime_ms, project_name, recency_status, tool_file_path,
+    cap_messages, clean_title, mtime_ms, project_name, tool_file_path, transcript_status,
+    TranscriptState,
 };
 use super::{shell_quote, AgentRun, Delegate, RunCandidate, RunMessage, RunParser};
 use std::collections::HashMap;
@@ -189,6 +190,7 @@ fn parse_run(path: &std::path::Path, index: &HashMap<String, String>) -> Option<
     let (mut input_tokens, mut output_tokens): (i64, i64) = (0, 0);
     let mut files: HashSet<String> = HashSet::new();
     let mut last_event: Option<String> = None;
+    let mut transcript_state = TranscriptState::Unknown;
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -234,7 +236,9 @@ fn parse_run(path: &std::path::Path, index: &HashMap<String, String>) -> Option<
                 // shared tool_file_path helper so the three adapters agree
                 // on what counts as a "file the agent touched".
                 if let Some(p) = payload {
-                    if p.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                    let item_type = p.get("type").and_then(|t| t.as_str());
+                    if item_type == Some("function_call") {
+                        transcript_state = TranscriptState::Working;
                         let name = p.get("name").and_then(|n| n.as_str()).unwrap_or("");
                         if let Some(args_str) = p.get("arguments").and_then(|a| a.as_str()) {
                             if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
@@ -245,16 +249,33 @@ fn parse_run(path: &std::path::Path, index: &HashMap<String, String>) -> Option<
                         }
                     }
                     // Track the newest assistant message as the run's last event.
-                    if p.get("type").and_then(|t| t.as_str()) == Some("message")
-                        && p.get("role").and_then(|r| r.as_str()) == Some("assistant")
-                    {
-                        if let Some(t) = message_text(p) {
-                            last_event = Some(clean_title(&t));
+                    if item_type == Some("function_call_output") {
+                        transcript_state = TranscriptState::Working;
+                    }
+                    if item_type == Some("message") {
+                        match p.get("role").and_then(|r| r.as_str()) {
+                            Some("user") => transcript_state = TranscriptState::Working,
+                            Some("assistant") => {
+                                transcript_state = TranscriptState::TurnComplete;
+                                if let Some(t) = message_text(p) {
+                                    last_event = Some(clean_title(&t));
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
             Some("event_msg") => {
+                match payload.and_then(|p| p.get("type")).and_then(|t| t.as_str()) {
+                    Some("task_started") | Some("user_message") => {
+                        transcript_state = TranscriptState::Working;
+                    }
+                    Some("task_complete") | Some("turn_aborted") => {
+                        transcript_state = TranscriptState::TurnComplete;
+                    }
+                    _ => {}
+                }
                 // `token_count` events carry a *cumulative* total for the
                 // session — keep overwriting so the last one wins. Cached
                 // input is subtracted to mirror the Claude parser.
@@ -282,7 +303,7 @@ fn parse_run(path: &std::path::Path, index: &HashMap<String, String>) -> Option<
     let cost_usd =
         crate::pricing::cost_for_run(model.as_deref().unwrap_or(""), input_tokens, output_tokens);
     Some(AgentRun {
-        status: recency_status(updated_ms),
+        status: transcript_status(updated_ms, transcript_state),
         title: index
             .get(&id)
             .cloned()
@@ -446,9 +467,20 @@ mod tests {
         assert_eq!(run.input_tokens, 600); // cumulative minus cached
         assert_eq!(run.output_tokens, 55);
         assert_eq!(run.files_touched, 0);
+        assert_eq!(run.status, "running", "the latest turn starts with a user message");
         // gpt-5.4 at 600 input + 55 output = 0.0015 + 0.00055.
         let c = run.cost_usd.expect("gpt-5.4 has a known price");
         assert!((c - 0.00205).abs() < 1e-6, "got {c}");
+    }
+
+    #[test]
+    fn task_complete_marker_settles_a_fresh_rollout() {
+        let home = temp_home("lifecycle");
+        let p = home.join("rollout-1.jsonl");
+        let done = r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#;
+        std::fs::write(&p, format!("{}{done}\n", fixture())).unwrap();
+
+        assert_eq!(parse_run(&p, &HashMap::new()).unwrap().status, "done");
     }
 
     #[test]

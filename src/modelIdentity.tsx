@@ -184,6 +184,24 @@ export function resolveModelLogo(
  *  maker would be noise. */
 const PAIR_MIN_SIZE = 22;
 
+/**
+ * Delegates whose whole catalogue is one house. For these the maker is a fact
+ * about the *CLI*, not only about the model id: Claude Code cannot run
+ * anything but Anthropic's models, and Codex cannot run anything but OpenAI's.
+ *
+ * Which matters because `default` — "no --model flag, let the CLI choose" — is
+ * a perfectly ordinary way to run one, and it names no model. Without this the
+ * same agent drew a pair on a turn that pinned a model and a lone runner on the
+ * turn beside it that didn't, as though something about the run had changed.
+ *
+ * OpenCode and Oh My Pi are deliberately absent: their catalogues are other
+ * makers' models, so with no model id there is nothing true to draw.
+ */
+const DELEGATE_HOUSE: Partial<Record<ProviderId, ProviderId>> = {
+  "claude-code": "anthropic",
+  codex: "openai",
+};
+
 /** The maker's share of the box; the rest goes to the runner. */
 const MAKER_SHARE = 0.46;
 
@@ -222,7 +240,10 @@ export function ProviderModelMark({
   size?: number;
 }): ReactElement {
   const makerSize = Math.round(size * MAKER_SHARE);
-  const maker = resolveModelLogo(model, makerSize);
+  const house = DELEGATE_HOUSE[provider];
+  const maker =
+    resolveModelLogo(model, makerSize) ??
+    (house ? <ProviderLogo id={house} size={makerSize} /> : null);
   if (size < PAIR_MIN_SIZE || !maker) return <ProviderLogo id={provider} size={size} />;
 
   const runnerSize = size - makerSize + Math.round(makerSize * OVERLAP);
@@ -279,7 +300,9 @@ export function conversationMark(
   size = 24,
 ): ConversationMark | null {
   if (provider && isDelegateProvider(provider)) {
-    const maker = modelIdentity(model)?.name;
+    const house = DELEGATE_HOUSE[provider];
+    const maker =
+      modelIdentity(model)?.name ?? (house ? providerName(house) : undefined);
     return {
       node: <ProviderModelMark provider={provider} model={model} size={size} />,
       label: maker ? `${providerName(provider)} · ${maker}` : providerName(provider),

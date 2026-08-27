@@ -75,7 +75,8 @@ import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } fr
 import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
-import { renderMessageBody, CompactionRow } from "./ai/ChatMessage";
+import { renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
+import { groupToolRuns, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
 import { mayActivateModel } from "./ai/modelActivationPolicy";
@@ -722,11 +723,6 @@ export function AiPanel({
   // best available answer there, and it is a better one than the picker's
   // current pair: relabelling every old turn each time the model changes is
   // precisely what this stopped doing.
-  const threadMark = conversationMark(
-    conversationSession.originModel ?? model,
-    conversationSession.originProvider ?? provider,
-    22,
-  );
   // Who asked, drawn once so it can sit against every user turn: a thread with
   // a mark on one side only reads as a log of answers, and this is a
   // discussion — two participants, each turn attributed to the one who made it.
@@ -735,10 +731,26 @@ export function AiPanel({
   // both go: the bubbles keep the right edge to themselves.
   const [showAskerAvatar] = useSetting(SETTINGS.showAskerAvatar);
   /** The mark for one response: what produced THAT turn. A thread continued on
-   *  another model shows both, each against the turn it actually ran. */
+   *  another model shows both, each against the turn it actually ran.
+   *
+   *  Each half falls back on its own. The rule used to be all-or-nothing —
+   *  a turn missing *both* halves borrowed the thread's, a turn missing one
+   *  got a null in its place — so a turn stamped with a runner and no model
+   *  drew the runner alone while the turn under it drew the pair. Same
+   *  conversation, same agent, two different marks; nothing about the run had
+   *  changed, only what that turn happened to record. Replayed CLI transcripts
+   *  are the common case: they know which delegate produced them and never a
+   *  per-turn model.
+   *
+   *  The thread's origin is the right filler, and a better one than the
+   *  picker's current pair: relabelling every old turn each time the model
+   *  changes is precisely what stamping stopped doing. */
   function responseMark(stamp: { provider?: ProviderId; model?: string }) {
-    if (!stamp.model && !stamp.provider) return threadMark;
-    return conversationMark(stamp.model ?? null, stamp.provider ?? provider, 22);
+    return conversationMark(
+      stamp.model ?? conversationSession.originModel ?? model,
+      stamp.provider ?? conversationSession.originProvider ?? provider,
+      22,
+    );
   }
   const conversationGitMeta = useMemo(
     () => ({
@@ -1089,6 +1101,138 @@ export function AiPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panelId, delegateSession, currentId]);
+  // A stretch of uninterrupted tool work folds into one row (see toolRuns.ts).
+  // The message loop below is untouched: this rewrites its *output*, dropping a
+  // closed run's nodes and putting a summary in their place. Doing it there
+  // rather than inside the loop keeps one renderer for a tool row — the rows
+  // you get back on open are the very same elements, not a second drawing of
+  // them.
+  const toolRuns = useMemo(() => groupToolRuns(msgs), [msgs]);
+  // Constant-time "is this message inside a folded run?" for the message loop:
+  // a message in a run hands its thought process to the run's header
+  // (`stackToolRuns` hoists it above the "N tool calls" row) and must not draw
+  // a second copy inside the fold.
+  const toolRunAt = useMemo(() => toolRunIndex(toolRuns), [toolRuns]);
+  // Which messages have handed their mark to a folded row's header. A turn
+  // that opens with tool work keeps its mark on the header in *both* states —
+  // a mark that appears and disappears as you click reads as the row moving,
+  // and the eye follows the mark, not the text. The message underneath must
+  // therefore not draw a second one when the run opens.
+  const toolRunMarkOwners = useMemo(() => {
+    const owners = new Set<number>();
+    for (const run of toolRuns) {
+      const first = msgs[run.start];
+      const before = msgs[run.start - 1];
+      if (
+        first?.role === "assistant" &&
+        (!before || (before.role !== "assistant" && before.role !== "tool"))
+      ) {
+        owners.add(run.start);
+      }
+    }
+    return owners;
+  }, [toolRuns, msgs]);
+  const [openToolRuns, setOpenToolRuns] = useState<Set<number>>(() => new Set());
+  function toggleToolRun(start: number) {
+    setOpenToolRuns((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(start)) next.add(start);
+      return next;
+    });
+  }
+  function stackToolRuns(nodes: ReactNode[]): ReactNode[] {
+    if (toolRuns.length === 0) return nodes;
+    const out: ReactNode[] = [];
+    let cursor = 0;
+    for (const run of toolRuns) {
+      for (; cursor < run.start; cursor++) out.push(nodes[cursor]);
+      // The runs are computed from *messages*, but this function rewrites the
+      // loop's *output* — and the loop sometimes draws nothing for a message
+      // (results after a same-name burst render null; their calls are already
+      // on screen as ⎿ rows). A run whose rows were all withheld folds
+      // nothing: emitting its header would put a "3 tool calls" row over an
+      // empty body.
+      if (nodes.slice(run.start, run.end).every((n) => n == null)) {
+        cursor = run.end;
+        continue;
+      }
+      // Work still happening stays open. Collapsing a run the agent is in the
+      // middle of would hide the only thing moving on screen; it folds itself
+      // once the answer it was gathering for arrives.
+      const working = streaming && run.end === msgs.length;
+      const open = openToolRuns.has(run.start) || working;
+      const { count, names } = toolRunLabel(run);
+      // When a turn opens with tool work, the message wearing the agent's mark
+      // is the one this row folds away — and a response with no mark reads as
+      // nobody's. The row wears it instead, open or closed, and the message
+      // underneath stands down (`toolRunMarkOwners`).
+      const first = msgs[run.start];
+      const startsResponse = toolRunMarkOwners.has(run.start);
+      const mark = startsResponse && first.role === "assistant" ? responseMark(first) : null;
+      // The reasoning that drove this stretch of tool work is the agent's
+      // voice, not tool machinery — it stays visible above the fold, in
+      // arrival order, whether the run is open or closed. The messages inside
+      // render with `hideThinking` so opening the run never shows it twice.
+      const thinkingNodes: ReactNode[] = [];
+      for (let i = run.start; i < run.end; i++) {
+        const t = extractThinking(msgs[i]);
+        if (t) thinkingNodes.push(<ThinkingBlock key={`think-${i}`} text={t} streaming={false} />);
+      }
+      out.push(
+        <div
+          key={`tool-run-${run.start}`}
+          style={{ display: "flex", gap: 10, margin: startsResponse ? "14px 0 0" : "6px 0 0" }}
+        >
+          <div
+            aria-hidden="true"
+            style={{
+              flexShrink: 0,
+              width: 22,
+              height: 22,
+              marginTop: 1,
+              display: "grid",
+              placeItems: "center",
+            }}
+          >
+            {startsResponse ? mark?.node ?? <KlideMark size={20} /> : null}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {thinkingNodes}
+            <ToolRunRow
+              count={count}
+              names={names}
+              expanded={open}
+              onToggle={() => toggleToolRun(run.start)}
+            />
+          </div>
+        </div>,
+      );
+      // The rows stay mounted either way and the wrapper animates its height
+      // (see `.klide-tool-run-body`). Mounting them only when open would make
+      // the close instant — there is nothing left to animate once the content
+      // is gone — and it saves nothing: the loop above already built them.
+      out.push(
+        <div
+          key={`tool-run-body-${run.start}`}
+          className="klide-tool-run-body"
+          data-open={open ? "true" : "false"}
+          // Not `aria-hidden`: the rows it hides hold focusable disclosure
+          // controls, and hiding a focusable element from assistive tech
+          // without taking it out of the tab order strands the keyboard on a
+          // control nobody can see. `inert` does both.
+          inert={!open}
+        >
+          <div>
+            {nodes.slice(run.start, run.end)}
+          </div>
+        </div>,
+      );
+      cursor = run.end;
+    }
+    for (; cursor < nodes.length; cursor++) out.push(nodes[cursor]);
+    return out;
+  }
+
   // Portalled to <body> like the composer popovers: the menu is taller than
   // the panel's clip region (`.floating-panel` is overflow: hidden), so an
   // in-tree absolute menu gets cut off and its own scrollbar never engages.
@@ -3697,7 +3841,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             )}
           </div>
         )}
-        {msgs.map((m, i) => {
+        {stackToolRuns(msgs.map((m, i) => {
           // "Last" means the tail of the *exchange*, not of the array. Turns
           // typed ahead sit below the answer they're waiting on, and counting
           // them here would take the caret off a streaming answer, stop a
@@ -3908,7 +4052,12 @@ This user request requires workspace inspection. Before answering, you MUST call
           // message after a user message carries Kit's K mark; the rest get a
           // 22px spacer so bodies stay column-aligned with tool rows.
           const prevMsg = msgs[i - 1];
-          const isResponseStart = !prevMsg || (prevMsg.role !== "assistant" && prevMsg.role !== "tool");
+          const isResponseStart =
+            (!prevMsg || (prevMsg.role !== "assistant" && prevMsg.role !== "tool")) &&
+            // …unless a folded run's header is already wearing this turn's
+            // mark, in which case this row draws the spacer and keeps the
+            // column aligned without a second one.
+            !toolRunMarkOwners.has(i);
           // Per-message actions belong on the *final* answer of a response, not
           // on intermediate narration turns ("OK, let me look…") that are
           // followed by more tool calls — otherwise the icon row appears in the
@@ -3936,7 +4085,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 <div aria-hidden="true" style={{ flexShrink: 0, width: 22 }} />
               )}
               <div style={{ flex: 1, minWidth: 0, color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.6 }}>
-                {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive)}{isStreamingActive && <span className="ai-caret" />}</>}
+                {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive, { hideThinking: toolRunAt(i) !== null })}{isStreamingActive && <span className="ai-caret" />}</>}
                 {!isStreamingActive && !isAssistantPlaceholder && isResponseEnd && m.content?.trim() && (
                   <>
                     <MessageActions
@@ -3986,7 +4135,7 @@ This user request requires workspace inspection. Before answering, you MUST call
               </div>
             </div>
           );
-        })}
+        }))}
         {/* "Working" heartbeat — shown while a run is in progress but nothing
             else is animating. Covers the gap where the model is generating the
             next turn (esp. providers that don't stream token deltas, so there's

@@ -265,19 +265,21 @@ export function boardSectionForRun(run: Pick<Run, "status" | "kind" | "parentId"
   return "done";
 }
 
-/** Mirrors `DELEGATE_RECENCY_MS` in `src-tauri/src/delegate/runs.rs`: how long a
- *  Delegate transcript may go unwritten before Rust reports the run as `done`.
+/** Mirrors `DELEGATE_RECENCY_MS` in `src-tauri/src/delegate/runs.rs`: how long an
+ *  otherwise-active Delegate transcript may go unwritten before Rust reports
+ *  the run as `done`. Provider turn markers and hosted PTY signals settle known
+ *  states earlier.
  *  Pinned from the Rust side by
  *  `delegate_recency_window_bounds_the_frontend_idle_signal`. */
 export const DELEGATE_RECENCY_MS = 120_000;
 
 /** How long a *running* run may go without an update before it reads as idle.
  *
- *  Only reachable for a Klide Harness run, whose status the harness reports
- *  directly. A Delegate's status is inferred from transcript mtime, so Rust has
- *  already relabelled it `done` at `DELEGATE_RECENCY_MS` — well before this
- *  fires. Raising `DELEGATE_RECENCY_MS` past this value is what would make the
- *  idle signal reach Delegates; see the test named above. */
+ *  A Delegate with a known provider or PTY state settles directly. Its fallback
+ *  active state is still bounded by transcript mtime, so Rust has relabelled it
+ *  `done` at `DELEGATE_RECENCY_MS` before this fires. Raising that window past
+ *  this value would make the idle signal reach fallback Delegate rows; see the
+ *  test named above. */
 const STALE_RUNNING_MS = 5 * 60_000;
 
 /** What the Mission Control attention queue should surface for a run, if
