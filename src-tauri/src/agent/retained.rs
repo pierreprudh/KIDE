@@ -9,7 +9,9 @@
 //! slices or searches the stored text on demand. The transcript still records
 //! the full result on `ToolCallFinished` — retention only changes what the
 //! *provider* is asked to carry, so the durable record stays complete and
-//! replay can rebuild the same stub deterministically from it.
+//! replay can rebuild the same stub deterministically from it. Replay only
+//! stubs a result whose value file is actually on disk; anything else rides
+//! along in full, so a stub can never point at a value peek can't read.
 //!
 //! Files live at `<runs_dir>/<run_id>.values/<value_id>.txt`, a sibling of the
 //! run's `<run_id>.jsonl` transcript. The value id is derived from the tool
@@ -47,16 +49,31 @@ pub(super) fn values_dir(runs_dir: &Path, run_id: &str) -> PathBuf {
 /// three always agree. Sanitizing the *requested* id through the same
 /// function also makes path traversal unrepresentable — no separator or dot
 /// survives.
+///
+/// When sanitizing actually changed the id (filtered characters, or a cut at
+/// 48 chars), a short hash of the original is appended so two distinct call
+/// ids can't collapse onto one file. Real provider ids are short and
+/// alphanumeric, so they pass through untouched and their stubs stay readable.
 pub(super) fn value_id(tool_call_id: &str) -> String {
     let cleaned: String = tool_call_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(48)
         .collect();
+    if cleaned == tool_call_id {
+        return cleaned;
+    }
+    // FNV-1a over the original id — no dependency, stable across runs.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in tool_call_id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let tag = hash as u32;
     if cleaned.is_empty() {
-        "value".to_string()
+        format!("value-{tag:08x}")
     } else {
-        cleaned
+        format!("{cleaned}-{tag:08x}")
     }
 }
 
@@ -132,9 +149,22 @@ pub(super) fn retain_large_result(
 }
 
 /// Replay-time stub: same shape as the live one, but never writes — the file
-/// was written when the result was produced. Falls through to the full
+/// was written when the result was produced. A stub is only handed back when
+/// that file actually exists; if the live write failed (or retention was off
+/// for the original turn), the full content rides along instead, so a stub
+/// can never point at a value that isn't there. Falls through to the full
 /// content when the result was small enough to keep.
-pub(super) fn stub_for_replay(tool_name: &str, tool_call_id: &str, content: &str) -> String {
+pub(super) fn stub_for_replay(
+    values: Option<(&Path, &str)>,
+    tool_name: &str,
+    tool_call_id: &str,
+    content: &str,
+) -> String {
+    let stored = values
+        .is_some_and(|(runs_dir, run_id)| value_path(runs_dir, run_id, tool_call_id).is_file());
+    if !stored {
+        return content.to_string();
+    }
     stub_for(tool_name, tool_call_id, content).unwrap_or_else(|| content.to_string())
 }
 
@@ -197,7 +227,9 @@ pub(super) fn peek(
     let mut out = format!("[#{id} lines {start}–{end} of {total}]\n");
     let mut clipped_at: Option<usize> = None;
     for (offset, line) in lines[start - 1..end].iter().enumerate() {
-        let numbered = format!("{}\t{}\n", start + offset, truncate_line(line, PREVIEW_LINE_CHARS));
+        // `N: ` — the same gutter read_file uses, so write_file's tolerant
+        // matcher strips it when the model quotes a peeked line in old_str.
+        let numbered = format!("{}: {}\n", start + offset, truncate_line(line, PREVIEW_LINE_CHARS));
         if out.len() + numbered.len() > PEEK_MAX_BYTES {
             clipped_at = Some(start + offset);
             break;
@@ -229,7 +261,7 @@ fn search_value(id: &str, lines: &[&str], query: &str) -> String {
             clipped = true;
             break;
         }
-        let numbered = format!("{}\t{}\n", index + 1, truncate_line(line, QUERY_LINE_CHARS));
+        let numbered = format!("{}: {}\n", index + 1, truncate_line(line, QUERY_LINE_CHARS));
         if out.len() + numbered.len() > PEEK_MAX_BYTES - 200 {
             clipped = true;
             break;
@@ -270,7 +302,8 @@ mod tests {
     fn large_results_get_a_stub_with_head_tail_and_id() {
         let content = big_output(1000);
         let stub = stub_for("run_command", "call_abc/123", &content).unwrap();
-        assert!(stub.contains("[retained #call_abc123]"), "sanitized id: {stub}");
+        // The '/' was filtered out, so the id carries a disambiguating hash.
+        assert!(stub.contains("[retained #call_abc123-"), "sanitized id: {stub}");
         assert!(stub.contains("line 1:"), "head preview missing");
         assert!(stub.contains("line 1000:"), "tail preview missing");
         assert!(stub.contains("lines retained"), "hidden-count marker missing");
@@ -289,7 +322,9 @@ mod tests {
         let input = serde_json::json!({ "id": "tc9", "start_line": 500, "end_line": 502 });
         let peeked = peek(Some(&dir), "run1", &input).unwrap();
         assert!(peeked.contains("lines 500–502 of 1000"), "{peeked}");
-        assert!(peeked.contains("500\tline 500:"), "numbered line missing: {peeked}");
+        // The gutter is `N: ` — the same shape read_file emits, so a peeked
+        // line pasted into write_file's old_str still matches.
+        assert!(peeked.contains("500: line 500:"), "numbered line missing: {peeked}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -321,7 +356,7 @@ mod tests {
 
         let input = serde_json::json!({ "id": "tc2", "query": "failed" });
         let peeked = peek(Some(&dir), "run1", &input).unwrap();
-        assert!(peeked.contains("1000\tFAILED: the widget test"), "{peeked}");
+        assert!(peeked.contains("1000: FAILED: the widget test"), "{peeked}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -345,11 +380,41 @@ mod tests {
     }
 
     #[test]
-    fn replay_stub_matches_the_live_stub() {
+    fn replay_stub_matches_the_live_stub_when_the_file_exists() {
+        let dir = std::env::temp_dir().join(format!("klide-retained-rp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         let content = big_output(500);
-        let live = stub_for("grep", "tc1", &content).unwrap();
-        let replay = stub_for_replay("grep", "tc1", &content);
+        let live = retain_large_result(&dir, "run1", "tc1", "grep", &content).unwrap();
+        let replay = stub_for_replay(Some((dir.as_path(), "run1")), "grep", "tc1", &content);
         assert_eq!(live, replay);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replay_without_a_stored_file_carries_the_full_text() {
+        // The live write failed (or retention was off that turn): the model
+        // saw the full text then, so a resume must show the full text too —
+        // never a stub pointing at a value peek can't read.
+        let dir = std::env::temp_dir().join(format!("klide-retained-nf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = big_output(500);
+        let replay = stub_for_replay(Some((dir.as_path(), "run1")), "grep", "tc1", &content);
+        assert_eq!(replay, content);
+        let none = stub_for_replay(None, "grep", "tc1", &content);
+        assert_eq!(none, content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitized_ids_cannot_collide() {
+        // "a.b" and "a/b" both clean to "ab"; the hash suffix keeps them apart.
+        assert_ne!(value_id("a.b"), value_id("a/b"));
+        // A clean provider-style id passes through untouched.
+        assert_eq!(value_id("call_abc123"), "call_abc123");
+        // Two long ids sharing a 48-char prefix stay distinct.
+        let base = "x".repeat(48);
+        assert_ne!(value_id(&format!("{base}aaa")), value_id(&format!("{base}bbb")));
     }
 
     #[test]

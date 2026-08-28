@@ -1024,6 +1024,16 @@ fn schema_has_name(schema: &serde_json::Value, name: &str) -> bool {
         == Some(name)
 }
 
+/// Whether a resolved tool list (from [`schemas_for_mode`]) offers a tool by
+/// name. The run loop gates retention on `peek_value` being callable — a
+/// stub that tells the model to call a tool this run doesn't have would be
+/// a dead end.
+pub fn tools_include(tools: &Option<Vec<serde_json::Value>>, name: &str) -> bool {
+    tools
+        .as_deref()
+        .is_some_and(|list| list.iter().any(|schema| schema_has_name(schema, name)))
+}
+
 pub fn execute_read_only_tool(root: &str, call: &NormalizedToolCall, run_id: &str) -> ToolResult {
     execute_non_mutating_tool(root, call, run_id, None)
 }
@@ -2899,21 +2909,28 @@ fn line_spans(s: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-/// Normalize one line for tolerant matching: drop a leading `N:` / `N: `
-/// line-number prefix (the read_file gutter), then trim surrounding
-/// whitespace so indentation drift doesn't defeat a match. Conservative —
-/// the prefix is stripped only when it's exactly `<digits>:`.
+/// Normalize one line for tolerant matching: drop leading `N:` / `N: `
+/// line-number gutters, then trim surrounding whitespace so indentation
+/// drift doesn't defeat a match. Gutters can stack — peek_value over a
+/// retained read_file output numbers lines that already carry the read_file
+/// gutter — so stripping loops until no `<digits>:` prefix remains. Both
+/// sides of a match normalize through this same function, so a genuine
+/// `N:`-looking content line strips identically on each side, and the
+/// uniqueness requirement in `locate_edit` still guards placement.
 fn normalize_match_line(line: &str) -> &str {
-    let trimmed = line.trim();
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
+    let mut rest = line.trim();
+    loop {
+        let bytes = rest.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i > 0 && i < bytes.len() && bytes[i] == b':' {
+            rest = rest[i + 1..].trim_start();
+        } else {
+            return rest;
+        }
     }
-    if i > 0 && i < bytes.len() && bytes[i] == b':' {
-        return trimmed[i + 1..].trim_start();
-    }
-    trimmed
 }
 
 /// Locate the unique region of `current` that `old_str` refers to, returning
@@ -3634,6 +3651,17 @@ mod tests {
         let current = "fn f() {\n    let y = 2;\n    return y;\n}\n";
         let old = "2:     let y = 2;\n3:     return y;";
         let (s, e) = locate_edit(current, old).expect("numbered fuzzy unique");
+        assert_eq!(&current[s..e], "    let y = 2;\n    return y;");
+    }
+
+    #[test]
+    fn locate_tolerates_stacked_gutters_from_a_peeked_read() {
+        // A big read_file result gets retained; the model peeks a slice and
+        // pastes it into old_str. Each line then carries TWO gutters: the
+        // peek_value number over the read_file number, e.g. "5: 2:     code".
+        let current = "fn f() {\n    let y = 2;\n    return y;\n}\n";
+        let old = "5: 2:     let y = 2;\n6: 3:     return y;";
+        let (s, e) = locate_edit(current, old).expect("double-gutter fuzzy unique");
         assert_eq!(&current[s..e], "    let y = 2;\n    return y;");
     }
 
