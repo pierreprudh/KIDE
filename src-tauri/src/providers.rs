@@ -783,7 +783,10 @@ fn mark_keychain(id: &str, present: bool) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_vec_pretty(&set) {
-        let _ = std::fs::write(&path, json);
+        // Same store as the credentials it describes — same file mode. The
+        // marker only carries provider ids, but a 0600 store shouldn't sit
+        // next to a 0644 index of it.
+        let _ = crate::durable::write_atomic_private(&path, &json);
     }
 }
 
@@ -814,7 +817,11 @@ pub fn set_provider_reference(id: &str, reference: Option<&str>) -> Result<(), S
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_vec_pretty(&refs).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("Could not write {path:?}: {e}"))?;
+    // Atomic + 0600: the file only ever holds `${VAR}` references (literals are
+    // rejected above), but it names the user's secret sources — private mode,
+    // same as every other store under `~/.klide`.
+    crate::durable::write_atomic_private(&path, &json)
+        .map_err(|e| format!("Could not write {path:?}: {e}"))?;
     invalidate_token_cache(id);
     Ok(())
 }

@@ -2531,10 +2531,26 @@ This user request requires workspace inspection. Before answering, you MUST call
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, [input]);
 
+  // Persist the conversation — debounced (trailing). Streaming commits a new
+  // session object every ~50 ms, and each persist is a full index round-trip
+  // (JSON.parse + stringify of up to 100 conversations) on the main thread;
+  // only the last commit in a burst matters. The unmount flush below covers
+  // a panel that goes away inside the debounce window.
+  const persistTimerRef = useRef<number | null>(null);
   useEffect(() => {
     const snapshot = snapshotConversationSession(conversationSession);
     if (!snapshot) return;
-    setConversations(persistConversation(snapshot));
+    if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = window.setTimeout(() => {
+      persistTimerRef.current = null;
+      setConversations(persistConversation(snapshot));
+    }, 1_000);
+    return () => {
+      if (persistTimerRef.current !== null) {
+        window.clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
+    };
   }, [conversationSession]);
 
   // Flush whatever the latest commit was on unmount so a view switch

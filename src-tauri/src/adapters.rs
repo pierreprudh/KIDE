@@ -11,8 +11,25 @@ use crate::providers::{
     provider_key, response_error, text_from_message, AiChatResponse, AiUsage, StreamChunk,
     ANTHROPIC_VERSION, OLLAMA_URL,
 };
+use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::ipc::Channel;
+
+// One shared HTTP client for every provider turn. A fresh client per turn paid
+// a full DNS + TCP + TLS handshake each time and threw the connection pool
+// away — noticeable hundreds of ms in an agent loop that makes dozens of
+// sequential calls. `reqwest::Client` is an `Arc` internally; sharing it is the
+// intended use.
+fn shared_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(180))
+            .build()
+            .unwrap_or_default()
+    })
+}
 
 // ── Provider streaming trait + shared loop ──────────────────────────────
 
@@ -50,11 +67,7 @@ async fn stream_provider<S: StreamingProvider>(
     provider: S,
     on_chunk: &Channel<StreamChunk>,
 ) -> Result<AiChatResponse, String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(180))
-        .build()
-        .map_err(|e| format!("Unable to build HTTP client: {e}"))?;
+    let client = shared_client();
     // Send with retry on transient throttling. A 429 (rate limit) or 503
     // (overloaded) arrives BEFORE any streamed bytes, so retrying the whole
     // request is safe — no chunks have been emitted yet. We honor the server's
@@ -65,7 +78,7 @@ async fn stream_provider<S: StreamingProvider>(
     let mut attempt: u32 = 0;
     let res = loop {
         let res = provider
-            .build_request(&client)?
+            .build_request(client)?
             .send()
             .await
             .map_err(|e| format!("Unable to reach {}: {e}", provider.name()))?;
