@@ -85,11 +85,18 @@ pub fn append_line(path: &Path, line: &str) -> Result<(), String> {
     buf.push_str(line);
     buf.push('\n');
 
+    let existed = path.exists();
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|e| format!("Could not open {path:?}: {e}"))?;
+    // A fresh log lands at 0600 — run transcripts and Mission event logs hold
+    // conversation content. The exists() check means the chmod only happens on
+    // the first append after creation, never on the steady-state path.
+    if !existed {
+        set_private(path);
+    }
     file.write_all(buf.as_bytes())
         .map_err(|e| format!("Could not append to {path:?}: {e}"))?;
     file.sync_data()

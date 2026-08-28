@@ -43,6 +43,8 @@ use self::transcripts::{
     app_runs_dir, append_event, list_summaries, now_ms, read_events, read_run_origin, run_id,
     transcript_path, validate_run_id, write_summary, RunOrigin,
 };
+#[cfg(test)]
+use self::transcripts::read_summary;
 use self::types::error_code;
 use self::types::{
     AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentMode, AgentRunStatus,
@@ -228,6 +230,11 @@ trait RunSupervisor: Send + Sync {
     /// Default no-op keeps FakeSupervisor tests headless; the budget itself
     /// is unit-tested in failure_budget.rs.
     fn note_terminal(&self, _run_id: &str, _provider: &str, _model: &str, _failed: bool) {}
+    /// Retire a settled run: drop its handle (cancel token, pause channels,
+    /// trust memory) from the supervisor map. The transcript stays on disk, so
+    /// reattach/status callers already treat a missing handle as "show the
+    /// snapshot". Default no-op keeps headless test supervisors simple.
+    fn retire_run(&self, _run_id: &str) {}
     /// Start a nested subagent Run and resolve with its report once it settles.
     ///
     /// This is what makes a subagent durable. It used to be the frontend's job:
@@ -317,6 +324,14 @@ impl RunSupervisor for TauriSupervisor {
         } else {
             budget.record_success(run_id);
         }
+    }
+
+    fn retire_run(&self, run_id: &str) {
+        let state = self.app.state::<AgentSupervisorState>();
+        let Ok(mut runs) = state.runs.lock() else {
+            return;
+        };
+        runs.remove(run_id);
     }
 
     fn spawn_subagent(
@@ -451,7 +466,7 @@ fn settle_run(
         }
         _ => {}
     }
-    write_summary(
+    let result = write_summary(
         runs_dir,
         &AgentRunSummary {
             status: run_status_wire(&status).to_string(),
@@ -459,7 +474,13 @@ fn settle_run(
             message_count,
             ..summary.clone()
         },
-    )
+    );
+    // The run is terminal either way: drop the handle so the supervisor map
+    // doesn't grow by one cancel-token + trust-memory entry per run ever
+    // started. Done after the summary write so a reattach landing in between
+    // still sees the terminal status; retired even when the write failed.
+    sup.retire_run(id);
+    result
 }
 
 /// Commit a finished run's working-tree edits onto its branch.
@@ -3536,6 +3557,11 @@ mod test_support {
             }
         }
         fn broadcast(&self, _run_id: &str, _seq: u64, _event: &AgentEvent) {}
+        fn retire_run(&self, run_id: &str) {
+            if let Ok(mut runs) = self.runs.lock() {
+                runs.remove(run_id);
+            }
+        }
     }
 
     pub(super) fn make_handle() -> AgentRunHandle {
@@ -4158,10 +4184,12 @@ mod run_loop_tests {
             std::fs::read_to_string(format!("{root}/greeting.txt")).unwrap(),
             "hello klide\n"
         );
-        assert_eq!(
-            with_run_handle(sup.as_ref(), "loop-run", |h| h.status),
-            Some(AgentRunStatus::Done)
-        );
+        assert_eq!(read_summary(&runs_dir, "loop-run").unwrap().status, "done");
+
+        // The handle is retired with the terminal status: the supervisor map
+        // must not grow by one cancel-token + trust-memory entry per run ever
+        // started.
+        assert!(with_run_handle(sup.as_ref(), "loop-run", |_| ()).is_none());
 
         // The transcript carries the whole sequence.
         let events = read_events(&runs_dir, "loop-run").unwrap();
@@ -4231,10 +4259,7 @@ mod run_loop_tests {
         )
         .await;
 
-        assert_eq!(
-            with_run_handle(sup.as_ref(), "err-run", |h| h.status),
-            Some(AgentRunStatus::Error)
-        );
+        assert_eq!(read_summary(&runs_dir, "err-run").unwrap().status, "error");
         let events = read_events(&runs_dir, "err-run").unwrap();
         assert!(events.iter().any(|e| matches!(
             e,
@@ -4263,10 +4288,7 @@ mod run_loop_tests {
         let sup = Arc::new(FakeSupervisor::with_run("cap-run"));
         drive_loop(sup.clone(), &runs_dir, "cap-run", request, caller).await;
 
-        assert_eq!(
-            with_run_handle(sup.as_ref(), "cap-run", |h| h.status),
-            Some(AgentRunStatus::Error)
-        );
+        assert_eq!(read_summary(&runs_dir, "cap-run").unwrap().status, "error");
         let events = read_events(&runs_dir, "cap-run").unwrap();
         assert!(
             events.iter().any(|e| matches!(
@@ -4306,8 +4328,8 @@ mod run_loop_tests {
         .await;
 
         assert_eq!(
-            with_run_handle(sup.as_ref(), "runaway-run", |h| h.status),
-            Some(AgentRunStatus::Done)
+            read_summary(&runs_dir, "runaway-run").unwrap().status,
+            "done"
         );
         let events = read_events(&runs_dir, "runaway-run").unwrap();
 
@@ -4367,8 +4389,8 @@ mod run_loop_tests {
         .await;
 
         assert_eq!(
-            with_run_handle(sup.as_ref(), "runaway-twice-run", |h| h.status),
-            Some(AgentRunStatus::Done)
+            read_summary(&runs_dir, "runaway-twice-run").unwrap().status,
+            "done"
         );
         let events = read_events(&runs_dir, "runaway-twice-run").unwrap();
         assert!(
@@ -4441,8 +4463,8 @@ mod run_loop_tests {
 
         // The run ends on the model's own answer, so there is no turn-cap error.
         assert_eq!(
-            with_run_handle(sup.as_ref(), "endgame-run", |h| h.status),
-            Some(AgentRunStatus::Done)
+            read_summary(&runs_dir, "endgame-run").unwrap().status,
+            "done"
         );
         assert!(
             !events.iter().any(|e| matches!(

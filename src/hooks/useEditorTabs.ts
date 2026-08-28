@@ -255,22 +255,30 @@ export function useEditorTabs(opts: {
         readWorkspaceTextFile(workspaceRoot, path)
           .then((diskCode) => {
             if (cancelled) return;
-            setTabs((cur) =>
-              cur.map((tab) => {
+            setTabs((cur) => {
+              let changed = false;
+              const next = cur.map((tab) => {
                 if (tab.path !== path) return tab;
                 // Same as the last disk content we know about? Then this
                 // event is noise (our own save, or a rename) — not an edit.
                 if (diskCode === (tab.diskCode ?? tab.code)) {
+                  // Nothing to update — hand back the same object so an
+                  // idle poll doesn't churn tab identity (and every
+                  // downstream effect keyed on it) every tick.
+                  if (tab.diskCode === diskCode && !tab.externalChanged) return tab;
+                  changed = true;
                   return { ...tab, diskCode, externalChanged: false };
                 }
+                changed = true;
                 if (tab.dirty) {
                   notify(`${filename(path)} changed on disk`);
                   return { ...tab, diskCode, externalChanged: true };
                 }
                 notify(`Reloaded ${filename(path)}`);
                 return { ...tab, code: diskCode, diskCode, externalChanged: false };
-              })
-            );
+              });
+              return changed ? next : cur;
+            });
           })
           .catch(() => {
             if (cancelled) return;
