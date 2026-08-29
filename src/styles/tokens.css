@@ -5689,6 +5689,198 @@ button:focus-visible .menu-leadout {
   }
 }
 
+/* ── Focus split ───────────────────────────────────────────────────────────
+   Two conversations, one canvas. There is no button for it: a split opens by
+   dragging a conversation onto the canvas or with ⌘N, and closes with ⌘W. So
+   the motion carries the whole explanation — the seam has to *open*, not
+   appear, or the second half reads as a glitch rather than a place.
+
+   What moves is width: the conversation you are in gives up exactly the space
+   the new one takes, both halves travelling on the same 380ms ease-soft as
+   the terminal dock. The hairline between them draws downward while they part,
+   like a wire being pulled taut. Nothing fades in from nowhere. */
+.klide-focus-split-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.klide-focus-split-pane {
+  position: relative;
+  flex-grow: 0;
+  /* Shrinkable, so the seam's own 9px comes out of the two halves rather than
+     off the right edge of the canvas: the basis percentages sum to 100%. */
+  flex-shrink: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    flex-basis 380ms var(--ease-soft),
+    opacity 200ms var(--ease-out);
+}
+
+/* The arriving half: no width yet, so its text is not reflowing in view while
+   the seam opens. `data-shown` lands the frame after it mounts. */
+.klide-focus-split-pane--second:not([data-shown]) {
+  opacity: 0;
+}
+
+/* Dragging the divider must track the pointer exactly — a width transition
+   would make the seam lag behind the cursor. */
+.klide-focus-split-row[data-resizing] .klide-focus-split-pane {
+  transition: none;
+}
+
+/* Drawn ON TOP of the half, not behind it: the conversation surface is frosted
+   glass, and a fill underneath would read as a smudge rather than a target.
+   Mixed with `transparent` for the same reason --menu-row-* are — --accent-soft
+   is opaque in four of the five themes and would punch through the frost. */
+.klide-focus-split-pane[data-drop-target]::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* The way out of the second half. Focus hides the panel header, so this stands
+   where that header's close would have been — the app's own close mark, at the
+   app's one icon weight, never a private glyph.
+
+   It stays visible: a control you cannot find is not a control, and this half's
+   only other exit is a keystroke. The mark is all there is — no fill, no frame,
+   nothing that reads as a box. What answers the pointer is weight of colour,
+   dim at rest and strong under the cursor. The 24px square is hit area only. */
+.klide-focus-split-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 4;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  /* Barely there until looked for: present enough to be found, faint enough
+     that a conversation you are reading is not sharing the page with a
+     control. */
+  opacity: 0.4;
+  transition:
+    opacity var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.klide-focus-split-pane:hover .klide-focus-split-close {
+  opacity: 0.75;
+  color: var(--fg-subtle);
+}
+
+.klide-focus-split-close:hover,
+.klide-focus-split-close:focus-visible {
+  opacity: 1;
+  color: var(--fg-strong);
+}
+
+/* The seam. A hairline that happens to be draggable, not a bar: 1px of border
+   with a wider transparent hit area either side, so the pointer finds it
+   without the canvas growing a piece of chrome. It draws from the top as the
+   halves part, then answers the cursor like every other hairline in the app. */
+.klide-focus-split-divider {
+  flex: 0 0 9px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  border: none;
+  padding: 0;
+  position: relative;
+}
+
+.klide-focus-split-divider::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 4px;
+  width: 1px;
+  background: var(--border);
+  transform: scaleY(0);
+  transform-origin: 50% 0;
+  transition:
+    transform 380ms var(--ease-soft),
+    background var(--motion-fast) var(--ease-out);
+}
+
+.klide-focus-split-divider[data-shown]::after {
+  transform: none;
+}
+
+.klide-focus-split-divider:hover::after {
+  background: var(--border-strong);
+}
+
+/* The drop preview. While a conversation is dragged over an unsplit canvas the
+   seam opens on the *same* transition the real split uses, and this holds the
+   space the dropped conversation is about to fill — so the drop lands exactly
+   where the preview already is. It is not a target itself: the whole canvas
+   is, and dropping always means "beside". */
+.klide-focus-split-ghost {
+  flex-grow: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  margin: 10px 10px 10px 4px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--fg-subtle);
+  text-align: center;
+  padding: 0 10px;
+  pointer-events: none;
+  animation: klide-focus-ghost-in 240ms var(--ease-out) both;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+/* Armed — the pointer is actually over the canvas, so releasing now drops. */
+.klide-focus-split-ghost[data-drop-target] {
+  border-color: var(--accent);
+  border-style: solid;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--fg-strong);
+}
+
+@keyframes klide-focus-ghost-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-focus-split-pane,
+  .klide-focus-split-close,
+  .klide-focus-split-divider::after {
+    transition: none;
+  }
+  .klide-focus-split-ghost {
+    animation: none;
+  }
+}
+
 .klide-focus-ai-surface {
   position: relative;
   width: 100%;

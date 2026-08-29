@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -2525,12 +2526,48 @@ This user request requires workspace inspection. Before answering, you MUST call
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialProvider]);
 
-  useEffect(() => {
+  // Grow the composer with what is typed into it — but never from a
+  // measurement taken while the box has no width to measure in. Two rules,
+  // both learned from a composer that came up at its 160px cap and stayed
+  // there: an EMPTY composer is never measured (WebKit lays the placeholder
+  // out inside the box, so in a narrow pane the placeholder wraps and the
+  // "content" height is the placeholder's, not the caret's — `rows={1}` and
+  // the min-height own that case), and a box that has not been laid out yet
+  // is left alone until it has been. The old effect re-ran only on `input`,
+  // so one bad measurement was permanent.
+  const autosizeComposer = useCallback(() => {
     const ta = taRef.current;
     if (!ta) return;
+    if (ta.value === "") {
+      ta.style.height = "";
+      return;
+    }
+    if (ta.clientWidth === 0) return;
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
-  }, [input]);
+  }, []);
+
+  useEffect(() => {
+    autosizeComposer();
+  }, [input, autosizeComposer]);
+
+  // A composer whose pane changes width has to be re-measured: the same text
+  // wraps to a different number of lines in a Focus half than it did in the
+  // full canvas. Width only — reacting to the height we just set ourselves
+  // would be a loop.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta || typeof ResizeObserver === "undefined") return;
+    let lastWidth = ta.clientWidth;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      autosizeComposer();
+    });
+    observer.observe(ta);
+    return () => observer.disconnect();
+  }, [autosizeComposer]);
 
   // Persist the conversation — debounced (trailing). Streaming commits a new
   // session object every ~50 ms, and each persist is a full index round-trip

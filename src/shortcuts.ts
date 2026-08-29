@@ -18,6 +18,8 @@ export type ShortcutId =
   | "find-in-files"
   | "git-review"
   | "back-to-editor"
+  | "focus-split"
+  | "focus-split-close"
   | "next-tab"
   | "prev-tab"
   | "save-file"
@@ -44,6 +46,12 @@ export const SHORTCUTS: Record<ShortcutId, Shortcut> = {
   "find-in-files": { keys: ["⌘", "⇧", "F"], label: "Find in files" },
   "git-review": { keys: ["⌘", "⇧", "G"], label: "Git review" },
   "back-to-editor": { keys: ["⌘", "N"], label: "Back to the editor" },
+  // Same chord, read the same way — "the other one". Focus has no editor to
+  // return to, so there it opens a second conversation beside the current one.
+  "focus-split": { keys: ["⌘", "N"], label: "Second conversation beside (Focus)" },
+  // ⌘W closes what is in front of you: an editor tab in the workbench, the
+  // second conversation in Focus.
+  "focus-split-close": { keys: ["⌘", "W"], label: "Close the second conversation (Focus)" },
   "next-tab": { keys: ["⌘", "Tab"], label: "Next tab" },
   "prev-tab": { keys: ["⌘", "⇧", "Tab"], label: "Previous tab" },
   "save-file": { keys: ["⌘", "S"], label: "Save file" },
@@ -77,6 +85,8 @@ export const SHORTCUT_GROUPS: { title: string; ids: ShortcutId[] }[] = [
       "find-in-files",
       "git-review",
       "back-to-editor",
+      "focus-split",
+      "focus-split-close",
       "next-tab",
       "prev-tab",
     ],
