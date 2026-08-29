@@ -18,7 +18,7 @@ Pierre is new to building desktop apps and is learning Rust as he goes. Frame te
 
 | ✅ Do | ❌ Don't |
 |---|---|
-| Keep the familiar IDE structural layout (activity bar, sidebar, tabs, editor, status bar, panel) | Strip out structural elements to "simplify" |
+| Keep the familiar IDE structural layout (sidebar rail, tabs, editor, status bar, panel) | Strip out structural elements to "simplify" |
 | Quiet light/dark palettes with shared app + terminal tokens | Saturated accent colors, gradients, drop shadows |
 | Generous whitespace, thin 1px borders, no heavy dividers | Boxes, frames, busy chrome |
 | Restrained type — Atkinson Hyperlegible for UI, Monaspace for code | Multiple display fonts, decorative weights |
@@ -55,6 +55,7 @@ Klide/
 ├── docs/                      Design docs (delegate replay, competitors, website) + adr/ (git-ignored, local only)
 ├── src/                       React + TypeScript frontend
 │   ├── main.tsx                 React boot
+│   ├── monaco-setup.ts          Self-host Monaco from the npm bundle (no CDN fetch)
 │   ├── App.tsx                  Root layout — composes view/panel/editor state; threads props
 │   ├── theme.ts                 7 themes + Monaco theme defs
 │   ├── styles/tokens.css        CSS custom properties + design primitives
@@ -62,6 +63,7 @@ Klide/
 │   ├── zLayers.ts               Z scale for root-level overlay stacking
 │   ├── shortcuts.ts             Keyboard shortcut registry (names + displayed keycaps)
 │   ├── settingsStore.ts         Declarative persisted-settings catalog + useSetting
+│   ├── settingsNavigation.ts    Registered-opener seam — a data module can request a Settings section
 │   ├── persistedStore.ts        The one persisted-store contract (get/subscribe/mutate) under the run-data stores
 │   ├── toast.ts                 Global notification bus (surface: components/ToastHost.tsx)
 │   ├── errors.ts                errMessage — readable text from any thrown value
@@ -80,6 +82,8 @@ Klide/
 │   ├── modelIdentity.tsx        Model → display name + logo (modelBrand.tsx: maker mark + link)
 │   ├── favModels.ts             Shared starred-model list
 │   ├── runs.ts                  Agent run data layer
+│   ├── runIsolation.ts          Default worktree-per-run policy — branch naming, local fallback
+│   ├── runningConversations.ts  Which conversations have a live Harness Run right now (rail marker)
 │   ├── runLedger.ts             Unified run ledger — merges tasks/convos/transcripts
 │   ├── runPresentation.ts       The one status vocabulary: run state → word + tone
 │   ├── runInspection.ts         Mission Control detail-subject resolution + lineage
@@ -94,6 +98,7 @@ Klide/
 │   ├── gateway.ts               opencodex proxy registered as one self-hosted endpoint
 │   ├── memory.ts                Project Memory data layer (+ memoryDrafts.ts, memorySearch.ts)
 │   ├── gitGraph.ts              Lane layout for the commit graph (gitTypes.ts: wire types)
+│   ├── gitReview.ts             Pure Git Review policy — derivations + mutating-action outcomes
 │   ├── gridLayouts.ts           Freeform grid layouts (layouts.ts: fixed presets)
 │   ├── panelLayout.ts           Floating panel rect store
 │   ├── skills.ts                Skills store (loader + auto-grant)
@@ -115,7 +120,7 @@ Klide/
 │   │   ├── usePortalMenu.ts     Body-portaled dropdown state
 │   │   └── useUserInfo.ts       Cached local + GitHub identity for the rail footer
 │   ├── components/
-│   │   ├── ActivityBar.tsx      Left rail — top zone (tools, FLIP) + bottom zone (Settings + Profile)
+│   │   ├── WorkspaceRail.tsx    The app's one sidebar — actions, project/conversation tree, identity foot; shared by Focus + workbench
 │   │   ├── ActivityHeatmap.tsx  52-week run activity grid
 │   │   ├── AiPanel.tsx          AI chat panel host + run interaction surface
 │   │   ├── AnchoredWorkbench.tsx Anchored layout shell — sidebar, tabs, editor, terminal, AI panels
@@ -150,7 +155,7 @@ Klide/
 │   │   ├── ProfileModal.tsx     Local IDE profile (avatar + identity + workspace)
 │   │   ├── SearchPanel.tsx      Find-in-files results
 │   │   ├── SettingsPanel.tsx    Settings shell (sections live in settings/)
-│   │   ├── settings/            accounts, apiKeys, controls, customProviders, gateway, icons, localServers, stats
+│   │   ├── settings/            accounts, apiKeys, controls, customProviders, gateway, icons, localServers, stats, storage
 │   │   ├── Sidebar.tsx          File explorer tree
 │   │   ├── SkillsModal.tsx      Skill editor + install + provenance groups
 │   │   ├── SplitPane.tsx        Vertical/horizontal split shell
@@ -179,6 +184,9 @@ Klide/
 │   │       ├── panelHost.ts       App↔AiPanel contract — identity, handoffs, resume policy
 │   │       ├── workspaceFiles.ts  Bounded file walk for @mentions
 │   │       ├── summarize.ts       Summarize-and-handoff + auto-skill detect
+│   │       ├── attachments.ts     Drop/paste rules — image → data URI, doc → text, refuse binaries (AttachmentTray.tsx: staged strip)
+│   │       ├── toolRuns.ts        Fold a prose-free stretch of tool messages into one openable row
+│   │       ├── storedConversations.ts Durable localStorage conversation index + panel binding + title rule
 │   │       ├── ConversationHistory.tsx / DelegateTerminal.tsx / RaceFollowUpBar.tsx
 │   └── agent/
 │       ├── types.ts             Agent protocol types (events, diffs, permissions)
@@ -202,6 +210,7 @@ Klide/
     ├── src/
     │   ├── main.rs               Entry point (also the `klide ptyd` daemon entry)
     │   ├── lib.rs                Command registration + thin Tauri glue, AI chat dispatch, fs ops, app menu
+    │   ├── cli.rs                Login-shell binary resolution + subscription-CLI install/auth status
     │   ├── adapters.rs           Provider streaming trait + shared loop + 3 wire adapters (Ollama/OpenAI/Anthropic)
     │   ├── providers.rs          Provider registry — one row per provider (wire, key, models, subscription)
     │   ├── custom_providers.rs   User-added self-hosted OpenAI-wire endpoints
@@ -217,6 +226,7 @@ Klide/
     │   ├── workspace.rs          Workspace module — owns the Workspace-rooted invariant
     │   ├── worktree_setup.rs     Per-workspace worktree bootstrap recipe (copy/link/port/script)
     │   ├── memory.rs             Project memory markdown I/O
+    │   ├── storage.rs            Where the runs dir lives — user-choosable folder, validated moves, cache accounting
     │   ├── missions.rs           Durable Missions — authored specs, append-only events, drive loop
     │   ├── durable.rs            Atomic + append-only write primitives for on-disk state
     │   ├── pty.rs                Delegate PTY commands + host-choice rules (SessionHosting)
@@ -230,6 +240,7 @@ Klide/
     │       ├── mod.rs             Agent supervisor + run loop
     │       ├── run_core.rs        Tauri-free turn prep — provider quirks, message assembly, compaction
     │       ├── tools.rs           Tool registry (schema + capability + execution)
+    │       ├── tool_handlers.rs   Per-capability call ceremony — permission gates, pauses, checkpoints
     │       ├── conversation_search.rs Workspace-scoped search over prior Harness transcripts
     │       ├── glob_match.rs      Shared */? matcher (glob tool + command allowlist)
     │       ├── permission.rs      Permission engine — classify, prompt, remember, persist
@@ -318,10 +329,12 @@ Durable end-of-session notes in `<workspace>/.klide/memory/` so a future agent (
 v0.5 was declared feature-complete on 2026-07-21. Mission Control is the
 operations surface for Klide Harness runs and Delegate runs; review evidence,
 worktree fleets, mission chaining, subagents, advisor escalation, and two-agent
-races are shipped. v0.5.1 owns release hardening and publishing: full
-race/restart/merge dogfooding, default worktree isolation, provider-aware
-historical lifecycle signals, the first signed/notarized macOS bundle, and
-Windows/Linux validation.
+races are shipped. v0.5.1 owns release hardening and publishing: default
+worktree isolation and provider-aware historical lifecycle signals are done
+(the latter 2026-08-27 — per-CLI turn markers + PTY hook/exit joins, session
+ids persisted in scrollback metadata); still open are full race/restart/merge
+dogfooding, the first signed/notarized macOS bundle, and Windows/Linux
+validation (keyring feature selection is the remaining compile blocker).
 
 The next product milestone is v0.6, dependable orchestration: Missions as
 outcomes, visible budget and capacity, capability-based worker routing,
