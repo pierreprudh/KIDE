@@ -2,6 +2,124 @@
 
 Notable changes per milestone. Dates are completion dates.
 
+## Unreleased — on the v0.6 line (since 2026-08-23)
+
+Hardening after the 0.6.1 cut. The v0.6 orchestration milestone itself is
+still open.
+
+### Harness
+
+- **A run near its turn cap finishes instead of stopping.** Three turns short
+  of the cap the model is steered to stop exploring and save what it has; on
+  the final turn the harness withholds the tool schemas, so the only reply it
+  can produce is a written one. Both steps ride the steering seam and land in
+  the transcript, so a run that answers ends `Done` — no more `max_turns`
+  error on work that was one sentence from finished.
+- **A turn that reasons itself empty gets another try.** A reasoning model can
+  spend its whole reply budget in the private reasoning channel and return a
+  successful turn with no answer and no tool call. That turn is now dropped
+  from the provider history and resampled at half the budget, instead of the
+  run settling `Done` having said nothing under a notice blaming the wrong
+  number (`num_ctx`, when what ran out was the reply budget).
+- **A truncated command keeps its verdict.** Long tool output now keeps both
+  ends and gives up the middle — a test run states its result in its last
+  three lines, and the old head-only cut removed precisely the lines the
+  command was run for. `web_fetch` stays head-only on purpose: a page's tail
+  is footer, not verdict.
+- **The agent can search previous conversations.** A read-only
+  `search_conversations` tool (Plan and Goal modes) ranks matches from prior
+  Harness conversations in the current workspace, excluding the current run
+  and its children.
+- **MLX keeps its prompt cache.** TODO snapshots append on change instead of
+  rewriting an early system message, so the reusable prompt prefix — file
+  contents included — survives across turns; future MLX-LM launches get a
+  1 GB `--prompt-cache-bytes` budget so retained prefixes can't grow without
+  bound. Synthetic replay measured first streamed delta dropping from ~3.8 s
+  to ~0.6 s.
+
+### Delegate runs and Mission Control
+
+- **Historical delegate runs settle.** Lifecycle state is inferred from each
+  CLI's own turn markers (Claude Code, Codex, OpenCode, omp) instead of
+  transcript recency alone; Klide-hosted PTY hook and exit state join onto
+  that history, and provider session ids persist into scrollback metadata so
+  blocked/completed/failed/interrupted survive startup races and app
+  restarts. This closes the v0.5.1 lifecycle item.
+- **A replayed tool call says what it did.** The transcript now carries a
+  delegate call's arguments and its result (bounded on the way in — `read_run`
+  streams instead of slurping 90 MB files), so reopening a Claude Code session
+  shows the same rows a live turn draws instead of eight rows reading "Bash".
+  Every replayed delegate result says which CLI produced it: Klide applied no
+  capability, permission prompt, or diff review to it.
+- **A resume lands where you are looking.** Mission Control admissions reuse
+  the panel a one-slot surface (Focus, anchored, grid) is already showing
+  instead of appending an invisible one. "Resume in Claude Code" moves to the
+  workbench, where the interactive session can actually render; a new
+  "Continue in Focus" turns the run's transcript into a Klide thread pinned to
+  the same agent and runs the CLI headless with the history folded in. The
+  detail pane's three continue actions each say what they do.
+
+### Conversation view
+
+- **A stretch of tool work folds into one row** — count, tools, chevron;
+  opening it gives back exactly the rows that were there. Only prose-free
+  runs of three or more calls fold; the moment the agent says something, the
+  run ends. Folded rows stay mounted and `inert`.
+- **One agent, one mark.** A turn's provider and model stamps fall back
+  independently to the thread's origin, and Claude Code / Codex get their
+  maker mark even on `default`-model turns — the same replayed and live turn
+  no longer wear different logos.
+- **Tool machinery recedes.** Thinking hoists above the fold header, call and
+  result rows step down a color token and inset from the prose edge, shell
+  calls expand to the bare command line, and results render as raw mono text
+  (markdown was mangling grep hits and file contents).
+- **Your picture rides beside your message**, aligned to the message rather
+  than the whole turn — with a Settings → Appearance switch to turn it off.
+- **A turn that stops reaching the view heals from its transcript.** When the
+  panel legitimately stops following a live run mid-turn, it now re-reads the
+  run transcript on settle and adopts it, instead of showing tool calls and
+  then silence while the answer sat on disk.
+
+### Focus
+
+- **A dropped screenshot is a task.** One rule set (`ai/attachments.ts`)
+  decides what a dropped or pasted file becomes: a photo travels as a data
+  URI for a model that can see it, a document travels as the text shape an
+  `@mention` produces, and a PDF or zip is refused by name. The start stage
+  stages attachments beside the text and hands both to the panel.
+- Composer polish: the start stage and conversation composer draw their
+  controls in the same order (sending no longer reshuffles them), and the
+  app-wide `focus-visible` ring is exempted by name so typing no longer
+  paints clipped blue bars across the card.
+
+### Storage
+
+- **One screenshot may not cost a month of history.** Conversation-cache
+  snapshots carry images only within a byte budget — older photos keep their
+  name and lose their bytes — so a pasted 2 MB screenshot can no longer evict
+  33 threads from the ~5 MB localStorage quota. The full image lives in the
+  run transcript, which is the record.
+- **Settings → Storage** shows what the cache holds and where transcripts
+  live, with Drop cached photos, Clear, per-thread Forget, and Reveal.
+- **Transcripts can live where you want.** The runs folder is user-choosable
+  (`~/.klide/storage.json`); Rust validates by writing, moves only
+  transcripts and run folders (checkpoints travel too), records the choice
+  only after the move succeeds, and falls back to the default — saying why —
+  when a chosen folder stops existing.
+
+### Performance and hygiene
+
+- Conversation persists are debounced (streaming was round-tripping the whole
+  100-conversation index every ~50 ms), and the editor-tab disk poll stops
+  re-registering App's listeners when nothing changed.
+- The run supervisor retires a run's handle on settle instead of keeping its
+  cancel token and pause channels for the app lifetime, and provider adapters
+  share one reqwest client instead of paying DNS+TCP+TLS every turn.
+- Keychain markers, provider `${VAR}` refs, and freshly created transcript /
+  mission logs are written mode 0600.
+- Docs: the app bundle is 27 MB, not the ~10 MB the stack table had claimed
+  since Tauri was new here.
+
 ## v0.6.1 — Subscriptions and Reach (2026-08-23)
 
 Work on the v0.6 line. The orchestration milestone itself — Missions as

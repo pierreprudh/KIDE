@@ -87,8 +87,8 @@ Klide has three capability modes:
 | **Editor and shell** | Monaco editor, file explorer, tabs, search, command palette, Git review, commit graph, and persistent PTY terminals |
 | **Workspace surfaces** | Welcome launcher, focus mode, free-mode floating panels, fixed layout presets, and a freeform grid builder |
 | **Models** | Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter, and OpenAI-compatible endpoints |
-| **Project context** | `AGENTS.md`, `CLAUDE.md`, file mentions, skills, dynamic tools, and reviewed project memory |
-| **Local security** | Workspace-rooted file access, operating-system keychain storage, project command allowlists, and network permissions |
+| **Project context** | `AGENTS.md`, `CLAUDE.md`, file mentions, image and document attachments, skills, dynamic tools, search over previous conversations, and reviewed project memory |
+| **Local security** | Workspace-rooted file access, operating-system keychain storage, project command allowlists, network permissions, and a user-choosable transcript folder |
 
 ## Get started
 
@@ -154,9 +154,9 @@ Read the [Harness contract](./HARNESS_CONTRACT.md) for the trust model and [Harn
 
 ## Project status
 
-Klide v0.5 is feature-complete and remains under active development. Its frontend tests, production build, Rust suite, PTY socket integration, and release-bundle boot check pass. Unsigned Apple Silicon bundles and source builds are available now; Apple-notarized bundles are not yet published.
+Klide is under active development. Its frontend tests, production build, Rust suite, PTY socket integration, and release-bundle boot check pass. Unsigned Apple Silicon bundles and source builds are available now; Apple-notarized bundles are not yet published.
 
-v0.6.1 is the current release: Focus reaches every provider Klide supports, delegate CLIs run there on their own subscription and show their work, and the opencodex gateway adds around forty upstreams behind one self-hosted endpoint. The v0.6 orchestration milestone itself — Missions as outcomes, budget and capacity in the dispatch path, capability routing, automatic validation contracts — is still open, so treat those surfaces as unfinished.
+v0.6.1 is the current release: Focus reaches every provider Klide supports, delegate CLIs run there on their own subscription and show their work, and the opencodex gateway adds around forty upstreams behind one self-hosted endpoint. Since that cut, main has landed hardening on the same line: historical delegate runs settle their lifecycle correctly, replayed CLI sessions show each tool call's input and result, runs near the turn cap finish instead of erroring, storage grew a Settings section with a movable transcript folder, and the agent can search previous conversations. The v0.6 orchestration milestone itself — Missions as outcomes, budget and capacity in the dispatch path, capability routing, automatic validation contracts — is still open, so treat those surfaces as unfinished.
 
 Current priorities:
 
