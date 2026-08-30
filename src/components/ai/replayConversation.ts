@@ -28,6 +28,26 @@ export function isSilentRunError(code: string): boolean {
   return code === SILENT_RUN_ERROR_CODE;
 }
 
+/**
+ * The trailing "Run failed" line a replayed view needs to explain itself.
+ *
+ * A run that died (provider 500, proxy timeout, crash-loop quarantine) folds
+ * to nothing — `foldEvents` renders work, and a failure produced none — so a
+ * replay would end mid-thought and read as hung. Tail-only on purpose: an
+ * error the conversation already moved past (a later turn was sent and
+ * appended after it) is history, not the state of the thread, and pinning it
+ * to the bottom would report a recovered conversation as failed.
+ */
+export function runErrorLine(events: AgentEvent[]): Msg | null {
+  const last = events[events.length - 1];
+  if (last?.type !== "run_error" || isSilentRunError(last.error.code)) return null;
+  return {
+    role: "system",
+    content: `Run failed: ${last.error.message}`,
+    runError: { message: last.error.message },
+  };
+}
+
 type RunMeta = {
   mode: "chat" | "plan" | "goal";
   provider: string;
@@ -67,7 +87,16 @@ export function replayForAdoption(
   const queuedLocal = current.filter(
     (m) => m.role === "user" && m.queueState === "queued",
   );
-  const replayed = [...eventsToMsgs(events), ...queuedLocal];
+  // A run that ended in failure folds to no row at all, so without the error
+  // line an adopted replay ends mid-work and reads as a hang or a crash —
+  // which is exactly what a reattached panel showed when the provider timed
+  // out while nobody was on the live channel.
+  const errorLine = runErrorLine(events);
+  const replayed = [
+    ...eventsToMsgs(events),
+    ...(errorLine ? [errorLine] : []),
+    ...queuedLocal,
+  ];
   return replayed.length >= current.length ? replayed : null;
 }
 
@@ -128,16 +157,8 @@ export function eventsToConversation(
   // error as a trailing system line so the resumed view explains itself.
   // A user-initiated Stop is intentionally silent — same rule as the live run
   // path in AiPanel, shared as `isSilentRunError` so they cannot diverge.
-  const runError = events.find(
-    (e): e is Extract<AgentEvent, { type: "run_error" }> =>
-      e.type === "run_error" && !isSilentRunError(e.error.code),
-  );
-  if (runError) {
-    msgs.push({
-      role: "system",
-      content: `Run failed: ${runError.error.message}`,
-    });
-  }
+  const errorLine = runErrorLine(events);
+  if (errorLine) msgs.push(errorLine);
 
   // A transcript knows exactly when it started and when it last moved — take
   // both from the events rather than stamping "now" on a run that may have

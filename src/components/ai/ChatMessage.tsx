@@ -831,6 +831,40 @@ export function SteeringRow({ reason }: { reason: string }) {
   );
 }
 
+// The run's terminal failure, in the same visual family as the "Starting
+// {provider} local server…" line: a centered mono label between two hairlines.
+// The message wraps below rather than ellipsizing — a timeout's advice ("try a
+// smaller or pre-warmed model") is the useful half, and a truncated error is
+// the one row that must never hide its tail.
+export function RunFailedRow({ message }: { message: string }) {
+  const hairline = (
+    <span
+      aria-hidden="true"
+      style={{
+        height: 1,
+        flex: "1 1 44px",
+        minWidth: 28,
+        maxWidth: 72,
+        background: "color-mix(in srgb, var(--border) 82%, transparent)",
+      }}
+    />
+  );
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, width: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", maxWidth: "min(520px, 100%)" }}>
+        {hairline}
+        <span style={{ ...COMPACT_MONO, color: "var(--danger)", fontWeight: 500, flexShrink: 0 }}>
+          Run failed
+        </span>
+        {hairline}
+      </div>
+      <div style={{ ...COMPACT_MONO, color: "var(--fg-subtle)", textAlign: "center", maxWidth: "min(520px, 92%)", lineHeight: 1.5 }}>
+        {message}
+      </div>
+    </div>
+  );
+}
+
 export function renderMessageBody(
   m: Msg,
   active = false,
@@ -842,6 +876,9 @@ export function renderMessageBody(
 ): ReactElement {
   if (m.role === "system" && m.steering) {
     return <SteeringRow reason={m.steering.reason} />;
+  }
+  if (m.role === "system" && m.runError) {
+    return <RunFailedRow message={m.runError.message} />;
   }
   if (m.role === "system" && m.compaction) {
     return <CompactionRow count={m.compaction.count} summary={m.compaction.summary} source={m.compaction.source} messages={m.compaction.messages} toolCalls={m.compaction.toolCalls} />;

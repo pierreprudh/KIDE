@@ -91,7 +91,11 @@ describe("eventsToConversation", () => {
       "t"
     );
     const last = convo.msgs[convo.msgs.length - 1];
-    expect(last).toEqual({ role: "system", content: "Run failed: 502 from upstream" });
+    expect(last).toEqual({
+      role: "system",
+      content: "Run failed: 502 from upstream",
+      runError: { message: "502 from upstream" },
+    });
   });
 
   it("stays silent about a run the user stopped", () => {
@@ -164,6 +168,50 @@ describe("replayForAdoption", () => {
     ];
     expect(replayForAdoption(transcript, onScreen)).toBeNull();
     expect(replayForAdoption([], onScreen)).toBeNull();
+  });
+
+  it("explains a run that died while nobody held the live channel", () => {
+    // A proxy timeout folds to no row — the failure produced no work — so a
+    // reattached view ended mid-tool-call and read as a crash. The user only
+    // learned the run failed by finding run_error in the transcript by hand.
+    const failed = [
+      runStarted(1),
+      userMessage("hi", 2),
+      runError("provider_unavailable", "timed out waiting for the model (HTTP 524)", 3),
+    ];
+    const healed = replayForAdoption(failed, [{ role: "user", content: "hi" }]);
+    expect(healed?.[healed.length - 1]).toEqual({
+      role: "system",
+      content: "Run failed: timed out waiting for the model (HTTP 524)",
+      runError: { message: "timed out waiting for the model (HTTP 524)" },
+    });
+  });
+
+  it("keeps queued turns after the error line, and stays silent about a Stop", () => {
+    const stopped = [
+      runStarted(1),
+      userMessage("hi", 2),
+      assistantMessage("partial", 3),
+      runError("aborted", "Aborted", 4),
+    ];
+    const queued: Msg = { role: "user", content: "and then?", queueState: "queued" };
+    const afterStop = replayForAdoption(stopped, [{ role: "user", content: "hi" }, queued]);
+    expect(afterStop?.some((m) => m.content.startsWith("Run failed:"))).toBe(false);
+    expect(afterStop?.[afterStop.length - 1]).toBe(queued);
+  });
+
+  it("does not pin an old error to a conversation that moved past it", () => {
+    // Turn 2 failed, turn 3 was sent and answered. The error is history — a
+    // trailing "Run failed" line would report a recovered thread as failed.
+    const recovered = [
+      runStarted(1),
+      userMessage("hi", 2),
+      runError("provider_unavailable", "502", 3),
+      userMessage("retry", 4),
+      assistantMessage("done", 5),
+    ];
+    const healed = replayForAdoption(recovered, []);
+    expect(healed?.some((m) => m.content.startsWith("Run failed:"))).toBe(false);
   });
 });
 

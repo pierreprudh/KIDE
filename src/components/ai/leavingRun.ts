@@ -36,3 +36,25 @@ export type RunLeaveDecision = {
 export function decideOnLeavingRun(state: RunLeaveState): RunLeaveDecision {
   return { abort: false, settle: !state.hasActiveRun };
 }
+
+export type ConversationArrival = {
+  /** The conversation being opened is the one already on screen. */
+  sameConversation: boolean;
+  /** This panel is still wired to a live run stream for what it shows —
+   *  the original `startAgentRun` channel or a reattach follower. */
+  followingLiveRun: boolean;
+};
+
+/**
+ * Whether opening a conversation should re-adopt it — detach, replace the
+ * view with the stored snapshot, re-follow the run.
+ *
+ * The one refusal: re-selecting the thread already on screen while this
+ * panel is still following its run. The original channel is the only stream
+ * that carries token deltas — the global reattach broadcast replays persisted
+ * structural events only — so re-adopting here trades a streaming view for a
+ * chunky one, for a click that asked to see exactly what is already showing.
+ */
+export function shouldReadoptConversation(arrival: ConversationArrival): boolean {
+  return !(arrival.sameConversation && arrival.followingLiveRun);
+}
