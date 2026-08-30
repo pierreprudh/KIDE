@@ -412,6 +412,7 @@ function App() {
     followUpsByPanel,
     modelsByPanel,
     reviewOverrideByPanel,
+    commandsOverrideByPanel,
     admit,
     release,
     endRaceWatch,
@@ -426,6 +427,7 @@ function App() {
     clearRaceWatch,
     reportPanelModels,
     setPanelReviewOverride,
+    setPanelCommandsOverride,
   } = useAiPanelFleet({
     createPanel: appendAiPanel,
     removePanel: closeAiPanel,
@@ -628,6 +630,11 @@ function App() {
   const reviewForPanel = (id: string) =>
     id in reviewOverrideByPanel ? reviewOverrideByPanel[id] : requireDiffReview;
   const setPanelReview = setPanelReviewOverride;
+  // The full-auto rung's command half has no global default on purpose:
+  // silencing the command permission gate is opted into per conversation and
+  // reverts to prompting on reload.
+  const commandsForPanel = (id: string) => commandsOverrideByPanel[id] ?? false;
+  const setPanelCommands = setPanelCommandsOverride;
   const [stopAfterRejection] = useSetting(SETTINGS.stopAfterRejection);
   const [harnessSettings, setHarnessSettings] = useSetting(SETTINGS.harnessSettings);
   // Free-mode floating panels fall back to a default rect when the persisted
@@ -1220,6 +1227,8 @@ function App() {
         apiKeyVersion={apiKeyVersion}
         requireDiffReview={reviewForPanel(panelId)}
         onRequireDiffReviewChange={(v) => setPanelReview(panelId, v)}
+        autoApproveCommands={commandsForPanel(panelId)}
+        onAutoApproveCommandsChange={(v) => setPanelCommands(panelId, v)}
         onOpenDiff={setDiffView}
         stopAfterRejection={stopAfterRejection}
         skills={skills}
@@ -3027,6 +3036,10 @@ function App() {
                   requireDiffReview={reviewForPanel(primaryPanelId)}
                   onRequireDiffReviewChange={(required) =>
                     setPanelReview(primaryPanelId, required)
+                  }
+                  autoApproveCommands={commandsForPanel(primaryPanelId)}
+                  onAutoApproveCommandsChange={(enabled) =>
+                    setPanelCommands(primaryPanelId, enabled)
                   }
                 />
               </Suspense>

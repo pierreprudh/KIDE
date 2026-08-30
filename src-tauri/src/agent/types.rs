@@ -115,6 +115,14 @@ pub struct StartRunRequest {
     /// applied edit writes a rollback checkpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_diff_review: Option<bool>,
+    /// Whether `run_command` may execute without a permission prompt. `None`
+    /// or `Some(false)` keeps the normal gate (run-scoped approvals + the
+    /// project allowlist); `Some(true)` is the full-auto rung — commands run
+    /// as if allowlisted. Network requests keep prompting: this flag trades
+    /// away only the command gate, is chosen per conversation, and is never
+    /// persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_approve_commands: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     /// Durable Mission linkage. A Mission Task is not this Run: each retry or

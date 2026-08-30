@@ -390,6 +390,10 @@ async fn run_subagent_to_completion(
         test_after_edit_command: None,
         command_allowlist: vec![],
         require_diff_review: spec.require_diff_review,
+        // A headless child never inherits the full-auto command rung: the
+        // parent conversation's operator opted in for that surface, not for
+        // runs it spawns.
+        auto_approve_commands: None,
         parent_id: Some(spec.parent_id.clone()),
         mission_id: None,
         mission_task_id: None,
@@ -4594,6 +4598,37 @@ mod permission_gate_tests {
     }
 
     #[tokio::test]
+    async fn full_auto_runs_a_brand_new_command_without_a_prompt() {
+        let root = temp_workspace("full-auto");
+        let sup = FakeSupervisor::with_run("full-auto-run");
+        let cancel = CancellationToken::new();
+        // No allowlist entry, no prior approval — only the full-auto rung.
+        let mut request = test_request(&root, &[]);
+        request.auto_approve_commands = Some(true);
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-full-auto-runs-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "full-auto-run",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: runs_dir.as_path(),
+        };
+        let (events, mut emit) = event_log();
+
+        let result =
+            run_gate_without_prompt(&ctx, &command_call("call-1", "echo full-auto"), &mut emit)
+                .await;
+        assert!(result.ok, "full auto should execute: {}", result.content);
+        assert!(result.content.contains("full-auto"));
+        assert_eq!(prompts_shown(&events), 0, "full auto must never prompt");
+    }
+
+    #[tokio::test]
     async fn approve_for_run_executes_and_the_identical_command_skips_the_prompt() {
         let root = temp_workspace("approve-run");
         let sup = FakeSupervisor::with_run("perm-run");
@@ -4790,24 +4825,40 @@ mod diff_gate_tests {
 
     #[test]
     fn parse_diff_decision_tolerates_every_wire_shape() {
-        assert_eq!(parse_diff_decision("apply"), ("apply".to_string(), None));
-        assert_eq!(parse_diff_decision("reject"), ("reject".to_string(), None));
+        assert_eq!(
+            parse_diff_decision("apply"),
+            ("apply".to_string(), None, false)
+        );
+        assert_eq!(
+            parse_diff_decision("reject"),
+            ("reject".to_string(), None, false)
+        );
         assert_eq!(
             parse_diff_decision(r#"{"behavior":"apply"}"#),
-            ("apply".to_string(), None)
+            ("apply".to_string(), None, false)
+        );
+        // "Validate all" — apply plus scope "run"; the scope never rides a
+        // rejection.
+        assert_eq!(
+            parse_diff_decision(r#"{"behavior":"apply","scope":"run"}"#),
+            ("apply".to_string(), None, true)
+        );
+        assert_eq!(
+            parse_diff_decision(r#"{"behavior":"reject","scope":"run"}"#),
+            ("reject".to_string(), None, false)
         );
         assert_eq!(
             parse_diff_decision(r#"{"behavior":"reject","note":"use snake_case"}"#),
-            ("reject".to_string(), Some("use snake_case".to_string()))
+            ("reject".to_string(), Some("use snake_case".to_string()), false)
         );
         // Blank notes are dropped; garbage falls back to a plain rejection.
         assert_eq!(
             parse_diff_decision(r#"{"behavior":"reject","note":"  "}"#),
-            ("reject".to_string(), None)
+            ("reject".to_string(), None, false)
         );
         assert_eq!(
             parse_diff_decision("{broken"),
-            ("{broken".to_string(), None)
+            ("{broken".to_string(), None, false)
         );
     }
 
@@ -4941,6 +4992,60 @@ mod diff_gate_tests {
         assert_eq!(
             std::fs::read_to_string(std::path::Path::new(&root).join("notes.md")).unwrap(),
             "approved\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(runs_dir);
+    }
+
+    #[tokio::test]
+    async fn validate_all_applies_this_edit_and_the_next_one_skips_the_pause() {
+        let root = temp_workspace("apply-all");
+        let sup = FakeSupervisor::with_run("diff-run");
+        let cancel = CancellationToken::new();
+        let request = reviewed_request(&root);
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-diff-gate-runs-all-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "diff-run",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: runs_dir.as_path(),
+        };
+        let mut emit = |_: AgentEvent| -> Result<(), String> { Ok(()) };
+
+        let first = create_call("c1", "a.md", "first\n");
+        let (outcome, _) = tokio::join!(
+            process_write_tool(&ctx, &first, &mut emit),
+            answer_diff(&sup, "diff-run", r#"{"behavior":"apply","scope":"run"}"#),
+        );
+        let result = match outcome.expect("gate ok") {
+            ToolOutcome::Produced(r) => r,
+            ToolOutcome::Cancelled => panic!("unexpected cancellation"),
+        };
+        assert!(result.ok, "applied: {}", result.content);
+
+        // The second edit must apply without pausing — nobody answers this
+        // one, so the timeout converts a would-be hang into a clear failure.
+        let second = create_call("c2", "b.md", "second\n");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            process_write_tool(&ctx, &second, &mut emit),
+        )
+        .await
+        .expect("validate-all must skip the second pause");
+        let result = match outcome.expect("gate ok") {
+            ToolOutcome::Produced(r) => r,
+            ToolOutcome::Cancelled => panic!("unexpected cancellation"),
+        };
+        assert!(result.ok, "auto-applied: {}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(std::path::Path::new(&root).join("b.md")).unwrap(),
+            "second\n"
         );
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(runs_dir);

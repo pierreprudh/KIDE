@@ -311,6 +311,10 @@ type Props = {
   apiKeyVersion?: number;
   requireDiffReview: boolean;
   onRequireDiffReviewChange?: (enabled: boolean) => void;
+  /** The full-auto rung's command half: shell commands run without a
+   *  permission prompt. Per-conversation and never persisted. */
+  autoApproveCommands?: boolean;
+  onAutoApproveCommandsChange?: (enabled: boolean) => void;
   /** Open a proposed/applied edit as a full side-by-side diff in the editor. */
   onOpenDiff?: (edit: { path: string; oldContent: string; newContent: string; isCreate: boolean }) => void;
   stopAfterRejection: boolean;
@@ -622,6 +626,8 @@ export function AiPanel({
   apiKeyVersion = 0,
   requireDiffReview,
   onRequireDiffReviewChange,
+  autoApproveCommands = false,
+  onAutoApproveCommandsChange,
   onOpenDiff,
   stopAfterRejection,
   skills,
@@ -1336,25 +1342,17 @@ export function AiPanel({
   const [slashIdx, setSlashIdx] = useState(0);
   const [nextSendMode, setNextSendMode] = useState<AgentMode | null>(null);
 
-  // Transient "mode line" — the review/auto/plan state is normally invisible.
-  // A slash command (or /mode peek) flashes it above the composer for ~2.4s,
-  // then it fades. No persistent chrome at rest.
-  type ModeTone = "accent" | "warning" | "muted";
-  const [modeFlash, setModeFlash] = useState<{ text: string; tone: ModeTone } | null>(null);
-  const modeFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  function flashMode(text: string, tone: ModeTone = "muted") {
-    setModeFlash({ text, tone });
-    if (modeFlashTimer.current) clearTimeout(modeFlashTimer.current);
-    modeFlashTimer.current = setTimeout(() => setModeFlash(null), 2400);
-  }
-  useEffect(() => () => { if (modeFlashTimer.current) clearTimeout(modeFlashTimer.current); }, []);
-  // Snapshot the current mode for the /mode peek. Reads state at call time.
-  function currentModeFlash(): { text: string; tone: ModeTone } {
-    if (effectiveMode === "chat") return { text: "chat mode · no tools", tone: "muted" };
-    if (effectiveMode === "plan") return { text: "plan mode · read-only", tone: "warning" };
-    return requireDiffReview
-      ? { text: "reviewing every edit", tone: "muted" }
-      : { text: "auto-accept edits on", tone: "accent" };
+  // The current mode in words, for the /mode peek. Reads state at call time.
+  // Mode changes themselves stay silent: the + menu checkmark and the foot
+  // bar's standing note are the state, and a transient line above the
+  // composer proved to be chrome nobody needed.
+  function currentModeText(): string {
+    if (effectiveMode === "chat") return "chat mode · no tools";
+    if (effectiveMode === "plan") return "plan mode · read-only";
+    if (requireDiffReview) return "reviewing every edit";
+    return autoApproveCommands
+      ? "full auto · commands run without asking"
+      : "auto-accept edits on";
   }
   // /auto-mode and /review-mode imply Goal mode (edits only happen there).
   const goalOrPlan = () => (modelSupportsTools || providerDelegatesWork ? "goal" : "plan") as AgentMode;
@@ -1363,9 +1361,9 @@ export function AiPanel({
     { name: "chat", desc: "Switch to Chat mode (no tools)", run: () => { selectMode("chat"); setInput(""); } },
     { name: "plan", desc: "Switch to Plan mode (read-only, proposes a plan)", run: () => { selectMode("plan"); setInput(""); } },
     { name: "goal", desc: "Switch to Goal mode (can propose edits)", run: () => { selectMode(modelSupportsTools || providerDelegatesWork ? "goal" : "plan"); setInput(""); } },
-    { name: "mode", desc: "Show the current mode", run: () => { setInput(""); setSlash(null); const f = currentModeFlash(); flashMode(f.text, f.tone); } },
-    { name: "auto-mode", desc: "Auto-accept edits — apply without a prompt", run: () => { setInput(""); setSlash(null); selectMode(goalOrPlan()); onRequireDiffReviewChange?.(false); flashMode("auto-accept edits on", "accent"); } },
-    { name: "review-mode", desc: "Review every edit before it applies (default)", run: () => { setInput(""); setSlash(null); selectMode(goalOrPlan()); onRequireDiffReviewChange?.(true); flashMode("reviewing every edit", "muted"); } },
+    { name: "mode", desc: "Show the current mode", run: () => { setInput(""); setSlash(null); notify(currentModeText()); } },
+    { name: "auto-mode", desc: "Auto-accept edits — apply without a prompt", run: () => { setInput(""); setSlash(null); selectMode(goalOrPlan()); onRequireDiffReviewChange?.(false); onAutoApproveCommandsChange?.(false); } },
+    { name: "review-mode", desc: "Review every edit before it applies (default)", run: () => { setInput(""); setSlash(null); selectMode(goalOrPlan()); onRequireDiffReviewChange?.(true); onAutoApproveCommandsChange?.(false); } },
     { name: "clear", desc: "Start a new conversation", run: () => newConversation() },
     { name: "compact", desc: "Summarize older turns to free up context", run: () => {
       setInput(""); setSlash(null);
@@ -1547,14 +1545,13 @@ export function AiPanel({
     handleComposerChange("/", 1);
     requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); ta.setSelectionRange(1, 1); } });
   }
-  // The autonomy ladder shown in the + menu, lowest → highest. The last two
-  // are both Goal mode; they differ only in requireDiffReview (review vs auto).
-  function selectRung(mode: AgentMode, review: boolean | null) {
+  // The autonomy ladder shown in the + menu, lowest → highest. The last three
+  // are all Goal mode; they differ only in the diff-review policy and whether
+  // shell commands also skip the permission gate (full auto).
+  function selectRung(mode: AgentMode, review: boolean | null, commands: boolean | null) {
     selectMode(mode); // persists mode + closes the menu
     if (mode === "goal" && review !== null) onRequireDiffReviewChange?.(review);
-    if (mode === "chat") flashMode("chat mode · no tools");
-    else if (mode === "plan") flashMode("plan mode · read-only", "warning");
-    else flashMode(review ? "reviewing every edit" : "auto-accept edits on", review ? "muted" : "accent");
+    if (mode === "goal" && commands !== null) onAutoApproveCommandsChange?.(commands);
   }
 
   // Stage pasted/dropped files through the one set of attachment rules
@@ -1620,7 +1617,7 @@ export function AiPanel({
   });
   // + menu: Goal rungs disabled when the model has no tools; which rung is lit.
   const goalDisabled = !modelSupportsTools && !providerDelegatesWork;
-  const currentRungIdx = currentRungIndex(effectiveMode, requireDiffReview);
+  const currentRungIdx = currentRungIndex(effectiveMode, requireDiffReview, autoApproveCommands);
   // Effective window: a per-model override (Settings → Harness, Ollama only)
   // genuinely caps the runtime window, so the gauge must measure against it —
   // otherwise a dialed-down model reads near-empty when it's actually full.
@@ -3119,6 +3116,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         maxTurns: maxTurns && maxTurns > 0 ? maxTurns : undefined,
         commandTimeoutSecs: commandTimeoutSecs && commandTimeoutSecs > 0 ? commandTimeoutSecs : undefined,
         requireDiffReview,
+        autoApproveCommands: autoApproveCommands || undefined,
         testAfterEditCommand: testAfterEditCommand || undefined,
       }, handleEvent);
       activeHarnessRunRef.current = session.runId;
@@ -3501,6 +3499,24 @@ This user request requires workspace inspection. Before answering, you MUST call
     setAcceptingChanges(true);
     try {
       await resolveDiff({ runId: proposal.runId, proposalId: proposal.id, decision: { behavior: "apply" } });
+    } catch (e) {
+      console.error("Failed to accept proposed modification:", e);
+      notify(`Couldn't accept the modification: ${e instanceof Error ? e.message : String(e)}`, { tone: "error" });
+    } finally {
+      setAcceptingChanges(false);
+    }
+  }
+
+  // "Validate all" — apply this edit AND stop asking: scope "run" covers the
+  // rest of the live run in the harness, and flipping the rung to auto-accept
+  // covers every later turn (plus lights the right rung in the + menu).
+  async function handleDiffApplyAll() {
+    if (!pendingDiff || acceptingChanges) return;
+    const proposal = pendingDiff;
+    setAcceptingChanges(true);
+    try {
+      await resolveDiff({ runId: proposal.runId, proposalId: proposal.id, decision: { behavior: "apply", scope: "run" } });
+      onRequireDiffReviewChange?.(false);
     } catch (e) {
       console.error("Failed to accept proposed modification:", e);
       notify(`Couldn't accept the modification: ${e instanceof Error ? e.message : String(e)}`, { tone: "error" });
@@ -4272,6 +4288,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 reason: pendingDiff.reason,
               }}
               onApply={handleDiffApply}
+              onApplyAll={onRequireDiffReviewChange ? handleDiffApplyAll : undefined}
               onReject={handleDiffReject}
               onRequestChanges={handleDiffRequestChanges}
               onOpenChanges={onOpenDiff ? () => onOpenDiff({
@@ -4478,12 +4495,6 @@ This user request requires workspace inspection. Before answering, you MUST call
             </button>
           </div>
         )}
-        {modeFlash && (
-          <div aria-live="polite" className="popover-enter" style={{ display: "flex", alignItems: "center", gap: 7, padding: "0 2px 6px", fontFamily: "var(--font-mono)", fontSize: 11.5, color: modeFlash.tone === "accent" ? "var(--accent)" : modeFlash.tone === "warning" ? "var(--warning)" : "var(--fg-subtle)" }}>
-            <span style={{ letterSpacing: "-1px" }} aria-hidden>{modeFlash.tone === "warning" ? "◌" : "⏵⏵"}</span>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{modeFlash.text}</span>
-          </div>
-        )}
         {/* The run's changed-files outcome lives in the final answer's
             MessageActions row (revert slot) — no standalone strip here. */}
         <div style={{ position: "relative", border: `1px solid ${composerFocused ? "var(--accent)" : "var(--border-strong)"}`, borderRadius: "var(--radius-lg)", background: "var(--bg-elevated)", boxShadow: composerFocused ? "0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), 0 4px 16px rgba(38, 38, 32, 0.08)" : "0 1px 3px rgba(38, 38, 32, 0.05)", transition: "border-color var(--motion-med) var(--ease-out), box-shadow var(--motion-med) var(--ease-out)" }}>
@@ -4631,7 +4642,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                         const active = i === currentRungIdx;
                         return (
                           <button key={rung.key} type="button" role="menuitemradio" aria-checked={active} disabled={disabled}
-                            onClick={() => { if (!disabled) selectRung(rung.mode, rung.review); }}
+                            onClick={() => { if (!disabled) selectRung(rung.mode, rung.review, rung.commands); }}
                             title={disabled ? `${model} cannot use edit tools.` : rung.description}
                             style={{ width: "100%", display: "flex", alignItems: "center", height: 32, padding: "0 10px", border: "none", borderRadius: "var(--radius-sm)", background: "transparent", font: "inherit", fontSize: 13, cursor: disabled ? "default" : "pointer" }}
                             onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "var(--bg-hover)"; }}
@@ -4881,28 +4892,46 @@ This user request requires workspace inspection. Before answering, you MUST call
               {displayedBranch}
             </span>
           ) : null}
-          <button
-            type="button"
-            className="klide-ai-accept-modification"
-            onClick={() => {
-              if (!acceptanceMode) return;
-              void (
+          {/* The auto rungs stay announced after the + menu's flash fades —
+              silencing a review gate is a state the panel wears, and this foot
+              bar is where the conversation's standing facts live. */}
+          {effectiveMode === "goal" && !requireDiffReview && (
+            <span
+              className="klide-ai-mode-note"
+              title={
+                autoApproveCommands
+                  ? "Full auto: edits apply and shell commands run without asking. Pick another rung in the + menu to bring the prompts back."
+                  : "Auto-accept: edits apply without a prompt (still checkpointed). Commands still ask."
+              }
+            >
+              {autoApproveCommands ? "full auto" : "auto-accept edits"}
+            </span>
+          )}
+          {/* Only while there is something to act on. The idle placeholder
+              used to sit here disabled, permanently saying "Accept
+              modification" — which read as a review-mode promise even in the
+              auto rungs, not as the dormant action it was. */}
+          {acceptanceMode && (
+            <button
+              type="button"
+              className="klide-ai-accept-modification"
+              onClick={() => {
+                void (
+                  acceptanceMode === "pending-diff"
+                    ? handleDiffApply()
+                    : acceptThisRunChanges()
+                );
+              }}
+              disabled={reverting || acceptingChanges}
+              title={
                 acceptanceMode === "pending-diff"
-                  ? handleDiffApply()
-                  : acceptThisRunChanges()
-              );
-            }}
-            disabled={!acceptanceMode || reverting || acceptingChanges}
-            title={
-              acceptanceMode === "pending-diff"
-                ? `Apply the proposed modification to ${pendingDiff?.path ?? "this file"}`
-                : acceptanceMode === "applied-run"
-                  ? `Keep ${revertableFiles} modified file${revertableFiles === 1 ? "" : "s"} and dismiss the rollback shortcut`
-                  : "No modifications to accept"
-            }
-          >
-            {acceptingChanges ? "Accepting…" : "Accept modification"}
-          </button>
+                  ? `Apply the proposed modification to ${pendingDiff?.path ?? "this file"}`
+                  : `Keep ${revertableFiles} modified file${revertableFiles === 1 ? "" : "s"} and dismiss the rollback shortcut`
+              }
+            >
+              {acceptingChanges ? "Accepting…" : "Accept modification"}
+            </button>
+          )}
         </div>
       </div>
       )}

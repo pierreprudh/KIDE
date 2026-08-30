@@ -145,6 +145,8 @@ type Props = {
   onContextWindowChange: (window: number | undefined) => void;
   requireDiffReview: boolean;
   onRequireDiffReviewChange: (required: boolean) => void;
+  autoApproveCommands: boolean;
+  onAutoApproveCommandsChange: (enabled: boolean) => void;
 };
 
 function basename(path: string): string {
@@ -204,6 +206,8 @@ export function FocusMode({
   onContextWindowChange,
   requireDiffReview,
   onRequireDiffReviewChange,
+  autoApproveCommands,
+  onAutoApproveCommandsChange,
 }: Props) {
   // Conversation groups + the hero footer name self-hosted endpoints through
   // providerName(); subscribing keeps those labels live across a rename.
@@ -279,6 +283,8 @@ export function FocusMode({
       onContextWindowChange,
       requireDiffReview,
       onRequireDiffReviewChange,
+      autoApproveCommands,
+      onAutoApproveCommandsChange,
       onOpenSettingsSection,
     }),
     [
@@ -293,6 +299,8 @@ export function FocusMode({
       onContextWindowChange,
       requireDiffReview,
       onRequireDiffReviewChange,
+      autoApproveCommands,
+      onAutoApproveCommandsChange,
       onOpenSettingsSection,
     ]
   );
@@ -1310,8 +1318,10 @@ function FocusAddMenu({
   supportsTools,
   providerDelegatesWork,
   requireDiffReview,
+  autoApproveCommands,
   onModeChange,
   onRequireDiffReviewChange,
+  onAutoApproveCommandsChange,
   onAddFile,
   canAttachFiles,
   supportsVision,
@@ -1324,8 +1334,10 @@ function FocusAddMenu({
    *  tool-support probe Klide runs for wire providers. */
   providerDelegatesWork: boolean;
   requireDiffReview: boolean;
+  autoApproveCommands: boolean;
   onModeChange: (mode: AgentMode) => void;
   onRequireDiffReviewChange: (required: boolean) => void;
+  onAutoApproveCommandsChange: (enabled: boolean) => void;
   onAddFile: (path: string) => void;
   /** False for a delegate CLI, which takes text on its stdin and nothing else. */
   canAttachFiles: boolean;
@@ -1404,7 +1416,7 @@ function FocusAddMenu({
     providerDelegatesWork,
   });
   const activeKey = effectiveMode === "goal"
-    ? requireDiffReview ? "goal-review" : "goal-auto"
+    ? requireDiffReview ? "goal-review" : autoApproveCommands ? "goal-full" : "goal-auto"
     : effectiveMode;
   const matchingFiles = (files ?? [])
     .filter((path) => !fileQuery || isSubsequence(fileQuery, path))
@@ -1537,6 +1549,9 @@ function FocusAddMenu({
                       if (choice.mode === "goal" && choice.review !== null) {
                         onRequireDiffReviewChange(choice.review);
                       }
+                      if (choice.mode === "goal" && choice.commands !== null) {
+                        onAutoApproveCommandsChange(choice.commands);
+                      }
                       close();
                     }}
                   >
@@ -1575,6 +1590,10 @@ export type FocusComposerControls = {
   onContextWindowChange: (window: number | undefined) => void;
   requireDiffReview: boolean;
   onRequireDiffReviewChange: (required: boolean) => void;
+  /** The full-auto rung's command half: shell commands run without a
+   *  permission prompt. Per-conversation and never persisted. */
+  autoApproveCommands: boolean;
+  onAutoApproveCommandsChange: (enabled: boolean) => void;
   onOpenSettingsSection: (section: string) => void;
 };
 
@@ -1607,6 +1626,8 @@ function FocusComposer({
     onContextWindowChange,
     requireDiffReview,
     onRequireDiffReviewChange,
+    autoApproveCommands,
+    onAutoApproveCommandsChange,
     onOpenSettingsSection,
   } = controls;
   const [draft, setDraft] = useState("");
@@ -1847,8 +1868,10 @@ function FocusComposer({
               supportsTools={supportsTools}
               providerDelegatesWork={isDelegateProvider(provider)}
               requireDiffReview={requireDiffReview}
+              autoApproveCommands={autoApproveCommands}
               onModeChange={selectAgentMode}
               onRequireDiffReviewChange={onRequireDiffReviewChange}
+              onAutoApproveCommandsChange={onAutoApproveCommandsChange}
               onAddFile={addFile}
               canAttachFiles={canAttachFiles}
               supportsVision={supportsVision}

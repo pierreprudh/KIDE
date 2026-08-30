@@ -115,6 +115,12 @@ Rejected commands are remembered for the current Run. If the model proposes the
 same command/cwd again, the Harness auto-declines and tells the model to take a
 different approach.
 
+The full-auto rung (`autoApproveCommands: true` on the run request) silences
+the command gate for that Run: commands execute as if allowlisted, including
+over a remembered rejection — escalating the rung is the override. It is chosen
+per conversation, never persisted, and does not extend to network targets,
+headless Mission attempts, or spawned subagent runs.
+
 The project allowlist remains backward-compatible with `commands: string[]` and
 also accepts `rules: [{ "pattern": "cargo test *" }]`. Wildcard rules do not
 silently approve commands that introduce new outside-Workspace absolute paths;
@@ -137,6 +143,13 @@ all remaining checkpoints for a Run.
 Rejected edits are remembered by `<path>::<new_hash>` for the current Run. If
 the model proposes the same resulting file contents again, the Harness
 auto-declines.
+
+An apply decision may carry `scope: "run"` ("Validate all"): the edit applies
+and every later edit of the live Run auto-applies without pausing — the mid-run
+counterpart of starting the Run with `requireDiffReview: false`, and one-way
+for the Run's life. The surface flips its rung to auto-accept alongside, so
+later turns arrive already reviewing nothing. Auto-applied edits still emit
+`DiffProposed` and write checkpoints.
 
 ## Dynamic Tool Config
 

@@ -888,6 +888,10 @@ fn start_request_for(
         test_after_edit_command: None,
         command_allowlist: vec![],
         require_diff_review: Some(dispatch.require_diff_review),
+        // Mission attempts keep the command permission gate: its pauses have
+        // durable supervisor state, and approval froze a diff-review policy,
+        // not command trust.
+        auto_approve_commands: None,
         parent_id: None,
         mission_id: Some(bundle.mission.id.clone()),
         mission_task_id: Some(task.id.clone()),

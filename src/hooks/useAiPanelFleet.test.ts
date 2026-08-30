@@ -118,6 +118,7 @@ describe("AI panel fleet reducer", () => {
       pendingContinuation: null,
       modelsByPanel: { "ai-a": ["llama3.1:8b"], "ai-b": ["qwen2.5:7b"] },
       reviewOverrideByPanel: { "ai-a": false },
+      commandsOverrideByPanel: { "ai-a": true },
       isolatedStartByPanel: { "ai-a": { text: "go", attachments: [] } },
       seatByPanel: { "ai-a": 2, "ai-b": 1 },
     };
@@ -132,6 +133,7 @@ describe("AI panel fleet reducer", () => {
     // The settings maps live in the fleet precisely so a close clears them.
     expect(closed.modelsByPanel).toEqual({ "ai-b": ["qwen2.5:7b"] });
     expect(closed.reviewOverrideByPanel).toEqual({});
+    expect(closed.commandsOverrideByPanel).toEqual({});
     expect(closed.isolatedStartByPanel).toEqual({});
     expect(closed.seatByPanel).toEqual({ "ai-b": 1 });
   });

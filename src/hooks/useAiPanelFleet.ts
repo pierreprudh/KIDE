@@ -30,6 +30,10 @@ export type AiPanelFleetState = {
    *  panel must leave no map entry behind. */
   modelsByPanel: Record<string, string[]>;
   reviewOverrideByPanel: Record<string, boolean>;
+  /** The full-auto rung's command half. Deliberately in-memory with no global
+   *  default: silencing the command gate is opted into per conversation and
+   *  reverts to prompting on reload. */
+  commandsOverrideByPanel: Record<string, boolean>;
   isolatedStartByPanel: Record<string, IsolatedRunStart>;
   /** How many times a panel has been reseated — reused by a one-slot surface
    *  for a new admission. It is the remount lever: `conversationSessionKey`
@@ -47,6 +51,7 @@ export const initialAiPanelFleetState: AiPanelFleetState = {
   pendingContinuation: null,
   modelsByPanel: {},
   reviewOverrideByPanel: {},
+  commandsOverrideByPanel: {},
   isolatedStartByPanel: {},
   seatByPanel: {},
 };
@@ -74,6 +79,7 @@ export type AiPanelFleetAction =
   | { type: "race-watch-cleared" }
   | { type: "panel-models-reported"; panelId: string; models: string[] }
   | { type: "review-override-set"; panelId: string; required: boolean }
+  | { type: "commands-override-set"; panelId: string; enabled: boolean }
   | { type: "isolated-start-queued"; panelId: string; start: IsolatedRunStart }
   | { type: "isolated-start-consumed"; panelId: string }
   | { type: "seat-bumped"; panelId: string };
@@ -193,6 +199,7 @@ export function aiPanelFleetReducer(
         followUpsByPanel: omitPanel(state.followUpsByPanel, action.panelId),
         modelsByPanel: omitPanel(state.modelsByPanel, action.panelId),
         reviewOverrideByPanel: omitPanel(state.reviewOverrideByPanel, action.panelId),
+        commandsOverrideByPanel: omitPanel(state.commandsOverrideByPanel, action.panelId),
         isolatedStartByPanel: omitPanel(state.isolatedStartByPanel, action.panelId),
         seatByPanel: omitPanel(state.seatByPanel, action.panelId),
       };
@@ -223,6 +230,14 @@ export function aiPanelFleetReducer(
         reviewOverrideByPanel: {
           ...state.reviewOverrideByPanel,
           [action.panelId]: action.required,
+        },
+      };
+    case "commands-override-set":
+      return {
+        ...state,
+        commandsOverrideByPanel: {
+          ...state.commandsOverrideByPanel,
+          [action.panelId]: action.enabled,
         },
       };
     case "isolated-start-queued":
@@ -619,6 +634,8 @@ export function useAiPanelFleet(deps: AiPanelFleetDeps) {
       dispatch({ type: "panel-models-reported", panelId, models }),
     setPanelReviewOverride: (panelId: string, required: boolean) =>
       dispatch({ type: "review-override-set", panelId, required }),
+    setPanelCommandsOverride: (panelId: string, enabled: boolean) =>
+      dispatch({ type: "commands-override-set", panelId, enabled }),
     queueIsolatedStart: (panelId: string, start: IsolatedRunStart) =>
       dispatch({ type: "isolated-start-queued", panelId, start }),
     consumeIsolatedStart: (panelId: string) =>

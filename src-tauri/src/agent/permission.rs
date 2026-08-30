@@ -49,6 +49,11 @@ pub struct TrustMemory {
     /// never remembered across proposals — only a rejection sticks, so one
     /// "Reject" stops the byte-identical re-proposal.
     rejected_edits: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// "Validate all" from the diff card: every later edit this run applies
+    /// without pausing — the mid-run counterpart of starting the run with
+    /// `require_diff_review: false`. One-way for the run's life; the surface
+    /// flips its rung alongside so later turns arrive already auto-accepting.
+    edits_auto_apply: std::sync::atomic::AtomicBool,
 }
 
 impl TrustMemory {
@@ -92,6 +97,16 @@ impl TrustMemory {
             .unwrap()
             .insert(edit_key.to_string());
     }
+
+    pub fn edits_auto_applied(&self) -> bool {
+        self.edits_auto_apply
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn remember_edits_auto_apply(&self) {
+        self.edits_auto_apply
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Was this exact edit (path + resulting content hash) already rejected this
@@ -105,6 +120,16 @@ pub fn remember_write_rejection(ctx: &ToolCtx<'_>, edit_key: &str) {
     with_run_handle(ctx.sup, ctx.id, |h| {
         h.trust.remember_write_rejection(edit_key)
     });
+}
+
+/// Has "Validate all" been chosen earlier in this run? Later edits then apply
+/// without pausing, exactly as if the run had started with review off.
+pub fn edits_auto_applied(ctx: &ToolCtx<'_>) -> bool {
+    with_run_handle(ctx.sup, ctx.id, |h| h.trust.edits_auto_applied()).unwrap_or(false)
+}
+
+pub fn remember_edits_auto_apply(ctx: &ToolCtx<'_>) {
+    with_run_handle(ctx.sup, ctx.id, |h| h.trust.remember_edits_auto_apply());
 }
 
 /// What the pre-check concluded before any prompt is shown.

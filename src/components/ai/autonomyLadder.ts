@@ -18,6 +18,11 @@ export type AutonomyRung = {
   /** The diff-review policy this rung implies. `null` means "not applicable" —
    *  chat and plan never propose an edit to review. */
   review: boolean | null;
+  /** Whether shell commands also run without a permission prompt. `null` means
+   *  "not applicable" — chat and plan have no command tool. Only the top rung
+   *  sets this true, and it is never persisted: on reload every panel falls
+   *  back to prompting. */
+  commands: boolean | null;
   label: string;
   /** One short clause. Lower-case, no trailing period: it renders as a
    *  subtitle under the label. */
@@ -25,12 +30,13 @@ export type AutonomyRung = {
 };
 
 export const AUTONOMY_RUNGS: AutonomyRung[] = [
-  { key: "chat", mode: "chat", review: null, label: "Chat", description: "no tools" },
-  { key: "plan", mode: "plan", review: null, label: "Plan", description: "read-only, proposes" },
+  { key: "chat", mode: "chat", review: null, commands: null, label: "Chat", description: "no tools" },
+  { key: "plan", mode: "plan", review: null, commands: null, label: "Plan", description: "read-only, proposes" },
   {
     key: "goal-review",
     mode: "goal",
     review: true,
+    commands: false,
     label: "Goal · review",
     description: "approve each edit",
   },
@@ -38,16 +44,32 @@ export const AUTONOMY_RUNGS: AutonomyRung[] = [
     key: "goal-auto",
     mode: "goal",
     review: false,
+    commands: false,
     label: "Goal · auto-accept",
-    description: "applies on its own",
+    description: "edits apply, commands still ask",
+  },
+  {
+    key: "goal-full",
+    mode: "goal",
+    review: false,
+    commands: true,
+    label: "Goal · full auto",
+    description: "edits and commands, no prompts",
   },
 ];
 
-/** Which rung is currently selected. `review` is only consulted for `goal`,
- *  because it is the only Mode that can propose an edit. */
-export function currentRungIndex(mode: AgentMode, requireDiffReview: boolean): number {
+/** Which rung is currently selected. `review` and `commands` are only
+ *  consulted for `goal` — the only Mode that can edit or run a command. */
+export function currentRungIndex(
+  mode: AgentMode,
+  requireDiffReview: boolean,
+  autoApproveCommands = false
+): number {
   const idx = AUTONOMY_RUNGS.findIndex(
-    (r) => r.mode === mode && (r.review === null || r.review === requireDiffReview)
+    (r) =>
+      r.mode === mode &&
+      (r.review === null || r.review === requireDiffReview) &&
+      (r.commands === null || r.commands === autoApproveCommands)
   );
   return idx >= 0 ? idx : 0;
 }

@@ -6150,6 +6150,29 @@ button:focus-visible .menu-leadout {
   opacity: 0.92;
 }
 
+/* The standing autonomy note ("auto-accept edits" / "full auto") — branch-label
+   quiet, but in the accent so a silenced review gate never reads as default. */
+.klide-ai-mode-note {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.55;
+  cursor: default;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.klide-ai-mode-note:hover {
+  opacity: 0.92;
+}
+
 .klide-ai-accept-modification {
   display: inline-flex;
   align-items: center;

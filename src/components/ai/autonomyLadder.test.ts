@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { AUTONOMY_RUNGS, currentRungIndex, effectiveMode } from "./autonomyLadder";
 
 describe("the autonomy ladder", () => {
-  it("offers each Mode capability tier exactly once, plus the two Goal policies", () => {
-    expect(AUTONOMY_RUNGS.map((r) => r.mode)).toEqual(["chat", "plan", "goal", "goal"]);
+  it("offers each Mode capability tier exactly once, plus the three Goal policies", () => {
+    expect(AUTONOMY_RUNGS.map((r) => r.mode)).toEqual(["chat", "plan", "goal", "goal", "goal"]);
     // Only goal distinguishes a review policy — chat and plan never propose an
     // edit, so `review` is not applicable rather than false.
     expect(AUTONOMY_RUNGS.filter((r) => r.review === null).map((r) => r.mode)).toEqual([
@@ -13,6 +13,14 @@ describe("the autonomy ladder", () => {
     expect(AUTONOMY_RUNGS.filter((r) => r.mode === "goal").map((r) => r.review)).toEqual([
       true,
       false,
+      false,
+    ]);
+    // Only the top rung silences the command gate; the two auto rungs differ
+    // in nothing else.
+    expect(AUTONOMY_RUNGS.filter((r) => r.mode === "goal").map((r) => r.commands)).toEqual([
+      false,
+      false,
+      true,
     ]);
   });
 
@@ -32,11 +40,13 @@ describe("currentRungIndex", () => {
     expect(currentRungIndex("plan", false)).toBe(1);
     expect(currentRungIndex("goal", true)).toBe(2);
     expect(currentRungIndex("goal", false)).toBe(3);
+    expect(currentRungIndex("goal", false, true)).toBe(4);
   });
 
   it("ignores the review policy for modes that cannot propose an edit", () => {
     expect(currentRungIndex("chat", false)).toBe(currentRungIndex("chat", true));
     expect(currentRungIndex("plan", false)).toBe(currentRungIndex("plan", true));
+    expect(currentRungIndex("plan", false, true)).toBe(currentRungIndex("plan", false));
   });
 });
 

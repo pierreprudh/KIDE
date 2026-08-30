@@ -466,12 +466,17 @@ where
         .as_ref()
         .map(|rule| rule.exact || preflight.external_paths.is_empty())
         .unwrap_or(false);
+    // The full-auto rung: the user chose to run this conversation's commands
+    // without prompts. Same trust as a project-allowlist hit, but scoped to
+    // the run request — nothing is persisted, and a rejection remembered from
+    // before the user escalated no longer blocks (escalating IS the override).
+    let full_auto = ctx.request.auto_approve_commands == Some(true);
 
     match permission::precheck(
         ctx,
         permission::Capability::Command,
         &approval_key,
-        project_ok,
+        project_ok || full_auto,
     ) {
         permission::Precheck::Execute => {
             return Ok(ToolOutcome::Produced(
@@ -737,10 +742,11 @@ where
 /// up as `Cancelled`.
 /// Parse a resolved diff decision. The channel carries either a bare behavior
 /// string ("apply" / "reject" — also the pause's cancellation default) or the
-/// frontend's full decision JSON `{"behavior": "...", "note": "..."}` where
-/// `note` is the user's review feedback. Tolerates both; unknown shapes read
-/// as a plain rejection.
-pub(super) fn parse_diff_decision(raw: &str) -> (String, Option<String>) {
+/// frontend's full decision JSON `{"behavior": "...", "note": "...", "scope":
+/// "..."}` where `note` is the user's review feedback and `scope: "run"` is
+/// "Validate all" — apply this edit and every later one this run. Tolerates
+/// every shape; unknown shapes read as a plain rejection.
+pub(super) fn parse_diff_decision(raw: &str) -> (String, Option<String>, bool) {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
         if let Some(obj) = value.as_object() {
             let behavior = obj
@@ -754,13 +760,15 @@ pub(super) fn parse_diff_decision(raw: &str) -> (String, Option<String>) {
                 .map(str::trim)
                 .filter(|n| !n.is_empty())
                 .map(str::to_string);
-            return (behavior, note);
+            let apply_all =
+                behavior == "apply" && obj.get("scope").and_then(|s| s.as_str()) == Some("run");
+            return (behavior, note, apply_all);
         }
         if let Some(s) = value.as_str() {
-            return (s.to_string(), None);
+            return (s.to_string(), None, false);
         }
     }
-    (raw.to_string(), None)
+    (raw.to_string(), None, false)
 }
 
 pub(super) async fn process_write_tool<E>(
@@ -799,11 +807,14 @@ Do not propose it again — take a different approach or ask the user what they'
         }));
     }
 
-    // Auto-accept mode (require_diff_review == Some(false)): apply without
-    // pausing. Still emit the proposed diff so the edit stays visible in the
-    // conversation, and the checkpoint written below keeps it revertable —
-    // which is what makes auto-accept safe. Otherwise pause for diff review.
-    let decision = if ctx.request.require_diff_review == Some(false) {
+    // Auto-accept — the run started with review off, or "Validate all" was
+    // chosen at an earlier diff this run: apply without pausing. Still emit
+    // the proposed diff so the edit stays visible in the conversation, and
+    // the checkpoint written below keeps it revertable — which is what makes
+    // auto-accept safe. Otherwise pause for diff review.
+    let decision = if ctx.request.require_diff_review == Some(false)
+        || permission::edits_auto_applied(ctx)
+    {
         emit(AgentEvent::DiffProposed {
             run_id: ctx.id.to_string(),
             proposal: proposal.clone(),
@@ -834,10 +845,19 @@ Do not propose it again — take a different approach or ask the user what they'
         }
     };
 
-    let (behavior, note) = parse_diff_decision(&decision);
+    let (behavior, note, apply_all) = parse_diff_decision(&decision);
+    // "Validate all": this approval covers every later edit of the run, so the
+    // next proposal auto-applies instead of pausing. Recorded before the event
+    // so the transcript's decision says what was actually granted.
+    if apply_all {
+        permission::remember_edits_auto_apply(ctx);
+    }
     let mut decision_obj = serde_json::json!({ "behavior": behavior });
     if let Some(n) = &note {
         decision_obj["note"] = serde_json::json!(n);
+    }
+    if apply_all {
+        decision_obj["scope"] = serde_json::json!("run");
     }
     emit(AgentEvent::DiffResolved {
         run_id: ctx.id.to_string(),

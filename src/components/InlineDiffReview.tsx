@@ -14,6 +14,10 @@ export type PendingEdit = {
 type Props = {
   edit: PendingEdit;
   onApply: () => void;
+  /** "Validate all": apply this edit and stop asking — the harness auto-applies
+   *  the rest of the run's edits and the conversation's rung flips to
+   *  auto-accept. Omit to hide the control (no rung to flip). */
+  onApplyAll?: () => void;
   onReject: () => void;
   /** "Request changes": reject with review feedback attached — the harness
    *  hands the note to the model so it revises the edit instead of dropping
@@ -131,7 +135,7 @@ function BareAction({
  *  ✗ cancel / ✓ validate / ⤢ open-changes on the right (the Image-#4 sketch).
  *  Folded by default; "open changes" expands the description + line-numbered
  *  diff in place. Lives inline under the message that proposed the edit. */
-export function InlineDiffReview({ edit, onApply, onReject, onRequestChanges, onOpenChanges }: Props) {
+export function InlineDiffReview({ edit, onApply, onApplyAll, onReject, onRequestChanges, onOpenChanges }: Props) {
   const { rows, added, removed } = useMemo(
     () => buildRows(edit.oldContent, edit.newContent),
     [edit.oldContent, edit.newContent]
@@ -226,6 +230,14 @@ export function InlineDiffReview({ edit, onApply, onReject, onRequestChanges, on
               <path d="M20 6 9 17l-5-5" />
             </svg>
           </BareAction>
+          {onApplyAll && (
+            <BareAction label="Validate all — auto-accept the rest of this conversation's edits" tone="accent" onClick={onApplyAll}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6 7 17l-4-4" />
+                <path d="m22 10-7.5 7.5L13 16" />
+              </svg>
+            </BareAction>
+          )}
           <BareAction
             label={onOpenChanges ? "Open changes in editor" : expanded ? "Hide changes" : "Open changes"}
             tone="neutral"

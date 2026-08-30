@@ -144,7 +144,10 @@ export type DiffProposal = {
 };
 
 export type DiffDecision =
-  | { behavior: "apply" }
+  /** `scope: "run"` is "Validate all": apply this edit AND auto-apply every
+   *  later edit of the live run (the harness remembers it on the run handle;
+   *  the panel flips its rung so later turns follow). */
+  | { behavior: "apply"; scope?: "run" }
   /** `note` is the user's review feedback ("request changes") — the harness
    *  folds it into the rejection tool result so the model revises toward it
    *  instead of abandoning course. */
@@ -339,6 +342,11 @@ export type StartAgentRunInput = {
   /** Whether file edits pause for diff review. Omit/true = review every edit;
    *  false = auto-accept (edits apply without a prompt; still checkpointed). */
   requireDiffReview?: boolean;
+  /** Whether shell commands skip the permission gate. Omit/false keeps the
+   *  normal gate (run-scoped approvals + project allowlist); true is the
+   *  full-auto rung — commands run as if allowlisted. Network requests still
+   *  prompt. Per-conversation, never persisted. */
+  autoApproveCommands?: boolean;
   /** Optional command to run after an accepted edit/create. */
   testAfterEditCommand?: string;
   /** When this run is a spawned sub-agent, the parent run's id. */
