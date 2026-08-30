@@ -618,7 +618,8 @@ function formatDuration(ms: number): string {
 
 // Quiet per-message stats — centered under the answer, barely-there by
 // default, full strength on hover (see .klide-msg-meta in tokens.css).
-// Order: tok/s · tokens · time · total · TTFT.
+// Order: tok/s, tokens, time, total, TTFT — spacing alone separates the
+// parts; every one is self-labeled, so a glyph between them is noise.
 function MessageMeta({ meta }: { meta: { ms?: number; modelMs?: number; tokens?: number; promptTokens?: number; ttftMs?: number; tps?: number; exact?: boolean; costUsd?: number } }) {
   const parts: string[] = [];
   if (meta.tps) parts.push(`${meta.tps} tok/s`);
@@ -644,7 +645,7 @@ function MessageMeta({ meta }: { meta: { ms?: number; modelMs?: number; tokens?:
         marginTop: 6,
         display: "flex",
         justifyContent: "center",
-        gap: 10,
+        gap: 14,
         fontSize: 10,
         fontFamily: "var(--font-mono)",
         color: "var(--fg-dim)",
@@ -653,10 +654,7 @@ function MessageMeta({ meta }: { meta: { ms?: number; modelMs?: number; tokens?:
       }}
     >
       {parts.map((p, i) => (
-        <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-          {i > 0 && <span aria-hidden style={{ opacity: 0.5 }}>·</span>}
-          {p}
-        </span>
+        <span key={i}>{p}</span>
       ))}
     </div>
   );
