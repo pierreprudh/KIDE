@@ -73,6 +73,27 @@ describe("running conversations", () => {
     expect([...getRunningConversationIds()]).toEqual(["run-live"]);
   });
 
+  it("confirms a run whose Rust registration lags the panel's first publish", async () => {
+    // The panel publishes "running" the moment its send begins — before
+    // `agent_start_run` has round-tripped — so the first status ask races the
+    // registration and answers null while the run is real. The confirmation
+    // retries instead of writing the run off for the whole turn.
+    invokeMock.mockResolvedValueOnce(null).mockResolvedValue("running");
+
+    const { subscribeRunningConversations, getRunningConversationIds } = await load();
+    subscribeRunningConversations(() => {});
+    await publish("run-late", "running");
+    await settled();
+    expect([...getRunningConversationIds()]).toEqual([]);
+
+    await vi.waitFor(
+      () => {
+        expect([...getRunningConversationIds()]).toEqual(["run-late"]);
+      },
+      { timeout: 1500 },
+    );
+  });
+
   it("does not trust a 'running' row the harness has already finished", async () => {
     // The exact shape a panel unmounted mid-run leaves behind: the last
     // snapshot it wrote says running, the run settled afterwards, and nothing

@@ -11,7 +11,8 @@
 // localStorage forever, even after the harness settles. So the store only
 // *nominates* candidates — Rust is asked for the truth (`agent_run_status`),
 // and each confirmed run is then followed on its global `agent-run:{id}`
-// stream until it emits a terminal event. Nothing polls.
+// stream until it emits a terminal event. Confirmed runs are never polled;
+// only the confirmation itself retries (see CONFIRM_RETRY_MS).
 //
 // One watcher set is shared by every subscriber: rows ask about their own id,
 // not for the whole set, so a rail of forty conversations still runs one
@@ -56,14 +57,39 @@ function markSettled(id: string) {
   emit(next);
 }
 
+// The panel flips its streaming flag — and publishes "running" — the moment a
+// send begins, which is before `agent_start_run` has round-tripped and
+// registered the run in Rust. The first ask therefore races a real run and can
+// answer "not tracking"; without a second ask the marker would stay hidden for
+// the whole turn (a plain streamed answer never republishes, so reconcile
+// never came back). A short bounded ladder covers the registration gap without
+// turning the confirmation into an open-ended poll: a nomination that is still
+// unconfirmed after the last rung really is stale (a panel unmounted mid-run,
+// a Delegate PTY with no Harness Run) and stays off the rail.
+const CONFIRM_RETRY_MS = [200, 500, 1000, 2000];
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function isNominated(id: string): boolean {
+  return getKlideConvos().some((c) => c.id === id && c.status === "running");
+}
+
 async function confirmAndFollow(id: string) {
   if (watched.has(id) || confirming.has(id)) return;
   confirming.add(id);
   try {
-    // Delegate conversations are PTY-driven and have no Harness Run, so the
-    // supervisor answers null for them — same as a settled run it has evicted.
-    const status = await getAgentRunStatus(id).catch(() => null);
-    if (!isActiveRunStatus(status)) return;
+    for (let attempt = 0; ; attempt += 1) {
+      // Delegate conversations are PTY-driven and have no Harness Run, so the
+      // supervisor answers null for them — same as a settled run it has
+      // evicted.
+      const status = await getAgentRunStatus(id).catch(() => null);
+      if (isActiveRunStatus(status)) break;
+      const delay = CONFIRM_RETRY_MS[attempt];
+      if (delay === undefined) return;
+      await sleep(delay);
+      // The run may have settled (or the row been deleted) while we waited.
+      if (!isNominated(id)) return;
+    }
     // `fromSeq: 0` — we want the terminal event, not a replay; the payload is
     // ignored, only `done` matters.
     const watch = await reattachAgentRun(id, 0, () => {});
