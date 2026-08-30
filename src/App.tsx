@@ -49,6 +49,7 @@ import {
 import { eventsToConversation, runMessagesToMsgs } from "./components/ai/replayConversation";
 import {
   CONVERSATIONS_CHANGED_EVENT,
+  PANEL_BINDINGS_CHANGED_EVENT,
   loadConversations,
   loadPanelSession,
 } from "./components/ai/storedConversations";
@@ -511,22 +512,42 @@ function App() {
   useEffect(() => {
     const read = () => {
       const stored = loadConversations<Conversation>();
+      // An empty fleet still renders the default slot (Focus's primary pane,
+      // the anchored workbench's AI panel), so its binding must still count.
+      const panelIds =
+        aiPanels.length > 0 ? aiPanels.map((p) => p.id) : [DEFAULT_AI_PANEL_ID];
       setOpenConversations(
-        aiPanels.flatMap((panel) => {
-          const convoId = loadPanelSession(panel.id)?.convoId;
+        panelIds.flatMap((panelId) => {
+          const convoId = loadPanelSession(panelId)?.convoId;
           if (!convoId) return [];
           const convo = stored.find((c) => c.id === convoId);
           // A session pointing at a pruned conversation is not something to
           // show — the panel is showing an empty chat, and so should the rail.
           if (!convo) return [];
-          return [{ panelId: panel.id, convoId, title: convo.title || "Untitled" }];
+          return [{ panelId, convoId, title: convo.title || "Untitled" }];
         }),
       );
     };
     read();
     window.addEventListener(CONVERSATIONS_CHANGED_EVENT, read);
-    return () => window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, read);
+    // A resume into a panel rebinds it without touching the conversation
+    // index, so the bindings' own event is what keeps the rail's marks live.
+    window.addEventListener(PANEL_BINDINGS_CHANGED_EVENT, read);
+    return () => {
+      window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, read);
+      window.removeEventListener(PANEL_BINDINGS_CHANGED_EVENT, read);
+    };
   }, [aiPanels]);
+  // The rail's "you are here" row — the focused panel's conversation, falling
+  // back to the primary slot. One derivation for both rails: the workbench's
+  // and Focus's draw the same history tree, and with two conversations up
+  // (Focus split, floating panels) they must agree on which one is selected
+  // and which are merely open.
+  const railActiveConversationId =
+    openConversations.find((c) => c.panelId === focusedPanel)?.convoId ??
+    openConversations.find((c) => c.panelId === primaryPanelId)?.convoId ??
+    openConversations[0]?.convoId ??
+    null;
 
   const [skills, setSkills] = useState<Skill[]>(() => loadSkills());
 
@@ -1365,6 +1386,13 @@ function App() {
     const previewing = focusConversationDrag && !splitPanel;
     const opened = splitPanel !== undefined && focusSplitShown;
     const primaryBasis = opened || previewing ? focusSplitRatio * 100 : 100;
+    // Clicking into a half is selecting it. The rail's accent route follows
+    // `focusedPanel`, and with two conversations up it must mean the one you
+    // are actually in — admission alone would leave it stuck on whichever half
+    // opened last. Capture-phase so the composer/scroll clicks inside count.
+    const engageFocusPane = (panelId: string) => {
+      if (focusedPanel !== panelId) focusPanel(panelId);
+    };
     return (
       <div
         ref={focusSplitRowRef}
@@ -1377,6 +1405,7 @@ function App() {
           className="klide-focus-split-pane"
           data-drop-target={focusDropTarget === "primary" || undefined}
           style={{ flexBasis: `${primaryBasis}%` }}
+          onMouseDownCapture={() => engageFocusPane(primaryPanelId)}
           {...(splitPanel ? focusPaneDropProps("primary") : {})}
         >
           {renderPanel("ai", "focus-ai", { aiVariant: "focus" })}
@@ -1424,6 +1453,7 @@ function App() {
               data-drop-target={focusDropTarget === "split" || undefined}
               data-shown={opened || undefined}
               style={{ flexBasis: `${opened ? (1 - focusSplitRatio) * 100 : 0}%` }}
+              onMouseDownCapture={() => engageFocusPane(splitPanel.id)}
               {...focusPaneDropProps("split")}
             >
               {renderAiPanel(splitPanel, {
@@ -2713,12 +2743,7 @@ function App() {
               /* The focused panel's conversation is the one you are looking
                  at, so it takes the tree's active route; the rest are marked
                  as merely open. */
-              selectedConversationId={
-                openConversations.find((c) => c.panelId === focusedPanel)?.convoId ??
-                openConversations.find((c) => c.panelId === primaryPanelId)?.convoId ??
-                openConversations[0]?.convoId ??
-                null
-              }
+              selectedConversationId={railActiveConversationId}
               openConversationIds={openConversations.map((c) => c.convoId)}
               onSwitchProject={changeRoot}
               onOpenConversation={openConversationInAiPanel}
@@ -2827,6 +2852,11 @@ function App() {
                     : ""}
                   projects={recentFolders}
                   chatActive={focusChatActive}
+                  /* What the canvas panes actually hold, so the rail can mark
+                     both halves of a split — the focused one selected, the
+                     other merely open. Same derivation as the workbench rail. */
+                  activeConversationId={railActiveConversationId}
+                  openConversationIds={openConversations.map((c) => c.convoId)}
                   onSwitchProject={(root) => {
                     endFocusRaceWatch();
                     setFocusChatActive(false);

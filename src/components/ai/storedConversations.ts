@@ -336,12 +336,24 @@ export function loadPanelSession(panelId: string): PanelSession | null {
   }
 }
 
+/** Fired in this window when a panel↔conversation binding is written. The
+ *  native `storage` event never fires in the writing window, and the rail's
+ *  selected/open marks are derived from these bindings — without a signal they
+ *  only refresh when the conversation *index* happens to change, which a
+ *  resume into a panel does not do. Bindings are written on identity
+ *  transitions only (fresh/resume/branch/provider/run start), so this is a
+ *  rare event, not a per-message one. */
+export const PANEL_BINDINGS_CHANGED_EVENT = "klide:panel-bindings-changed";
+
 export function savePanelSession(panelId: string, session: PanelSession) {
   try {
     localStorage.setItem(
       PANEL_SESSION_PREFIX + panelId,
       JSON.stringify(session)
     );
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(PANEL_BINDINGS_CHANGED_EVENT));
+    }
   } catch {
     /* storage full or unavailable */
   }

@@ -92,6 +92,13 @@ type Props = {
   onNewChat: () => void;
   /** Resume a saved conversation in the same live Focus chat surface. */
   onOpenConversation: (convo: Conversation) => void;
+  /** The conversation the canvas is actually showing — with a split, the
+   *  focused half's. The host derives it from its panel bindings, so it stays
+   *  right however the conversation arrived (rail click, hero card, drop). */
+  activeConversationId?: string | null;
+  /** Every conversation a canvas pane holds right now. One id normally, two
+   *  with a split open — the rail marks the non-selected ones as open. */
+  openConversationIds?: string[];
   onSubmit: (text: string, attachments: Attachment[]) => void;
   onOpenMissionControl: () => void;
   /** The rail's shared destinations — the same handler the free-mode activity
@@ -170,6 +177,8 @@ export function FocusMode({
   onSwitchProject,
   onNewChat,
   onOpenConversation,
+  activeConversationId,
+  openConversationIds,
   onSubmit,
   onOpenMissionControl,
   onOpenPanel,
@@ -292,6 +301,16 @@ export function FocusMode({
     setConversationOpenError(null);
   }
 
+  // What the rail highlights. While a chat is up, the host's panel bindings
+  // are the truth — they follow a drop into the split and a new split's focus,
+  // which the local click state cannot see. The local state still covers the
+  // "conversation unavailable" apology (that row stays selected) and the
+  // moment between a rail click and the panel binding catching up.
+  const railSelectedConversationId =
+    chatActive && !conversationOpenError
+      ? activeConversationId ?? selectedConversationId
+      : selectedConversationId;
+
   /** Open a conversation from the hero's resume cards. The rail resolves its
    *  own rows; this is the same guard for the cards, which read the same
    *  possibly-stale snapshot. */
@@ -371,7 +390,10 @@ export function FocusMode({
         projects={projects}
         nav={nav}
         activeProvider={provider}
-        selectedConversationId={selectedConversationId}
+        selectedConversationId={railSelectedConversationId}
+        /* Only while the canvas is showing them — on the hero home nothing is
+           open on screen, whatever sessions the panels still hold. */
+        openConversationIds={chatActive ? openConversationIds : undefined}
         onSwitchProject={onSwitchProject}
         onOpenConversation={(convo) => {
           setSelectedConversationId(convo.id);
