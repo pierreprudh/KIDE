@@ -80,6 +80,13 @@ export type Msg =
       steering?: {
         reason: string;
       };
+      /** Set when this system message reports the run's terminal failure, so
+       *  the chat renders it as a centered hairline row (the same family as
+       *  the "Starting {provider} local server…" line) instead of a text blob.
+       *  `content` keeps a plain-text fallback (serialization, search). */
+      runError?: {
+        message: string;
+      };
     }
   | {
       role: "tool";

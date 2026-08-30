@@ -99,7 +99,7 @@ import { addMemoryDraft } from "../memoryDrafts";
 import { writeMemory } from "../memory";
 import { isSilentRunError, replayForAdoption, shouldHealFromTranscript } from "./ai/replayConversation";
 import { createTurnDriver } from "./ai/turnDriver";
-import { decideOnLeavingRun, type RunLeaveDecision } from "./ai/leavingRun";
+import { decideOnLeavingRun, shouldReadoptConversation, type RunLeaveDecision } from "./ai/leavingRun";
 import { compactionMsg, extractAssistantText } from "../agent/foldEvents";
 import { pendingGatesFromEvents } from "../agent/pendingGates";
 import {
@@ -2421,6 +2421,20 @@ This user request requires workspace inspection. Before answering, you MUST call
 
   function loadConversation(c: Conversation) {
     setHistoryOpen(false);
+    // Re-selecting the thread already on screen while its run is streaming
+    // here must not re-adopt it: detaching would drop the one channel that
+    // carries token deltas (the reattach broadcast is structural events
+    // only), freezing the view between tool calls until whole messages land.
+    // The click asked for exactly what is showing — jump to the tail and out.
+    if (
+      !shouldReadoptConversation({
+        sameConversation: c.id === conversationSessionRef.current.conversationId,
+        followingLiveRun: activeHarnessRunRef.current !== null,
+      })
+    ) {
+      forceStickToBottom();
+      return;
+    }
     // Opening another thread used to abort whatever this one was running —
     // clicking a sibling row in the rail silently killed a working agent. The
     // run is left alone now; only this panel's subscription to it ends.
@@ -4084,6 +4098,17 @@ This user request requires workspace inspection. Before answering, you MUST call
           if (m.role === "system" && m.steering) {
             return (
               <div key={i} className="ai-msg-in" style={{ margin: "8px 0 8px 32px" }}>
+                {renderMessageBody(m)}
+              </div>
+            );
+          }
+
+          // Run-failure marker: a terminal event, not an assistant utterance —
+          // rendered as its own centered hairline row (the local-server
+          // starting line's family), full width, no gutter.
+          if (m.role === "system" && m.runError) {
+            return (
+              <div key={i} className="ai-msg-in" style={{ display: "flex", justifyContent: "center", margin: "16px 0 10px" }}>
                 {renderMessageBody(m)}
               </div>
             );

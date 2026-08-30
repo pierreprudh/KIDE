@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideOnLeavingRun } from "./leavingRun";
+import { decideOnLeavingRun, shouldReadoptConversation } from "./leavingRun";
 
 describe("leaving a conversation with a run in it", () => {
   it("leaves a working run alone", () => {
@@ -20,5 +20,34 @@ describe("leaving a conversation with a run in it", () => {
       abort: false,
       settle: true,
     });
+  });
+});
+
+describe("arriving at a conversation", () => {
+  it("refuses to re-adopt the thread already streaming on screen", () => {
+    // The regression this rule exists for: clicking the row of the very
+    // conversation you were watching dropped the token-delta channel, and the
+    // reattach broadcast only replays structural events — the view went from
+    // streaming to frozen-between-tool-calls for a click that changed nothing.
+    expect(
+      shouldReadoptConversation({ sameConversation: true, followingLiveRun: true }),
+    ).toBe(false);
+  });
+
+  it("re-adopts the same thread when the panel is no longer following its run", () => {
+    // A detached view (walked away and back, or the view fell behind) has a
+    // stale transcript on screen; re-adopting is how it catches up.
+    expect(
+      shouldReadoptConversation({ sameConversation: true, followingLiveRun: false }),
+    ).toBe(true);
+  });
+
+  it("always adopts a different thread, streaming or not", () => {
+    expect(
+      shouldReadoptConversation({ sameConversation: false, followingLiveRun: true }),
+    ).toBe(true);
+    expect(
+      shouldReadoptConversation({ sameConversation: false, followingLiveRun: false }),
+    ).toBe(true);
   });
 });
