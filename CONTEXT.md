@@ -34,6 +34,13 @@ _Avoid_: implementation notes, rough docs
 The capability tier of a run — `chat` (no tools), `plan` (read-only tools), `goal` (full tools). Decided when the run starts.
 _Avoid_: agent type, permission level
 
+**Goal policy**:
+What a `goal` run does with its two review gates — `review` (every edit pauses,
+commands ask), `auto` (edits apply, still checkpointed; commands ask), `full`
+(edits and commands, no prompts). Chosen per conversation from the foot bar,
+stamped onto each run request, never persisted — a reload reverts to prompting.
+_Avoid_: autonomy level, trust mode, rung (the ladder is gone)
+
 **Tool**:
 A workspace-rooted capability the model can call during a run (read_file, grep, write_file…). Defined by a schema and an execution, which belong together.
 _Avoid_: function, action

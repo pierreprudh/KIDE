@@ -180,7 +180,7 @@ Klide/
 │   │       ├── turnDriver.ts      Streaming state machine for one turn
 │   │       ├── conversationSession.ts Atomic live Conversation identity
 │   │       ├── contextBudget.ts   Context-window accounting + auto-compaction threshold
-│   │       ├── autonomyLadder.ts  The four rungs of Mode × diff-review policy
+│   │       ├── autonomyLadder.ts  Mode choices + the Goal policy cycle (review/auto/full)
 │   │       ├── panelHost.ts       App↔AiPanel contract — identity, handoffs, resume policy
 │   │       ├── workspaceFiles.ts  Bounded file walk for @mentions
 │   │       ├── summarize.ts       Summarize-and-handoff + auto-skill detect
@@ -447,7 +447,7 @@ enforce wrapper coverage for the git family.
 - [x] Monaco editor with syntax highlighting, Cmd+S, 7 themes
 - [x] Status bar — file path, language, git branch, theme/terminal/layout toggles, dot separators
 - [x] Terminal panel with real shell via Rust portable-pty
-- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted endpoints, 19 built-in tools, inline diff review + auto-accept toggle
+- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted endpoints, 19 built-in tools, inline diff review + the foot-bar Goal-policy decider (review / auto-accept / full auto)
 - [x] Agent mode — goal/plan modes, diff-reviewed edits, tool loop
 - [x] Git panel — full-view Git Review workbench (staging + diffs)
 - [x] Mission Control — aggregate agent run board (Claude Code, Codex, OpenCode, Oh My Pi, Klide) with handoff to AI panel

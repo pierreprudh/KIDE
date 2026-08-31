@@ -9,6 +9,17 @@ still open.
 
 ### Harness
 
+- **The command gate can be waived per conversation.** A Goal run dispatched
+  with `autoApproveCommands` executes `run_command` as if allowlisted — even
+  over a rejection remembered earlier in the run, since escalating is the
+  override. The waiver is chosen per conversation and never persisted (every
+  panel reverts to prompting on reload); network targets, Mission attempts,
+  and subagent runs keep the normal gate.
+- **"Validate all" on the diff card covers the rest of the run.** The apply
+  decision can carry `scope: "run"`: the pending edit applies, every later
+  edit of the live run auto-applies without pausing (still proposed and
+  checkpointed), and the conversation's policy flips to auto-accept so later
+  turns arrive already reviewing nothing.
 - **A run near its turn cap finishes instead of stopping.** Three turns short
   of the cap the model is steered to stop exploring and save what it has; on
   the final turn the harness withholds the tool schemas, so the only reply it
@@ -61,6 +72,16 @@ still open.
 
 ### Conversation view
 
+- **The + menu picks the Mode; the foot bar decides the Goal policy.** The
+  menu is back to three rows — Chat / Plan / Goal — and the policy (reviewing
+  edits · auto-accept edits · full auto) became a standing note beside the
+  branch in the conversation foot bar: one click cycles to the next, the
+  label morphing in on the soft curve. Review wears the branch label's
+  monochrome; a silenced gate wears the accent so it never reads as default.
+  The transient mode line above the composer is gone (`/mode` peeks via
+  toast), and the footer's "Accept modification" action renders only when a
+  diff is paused or a settled run left revertable files — the permanently
+  visible disabled placeholder read as a review-mode promise it wasn't.
 - **A stretch of tool work folds into one row** — count, tools, chevron;
   opening it gives back exactly the rows that were there. Only prose-free
   runs of three or more calls fold; the moment the agent says something, the
@@ -82,6 +103,8 @@ still open.
 
 ### Focus
 
+- The hero composer footer carries the same Goal-policy decider as the
+  conversation foot bar, so a policy can be chosen before the first message.
 - **A dropped screenshot is a task.** One rule set (`ai/attachments.ts`)
   decides what a dropped or pasted file becomes: a photo travels as a data
   URI for a model that can see it, a document travels as the text shape an
