@@ -58,7 +58,7 @@ import type { AgentAttachment as Attachment, AgentMode, ProviderId } from "../ag
 import { stageFiles, stagedImageBytes } from "./ai/attachments";
 import { AttachmentTray } from "./ai/AttachmentTray";
 import { notify } from "../toast";
-import { AUTONOMY_RUNGS, effectiveMode as effectiveModeFor } from "./ai/autonomyLadder";
+import { MODE_CHOICES, effectiveMode as effectiveModeFor, goalPolicyOf, nextGoalPolicy } from "./ai/autonomyLadder";
 import {
   PROVIDER_GROUPS,
   defaultModelForProvider,
@@ -1317,11 +1317,7 @@ function FocusAddMenu({
   mode,
   supportsTools,
   providerDelegatesWork,
-  requireDiffReview,
-  autoApproveCommands,
   onModeChange,
-  onRequireDiffReviewChange,
-  onAutoApproveCommandsChange,
   onAddFile,
   canAttachFiles,
   supportsVision,
@@ -1333,11 +1329,7 @@ function FocusAddMenu({
   /** A delegate CLI does its own editing, so Goal mode never depends on the
    *  tool-support probe Klide runs for wire providers. */
   providerDelegatesWork: boolean;
-  requireDiffReview: boolean;
-  autoApproveCommands: boolean;
   onModeChange: (mode: AgentMode) => void;
-  onRequireDiffReviewChange: (required: boolean) => void;
-  onAutoApproveCommandsChange: (enabled: boolean) => void;
   onAddFile: (path: string) => void;
   /** False for a delegate CLI, which takes text on its stdin and nothing else. */
   canAttachFiles: boolean;
@@ -1415,9 +1407,6 @@ function FocusAddMenu({
     modelSupportsTools: supportsTools,
     providerDelegatesWork,
   });
-  const activeKey = effectiveMode === "goal"
-    ? requireDiffReview ? "goal-review" : autoApproveCommands ? "goal-full" : "goal-auto"
-    : effectiveMode;
   const matchingFiles = (files ?? [])
     .filter((path) => !fileQuery || isSubsequence(fileQuery, path))
     .slice(0, 12);
@@ -1531,12 +1520,12 @@ function FocusAddMenu({
                 <AttachIcon size={14} />
               </button>
               <div className="klide-focus-add-menu-divider" />
-              {AUTONOMY_RUNGS.map((choice) => {
+              {MODE_CHOICES.map((choice) => {
                 const disabled = choice.mode === "goal" && !supportsTools;
-                const active = choice.key === activeKey;
+                const active = choice.mode === effectiveMode;
                 return (
                   <button
-                    key={choice.key}
+                    key={choice.mode}
                     type="button"
                     role="menuitemradio"
                     aria-checked={active}
@@ -1546,12 +1535,6 @@ function FocusAddMenu({
                     onClick={() => {
                       if (disabled) return;
                       onModeChange(choice.mode);
-                      if (choice.mode === "goal" && choice.review !== null) {
-                        onRequireDiffReviewChange(choice.review);
-                      }
-                      if (choice.mode === "goal" && choice.commands !== null) {
-                        onAutoApproveCommandsChange(choice.commands);
-                      }
                       close();
                     }}
                   >
@@ -1867,16 +1850,48 @@ function FocusComposer({
               mode={agentMode}
               supportsTools={supportsTools}
               providerDelegatesWork={isDelegateProvider(provider)}
-              requireDiffReview={requireDiffReview}
-              autoApproveCommands={autoApproveCommands}
               onModeChange={selectAgentMode}
-              onRequireDiffReviewChange={onRequireDiffReviewChange}
-              onAutoApproveCommandsChange={onAutoApproveCommandsChange}
               onAddFile={addFile}
               canAttachFiles={canAttachFiles}
               supportsVision={supportsVision}
               onAttachFiles={(files) => void addFiles(files)}
             />
+            {/* The Goal policy's decider, same as the AI panel's foot bar —
+                the menu above picks the Mode, this note names the policy and
+                a click cycles it. */}
+            {effectiveModeFor({
+              mode: agentMode,
+              modelSupportsTools: supportsTools,
+              providerDelegatesWork: isDelegateProvider(provider),
+            }) === "goal" && (() => {
+              const policy = goalPolicyOf(requireDiffReview, autoApproveCommands);
+              return (
+                <button
+                  type="button"
+                  className={
+                    policy.key === "review"
+                      ? "klide-ai-mode-note klide-ai-mode-note--muted"
+                      : "klide-ai-mode-note"
+                  }
+                  onClick={() => {
+                    const next = nextGoalPolicy(policy.key);
+                    onRequireDiffReviewChange(next.review);
+                    onAutoApproveCommandsChange(next.commands);
+                  }}
+                  title={
+                    policy.key === "review"
+                      ? "Review: each edit pauses for your approval; commands ask too. Click: auto-accept edits."
+                      : policy.key === "auto"
+                        ? "Auto-accept: edits apply without a prompt (still checkpointed); commands still ask. Click: full auto."
+                        : "Full auto: edits apply and shell commands run without asking. Click: back to reviewing every edit."
+                  }
+                >
+                  <span key={policy.key} className="klide-ai-mode-note-label">
+                    {policy.label}
+                  </span>
+                </button>
+              );
+            })()}
             <InlineMenu
               label="Provider"
               display={providerName(provider)}

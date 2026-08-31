@@ -128,7 +128,7 @@ import {
 } from "./ai/utils";
 
 import type { Msg, QueuedTurn, Conversation } from "./ai/types";
-import { AUTONOMY_RUNGS, currentRungIndex, effectiveMode as effectiveModeFor } from "./ai/autonomyLadder";
+import { MODE_CHOICES, effectiveMode as effectiveModeFor, goalPolicyOf, nextGoalPolicy } from "./ai/autonomyLadder";
 import {
   canCompactConversation,
   computeContextBudget,
@@ -1545,14 +1545,6 @@ export function AiPanel({
     handleComposerChange("/", 1);
     requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); ta.setSelectionRange(1, 1); } });
   }
-  // The autonomy ladder shown in the + menu, lowest → highest. The last three
-  // are all Goal mode; they differ only in the diff-review policy and whether
-  // shell commands also skip the permission gate (full auto).
-  function selectRung(mode: AgentMode, review: boolean | null, commands: boolean | null) {
-    selectMode(mode); // persists mode + closes the menu
-    if (mode === "goal" && review !== null) onRequireDiffReviewChange?.(review);
-    if (mode === "goal" && commands !== null) onAutoApproveCommandsChange?.(commands);
-  }
 
   // Stage pasted/dropped files through the one set of attachment rules
   // (src/components/ai/attachments.ts): a photo becomes a data URI for a
@@ -1615,9 +1607,10 @@ export function AiPanel({
     modelSupportsTools,
     providerDelegatesWork,
   });
-  // + menu: Goal rungs disabled when the model has no tools; which rung is lit.
+  // + menu: Goal disabled when the model has no tools. The Goal policy
+  // (review / auto-accept / full auto) lives in the foot bar, not here.
   const goalDisabled = !modelSupportsTools && !providerDelegatesWork;
-  const currentRungIdx = currentRungIndex(effectiveMode, requireDiffReview, autoApproveCommands);
+  const goalPolicy = goalPolicyOf(requireDiffReview, autoApproveCommands);
   // Effective window: a per-model override (Settings → Harness, Ollama only)
   // genuinely caps the runtime window, so the gauge must measure against it —
   // otherwise a dialed-down model reads near-empty when it's actually full.
@@ -4637,12 +4630,12 @@ This user request requires workspace inspection. Before answering, you MUST call
                         <AttachIcon size={14} />
                       </button>
                       <div style={{ height: 1, background: "var(--border)", margin: "4px 8px" }} />
-                      {AUTONOMY_RUNGS.map((rung, i) => {
+                      {MODE_CHOICES.map((rung) => {
                         const disabled = rung.mode === "goal" && goalDisabled;
-                        const active = i === currentRungIdx;
+                        const active = rung.mode === effectiveMode;
                         return (
-                          <button key={rung.key} type="button" role="menuitemradio" aria-checked={active} disabled={disabled}
-                            onClick={() => { if (!disabled) selectRung(rung.mode, rung.review, rung.commands); }}
+                          <button key={rung.mode} type="button" role="menuitemradio" aria-checked={active} disabled={disabled}
+                            onClick={() => { if (!disabled) selectMode(rung.mode); }}
                             title={disabled ? `${model} cannot use edit tools.` : rung.description}
                             style={{ width: "100%", display: "flex", alignItems: "center", height: 32, padding: "0 10px", border: "none", borderRadius: "var(--radius-sm)", background: "transparent", font: "inherit", fontSize: 13, cursor: disabled ? "default" : "pointer" }}
                             onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "var(--bg-hover)"; }}
@@ -4892,20 +4885,36 @@ This user request requires workspace inspection. Before answering, you MUST call
               {displayedBranch}
             </span>
           ) : null}
-          {/* The auto rungs stay announced after the + menu's flash fades —
-              silencing a review gate is a state the panel wears, and this foot
-              bar is where the conversation's standing facts live. */}
-          {effectiveMode === "goal" && !requireDiffReview && (
-            <span
-              className="klide-ai-mode-note"
+          {/* The Goal policy's decider. The + menu picks the Mode; this note
+              names the policy and a click cycles it (review → auto-accept →
+              full auto → review). Review is the calm default and stays
+              branch-label monochrome; the two silenced-gate rungs carry the
+              accent so they never read as default. */}
+          {effectiveMode === "goal" && onRequireDiffReviewChange && (
+            <button
+              type="button"
+              className={
+                goalPolicy.key === "review"
+                  ? "klide-ai-mode-note klide-ai-mode-note--muted"
+                  : "klide-ai-mode-note"
+              }
+              onClick={() => {
+                const next = nextGoalPolicy(goalPolicy.key);
+                onRequireDiffReviewChange(next.review);
+                onAutoApproveCommandsChange?.(next.commands);
+              }}
               title={
-                autoApproveCommands
-                  ? "Full auto: edits apply and shell commands run without asking. Pick another rung in the + menu to bring the prompts back."
-                  : "Auto-accept: edits apply without a prompt (still checkpointed). Commands still ask."
+                goalPolicy.key === "review"
+                  ? "Review: each edit pauses for your approval; commands ask too. Click: auto-accept edits."
+                  : goalPolicy.key === "auto"
+                    ? "Auto-accept: edits apply without a prompt (still checkpointed); commands still ask. Click: full auto."
+                    : "Full auto: edits apply and shell commands run without asking. Click: back to reviewing every edit."
               }
             >
-              {autoApproveCommands ? "full auto" : "auto-accept edits"}
-            </span>
+              <span key={goalPolicy.key} className="klide-ai-mode-note-label">
+                {goalPolicy.label}
+              </span>
+            </button>
           )}
           {/* Only while there is something to act on. The idle placeholder
               used to sit here disabled, permanently saying "Accept

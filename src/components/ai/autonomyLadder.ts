@@ -1,81 +1,68 @@
-// The four rungs of agent autonomy, in one place.
+// The agent's autonomy, in one place — split along the seam the UI wears it:
 //
 // **Mode** is a domain noun (see CONTEXT.md): the capability tier of a Run —
-// `chat` (no tools), `plan` (read-only tools), `goal` (full tools). What the UI
-// offers is Mode crossed with the diff-review policy, which makes four rungs.
+// `chat` (no tools), `plan` (read-only tools), `goal` (full tools). The + menu
+// offers exactly these three.
 //
-// That ladder was written out twice — `MODE_RUNGS` in AiPanel and
-// `FOCUS_MODE_CHOICES` in FocusMode — same four `(mode, review)` pairs, same
-// four labels, different descriptions. Two hand-kept tables for one domain
-// concept, and a fifth rung would have to be added to both.
+// **Goal policy** is what Goal mode does with its two gates: review every edit
+// (the default), auto-accept edits (commands still ask), or full auto (edits
+// and commands, no prompts). The conversation foot bar is the decider — its
+// standing note names the policy and a click cycles to the next — so the menu
+// never grows a rung per policy again.
 
 import type { AgentMode } from "../../agent/types";
 
-export type AutonomyRung = {
-  /** Stable key for React lists and persistence. */
-  key: string;
+export type ModeChoice = {
   mode: AgentMode;
-  /** The diff-review policy this rung implies. `null` means "not applicable" —
-   *  chat and plan never propose an edit to review. */
-  review: boolean | null;
-  /** Whether shell commands also run without a permission prompt. `null` means
-   *  "not applicable" — chat and plan have no command tool. Only the top rung
-   *  sets this true, and it is never persisted: on reload every panel falls
-   *  back to prompting. */
-  commands: boolean | null;
   label: string;
   /** One short clause. Lower-case, no trailing period: it renders as a
    *  subtitle under the label. */
   description: string;
 };
 
-export const AUTONOMY_RUNGS: AutonomyRung[] = [
-  { key: "chat", mode: "chat", review: null, commands: null, label: "Chat", description: "no tools" },
-  { key: "plan", mode: "plan", review: null, commands: null, label: "Plan", description: "read-only, proposes" },
-  {
-    key: "goal-review",
-    mode: "goal",
-    review: true,
-    commands: false,
-    label: "Goal · review",
-    description: "approve each edit",
-  },
-  {
-    key: "goal-auto",
-    mode: "goal",
-    review: false,
-    commands: false,
-    label: "Goal · auto-accept",
-    description: "edits apply, commands still ask",
-  },
-  {
-    key: "goal-full",
-    mode: "goal",
-    review: false,
-    commands: true,
-    label: "Goal · full auto",
-    description: "edits and commands, no prompts",
-  },
+export const MODE_CHOICES: ModeChoice[] = [
+  { mode: "chat", label: "Chat", description: "no tools" },
+  { mode: "plan", label: "Plan", description: "read-only, proposes" },
+  { mode: "goal", label: "Goal", description: "edits and commands" },
 ];
 
-/** Which rung is currently selected. `review` and `commands` are only
- *  consulted for `goal` — the only Mode that can edit or run a command. */
-export function currentRungIndex(
-  mode: AgentMode,
-  requireDiffReview: boolean,
-  autoApproveCommands = false
-): number {
-  const idx = AUTONOMY_RUNGS.findIndex(
-    (r) =>
-      r.mode === mode &&
-      (r.review === null || r.review === requireDiffReview) &&
-      (r.commands === null || r.commands === autoApproveCommands)
+export type GoalPolicy = "review" | "auto" | "full";
+
+export type GoalPolicyChoice = {
+  key: GoalPolicy;
+  /** The foot-bar note's text. Lower-case: it sits beside the branch label. */
+  label: string;
+  /** What the run request gets. `commands: true` is never persisted — on
+   *  reload every panel falls back to prompting. */
+  review: boolean;
+  commands: boolean;
+};
+
+/** Cycle order — each click on the foot-bar note escalates one step, then
+ *  wraps back to the reviewing default. */
+export const GOAL_POLICIES: GoalPolicyChoice[] = [
+  { key: "review", label: "reviewing edits", review: true, commands: false },
+  { key: "auto", label: "auto-accept edits", review: false, commands: false },
+  { key: "full", label: "full auto", review: false, commands: true },
+];
+
+/** Which policy the current pair of gate flags spells. An off-ladder combo
+ *  (review on + commands on) reads as review — the safest gate wins. */
+export function goalPolicyOf(requireDiffReview: boolean, autoApproveCommands: boolean): GoalPolicyChoice {
+  const match = GOAL_POLICIES.find(
+    (p) => p.review === requireDiffReview && p.commands === (requireDiffReview ? false : autoApproveCommands)
   );
-  return idx >= 0 ? idx : 0;
+  return match ?? GOAL_POLICIES[0];
+}
+
+/** The next rung on the click cycle. */
+export function nextGoalPolicy(current: GoalPolicy): GoalPolicyChoice {
+  const idx = GOAL_POLICIES.findIndex((p) => p.key === current);
+  return GOAL_POLICIES[(idx + 1) % GOAL_POLICIES.length];
 }
 
 /**
- * The rung a Mode collapses to when the model cannot call tools.
+ * The mode a pick collapses to when the model cannot call tools.
  *
  * A model with no tool support cannot execute a Goal, so offering one would
  * produce a run that silently does nothing. Delegate providers are exempt: the

@@ -1,52 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { AUTONOMY_RUNGS, currentRungIndex, effectiveMode } from "./autonomyLadder";
+import {
+  GOAL_POLICIES,
+  MODE_CHOICES,
+  effectiveMode,
+  goalPolicyOf,
+  nextGoalPolicy,
+} from "./autonomyLadder";
 
-describe("the autonomy ladder", () => {
-  it("offers each Mode capability tier exactly once, plus the three Goal policies", () => {
-    expect(AUTONOMY_RUNGS.map((r) => r.mode)).toEqual(["chat", "plan", "goal", "goal", "goal"]);
-    // Only goal distinguishes a review policy — chat and plan never propose an
-    // edit, so `review` is not applicable rather than false.
-    expect(AUTONOMY_RUNGS.filter((r) => r.review === null).map((r) => r.mode)).toEqual([
-      "chat",
-      "plan",
-    ]);
-    expect(AUTONOMY_RUNGS.filter((r) => r.mode === "goal").map((r) => r.review)).toEqual([
-      true,
-      false,
-      false,
-    ]);
-    // Only the top rung silences the command gate; the two auto rungs differ
-    // in nothing else.
-    expect(AUTONOMY_RUNGS.filter((r) => r.mode === "goal").map((r) => r.commands)).toEqual([
-      false,
-      false,
-      true,
-    ]);
+describe("the mode menu", () => {
+  it("offers each Mode capability tier exactly once — policies live in the foot bar", () => {
+    expect(MODE_CHOICES.map((c) => c.mode)).toEqual(["chat", "plan", "goal"]);
   });
 
-  it("gives every rung a unique key and a label", () => {
-    const keys = AUTONOMY_RUNGS.map((r) => r.key);
-    expect(new Set(keys).size).toBe(keys.length);
-    for (const r of AUTONOMY_RUNGS) {
-      expect(r.label).toBeTruthy();
-      expect(r.description).toBeTruthy();
+  it("gives every choice a label and a description", () => {
+    for (const c of MODE_CHOICES) {
+      expect(c.label).toBeTruthy();
+      expect(c.description).toBeTruthy();
     }
   });
 });
 
-describe("currentRungIndex", () => {
-  it("lights the rung matching the mode and its review policy", () => {
-    expect(currentRungIndex("chat", true)).toBe(0);
-    expect(currentRungIndex("plan", false)).toBe(1);
-    expect(currentRungIndex("goal", true)).toBe(2);
-    expect(currentRungIndex("goal", false)).toBe(3);
-    expect(currentRungIndex("goal", false, true)).toBe(4);
+describe("the goal policy cycle", () => {
+  it("orders review → auto-accept → full auto, and only the top rung silences commands", () => {
+    expect(GOAL_POLICIES.map((p) => p.key)).toEqual(["review", "auto", "full"]);
+    expect(GOAL_POLICIES.map((p) => p.review)).toEqual([true, false, false]);
+    expect(GOAL_POLICIES.map((p) => p.commands)).toEqual([false, false, true]);
   });
 
-  it("ignores the review policy for modes that cannot propose an edit", () => {
-    expect(currentRungIndex("chat", false)).toBe(currentRungIndex("chat", true));
-    expect(currentRungIndex("plan", false)).toBe(currentRungIndex("plan", true));
-    expect(currentRungIndex("plan", false, true)).toBe(currentRungIndex("plan", false));
+  it("cycles one step per click and wraps back to reviewing", () => {
+    expect(nextGoalPolicy("review").key).toBe("auto");
+    expect(nextGoalPolicy("auto").key).toBe("full");
+    expect(nextGoalPolicy("full").key).toBe("review");
+  });
+
+  it("names the policy the gate flags spell", () => {
+    expect(goalPolicyOf(true, false).key).toBe("review");
+    expect(goalPolicyOf(false, false).key).toBe("auto");
+    expect(goalPolicyOf(false, true).key).toBe("full");
+  });
+
+  it("reads an off-ladder combo as review — the safest gate wins", () => {
+    expect(goalPolicyOf(true, true).key).toBe("review");
   });
 });
 

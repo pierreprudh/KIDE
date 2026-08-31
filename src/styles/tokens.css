@@ -6150,13 +6150,17 @@ button:focus-visible .menu-leadout {
   opacity: 0.92;
 }
 
-/* The standing autonomy note ("auto-accept edits" / "full auto") — branch-label
-   quiet, but in the accent so a silenced review gate never reads as default. */
+/* The standing Goal-policy note and its decider ("reviewing edits" /
+   "auto-accept edits" / "full auto") — branch-label quiet; a click cycles the
+   policy. The accent means a review gate is silenced. */
 .klide-ai-mode-note {
   display: block;
   width: fit-content;
   max-width: 100%;
   overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--accent);
   font-family: var(--font-ui);
   font-size: 10.5px;
@@ -6165,12 +6169,46 @@ button:focus-visible .menu-leadout {
   text-overflow: ellipsis;
   white-space: nowrap;
   opacity: 0.55;
-  cursor: default;
-  transition: opacity var(--motion-fast) var(--ease-out);
+  cursor: pointer;
+  transition:
+    opacity var(--motion-slow) var(--ease-soft),
+    color var(--motion-slow) var(--ease-soft);
 }
 
-.klide-ai-mode-note:hover {
+.klide-ai-mode-note:hover,
+.klide-ai-mode-note:focus-visible {
   opacity: 0.92;
+}
+
+/* The review rung — the default policy wears the branch label's monochrome,
+   leaving the accent to mean "a gate is silenced". */
+.klide-ai-mode-note--muted {
+  color: var(--fg-subtle);
+  opacity: 0.38;
+}
+
+/* Each cycle morphs rather than snaps: the leaving label's color eases on the
+   button above while the arriving one (remounted per policy key) rises in.
+   Deliberately unhurried — the soft curve spends its speed early and lands
+   the last few percent slowly, so the swap reads as settling, not blinking. */
+.klide-ai-mode-note-label {
+  display: inline-block;
+  animation: klide-ai-mode-note-in 360ms var(--ease-soft) both;
+}
+@keyframes klide-ai-mode-note-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .klide-ai-mode-note-label {
+    animation: none;
+  }
 }
 
 .klide-ai-accept-modification {
