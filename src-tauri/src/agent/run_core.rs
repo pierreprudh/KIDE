@@ -563,7 +563,12 @@ where
     }
     let reads: Vec<NormalizedToolCall> = calls
         .iter()
-        .filter(|call| matches!(kind_for(call, workspace_root), Some(ToolKind::ReadOnly)))
+        .filter(|call| {
+            matches!(
+                kind_for(call, workspace_root),
+                Some(ToolKind::ReadOnly | ToolKind::ProjectMemory)
+            )
+        })
         .cloned()
         .collect();
     if reads.len() > 1 {
@@ -956,6 +961,7 @@ mod tests {
         for kind in [
             ToolKind::ReadOnly,
             ToolKind::ConversationHistory,
+            ToolKind::ProjectMemory,
             ToolKind::Write,
             ToolKind::Command,
             ToolKind::Pause,

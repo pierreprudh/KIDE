@@ -124,6 +124,27 @@ between fresh, restored, resumed, and branched Conversations; it is not itself
 a Run, because one Conversation session may be idle between Runs.
 _Avoid_: chat state, thread state, panel globals
 
+**Project Memory**:
+Reviewed, Workspace-scoped knowledge that survives Runs: decisions,
+conventions, facts, failures, patterns, and handoffs. One entry is a versioned
+Markdown file under `.klide/memory/`; Markdown is authoritative and any search
+index is derived. A draft is not Project Memory until the user accepts it.
+_Avoid_: external memory provider, vector database, chat memory
+
+**Memory source**:
+A structured reference from Project Memory back to the evidence that produced
+it — a Run, Transcript region, commit, or Workspace-relative file/line. Recall
+preserves these references so a model and reviewer can inspect the why behind
+the knowledge.
+_Avoid_: citation string, confidence score
+
+**Memory recall**:
+A native Harness read of reviewed Project Memory. `memory_search` returns
+ranked summaries and match reasons; `memory_read` resolves one authoritative
+entry. Both carry the `ReadProjectMemory` capability, and their Tool events make
+the recalled knowledge part of the Transcript evidence.
+_Avoid_: RAG call, prompt stuffing, MCP lookup
+
 **Panel fleet**:
 The host-owned collection of live Conversation sessions. It routes targeted
 resumes, startup handoffs, race tabs, and follow-up messages by panel id. Panel

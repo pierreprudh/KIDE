@@ -107,6 +107,10 @@ pub enum ToolKind {
     // current Workspace. Distinct from ReadOnly because the audit record must
     // not claim the Tool read workspace files.
     ConversationHistory,
+    // Reads Klide's reviewed, Workspace-scoped Project Memory. Distinct from
+    // workspace file reads and conversation history so Transcripts preserve
+    // which knowledge boundary a model crossed.
+    ProjectMemory,
     // Mutates only Klide's app-owned planning metadata. It is intentionally
     // available in Plan mode, but is not a workspace read.
     PlanState,
@@ -130,6 +134,7 @@ pub enum ToolKind {
 pub enum ToolCapability {
     ReadWorkspace,
     ReadConversationHistory,
+    ReadProjectMemory,
     UpdatePlanState,
     WriteWorkspace,
     RunCommand,
@@ -142,6 +147,7 @@ impl ToolKind {
         match self {
             ToolKind::ReadOnly => ToolCapability::ReadWorkspace,
             ToolKind::ConversationHistory => ToolCapability::ReadConversationHistory,
+            ToolKind::ProjectMemory => ToolCapability::ReadProjectMemory,
             ToolKind::PlanState => ToolCapability::UpdatePlanState,
             ToolKind::Network => ToolCapability::Network,
             ToolKind::Write => ToolCapability::WriteWorkspace,
@@ -156,7 +162,10 @@ pub fn tool_allowed_in_mode(mode: &AgentMode, kind: ToolKind) -> bool {
         AgentMode::Chat => false,
         AgentMode::Plan => matches!(
             kind,
-            ToolKind::ReadOnly | ToolKind::ConversationHistory | ToolKind::PlanState
+            ToolKind::ReadOnly
+                | ToolKind::ConversationHistory
+                | ToolKind::ProjectMemory
+                | ToolKind::PlanState
         ),
         AgentMode::Goal => true,
     }
@@ -170,6 +179,7 @@ pub fn tool_capability_label(capability: ToolCapability) -> &'static str {
     match capability {
         ToolCapability::ReadWorkspace => "read workspace",
         ToolCapability::ReadConversationHistory => "read conversation history",
+        ToolCapability::ReadProjectMemory => "read project memory",
         ToolCapability::UpdatePlanState => "update plan state",
         ToolCapability::WriteWorkspace => "write workspace",
         ToolCapability::RunCommand => "run command",
@@ -187,6 +197,7 @@ impl ToolCapability {
         match self {
             ToolCapability::ReadWorkspace => "read_workspace",
             ToolCapability::ReadConversationHistory => "read_conversation_history",
+            ToolCapability::ReadProjectMemory => "read_project_memory",
             ToolCapability::UpdatePlanState => "update_plan_state",
             ToolCapability::WriteWorkspace => "write_workspace",
             ToolCapability::RunCommand => "run_command",
@@ -321,6 +332,106 @@ fn run_conversation_search(
     }
 }
 
+fn run_memory_search(
+    ws: &Workspace,
+    input: &serde_json::Value,
+    _run_id: &str,
+    _runs_dir: Option<&Path>,
+) -> ToolResult {
+    let query = input
+        .get("query")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    if query.is_empty() {
+        return err("memory_search requires a non-empty query.".to_string());
+    }
+    let limit = input
+        .get("maxResults")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(5)
+        .clamp(1, 20) as usize;
+    let include_inactive = input
+        .get("includeInactive")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let mut kinds = Vec::new();
+    if let Some(values) = input.get("kinds").and_then(|value| value.as_array()) {
+        for value in values {
+            let Some(raw) = value.as_str() else {
+                return err("memory_search kinds must be strings.".to_string());
+            };
+            let Some(kind) = crate::memory::MemoryKind::parse(raw) else {
+                return err(format!("Unknown Project Memory kind `{raw}`."));
+            };
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+    }
+
+    match crate::memory::search_workspace_memory(ws, query, &kinds, limit, include_inactive) {
+        Ok(hits) if hits.is_empty() => ok(format!(
+            "No reviewed Project Memory in this workspace matched {query:?}."
+        )),
+        Ok(hits) => {
+            let mut content = format!(
+                "Found {} Project Memory entr{} matching {query:?}:",
+                hits.len(),
+                if hits.len() == 1 { "y" } else { "ies" },
+            );
+            for (index, hit) in hits.iter().enumerate() {
+                let entry = &hit.entry;
+                content.push_str(&format!(
+                    "\n\n{}. {} [{}]\n   memoryId: {}\n   score: {}\n   matched: {}",
+                    index + 1,
+                    entry.title,
+                    entry.kind.as_str(),
+                    entry.id,
+                    hit.score,
+                    hit.matched_fields.join(", "),
+                ));
+                if !hit.excerpt.is_empty() {
+                    content.push_str(&format!("\n   excerpt: {}", hit.excerpt));
+                }
+                if !entry.source_refs.is_empty() {
+                    content.push_str(&format!("\n   sources: {}", entry.source_refs.len()));
+                }
+            }
+            ToolResult {
+                ok: true,
+                content,
+                metadata: Some(serde_json::json!({ "query": query, "hits": hits })),
+            }
+        }
+        Err(error) => err(error),
+    }
+}
+
+fn run_memory_read(
+    ws: &Workspace,
+    input: &serde_json::Value,
+    _run_id: &str,
+    _runs_dir: Option<&Path>,
+) -> ToolResult {
+    let id = input
+        .get("memoryId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    if id.is_empty() {
+        return err("memory_read requires memoryId.".to_string());
+    }
+    match crate::memory::read_workspace_memory_entry(ws, id) {
+        Ok((entry, markdown)) => ToolResult {
+            ok: true,
+            content: markdown,
+            metadata: Some(serde_json::json!({ "entry": entry })),
+        },
+        Err(error) => err(error),
+    }
+}
+
 struct ToolEntry {
     kind: ToolKind,
     schema: serde_json::Value,
@@ -405,6 +516,37 @@ fn registry() -> Vec<ToolEntry> {
             run_read: Some(run_conversation_search),
             run_write_preview: None,
             summary: query_summary,
+        },
+        ToolEntry {
+            kind: ToolKind::ProjectMemory,
+            schema: schema("memory_search", "Search reviewed Project Memory in the current workspace. Use this when a task may depend on a prior decision, convention, failure, handoff, or successful pattern. Results include stable memory ids, matched fields, excerpts, and provenance counts.",
+                serde_json::json!({
+                    "query": { "type": "string", "description": "Words, file paths, run ids, or concepts to find. Every query term must match the same memory entry." },
+                    "kinds": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["run", "handoff", "decision", "convention", "fact", "failure", "pattern"] },
+                        "description": "Optional memory-kind filter."
+                    },
+                    "maxResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Optional result cap (default 5, maximum 20)." },
+                    "includeInactive": { "type": "boolean", "description": "Include superseded or stale evidence. Defaults to false." }
+                }),
+                &["query"]),
+            run_read: Some(run_memory_search),
+            run_write_preview: None,
+            summary: query_summary,
+        },
+        ToolEntry {
+            kind: ToolKind::ProjectMemory,
+            schema: schema("memory_read", "Read one Project Memory entry by the stable id returned from memory_search. Returns the authoritative Markdown plus structured provenance metadata.",
+                serde_json::json!({
+                    "memoryId": { "type": "string", "description": "Stable Project Memory id from memory_search." }
+                }),
+                &["memoryId"]),
+            run_read: Some(run_memory_read),
+            run_write_preview: None,
+            summary: |call| call.input.get("memoryId").and_then(|value| value.as_str())
+                .map(|id| format!("memory_read {id}"))
+                .unwrap_or_else(|| "memory_read".to_string()),
         },
         ToolEntry {
             kind: ToolKind::ReadOnly,
@@ -3576,6 +3718,15 @@ mod tests {
             Some(ToolKind::ConversationHistory)
         );
         assert_eq!(
+            find_tool_kind_for_workspace("memory_search", None),
+            Some(ToolKind::ProjectMemory)
+        );
+        assert_eq!(
+            find_tool_kind_for_workspace("memory_search", None)
+                .map(|kind| kind.capability().wire()),
+            Some("read_project_memory")
+        );
+        assert_eq!(
             find_tool_kind_for_workspace("search_conversations", None)
                 .map(|kind| kind.capability().wire()),
             Some("read_conversation_history")
@@ -3603,6 +3754,10 @@ mod tests {
             &AgentMode::Plan,
             ToolKind::ConversationHistory
         ));
+        assert!(tool_allowed_in_mode(
+            &AgentMode::Plan,
+            ToolKind::ProjectMemory
+        ));
         let plan = list_tools_for_workspace(&AgentMode::Plan, &[], Some(&root));
         assert!(
             plan.iter()
@@ -3613,6 +3768,16 @@ mod tests {
             plan.iter()
                 .any(|schema| schema["function"]["name"] == "search_conversations"),
             "Plan mode must advertise conversation-history search"
+        );
+        assert!(
+            plan.iter()
+                .any(|schema| schema["function"]["name"] == "memory_search"),
+            "Plan mode must advertise Project Memory search"
+        );
+        assert!(
+            plan.iter()
+                .any(|schema| schema["function"]["name"] == "memory_read"),
+            "Plan mode must advertise Project Memory reads"
         );
         assert!(
             !plan
@@ -3797,6 +3962,77 @@ mod tests {
         );
         assert!(result.ok, "{}", result.content);
         assert!(result.content.contains("No previous Klide conversations"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn memory_tools_round_trip_reviewed_markdown_with_provenance() {
+        let base = std::env::temp_dir().join(format!(
+            "klide-memory-tool-store-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let entry = crate::memory::memory_write(
+            base.to_string_lossy().to_string(),
+            crate::memory::MemoryInput {
+                title: "Keep trust decisions in Rust".to_string(),
+                kind: crate::memory::MemoryKind::Decision,
+                tags: vec!["harness".to_string()],
+                source_refs: vec![crate::memory::MemorySourceRef {
+                    source_type: crate::memory::MemorySourceType::Run,
+                    id: "run-trust-1".to_string(),
+                    label: Some("Trust boundary run".to_string()),
+                    ..crate::memory::MemorySourceRef::default()
+                }],
+                supersedes: None,
+                goal: "Keep the command trust boundary inside the Rust Harness".to_string(),
+                plan: Vec::new(),
+                decisions: vec!["Renderer input never grants command trust".to_string()],
+                files_touched: vec!["src-tauri/src/agent/permission.rs".to_string()],
+                next_steps: Vec::new(),
+                notes: "The audit trail must remain capability-specific.".to_string(),
+                run_id: Some("run-trust-1".to_string()),
+                provider: Some("klide".to_string()),
+                model: Some("test-model".to_string()),
+                mode: Some("goal".to_string()),
+                status: Some("done".to_string()),
+            },
+        )
+        .unwrap();
+
+        let search = execute_read_only_tool(
+            base.to_str().unwrap(),
+            &NormalizedToolCall {
+                id: "memory-search-1".to_string(),
+                name: "memory_search".to_string(),
+                input: serde_json::json!({
+                    "query": "trust Rust",
+                    "kinds": ["decision"]
+                }),
+            },
+            "current-run",
+        );
+        assert!(search.ok, "{}", search.content);
+        assert!(search.content.contains(&entry.id));
+        assert_eq!(
+            search.metadata.as_ref().unwrap()["hits"][0]["entry"]["sourceRefs"][0]["id"],
+            "run-trust-1"
+        );
+
+        let read = execute_read_only_tool(
+            base.to_str().unwrap(),
+            &NormalizedToolCall {
+                id: "memory-read-1".to_string(),
+                name: "memory_read".to_string(),
+                input: serde_json::json!({ "memoryId": entry.id }),
+            },
+            "current-run",
+        );
+        assert!(read.ok, "{}", read.content);
+        assert!(read.content.contains("title: Keep trust decisions in Rust"));
+        assert_eq!(read.metadata.as_ref().unwrap()["entry"]["kind"], "decision");
+
         let _ = std::fs::remove_dir_all(base);
     }
 
@@ -4047,6 +4283,7 @@ mod tests {
         let all = [
             ToolCapability::ReadWorkspace,
             ToolCapability::ReadConversationHistory,
+            ToolCapability::ReadProjectMemory,
             ToolCapability::UpdatePlanState,
             ToolCapability::WriteWorkspace,
             ToolCapability::RunCommand,
@@ -4062,6 +4299,10 @@ mod tests {
         assert_eq!(
             ToolCapability::ReadConversationHistory.wire(),
             "read_conversation_history"
+        );
+        assert_eq!(
+            ToolCapability::ReadProjectMemory.wire(),
+            "read_project_memory"
         );
     }
 }

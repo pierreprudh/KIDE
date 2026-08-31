@@ -7,6 +7,17 @@ Notable changes per milestone. Dates are completion dates.
 Hardening after the 0.6.1 cut. The v0.6 orchestration milestone itself is
 still open.
 
+### Project Memory
+
+- **Project Memory is now a native Harness capability.** Durable entries use a
+  versioned schema with kinds, review state, tags, source references, and
+  supersession. Plan and Goal runs can call `memory_search` and `memory_read`;
+  deterministic offline ranking returns match reasons and provenance, normal
+  recall excludes stale/superseded knowledge, and the Transcript stamps both
+  Tools with `read_project_memory` instead of pretending they read Workspace
+  files. Markdown remains the local source of truth; no external provider or
+  network service is involved.
+
 ### Harness
 
 - **The command gate can be waived per conversation.** A Goal run dispatched

@@ -1435,6 +1435,10 @@ export function AiPanel({
     try {
       const entry = await writeMemory(workspaceRoot, {
         title: handoff.title,
+        kind: "handoff",
+        tags: [],
+        sourceRefs: [{ sourceType: "run", id: currentId, label: "Source Run" }],
+        supersedes: null,
         goal: handoff.goal,
         plan: [],
         decisions: [],

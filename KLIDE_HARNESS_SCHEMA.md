@@ -47,8 +47,8 @@ Tools are filtered by **kind** per mode (`tools.rs:list_tools`):
 | Mode | Tools exposed |
 |---|---|
 | **Chat** | none — converse from visible context only |
-| **Plan** | `ReadOnly` (9) + `PlanState` (1) — inspect local context and keep the plan, never edit, execute shell-backed dynamic tools, or use network |
-| **Goal** | all kinds (19) + dynamic command tools — inspect + approval-gated network reads + diff-reviewed edits + approval-gated commands + pause |
+| **Plan** | Workspace reads (9) + Conversation history (1) + Project Memory (2) + Plan state (1), plus the advisor exception — inspect local context and keep the plan, never edit, execute shell-backed dynamic tools, or use network |
+| **Goal** | all built-in Tools (22) + dynamic command tools — inspect + approval-gated network reads + diff-reviewed edits + approval-gated commands + pause |
 
 *Dynamic tools* (`load_dynamic_tools`) are shell-backed command tools loaded at
 runtime from `.agents/tools.json`. They are Goal-only and pass through the same
@@ -80,6 +80,22 @@ warnings for unverified implementation work.
 | Tool | Purpose | Lineage |
 |---|---|---|
 | `update_todo_list` | add/complete/uncomplete/edit/remove/clear todos. *(`PlanState` kind, capability `UpdatePlanState`: it mutates Klide's own planning metadata, not workspace files — so it runs in Plan mode with no diff review.)* | CC (TodoWrite) |
+
+### Conversation history (Plan + Goal) — 1
+
+| Tool | Purpose | Lineage |
+|---|---|---|
+| `search_conversations` | Search prior Klide Harness Conversations in the current Workspace, excluding the current Run and its children. Carries `ReadConversationHistory`, not `ReadWorkspace`. | K |
+
+### Project Memory (Plan + Goal) — 2
+
+| Tool | Purpose | Lineage |
+|---|---|---|
+| `memory_search` | Deterministically search reviewed, Workspace-scoped Project Memory by terms and optional kinds. Returns scores, matched fields, excerpts, and provenance metadata; stale/superseded entries stay out unless explicitly requested. | K |
+| `memory_read` | Read the authoritative Markdown and structured provenance for one stable memory id. Id and Workspace-root checks prevent traversal outside `.klide/memory/`. | K |
+
+Both carry capability `ReadProjectMemory` (`read_project_memory` in the
+Transcript). See [`KLIDE_MEMORY_SCHEMA.md`](./KLIDE_MEMORY_SCHEMA.md).
 
 ### Network (Goal only) — 2
 
