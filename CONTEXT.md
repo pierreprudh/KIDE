@@ -157,6 +157,20 @@ _Avoid_: global panel state, panel list
 A model backend Klide can talk to — Ollama, LM Studio, Anthropic, OpenAI. Differs only in wire format; behaviour behind the seam is shared.
 _Avoid_: vendor, backend, LLM
 
+**Auto**:
+The Provider the picker sends when the user leaves the model choice to Klide.
+Not a backend: the Harness router (`src-tauri/src/agent/routing.rs`) replaces
+it with a concrete Provider + model at run start, and `RunStarted` carries the
+resolved pair, so every surface shows what actually ran. The rule is: rule out
+what cannot do the job (no key, server down, no tools when the Mode needs
+them, a window the prompt won't fit); prefer starred models, cheapest first,
+then what is installed locally; lock the pick for the conversation — a
+continuation reuses its origin, never routes again. `RouteResolved` records
+the reason and what was ruled out. Distinct from the Goal policy's `auto`
+(edits apply without review): that is a review setting, this is a Provider.
+_Avoid_: smart mode, auto-select, model router (the router is the mechanism;
+Auto is the choice the user makes)
+
 ### Mission Control
 
 **Mission Control**:

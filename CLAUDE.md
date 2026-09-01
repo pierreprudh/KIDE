@@ -53,6 +53,7 @@ Klide/
 ├── KLIDE_HARNESS_SCHEMA.md    Tool interface schema
 ├── KLIDE_MEMORY_SCHEMA.md     Project Memory entry + retrieval/MCP contract
 ├── MEMORY_ENGINE.md           All-in-one memory architecture + PR sequence
+├── MODEL_ROUTING.md           Auto model routing — the rule, the wire, what it deliberately is not
 ├── Design.md                  Design system — tokens, themes, principles (mirror changes in styles/tokens.css)
 ├── docs/                      Design docs (delegate replay, competitors, website) + adr/ (git-ignored, local only)
 ├── schemas/                   Versioned JSON Schemas for durable/wire contracts
@@ -242,6 +243,7 @@ Klide/
     │   └── agent/
     │       ├── mod.rs             Agent supervisor + run loop
     │       ├── run_core.rs        Tauri-free turn prep — provider quirks, message assembly, compaction
+    │       ├── routing.rs         The `auto` Provider → one concrete provider+model at run start (gate, rank, lock)
     │       ├── tools.rs           Tool registry (schema + capability + execution, including native memory recall)
     │       ├── tool_handlers.rs   Per-capability call ceremony — permission gates, pauses, checkpoints
     │       ├── conversation_search.rs Workspace-scoped search over prior Harness transcripts
@@ -402,6 +404,24 @@ AnthropicAdapter   (~95 lines)
 ```
 
 New provider (e.g. LM Studio) = one adapter, not 120 lines of duplicated infrastructure.
+
+### Auto model routing
+
+`auto` is a Provider id the picker can send, not a backend. Every run enters
+`start_run` (`agent/mod.rs`), and that is where `agent/routing.rs` replaces it
+with a concrete pair before anything downstream reads the provider — the
+failure budget, the summary, `RunStarted`, the adapters. The rule is small and
+deterministic: **gate** (key present, local server up, tool support when the
+Mode calls tools, context window ≥ 2× prompt + 4k), then **rank** (starred
+models cheapest-first, then installed Ollama models with the default first),
+then **lock** — a continuation of an `auto` thread reuses the pair its
+transcript recorded (`read_run_origin`) rather than routing again. The
+renderer sends its stars on the request (`preferredModels`; they live in
+localStorage), and a `RouteResolved` event after `RunStarted` records the
+reason and every candidate ranked above the pick with why it lost. Delegate
+CLIs are never candidates; Mission attempts never arrive as `auto` (approval
+freezes a concrete pair). Not a classifier, not per-turn, no LLM call in
+front of a message — see `MODEL_ROUTING.md` for the reasoning and what's next.
 
 ### Provider gateway (opencodex)
 

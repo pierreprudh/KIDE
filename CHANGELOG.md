@@ -20,6 +20,17 @@ still open.
 
 ### Harness
 
+- **Auto picks the model.** A new `Auto` Provider at the top of every picker
+  leaves the choice to the Harness. At run start Rust rules out what cannot do
+  the job — no API key, local server down, no tool support when the Mode needs
+  tools, a context window the prompt won't fit — then takes the user's starred
+  models cheapest-first, falling back to what Ollama has installed. The pick is
+  locked for the conversation (a continuation reuses its transcript's origin,
+  never re-routes), `RunStarted` carries the resolved pair so every surface
+  shows what actually ran, and a new `RouteResolved` Transcript line records
+  the reason plus every candidate ranked above it and why it lost. Delegate
+  CLIs are never candidates. Deterministic, no classifier, no network beyond
+  the probes it already had. See `MODEL_ROUTING.md`.
 - **A huge tool output is retained on disk, not carried in context.** A tool
   result over 20 KB is written once to `<runs>/<run id>.values/<call id>.txt`
   and the provider sees a `[retained #id]` stub with a head-and-tail preview
