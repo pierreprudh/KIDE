@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, type ReactNode, type RefObject, type ComponentProps } from "react";
+import { lazy, Suspense, useRef, useState, type ReactNode, type RefObject, type ComponentProps } from "react";
 import { beginDragSession } from "../dragSession";
 import { clamp } from "./settings/controls";
 import type { Skill } from "../skills";
@@ -133,6 +133,10 @@ export function AnchoredWorkbench(props: Props) {
   } = props;
 
   const sideVisible = explorerVisible;
+  // A splitter drag rewrites the column widths on every mouse move. The reveal
+  // transition on those same widths would make the column trail the pointer,
+  // so it is switched off for the length of the drag.
+  const [resizing, setResizing] = useState(false);
   const sidePanelWidth = panelLayout.explorer?.w ?? 280;
   const aiPanel = aiPanels[0];
   const aiPanelWidth = aiPanel?.rect.w ?? 360;
@@ -140,12 +144,17 @@ export function AnchoredWorkbench(props: Props) {
 
   // The side column shows explorer; ⌘+click in the activity bar can stack
   // skills below it via a SplitPane (matches the existing behaviour).
+  // The side column is always in the grid so its width can animate: the track
+  // goes 0 → sidePanelWidth and back, and this content keeps its full width
+  // underneath, so the column clips like a curtain instead of reflowing every
+  // row on the way. The tree stays mounted while hidden — same folders, same
+  // scroll when it comes back — and `active` stops it polling the disk.
   const renderSide = () => {
-    if (!sideVisible) return null;
     const explorer = (
       <Sidebar
         fill
         visible
+        active={sideVisible}
         width={sidePanelWidth}
         workspaceRoot={workspaceRoot}
         onOpen={onOpenFile}
@@ -169,15 +178,21 @@ export function AnchoredWorkbench(props: Props) {
         </Suspense>
       );
       return (
-        <SplitPane
-          top={explorer}
-          bottom={skillsPane}
-          defaultSplit={sidePanelWidth * 0.55}
-          minPane={80}
-        />
+        <div style={{ width: sidePanelWidth, flexShrink: 0, height: "100%", display: "flex", flexDirection: "column" }}>
+          <SplitPane
+            top={explorer}
+            bottom={skillsPane}
+            defaultSplit={sidePanelWidth * 0.55}
+            minPane={80}
+          />
+        </div>
       );
     }
-    return explorer;
+    return (
+      <div style={{ width: sidePanelWidth, flexShrink: 0, height: "100%", display: "flex", flexDirection: "column" }}>
+        {explorer}
+      </div>
+    );
   };
 
   // Editor column = TabBar (when tabs exist) + SearchPanel + Monaco. The
@@ -281,28 +296,32 @@ export function AnchoredWorkbench(props: Props) {
       >
         {/* Top row: side | editor | ai */}
         <div
+          /* The side tracks are always present — 0px when the Explorer is
+             closed — so the track list keeps its shape and the browser can
+             interpolate grid-template-columns: the column slides open rather
+             than appearing. (The AI tracks still come and go, so toggling the
+             AI panel snaps as before.) */
+          className="klide-anchored-columns"
+          data-resizing={resizing || undefined}
           style={{
             display: "grid",
-            gridTemplateColumns: sideVisible
-              ? `${sidePanelWidth}px 1px minmax(0, 1fr)${aiVisible ? ` 1px ${aiPanelWidth}px` : ""}`
-              : aiVisible
-                ? `minmax(0, 1fr) 1px ${aiPanelWidth}px`
-                : "1fr",
+            gridTemplateColumns: `${sideVisible ? sidePanelWidth : 0}px ${sideVisible ? 1 : 0}px minmax(0, 1fr)${aiVisible ? ` 1px ${aiPanelWidth}px` : ""}`,
             minHeight: 0,
             minWidth: 0,
             overflow: "hidden",
           }}
         >
-          {sideVisible && (
-            <>
-              <ColumnSurface>{renderSide()}</ColumnSurface>
-              <SideSplitter
-                side="left"
-                current={sidePanelWidth}
-                onChange={(w) => onPanelWidthChange("explorer", clamp(w, 200, 520))}
-              />
-            </>
-          )}
+          <div className="klide-anchored-side" data-open={sideVisible ? "true" : "false"}>
+            {renderSide()}
+          </div>
+          <div style={{ visibility: sideVisible ? "visible" : "hidden", minWidth: 0 }}>
+            <SideSplitter
+              side="left"
+              current={sidePanelWidth}
+              onChange={(w) => onPanelWidthChange("explorer", clamp(w, 200, 520))}
+              onDragging={setResizing}
+            />
+          </div>
           <ColumnSurface>{renderEditor()}</ColumnSurface>
           {aiVisible && (
             <>
@@ -310,6 +329,7 @@ export function AnchoredWorkbench(props: Props) {
                 side="right"
                 current={aiPanelWidth}
                 onChange={(w) => onPanelWidthChange("ai", clamp(w, 300, 620))}
+                onDragging={setResizing}
               />
               <ColumnSurface>{renderAi()}</ColumnSurface>
             </>
@@ -398,10 +418,14 @@ function SideSplitter({
   side,
   current,
   onChange,
+  onDragging,
 }: {
   side: "left" | "right";
   current: number;
   onChange: (next: number) => void;
+  /** Reports the start and end of a drag, so the host can pause any width
+   *  transition that would otherwise trail the pointer. */
+  onDragging?: (dragging: boolean) => void;
 }) {
   // The column itself is 1px so the layout hairline stays crisp. A 1px-wide
   // drag target is impossible to hit, so we overlay a wider invisible hit zone
@@ -412,6 +436,7 @@ function SideSplitter({
     const startX = e.clientX;
     const start = current;
     if (line) line.style.background = "var(--accent-soft)";
+    onDragging?.(true);
     function onMove(ev: MouseEvent) {
       const dx = ev.clientX - startX;
       const next = side === "left" ? start + dx : start - dx;
@@ -422,6 +447,7 @@ function SideSplitter({
       onMove,
       onDone: () => {
         if (line) line.style.background = "var(--border)";
+        onDragging?.(false);
       },
     });
   }

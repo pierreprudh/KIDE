@@ -173,6 +173,10 @@
   --motion-fast: 120ms;
   --motion-med: 180ms;
   --motion-slow: 240ms;
+  /* The Explorer's reveal — the anchored column sliding open, the free-mode
+     drawer gliding out. Longer than --motion-slow on purpose: a whole column
+     arriving is a bigger thing than a control, and hurrying it reads as a snap. */
+  --explorer-reveal: 320ms;
 }
 
 /* Sage Garden — Klide Light with the temperature corrected. Same bone-cream
@@ -7153,20 +7157,68 @@ button:focus-visible .menu-leadout {
   opacity: 0;
   visibility: hidden;
   will-change: transform, opacity;
+  /* Leaving is quicker than arriving, and the fade finishes before the slide
+     does, so nothing half-visible lingers on the way out. */
   transition:
-    transform 260ms var(--ease-soft),
-    opacity 150ms var(--ease-out),
-    visibility 0s linear 260ms;
+    transform 280ms var(--ease-soft),
+    opacity 160ms var(--ease-out),
+    visibility 0s linear 280ms;
 }
 
 .explorer-dock-overlay[data-open="true"] {
   transform: none;
   opacity: 1;
   visibility: visible;
+  /* The slide carries the reveal; the fade rides the first half of it so the
+     sheet is already solid while it is still settling into place. */
   transition:
-    transform 340ms var(--ease-soft),
-    opacity 180ms var(--ease-out),
+    transform var(--explorer-reveal) var(--ease-soft),
+    opacity 200ms var(--ease-out),
     visibility 0s;
+}
+
+/* ── The anchored Explorer column ─────────────────────────────────────────
+   The column is a grid track that animates 0 → its width. The rows inside keep
+   their full width underneath (see AnchoredWorkbench.renderSide), so the track
+   clips them like a curtain instead of reflowing the tree on every frame.
+   The content fades in a beat after the track starts moving — arriving into a
+   space that is already opening — and fades out ahead of it on the way back. */
+.klide-anchored-columns {
+  transition: grid-template-columns var(--explorer-reveal) var(--ease-soft);
+}
+
+/* Not while a splitter is being dragged: the widths follow the pointer. */
+.klide-anchored-columns[data-resizing] {
+  transition: none;
+}
+
+.klide-anchored-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: transparent;
+}
+
+.klide-anchored-side > * {
+  opacity: 0;
+  transition: opacity 140ms var(--ease-out);
+}
+
+.klide-anchored-side[data-open="true"] > * {
+  opacity: 1;
+  transition: opacity 220ms var(--ease-out) 90ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-anchored-columns,
+  .klide-anchored-side > *,
+  .klide-anchored-side[data-open="true"] > *,
+  .explorer-dock-overlay,
+  .explorer-dock-overlay[data-open="true"] {
+    transition: none;
+  }
 }
 
 .artifact-inspector-header {
