@@ -237,11 +237,57 @@ pub struct MemorySearchHit {
     pub excerpt: String,
 }
 
-fn memory_dir(workspace: &Workspace) -> Result<PathBuf, String> {
+/// Create-on-write only. Read paths must never mutate the workspace (Plan
+/// mode cannot write files; a fresh per-run worktree stays clean), so they
+/// resolve the store with `resolve_existing` and treat a missing dir as empty.
+fn ensure_memory_dir(workspace: &Workspace) -> Result<PathBuf, String> {
     let dir = workspace.resolve_new(".klide/memory")?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Unable to create .klide/memory directory: {e}"))?;
     workspace.resolve_existing(".klide/memory")
+}
+
+/// A linked git worktree's `.git` is a *file* — `gitdir: <main>/.git/worktrees/<name>`.
+/// Walk it back to the main checkout (the directory that owns the real `.git`).
+fn main_checkout_root(root: &Path) -> Option<PathBuf> {
+    let git_marker = root.join(".git");
+    if !std::fs::symlink_metadata(&git_marker).ok()?.is_file() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&git_marker).ok()?;
+    let gitdir = content
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))?
+        .trim();
+    let gitdir_path = if Path::new(gitdir).is_absolute() {
+        PathBuf::from(gitdir)
+    } else {
+        root.join(gitdir)
+    };
+    let canonical = std::fs::canonicalize(&gitdir_path).ok()?;
+    let mut current = canonical.as_path();
+    while let Some(parent) = current.parent() {
+        if current.file_name().and_then(|name| name.to_str()) == Some(".git") {
+            return Some(parent.to_path_buf());
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Memory must survive run isolation. Races/Tasks/Missions open a linked git
+/// worktree as their workspace, but `.klide/memory/` is git-ignored and not
+/// copied by worktree setup — resolving it against the worktree would make
+/// recall silently empty and plant a stray store. Hop to the main checkout so
+/// every run shares the one durable store. Returns `None` (caller keeps the
+/// run's own workspace) when the root is not a linked worktree or the hop
+/// cannot be resolved — same behavior as a plain checkout.
+fn resolve_memory_workspace(workspace: &Workspace) -> Option<Workspace> {
+    let main_root = main_checkout_root(workspace.root())?;
+    if main_root == workspace.root() {
+        return None;
+    }
+    Workspace::new(main_root.to_str()?).ok()
 }
 
 fn slugify(input: &str) -> String {
@@ -318,27 +364,41 @@ fn opt_str(s: &Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Frontmatter values render one per line, and the parser is last-key-wins —
+/// so a value carrying a newline could forge the Rust-stamped keys (e.g. a
+/// supersedes of `"x\nreviewState: stale"`). Strip control characters before
+/// any free string reaches the block. Tags/sourceRefs are JSON-escaped by
+/// serde and safe as-is.
+fn frontmatter_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn render_markdown(entry: &MemoryEntry) -> String {
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("schemaVersion: {}\n", entry.schema_version));
     out.push_str(&format!("date: {}\n", entry.date_iso));
     if let Some(v) = opt_str(&entry.run_id) {
-        out.push_str(&format!("runId: {v}\n"));
+        out.push_str(&format!("runId: {}\n", frontmatter_value(&v)));
     }
     if let Some(v) = opt_str(&entry.provider) {
-        out.push_str(&format!("provider: {v}\n"));
+        out.push_str(&format!("provider: {}\n", frontmatter_value(&v)));
     }
     if let Some(v) = opt_str(&entry.model) {
-        out.push_str(&format!("model: {v}\n"));
+        out.push_str(&format!("model: {}\n", frontmatter_value(&v)));
     }
     if let Some(v) = opt_str(&entry.mode) {
-        out.push_str(&format!("mode: {v}\n"));
+        out.push_str(&format!("mode: {}\n", frontmatter_value(&v)));
     }
     if let Some(v) = opt_str(&entry.status) {
-        out.push_str(&format!("status: {v}\n"));
+        out.push_str(&format!("status: {}\n", frontmatter_value(&v)));
     }
-    out.push_str(&format!("title: {}\n", entry.title));
+    out.push_str(&format!("title: {}\n", frontmatter_value(&entry.title)));
     out.push_str(&format!("kind: {}\n", entry.kind.as_str()));
     out.push_str(&format!("reviewState: {}\n", entry.review_state.as_str()));
     if !entry.tags.is_empty() {
@@ -352,7 +412,7 @@ fn render_markdown(entry: &MemoryEntry) -> String {
         }
     }
     if let Some(v) = opt_str(&entry.supersedes) {
-        out.push_str(&format!("supersedes: {v}\n"));
+        out.push_str(&format!("supersedes: {}\n", frontmatter_value(&v)));
     }
     out.push_str("---\n\n");
     if !entry.goal.is_empty() {
@@ -423,6 +483,11 @@ fn parse_entry_from_file(path: &Path, workspace_root: &Path) -> Option<MemoryEnt
     let mut tags = Vec::new();
     let mut source_refs = Vec::new();
     let mut supersedes = None;
+    // Markdown is authoritative and hand-editable, so unknown enum values are
+    // expected (typos, states a later Klide added). Fail closed: an entry we
+    // can't fully interpret is kept as inspectable evidence but never re-enters
+    // normal recall as if it were reviewed.
+    let mut unknown_enum_value = false;
 
     if lines.next() == Some("---") {
         for line in lines.by_ref() {
@@ -437,7 +502,9 @@ fn parse_entry_from_file(path: &Path, workspace_root: &Path) -> Option<MemoryEnt
                 }
                 match key {
                     "schemaVersion" => {
-                        schema_version = value.parse().unwrap_or(MEMORY_SCHEMA_VERSION)
+                        // A version we can't parse is a shape we don't know —
+                        // treat it as future, never coerce it back to v1.
+                        schema_version = value.parse().unwrap_or(MEMORY_SCHEMA_VERSION + 1)
                     }
                     "date" => date_iso = value,
                     "runId" => run_id = Some(value),
@@ -446,10 +513,14 @@ fn parse_entry_from_file(path: &Path, workspace_root: &Path) -> Option<MemoryEnt
                     "mode" => mode = Some(value),
                     "status" => status = Some(value),
                     "title" => title = value,
-                    "kind" => kind = MemoryKind::parse(&value).unwrap_or_default(),
-                    "reviewState" => {
-                        review_state = MemoryReviewState::parse(&value).unwrap_or_default()
-                    }
+                    "kind" => match MemoryKind::parse(&value) {
+                        Some(parsed) => kind = parsed,
+                        None => unknown_enum_value = true,
+                    },
+                    "reviewState" => match MemoryReviewState::parse(&value) {
+                        Some(parsed) => review_state = parsed,
+                        None => unknown_enum_value = true,
+                    },
                     "tags" => tags = serde_json::from_str(&value).unwrap_or_default(),
                     "sourceRefs" => source_refs = serde_json::from_str(&value).unwrap_or_default(),
                     "supersedes" => supersedes = Some(value),
@@ -457,11 +528,6 @@ fn parse_entry_from_file(path: &Path, workspace_root: &Path) -> Option<MemoryEnt
                 }
             }
         }
-    }
-    // Never reinterpret a future durable shape with today's semantics. The
-    // caller can surface an unreadable entry while a newer Klide migrates it.
-    if schema_version > MEMORY_SCHEMA_VERSION {
-        return None;
     }
     let created_at_ms = if date_iso.is_empty() {
         std::fs::metadata(path)
@@ -475,6 +541,42 @@ fn parse_entry_from_file(path: &Path, workspace_root: &Path) -> Option<MemoryEnt
         // for files we wrote ourselves.
         parse_iso_ms(&date_iso).unwrap_or(0)
     };
+    // Never reinterpret a future durable shape with today's semantics — and
+    // never silently skip it either. Surface an inert stub: visible in lists,
+    // stale so it stays out of normal recall, body left uninterpreted.
+    if schema_version > MEMORY_SCHEMA_VERSION {
+        return Some(MemoryEntry {
+            schema_version,
+            id: id.clone(),
+            path: path.to_string_lossy().to_string(),
+            rel_path,
+            created_at_ms,
+            date_iso,
+            title: if title.is_empty() { id } else { title },
+            kind: MemoryKind::default(),
+            review_state: MemoryReviewState::Stale,
+            tags: Vec::new(),
+            source_refs: Vec::new(),
+            supersedes: None,
+            goal: String::new(),
+            plan: Vec::new(),
+            decisions: Vec::new(),
+            files_touched: Vec::new(),
+            next_steps: Vec::new(),
+            notes: format!(
+                "Unreadable: written with Project Memory schema v{schema_version}, newer than \
+this Klide (v{MEMORY_SCHEMA_VERSION}). The Markdown file is intact — open it directly."
+            ),
+            run_id: None,
+            provider: None,
+            model: None,
+            mode: None,
+            status: None,
+        });
+    }
+    if unknown_enum_value {
+        review_state = MemoryReviewState::Stale;
+    }
 
     // Body → sections. Section lines start with `# `; we keep what we need
     // for the list view and the body. The full body goes into `notes` so
@@ -609,10 +711,63 @@ fn split_sections(
     )
 }
 
+/// Flip the `reviewState:` line inside an existing entry's frontmatter to
+/// `superseded`, leaving every other byte alone. A surgical edit (not a
+/// parse → re-render round trip) so hand-authored sections the parser doesn't
+/// model are never dropped from someone's durable note.
+fn demote_to_superseded(path: &Path) -> Result<(), String> {
+    let raw =
+        std::fs::read_to_string(path).map_err(|e| format!("Unable to read memory file: {e}"))?;
+    let mut lines: Vec<&str> = raw.split_inclusive('\n').collect();
+    let stamped = format!("reviewState: {}\n", MemoryReviewState::Superseded.as_str());
+    let mut replaced = false;
+    if lines.first().map(|line| line.trim_end()) == Some("---") {
+        for line in lines.iter_mut().skip(1) {
+            if line.trim_end() == "---" {
+                break;
+            }
+            if line.trim_start().starts_with("reviewState:") {
+                *line = &stamped;
+                replaced = true;
+                break;
+            }
+        }
+    }
+    let updated = if replaced {
+        lines.concat()
+    } else {
+        // No frontmatter, or no reviewState line — prepend a minimal block so
+        // the demotion is durable even for a bare hand-written note.
+        format!("---\n{stamped}---\n\n{raw}")
+    };
+    crate::durable::write_atomic(path, updated.as_bytes())
+        .map_err(|e| format!("Unable to demote superseded memory entry: {e}"))
+}
+
 #[tauri::command]
 pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<MemoryEntry, String> {
-    let workspace = Workspace::new(&workspace_root)?;
-    let dir = memory_dir(&workspace)?;
+    let base = Workspace::new(&workspace_root)?;
+    let hop = resolve_memory_workspace(&base);
+    let workspace = hop.as_ref().unwrap_or(&base);
+    let dir = ensure_memory_dir(workspace)?;
+    // `supersedes` is renderer/model input that becomes both a frontmatter
+    // line and a file lookup — hold it to the id charset before either.
+    let supersedes = opt_str(&input.supersedes);
+    if let Some(target_id) = &supersedes {
+        if !valid_memory_id(target_id) {
+            return Err(
+                "supersedes must be a Project Memory id (letters, numbers, '-' or '_')."
+                    .to_string(),
+            );
+        }
+        // Enforce the supersession at the write boundary: demote the target so
+        // normal recall stops returning it. A missing target is fine — the
+        // pointer still records the intent.
+        if let Ok(target_path) = workspace.resolve_existing(&format!(".klide/memory/{target_id}.md"))
+        {
+            demote_to_superseded(&target_path)?;
+        }
+    }
     let created = now_ms();
     let date_iso = iso_date(created);
     let stem = format!("{}-{}", date_stamp(created), slugify(&input.title));
@@ -635,7 +790,7 @@ pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<Memory
         review_state: MemoryReviewState::Reviewed,
         tags: input.tags,
         source_refs: input.source_refs,
-        supersedes: input.supersedes,
+        supersedes,
         goal: input.goal,
         plan: input.plan,
         decisions: input.decisions,
@@ -668,8 +823,13 @@ pub(crate) fn list_workspace_memory(
     workspace: &Workspace,
     limit: usize,
 ) -> Result<Vec<MemoryEntry>, String> {
-    let dir = memory_dir(workspace)?;
+    let hop = resolve_memory_workspace(workspace);
+    let workspace = hop.as_ref().unwrap_or(workspace);
     let mut entries = Vec::new();
+    // A missing store is simply the first-session state — resolve, never create.
+    let Ok(dir) = workspace.resolve_existing(".klide/memory") else {
+        return Ok(entries);
+    };
     let read = match std::fs::read_dir(&dir) {
         Ok(r) => r,
         Err(_) => return Ok(entries),
@@ -695,12 +855,15 @@ pub(crate) fn list_workspace_memory(
 
 fn search_terms(query: &str) -> Vec<String> {
     let mut terms = Vec::new();
+    // Unicode-aware on purpose: an accented letter is part of a term, never a
+    // separator, and folding is full to_lowercase — "Décision" must match
+    // "décision" for a French workspace, not split into "d" + "cision".
     for term in query
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/')))
+        .split(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/')))
         .map(str::trim)
         .filter(|term| !term.is_empty())
     {
-        let term = term.to_ascii_lowercase();
+        let term = term.to_lowercase();
         if !terms.contains(&term) {
             terms.push(term);
         }
@@ -717,7 +880,7 @@ fn field_matches(
     score: &mut u32,
     matched_fields: &mut BTreeSet<String>,
 ) {
-    let haystack = value.to_ascii_lowercase();
+    let haystack = value.to_lowercase();
     for (index, term) in terms.iter().enumerate() {
         if haystack.contains(term) {
             covered[index] = true;
@@ -739,7 +902,7 @@ fn clip_excerpt(value: &str, max_chars: usize) -> String {
 
 fn search_excerpt(entry: &MemoryEntry, terms: &[String]) -> String {
     let contains_term = |value: &str| {
-        let value = value.to_ascii_lowercase();
+        let value = value.to_lowercase();
         terms.iter().any(|term| value.contains(term))
     };
     if let Some(decision) = entry.decisions.iter().find(|value| contains_term(value)) {
@@ -771,9 +934,20 @@ pub(crate) fn search_workspace_memory(
     }
 
     let entries = list_workspace_memory(workspace, 500)?;
+    // Supersession is enforced at write time by demoting the target, but the
+    // store is hand-editable — honor the pointers too, so an entry any other
+    // entry claims to supersede stays out of normal recall regardless of what
+    // its own frontmatter says.
+    let superseded_ids: BTreeSet<String> = entries
+        .iter()
+        .filter_map(|entry| entry.supersedes.clone())
+        .collect();
     let mut hits = Vec::new();
     for entry in entries {
-        if !include_inactive && entry.review_state != MemoryReviewState::Reviewed {
+        if !include_inactive
+            && (entry.review_state != MemoryReviewState::Reviewed
+                || superseded_ids.contains(&entry.id))
+        {
             continue;
         }
         if !kinds.is_empty() && !kinds.contains(&entry.kind) {
@@ -911,7 +1085,11 @@ pub(crate) fn read_workspace_memory_entry(
     if !valid_memory_id(id) {
         return Err("Memory id must contain only letters, numbers, '-' or '_'.".to_string());
     }
-    let dir = memory_dir(workspace)?;
+    let hop = resolve_memory_workspace(workspace);
+    let workspace = hop.as_ref().unwrap_or(workspace);
+    let dir = workspace
+        .resolve_existing(".klide/memory")
+        .map_err(|_| "This workspace has no Project Memory store yet.".to_string())?;
     let rel_path = format!(".klide/memory/{id}.md");
     let path = workspace.resolve_existing(&rel_path)?;
     if !path.starts_with(&dir) || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
@@ -926,8 +1104,12 @@ pub(crate) fn read_workspace_memory_entry(
 
 #[tauri::command]
 pub fn memory_read(workspace_root: String, rel_path: String) -> Result<String, String> {
-    let workspace = Workspace::new(&workspace_root)?;
-    let dir = memory_dir(&workspace)?;
+    let base = Workspace::new(&workspace_root)?;
+    let hop = resolve_memory_workspace(&base);
+    let workspace = hop.as_ref().unwrap_or(&base);
+    let dir = workspace
+        .resolve_existing(".klide/memory")
+        .map_err(|_| "This workspace has no Project Memory store yet.".to_string())?;
     let path = workspace.resolve_existing(&rel_path)?;
     if !path.starts_with(&dir) || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
         return Err("Memory file is outside .klide/memory".to_string());
@@ -1026,7 +1208,264 @@ mod tests {
         )
         .unwrap();
 
-        assert!(parse_entry_from_file(&path, &base).is_none());
+        // Future entries surface as inert stubs: visible, stale (never in
+        // normal recall), body uninterpreted — not silently skipped.
+        let stub = parse_entry_from_file(&path, &base).unwrap();
+        assert_eq!(stub.schema_version, 2);
+        assert_eq!(stub.review_state, MemoryReviewState::Stale);
+        assert!(stub.goal.is_empty(), "future body must not be interpreted");
+        assert!(stub.notes.contains("Unreadable"));
+
+        // A version we can't even parse is a shape we don't know — future,
+        // never coerced back to v1.
+        std::fs::write(&path, "---\nschemaVersion: 2.0\ntitle: Odd\n---\n\n# Goal\n\nNope.\n")
+            .unwrap();
+        let stub = parse_entry_from_file(&path, &base).unwrap();
+        assert!(stub.schema_version > MEMORY_SCHEMA_VERSION);
+        assert_eq!(stub.review_state, MemoryReviewState::Stale);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unknown_review_state_or_kind_fails_closed_to_stale() {
+        let base = std::env::temp_dir().join(format!(
+            "klide-memory-fail-closed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join(".klide/memory")).unwrap();
+        let path = base.join(".klide/memory/typo.md");
+        std::fs::write(
+            &path,
+            "---\ntitle: Typo state\nkind: decision\nreviewState: super-seded\n---\n\n# Goal\n\nStill evidence.\n",
+        )
+        .unwrap();
+        let entry = parse_entry_from_file(&path, &base).unwrap();
+        assert_eq!(entry.review_state, MemoryReviewState::Stale);
+
+        std::fs::write(
+            &path,
+            "---\ntitle: Unknown kind\nkind: experimental\nreviewState: reviewed\n---\n\n# Goal\n\nStill evidence.\n",
+        )
+        .unwrap();
+        let entry = parse_entry_from_file(&path, &base).unwrap();
+        assert_eq!(entry.review_state, MemoryReviewState::Stale);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn writing_a_superseding_entry_demotes_the_target_and_hides_it_from_recall() {
+        let base = std::env::temp_dir().join(format!(
+            "klide-memory-supersede-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join(".klide/memory")).unwrap();
+
+        let mut old = sample_entry("decision-old-gate", "Permission gate architecture");
+        old.kind = MemoryKind::Decision;
+        old.goal = "Gate every command in the frontend".to_string();
+        write_entry(&base, old);
+
+        let root = base.to_string_lossy().to_string();
+        let written = super::memory_write(
+            root.clone(),
+            super::MemoryInput {
+                title: "Permission gate architecture (revised)".to_string(),
+                kind: MemoryKind::Decision,
+                tags: Vec::new(),
+                source_refs: Vec::new(),
+                supersedes: Some("decision-old-gate".to_string()),
+                goal: "Gate every command in the Rust permission engine".to_string(),
+                plan: Vec::new(),
+                decisions: Vec::new(),
+                files_touched: Vec::new(),
+                next_steps: Vec::new(),
+                notes: String::new(),
+                run_id: None,
+                provider: None,
+                model: None,
+                mode: None,
+                status: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(written.supersedes.as_deref(), Some("decision-old-gate"));
+
+        // The target's own frontmatter was demoted in place…
+        let old_raw =
+            std::fs::read_to_string(base.join(".klide/memory/decision-old-gate.md")).unwrap();
+        assert!(old_raw.contains("reviewState: superseded"), "{old_raw}");
+        // …and normal recall returns only the correction.
+        let workspace = Workspace::new(base.to_str().unwrap()).unwrap();
+        let hits =
+            search_workspace_memory(&workspace, "permission gate architecture", &[], 5, false)
+                .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry.id, written.id);
+        // The evidence stays inspectable on request.
+        let all =
+            search_workspace_memory(&workspace, "permission gate architecture", &[], 5, true)
+                .unwrap();
+        assert_eq!(all.len(), 2);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn memory_write_rejects_or_neutralizes_frontmatter_injection() {
+        let base = std::env::temp_dir().join(format!(
+            "klide-memory-injection-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let root = base.to_string_lossy().to_string();
+
+        // A supersedes value that isn't an id is refused outright.
+        let refused = super::memory_write(
+            root.clone(),
+            super::MemoryInput {
+                title: "Injection".to_string(),
+                kind: MemoryKind::Handoff,
+                tags: Vec::new(),
+                source_refs: Vec::new(),
+                supersedes: Some("old-id\nreviewState: stale".to_string()),
+                goal: String::new(),
+                plan: Vec::new(),
+                decisions: Vec::new(),
+                files_touched: Vec::new(),
+                next_steps: Vec::new(),
+                notes: String::new(),
+                run_id: None,
+                provider: None,
+                model: None,
+                mode: None,
+                status: None,
+            },
+        );
+        assert!(refused.is_err());
+
+        // A newline smuggled into a free string renders as a single sane line.
+        let written = super::memory_write(
+            root,
+            super::MemoryInput {
+                title: "Sneaky\nreviewState: stale".to_string(),
+                kind: MemoryKind::Handoff,
+                tags: Vec::new(),
+                source_refs: Vec::new(),
+                supersedes: None,
+                goal: String::new(),
+                plan: Vec::new(),
+                decisions: Vec::new(),
+                files_touched: Vec::new(),
+                next_steps: Vec::new(),
+                notes: String::new(),
+                run_id: None,
+                provider: None,
+                model: None,
+                mode: None,
+                status: None,
+            },
+        )
+        .unwrap();
+        let parsed =
+            parse_entry_from_file(std::path::Path::new(&written.path), &base).unwrap();
+        assert_eq!(parsed.review_state, MemoryReviewState::Reviewed);
+        assert!(!parsed.title.contains('\n'));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn search_is_unicode_aware_for_accented_queries_and_content() {
+        let base =
+            std::env::temp_dir().join(format!("klide-memory-unicode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join(".klide/memory")).unwrap();
+
+        let mut entry = sample_entry("decision-memoire", "DÉCISION d'architecture MÉMOIRE");
+        entry.kind = MemoryKind::Decision;
+        entry.goal = "Garder la mémoire du projet en Markdown".to_string();
+        write_entry(&base, entry);
+
+        let workspace = Workspace::new(base.to_str().unwrap()).unwrap();
+        let hits =
+            search_workspace_memory(&workspace, "décision mémoire", &[], 5, false).unwrap();
+        assert_eq!(hits.len(), 1, "accented terms must match case-insensitively");
+        assert_eq!(hits[0].entry.id, "decision-memoire");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn listing_never_creates_the_store_and_worktree_runs_hop_to_the_main_checkout() {
+        let base =
+            std::env::temp_dir().join(format!("klide-memory-worktree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let main = base.join("project");
+        let worktree = base.join("project-worktrees/run-1");
+
+        // A read on a fresh workspace stays a read: no .klide/memory appears.
+        std::fs::create_dir_all(&main).unwrap();
+        assert!(memory_list(main.to_string_lossy().to_string(), None)
+            .unwrap()
+            .is_empty());
+        assert!(
+            !main.join(".klide/memory").exists(),
+            "listing must not create the store"
+        );
+
+        // Shape of a linked git worktree: main has a .git dir, the worktree a
+        // .git *file* pointing at <main>/.git/worktrees/<name>.
+        std::fs::create_dir_all(main.join(".git/worktrees/run-1")).unwrap();
+        std::fs::create_dir_all(main.join(".klide/memory")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                main.join(".git/worktrees/run-1").to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let mut entry = sample_entry("decision-shared", "Shared recall architecture");
+        entry.kind = MemoryKind::Decision;
+        entry.goal = "One durable store for every run".to_string();
+        write_entry(&main, entry);
+
+        // Recall from inside the worktree sees the main checkout's store…
+        let listed = memory_list(worktree.to_string_lossy().to_string(), None).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "decision-shared");
+        assert!(
+            !worktree.join(".klide").exists(),
+            "the worktree must not grow a stray store"
+        );
+        // …and a write from inside the worktree lands in the main store.
+        let written = super::memory_write(
+            worktree.to_string_lossy().to_string(),
+            super::MemoryInput {
+                title: "Worktree handoff".to_string(),
+                kind: MemoryKind::Handoff,
+                tags: Vec::new(),
+                source_refs: Vec::new(),
+                supersedes: None,
+                goal: String::new(),
+                plan: Vec::new(),
+                decisions: Vec::new(),
+                files_touched: Vec::new(),
+                next_steps: Vec::new(),
+                notes: String::new(),
+                run_id: None,
+                provider: None,
+                model: None,
+                mode: None,
+                status: None,
+            },
+        )
+        .unwrap();
+        assert!(std::path::Path::new(&written.path).starts_with(
+            std::fs::canonicalize(&main).unwrap()
+        ));
         let _ = std::fs::remove_dir_all(&base);
     }
 

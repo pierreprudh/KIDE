@@ -332,6 +332,17 @@ fn run_conversation_search(
     }
 }
 
+/// Tool metadata is stamped into the durable Transcript and feeds Mission
+/// Control, evidence export, and (later) the MCP adapter — the absolute local
+/// `path` must never cross that boundary. `relPath` identifies the file.
+fn memory_entry_metadata(entry: &crate::memory::MemoryEntry) -> serde_json::Value {
+    let mut value = serde_json::to_value(entry).unwrap_or(serde_json::Value::Null);
+    if let Some(map) = value.as_object_mut() {
+        map.remove("path");
+    }
+    value
+}
+
 fn run_memory_search(
     ws: &Workspace,
     input: &serde_json::Value,
@@ -371,9 +382,14 @@ fn run_memory_search(
     }
 
     match crate::memory::search_workspace_memory(ws, query, &kinds, limit, include_inactive) {
-        Ok(hits) if hits.is_empty() => ok(format!(
-            "No reviewed Project Memory in this workspace matched {query:?}."
-        )),
+        Ok(hits) if hits.is_empty() => ToolResult {
+            ok: true,
+            content: format!(
+                "No reviewed Project Memory in this workspace matched {query:?}."
+            ),
+            // The schema promises `{query, hits}` on every search result.
+            metadata: Some(serde_json::json!({ "query": query, "hits": [] })),
+        },
         Ok(hits) => {
             let mut content = format!(
                 "Found {} Project Memory entr{} matching {query:?}:",
@@ -398,10 +414,21 @@ fn run_memory_search(
                     content.push_str(&format!("\n   sources: {}", entry.source_refs.len()));
                 }
             }
+            let hits_meta: Vec<serde_json::Value> = hits
+                .iter()
+                .map(|hit| {
+                    serde_json::json!({
+                        "entry": memory_entry_metadata(&hit.entry),
+                        "score": hit.score,
+                        "matchedFields": hit.matched_fields,
+                        "excerpt": hit.excerpt,
+                    })
+                })
+                .collect();
             ToolResult {
                 ok: true,
                 content,
-                metadata: Some(serde_json::json!({ "query": query, "hits": hits })),
+                metadata: Some(serde_json::json!({ "query": query, "hits": hits_meta })),
             }
         }
         Err(error) => err(error),
@@ -422,12 +449,40 @@ fn run_memory_read(
     if id.is_empty() {
         return err("memory_read requires memoryId.".to_string());
     }
+    let include_inactive = input
+        .get("includeInactive")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     match crate::memory::read_workspace_memory_entry(ws, id) {
-        Ok((entry, markdown)) => ToolResult {
-            ok: true,
-            content: markdown,
-            metadata: Some(serde_json::json!({ "entry": entry })),
-        },
+        Ok((entry, markdown)) => {
+            // ReadProjectMemory reads *reviewed* entries. Historical evidence
+            // (proposed/superseded/stale) is an explicit opt-in and arrives
+            // clearly marked, never as current guidance.
+            let state = entry.review_state;
+            if state != crate::memory::MemoryReviewState::Reviewed {
+                if !include_inactive {
+                    return err(format!(
+                        "Project Memory `{}` is {} and excluded from normal recall. \
+Call memory_read again with includeInactive: true to view it as historical evidence.",
+                        entry.id,
+                        state.as_str()
+                    ));
+                }
+                return ToolResult {
+                    ok: true,
+                    content: format!(
+                        "[historical evidence — reviewState: {}. Do not treat this as current guidance.]\n\n{markdown}",
+                        state.as_str()
+                    ),
+                    metadata: Some(serde_json::json!({ "entry": memory_entry_metadata(&entry) })),
+                };
+            }
+            ToolResult {
+                ok: true,
+                content: markdown,
+                metadata: Some(serde_json::json!({ "entry": memory_entry_metadata(&entry) })),
+            }
+        }
         Err(error) => err(error),
     }
 }
@@ -537,9 +592,10 @@ fn registry() -> Vec<ToolEntry> {
         },
         ToolEntry {
             kind: ToolKind::ProjectMemory,
-            schema: schema("memory_read", "Read one Project Memory entry by the stable id returned from memory_search. Returns the authoritative Markdown plus structured provenance metadata.",
+            schema: schema("memory_read", "Read one Project Memory entry by the stable id returned from memory_search. Returns the authoritative Markdown plus structured provenance metadata. Reads reviewed entries; superseded/stale evidence requires includeInactive.",
                 serde_json::json!({
-                    "memoryId": { "type": "string", "description": "Stable Project Memory id from memory_search." }
+                    "memoryId": { "type": "string", "description": "Stable Project Memory id from memory_search." },
+                    "includeInactive": { "type": "boolean", "description": "Read a superseded or stale entry as clearly-marked historical evidence. Defaults to false." }
                 }),
                 &["memoryId"]),
             run_read: Some(run_memory_read),

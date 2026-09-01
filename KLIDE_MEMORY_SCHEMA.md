@@ -129,13 +129,26 @@ Both Tools have capability `ReadProjectMemory` and wire spelling
 
 ```json
 {
-  "memoryId": "2026-08-31-1400-keep-command-trust-in-rust"
+  "memoryId": "2026-08-31-1400-keep-command-trust-in-rust",
+  "includeInactive": false
 }
 ```
 
 The visible result is authoritative Markdown. Tool metadata contains the parsed
-entry. The id validator and Workspace resolver prevent traversal outside the
-memory directory.
+entry (without the absolute `path` — Tool metadata is stamped into the durable
+Transcript, which crosses the machine boundary). The id validator and Workspace
+resolver prevent traversal outside the memory directory. Reading a
+proposed/superseded/stale entry requires `includeInactive: true` and returns the
+Markdown behind a `[historical evidence …]` marker, mirroring `memory_search`'s
+recall rule.
+
+### Store resolution
+
+Both Tools and the `memory_*` commands resolve `.klide/memory/` against the
+**main checkout**: a linked git worktree (the default isolation for Races,
+Tasks, and Missions) hops through its `.git` file back to the project that owns
+the store, so isolated runs recall — and write — the same durable memory. Read
+paths never create the directory; only `memory_write` does.
 
 ## MCP mapping
 
