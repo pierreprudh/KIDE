@@ -12,6 +12,7 @@ import { relativeTimeLong } from "../time";
 import { errMessage } from "../errors";
 import type { ThemeId } from "../theme";
 import type { GitFile, GitStatus } from "../gitTypes";
+import { UNNAMED_GIT_STATUS, gitStatusMark } from "../gitStatusMark";
 import {
   clampDetailPct,
   CommitDetailPane,
@@ -103,40 +104,17 @@ const PANE_TRANSITION = "width var(--motion-med) var(--ease-soft)";
 const DIFF_RENDER_LIMIT = 1600;
 
 
-function statusLabel(status: string): string {
-  if (status === "??") return "U";
-  if (status.includes("M")) return "M";
-  if (status.includes("A")) return "A";
-  if (status.includes("D")) return "D";
-  if (status.includes("R")) return "R";
-  return status || "-";
-}
-
-function statusColor(label: string): string {
-  if (label === "M") return "var(--warning)";
-  if (label === "A") return "var(--success)";
-  if (label === "D") return "var(--danger)";
-  if (label === "U") return "var(--accent)";
-  if (label === "R") return "var(--accent)";
-  return "var(--fg-subtle)";
-}
-
 function splitPath(path: string) {
   const parts = path.split("/");
   const name = parts.pop() ?? path;
   return { name, folder: parts.join("/") };
 }
 
-function StatusLetter({ label }: { label: string }) {
+function StatusLetter({ status }: { status: string }) {
+  const mark = gitStatusMark(status) ?? UNNAMED_GIT_STATUS;
   return (
-    <span
-      style={{
-        width: "1.2em", flexShrink: 0, textAlign: "center",
-        fontFamily: "var(--font-mono)", fontSize: 10.5, fontWeight: 600,
-        color: statusColor(label),
-      }}
-    >
-      {label}
+    <span className="klide-file-row-mark" title={mark.title} style={{ color: mark.color }}>
+      {mark.label}
     </span>
   );
 }
@@ -361,37 +339,22 @@ type FileRowProps = {
 
 function FileRow({ file, active, onOpen, onStage, onUnstage, onDiscard, loading }: FileRowProps) {
   const { name, folder } = splitPath(file.path);
-  const label = statusLabel(file.status);
-  const [hover, setHover] = useState(false);
   return (
     <div
+      // Chrome — fills, radius, ellipsis, the action reveal — comes from
+      // .klide-file-row, the same recipe the Explorer tree uses. Only this
+      // list's own columns and density are set here.
+      className="klide-file-row"
+      data-active={active}
       onClick={() => onOpen(file)}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: "grid",
-        gridTemplateColumns: "auto 1fr auto",
-        alignItems: "center",
-        gap: 8,
-        padding: "5px 10px",
-        borderRadius: "var(--radius-sm)",
-        cursor: "pointer",
-        background: active ? "var(--bg-selected)" : hover ? "var(--bg-hover)" : "transparent",
-        transition: "background var(--motion-fast) var(--ease-out)",
-      }}
+      style={{ gridTemplateColumns: "auto 1fr auto", gap: 8, padding: "5px 10px", fontSize: 13 }}
     >
-      <StatusLetter label={label} />
+      <StatusLetter status={file.status} />
       <div style={{ minWidth: 0 }}>
-        <div style={{ color: "var(--fg)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {name}
-        </div>
-        {folder && (
-          <div style={{ color: "var(--fg-dim)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}>
-            {folder}
-          </div>
-        )}
+        <div className="klide-file-row-name">{name}</div>
+        {folder && <div className="klide-file-row-sub">{folder}</div>}
       </div>
-      <div style={{ display: "flex", gap: 2, opacity: hover || active ? 1 : 0, transition: "opacity var(--motion-fast) var(--ease-out)" }}>
+      <div className="klide-file-row-actions">
         <button
           aria-label={file.staged ? "Unstage" : "Stage"}
           title={file.staged ? "Unstage" : "Stage"}
@@ -1786,7 +1749,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
                   fontSize: 12, color: "var(--fg-subtle)",
                 }}
               >
-                <StatusLetter label={statusLabel(reviewStatus?.files.find((f) => f.path === open.path)?.status ?? "")} />
+                <StatusLetter status={reviewStatus?.files.find((f) => f.path === open.path)?.status ?? ""} />
                 <span style={{ fontFamily: "var(--font-mono)", color: "var(--fg-strong)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{open.path}</span>
                 <span style={{ color: open.staged ? "var(--accent)" : "var(--fg-dim)" }}>{open.staged ? "staged" : "working"}</span>
                 <button

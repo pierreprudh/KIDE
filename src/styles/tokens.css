@@ -3465,18 +3465,18 @@ button:focus-visible .menu-leadout {
 /* Tree rows. The grid is: [chevron] [icon] [name] [decoration]. 16px
    chevron column, 16px icon column, name takes the rest and
    truncates, decoration floats right. */
-.klide-explorer-row {
-  position: relative; /* paints hover/selected fills above the indent guides */
+/* ── The one file-row recipe ──────────────────────────────────────────────
+   The chrome every list of files shares: the fill states, the radius, the
+   ellipsis rule, the mono status mark, the hover-revealed trailing actions.
+   The Explorer tree (`.klide-explorer-row`) and Git Review's changed-file
+   list each add only their own columns on top; neither owns hover or
+   selection any more, so the two lists can no longer drift apart. */
+.klide-file-row {
+  position: relative; /* paints its fills above the tree's indent guides */
   display: grid;
-  grid-template-columns: 16px 16px 1fr auto;
   align-items: center;
-  gap: 4px;
-  height: 23px;
-  padding: 0 8px 0 0;
   border-radius: var(--radius-sm);
-  border: 1px solid transparent;
   color: var(--fg);
-  font-size: 12.5px;
   cursor: pointer;
   user-select: none;
   min-width: 0;
@@ -3485,13 +3485,74 @@ button:focus-visible .menu-leadout {
     color var(--motion-fast) var(--ease-out);
 }
 
-.klide-explorer-row:hover {
+.klide-file-row:hover {
   background: var(--bg-hover);
 }
 
-.klide-explorer-row[data-active="true"] {
+/* After :hover on purpose — equal specificity, so a hovered selected row
+   keeps the selected fill. */
+.klide-file-row[data-active="true"] {
   background: var(--bg-selected);
   color: var(--fg-strong);
+}
+
+.klide-file-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The second line some rows carry — a containing folder, dimmer and smaller. */
+.klide-file-row-sub {
+  min-width: 0;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: 11px; /* no token below --fs-xs; the scale stops at 12px */
+}
+
+/* The git status letter. Colour comes from the row (gitStatusMark.ts owns
+   which token); this owns the shape, so M in the tree and M in Git Review
+   are the same glyph at the same size. */
+.klide-file-row-mark {
+  flex-shrink: 0;
+  min-width: 14px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+/* Trailing actions: hidden at rest, revealed by hover or selection — the
+   same hover-reveal recipe as the Explorer header actions. */
+.klide-file-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.klide-file-row:hover .klide-file-row-actions,
+.klide-file-row[data-active="true"] .klide-file-row-actions {
+  opacity: 1;
+}
+
+/* Composes .klide-file-row — this adds only the tree's own columns
+   (chevron, icon, name, decoration) and its tighter density. */
+.klide-explorer-row {
+  grid-template-columns: 16px 16px 1fr auto;
+  /* Reserved so the inline-rename state can show a border without reflow. */
+  border: 1px solid transparent;
+  gap: 4px;
+  height: 23px;
+  padding: 0 8px 0 0;
+  font-size: 12.5px;
 }
 
 .klide-explorer-row[data-virtual="true"] {
@@ -3521,25 +3582,6 @@ button:focus-visible .menu-leadout {
   justify-content: center;
   color: var(--fg-subtle);
   flex-shrink: 0;
-}
-
-.klide-explorer-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.klide-explorer-decoration {
-  flex-shrink: 0;
-  min-width: 14px;
-  display: grid;
-  place-items: center;
-  font-size: 9.5px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  line-height: 1;
-  letter-spacing: 0.02em;
 }
 
 /* Nesting — a children <ul> sits flush against the parent's row. */
@@ -3600,7 +3642,8 @@ button:focus-visible .menu-leadout {
   .klide-explorer-chevron {
     transition: none;
   }
-  .klide-explorer-row {
+  .klide-file-row,
+  .klide-file-row-actions {
     transition: none;
   }
   .klide-explorer-tree ul ul::before {
