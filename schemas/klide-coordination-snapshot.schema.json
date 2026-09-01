@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://klide.dev/schemas/klide-coordination-snapshot.schema.json",
+  "title": "Klide coordination snapshot",
+  "description": "Replay-derived Run state, envelope delivery, cancellation, and result projection at one journal cursor.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "nextSeq", "runs", "envelopes", "results"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "nextSeq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Inclusive sequence cursor for the next coordination_events read."
+    },
+    "runs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/runSnapshot" }
+    },
+    "envelopes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/envelopeSnapshot" }
+    },
+    "results": {
+      "type": "array",
+      "items": { "$ref": "klide-coordination-event.schema.json#/$defs/result" }
+    }
+  },
+  "$defs": {
+    "cancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor", "requestedAtMs"],
+      "properties": {
+        "actor": { "$ref": "klide-coordination-event.schema.json#/$defs/actor" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "requestedAtMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registration", "state", "registeredAtMs", "stateChangedAtMs"],
+      "properties": {
+        "registration": {
+          "$ref": "klide-coordination-event.schema.json#/$defs/registration"
+        },
+        "state": { "$ref": "klide-coordination-event.schema.json#/$defs/runState" },
+        "stateReason": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "registeredAtMs": { "type": "integer", "minimum": 0 },
+        "stateChangedAtMs": { "type": "integer", "minimum": 0 },
+        "cancelRequest": { "$ref": "#/$defs/cancelRequest" }
+      }
+    },
+    "deliveryState": {
+      "type": "string",
+      "enum": ["queued", "delivered", "acknowledged"]
+    },
+    "envelopeSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["envelope", "deliveryState"],
+      "properties": {
+        "envelope": { "$ref": "klide-coordination-event.schema.json#/$defs/envelope" },
+        "deliveryState": { "$ref": "#/$defs/deliveryState" },
+        "deliveredAtMs": { "type": "integer", "minimum": 0 },
+        "acknowledgedAtMs": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

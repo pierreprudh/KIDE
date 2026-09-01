@@ -84,6 +84,36 @@ _Avoid_: vibe check, soft review, confidence score
 A typed event a run emits (token, tool call, status change). The only way any surface learns what a run is doing.
 _Avoid_: message, update
 
+**Run coordination**:
+The Rust-owned control plane through which Runs identify, address, steer, wait
+for, cancel, and return structured work to one another. Its append-only journal
+under `.klide/coordination/` is shared across private worktrees and folds into a
+snapshot; the Harness, Delegate adapters, UI, embedded MCP, and future local
+socket are consumers of this one domain, never competing coordinators.
+_Avoid_: terminal orchestration, agent chat, external A2A provider, panel routing
+
+**Coordination envelope**:
+A durable semantic payload addressed from an operator or authenticated Run to
+one stable Run id. It has an explicit kind, correlation/reply identity,
+idempotency key, evidence references, and queued → delivered → acknowledged
+lifecycle. Delivery happens at an execution adapter's safe boundary; terminal
+bytes are never the authoritative envelope.
+_Avoid_: Agent event, prompt injection, terminal text, chat message
+
+**Coordination result**:
+The single structured outcome a Run publishes for its coordinator: status,
+summary, artifacts, and evidence references. A result reports work; reviewed
+knowledge extracted from it may later become Project Memory, but the result
+itself is not memory.
+_Avoid_: last assistant message, terminal tail, memory entry
+
+**Coordination snapshot**:
+The replay-derived view of registered Runs, normalized states, cancellation
+requests, envelope delivery, and results at one journal cursor. Consumers take
+a snapshot and then read events from `nextSeq`; React state and focused panels
+never become the source of truth.
+_Avoid_: agent registry, live panel list, cached bus state
+
 **Transcript**:
 The append-only JSONL record of a run's agent events on disk. A run can be replayed from it.
 _Avoid_: log, history, chat history

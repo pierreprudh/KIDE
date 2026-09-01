@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://klide.dev/schemas/klide-coordination-event.schema.json",
+  "title": "Klide coordination event line",
+  "description": "One durable, ordered event in a Workspace-owned inter-agent coordination journal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "seq", "ts", "event"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "ts": { "type": "integer", "minimum": 0 },
+    "event": {
+      "oneOf": [
+        { "$ref": "#/$defs/runRegistered" },
+        { "$ref": "#/$defs/runStateChanged" },
+        { "$ref": "#/$defs/envelopeQueued" },
+        { "$ref": "#/$defs/envelopeDelivered" },
+        { "$ref": "#/$defs/envelopeAcknowledged" },
+        { "$ref": "#/$defs/cancelRequested" },
+        { "$ref": "#/$defs/resultPublished" }
+      ]
+    }
+  },
+  "$defs": {
+    "workerKind": {
+      "type": "string",
+      "enum": ["harness", "delegate"]
+    },
+    "runState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "starting",
+        "working",
+        "blocked",
+        "waiting",
+        "reviewing",
+        "done",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "actor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": { "type": { "const": "operator" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "runId"],
+          "properties": {
+            "type": { "const": "run" },
+            "runId": { "$ref": "#/$defs/runId" }
+          }
+        }
+      ]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[^/\\\\]+$"
+    },
+    "componentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[^/\\\\]+$"
+    },
+    "registration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "workerKind"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/runId" },
+        "workerKind": { "$ref": "#/$defs/workerKind" },
+        "parentRunId": { "$ref": "#/$defs/runId" },
+        "missionId": { "$ref": "#/$defs/componentId" },
+        "missionTaskId": { "$ref": "#/$defs/componentId" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 160 }
+      },
+      "dependentRequired": {
+        "missionId": ["missionTaskId"],
+        "missionTaskId": ["missionId"]
+      }
+    },
+    "envelopeKind": {
+      "type": "string",
+      "enum": ["instruction", "question", "answer", "progress", "handoff"]
+    },
+    "sourceType": {
+      "type": "string",
+      "enum": ["run", "transcript", "commit", "file", "memory", "mission_task"]
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceType", "id"],
+      "properties": {
+        "sourceType": { "$ref": "#/$defs/sourceType" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workspace-relative path. Absolute local paths never cross an adapter boundary."
+        },
+        "lineStart": { "type": "integer", "minimum": 1 },
+        "lineEnd": { "type": "integer", "minimum": 1 }
+      },
+      "dependentRequired": { "lineEnd": ["lineStart"] }
+    },
+    "sourceRefs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/sourceRef" }
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "toRunId", "kind", "body", "sourceRefs", "createdAtMs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/componentId" },
+        "from": { "$ref": "#/$defs/actor" },
+        "toRunId": { "$ref": "#/$defs/runId" },
+        "kind": { "$ref": "#/$defs/envelopeKind" },
+        "body": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "replyTo": { "$ref": "#/$defs/componentId" },
+        "correlationId": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "sourceRefs": { "$ref": "#/$defs/sourceRefs" },
+        "createdAtMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "resultStatus": {
+      "type": "string",
+      "enum": ["succeeded", "partial", "failed", "cancelled"]
+    },
+    "artifactKind": {
+      "type": "string",
+      "enum": ["file", "commit", "transcript", "diff", "memory"]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reference"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/artifactKind" },
+        "reference": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 240 }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "runId", "status", "summary", "artifacts", "sourceRefs", "publishedAtMs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/componentId" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "status": { "$ref": "#/$defs/resultStatus" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 65536 },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "sourceRefs": { "$ref": "#/$defs/sourceRefs" },
+        "publishedAtMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runRegistered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "registration", "state"],
+      "properties": {
+        "type": { "const": "run_registered" },
+        "registration": { "$ref": "#/$defs/registration" },
+        "state": { "$ref": "#/$defs/runState" }
+      }
+    },
+    "runStateChanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "actor", "runId", "fromState", "toState"],
+      "properties": {
+        "type": { "const": "run_state_changed" },
+        "actor": { "$ref": "#/$defs/actor" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "fromState": { "$ref": "#/$defs/runState" },
+        "toState": { "$ref": "#/$defs/runState" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "envelopeQueued": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "envelope"],
+      "properties": {
+        "type": { "const": "envelope_queued" },
+        "envelope": { "$ref": "#/$defs/envelope" }
+      }
+    },
+    "envelopeDelivered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "envelopeId", "runId"],
+      "properties": {
+        "type": { "const": "envelope_delivered" },
+        "envelopeId": { "$ref": "#/$defs/componentId" },
+        "runId": { "$ref": "#/$defs/runId" }
+      }
+    },
+    "envelopeAcknowledged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "envelopeId", "runId"],
+      "properties": {
+        "type": { "const": "envelope_acknowledged" },
+        "envelopeId": { "$ref": "#/$defs/componentId" },
+        "runId": { "$ref": "#/$defs/runId" }
+      }
+    },
+    "cancelRequested": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "actor", "runId"],
+      "properties": {
+        "type": { "const": "cancel_requested" },
+        "actor": { "$ref": "#/$defs/actor" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "resultPublished": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "result"],
+      "properties": {
+        "type": { "const": "result_published" },
+        "result": { "$ref": "#/$defs/result" }
+      }
+    }
+  }
+}

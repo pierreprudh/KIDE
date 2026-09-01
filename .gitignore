@@ -48,6 +48,10 @@ src-tauri/gen/
 # Mission specs and append-only runtime events are local/private by default.
 # A repo can explicitly unignore or export authored mission Markdown later.
 .klide/missions/
+
+# Inter-agent envelopes, normalized Run state, and results are local durable
+# runtime evidence. The journal may quote prompts and Workspace paths.
+.klide/coordination/
 # Per-conversation agent todo stores — run scratch state, never repo content.
 .agents/todos/
 

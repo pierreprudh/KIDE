@@ -152,6 +152,7 @@ The Rust harness checks capabilities when it advertises tools and again before e
 
 Read the [Harness contract](./HARNESS_CONTRACT.md) for the trust model and [Harness schema](./KLIDE_HARNESS_SCHEMA.md) for the tool interface.
 The [Memory Engine](./MEMORY_ENGINE.md) and [Project Memory schema](./KLIDE_MEMORY_SCHEMA.md) describe Klide's local learning layer and its future embedded-MCP boundary.
+The [Agent Coordination architecture](./AGENT_COORDINATION.md) and [coordination schemas](./KLIDE_COORDINATION_SCHEMA.md) define stable Run addressing, durable envelopes, replay, and the shared adapter boundary for native agents and Delegates.
 
 ## Project status
 
