@@ -7,6 +7,7 @@
 // genuinely misc helpers (token estimates, ids) stay in `utils.ts`.
 
 import type { AgentAttachment as Attachment, ProviderId } from "../../agent/types";
+import { isAutoProvider } from "../../agent/providers";
 import type { Conversation, Msg } from "./types";
 import { notify as notifyUser } from "../../toast";
 import { canOpenSettings, openSettingsSection } from "../../settingsNavigation";
@@ -294,7 +295,11 @@ export function latestRestorableConversationId(
   // and, once the picker moved, relabelled it (see `originProvider` in
   // conversationSession.ts). With no thread for this Provider the panel opens
   // a fresh one; history is one click away and keeps its own identity.
-  if (provider) {
+  // An Auto panel owns no Provider: its threads record whatever the router
+  // landed each on, and continuing one re-locks to that origin in Rust. So it
+  // restores the most recent thread of any Provider — the one case where the
+  // rule above would otherwise leave a panel with nothing to reopen.
+  if (provider && !isAutoProvider(provider)) {
     return conversations.find((conv) => conv.provider === provider)?.id ?? null;
   }
   return conversations[0]?.id ?? null;

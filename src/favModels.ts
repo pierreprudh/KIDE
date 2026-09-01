@@ -54,6 +54,16 @@ export function favModelsFor(provider: string): string[] {
     .map((k) => k.slice(prefix.length));
 }
 
+/** Every star, across providers, in star order. What an `auto` run sends to
+ *  the Rust router as its preference list. */
+export function allFavModels(): { provider: string; model: string }[] {
+  return [...read()].flatMap((k) => {
+    const sep = k.indexOf(SEP);
+    if (sep <= 0) return [];
+    return [{ provider: k.slice(0, sep), model: k.slice(sep + 1) }];
+  });
+}
+
 export function toggleFavModel(provider: string, model: string): void {
   const set = read();
   const k = favKey(provider, model);

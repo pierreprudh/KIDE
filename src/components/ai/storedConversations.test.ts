@@ -388,6 +388,18 @@ describe("a panel restores only its own Provider's thread", () => {
     expect(latestRestorableConversationId("/workspace", "openrouter")).toBe("router-thread");
   });
 
+  it("lets an Auto panel reopen the latest thread of any Provider", () => {
+    // An Auto thread records the Provider the router landed it on, never
+    // "auto" — so the own-Provider rule would leave an Auto panel with nothing.
+    // Continuing the thread re-locks to its origin in Rust, so adopting it is
+    // safe.
+    saveConversations([
+      conversation({ id: "routed-to-anthropic", provider: "anthropic", updatedAt: 9 }),
+      conversation({ id: "older-local", provider: "ollama", updatedAt: 4 }),
+    ]);
+    expect(latestRestorableConversationId("/workspace", "auto")).toBe("routed-to-anthropic");
+  });
+
   it("falls back to the latest thread only when no Provider is asked for", () => {
     saveConversations([
       conversation({ id: "delegate-thread", provider: "claude-code", updatedAt: 9 }),
