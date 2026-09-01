@@ -3465,18 +3465,18 @@ button:focus-visible .menu-leadout {
 /* Tree rows. The grid is: [chevron] [icon] [name] [decoration]. 16px
    chevron column, 16px icon column, name takes the rest and
    truncates, decoration floats right. */
-.klide-explorer-row {
-  position: relative; /* paints hover/selected fills above the indent guides */
+/* ── The one file-row recipe ──────────────────────────────────────────────
+   The chrome every list of files shares: the fill states, the radius, the
+   ellipsis rule, the mono status mark, the hover-revealed trailing actions.
+   The Explorer tree (`.klide-explorer-row`) and Git Review's changed-file
+   list each add only their own columns on top; neither owns hover or
+   selection any more, so the two lists can no longer drift apart. */
+.klide-file-row {
+  position: relative; /* paints its fills above the tree's indent guides */
   display: grid;
-  grid-template-columns: 16px 16px 1fr auto;
   align-items: center;
-  gap: 4px;
-  height: 23px;
-  padding: 0 8px 0 0;
   border-radius: var(--radius-sm);
-  border: 1px solid transparent;
   color: var(--fg);
-  font-size: 12.5px;
   cursor: pointer;
   user-select: none;
   min-width: 0;
@@ -3485,13 +3485,74 @@ button:focus-visible .menu-leadout {
     color var(--motion-fast) var(--ease-out);
 }
 
-.klide-explorer-row:hover {
+.klide-file-row:hover {
   background: var(--bg-hover);
 }
 
-.klide-explorer-row[data-active="true"] {
+/* After :hover on purpose — equal specificity, so a hovered selected row
+   keeps the selected fill. */
+.klide-file-row[data-active="true"] {
   background: var(--bg-selected);
   color: var(--fg-strong);
+}
+
+.klide-file-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The second line some rows carry — a containing folder, dimmer and smaller. */
+.klide-file-row-sub {
+  min-width: 0;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: 11px; /* no token below --fs-xs; the scale stops at 12px */
+}
+
+/* The git status letter. Colour comes from the row (gitStatusMark.ts owns
+   which token); this owns the shape, so M in the tree and M in Git Review
+   are the same glyph at the same size. */
+.klide-file-row-mark {
+  flex-shrink: 0;
+  min-width: 14px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+/* Trailing actions: hidden at rest, revealed by hover or selection — the
+   same hover-reveal recipe as the Explorer header actions. */
+.klide-file-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.klide-file-row:hover .klide-file-row-actions,
+.klide-file-row[data-active="true"] .klide-file-row-actions {
+  opacity: 1;
+}
+
+/* Composes .klide-file-row — this adds only the tree's own columns
+   (chevron, icon, name, decoration) and its tighter density. */
+.klide-explorer-row {
+  grid-template-columns: 16px 16px 1fr auto;
+  /* Reserved so the inline-rename state can show a border without reflow. */
+  border: 1px solid transparent;
+  gap: 4px;
+  height: 23px;
+  padding: 0 8px 0 0;
+  font-size: 12.5px;
 }
 
 .klide-explorer-row[data-virtual="true"] {
@@ -3521,25 +3582,6 @@ button:focus-visible .menu-leadout {
   justify-content: center;
   color: var(--fg-subtle);
   flex-shrink: 0;
-}
-
-.klide-explorer-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.klide-explorer-decoration {
-  flex-shrink: 0;
-  min-width: 14px;
-  display: grid;
-  place-items: center;
-  font-size: 9.5px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  line-height: 1;
-  letter-spacing: 0.02em;
 }
 
 /* Nesting — a children <ul> sits flush against the parent's row. */
@@ -3600,8 +3642,15 @@ button:focus-visible .menu-leadout {
   .klide-explorer-chevron {
     transition: none;
   }
-  .klide-explorer-row {
+  .klide-file-row,
+  .klide-file-row-actions,
+  .klide-rail-files-reveal,
+  .klide-rail-files-reveal[data-open] {
     transition: none;
+  }
+  /* No drop either: the rows must land at rest, not 9px out of place. */
+  .klide-rail-files-reveal[data-open] .klide-explorer-row {
+    animation: none;
   }
   .klide-explorer-tree ul ul::before {
     transition: none;
@@ -3872,6 +3921,17 @@ button:focus-visible .menu-leadout {
      travel as one object instead of cross-fading on separate timings. */
   --rail-fold: 500ms;
   --rail-fold-ease: var(--ease-spring);
+  /* A nav row's chevron arriving under the pointer. Slow on the way in — it is
+     an offer, not a response, so it should surface rather than snap — and
+     quicker on the way out, where a lingering fade follows the pointer around
+     the rail. */
+  --rail-chevron-in: 320ms;
+  /* The files region's fold: the box opening. */
+  --rail-files-fold: 420ms;
+  /* One row's drop into that box, and the beat between consecutive rows. The
+     rows are what read as the motion — the box is only making room. */
+  --rail-files-row: 300ms;
+  --rail-files-row-step: 24ms;
   width: 252px;
   flex-shrink: 0;
   display: flex;
@@ -4285,8 +4345,9 @@ button:focus-visible .menu-leadout {
   color: var(--fg-dim);
   opacity: 0;
   transform: rotate(0deg);
+  /* Leaving. Shorter than the arrival below. */
   transition:
-    opacity var(--motion-fast) var(--ease-out),
+    opacity var(--motion-med) var(--ease-out),
     transform var(--motion-med) var(--ease-soft);
 }
 
@@ -4295,6 +4356,11 @@ button:focus-visible .menu-leadout {
 .klide-focus-nav-row[data-active="true"] .klide-focus-nav-chevron,
 .klide-focus-nav-chevron[data-expanded="true"] {
   opacity: 1;
+  /* Arriving, slowly. The whole transition is restated because this rule
+     replaces the one above for the revealed state rather than adding to it. */
+  transition:
+    opacity var(--rail-chevron-in) var(--ease-out),
+    transform var(--motion-med) var(--ease-soft);
 }
 
 .klide-focus-nav-chevron[data-expanded="true"] {
@@ -4317,6 +4383,97 @@ button:focus-visible .menu-leadout {
 
 .klide-focus-section-label:first-child {
   margin-top: 2px;
+}
+
+/* ── The rail's files region ──────────────────────────────────────────────
+   The global sidebar carries more than one list now: the workspace's tree,
+   unfolding under the Explorer row that names it, and the projects and
+   conversations below the hairline. Both scroll on their own, so a deep tree
+   never buries the history and a long history never pushes the tree away.
+
+   The fold is a reveal, not a mount. The tree stays in the DOM while closed —
+   its rows, its open folders and its scroll position are exactly what make
+   reopening it instant — and what animates is a real length: `height` against
+   the rail's own definite height. (`flex-grow` expresses the same split, but
+   its animation depends on how much free space the column happens to have; a
+   percentage of a known height does not.) `flex: none` keeps the region at
+   exactly that height instead of letting the body squeeze it, and the clip is
+   what hides the rows on the way through. */
+.klide-rail-files-reveal {
+  flex: none;
+  height: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Only the height. The box is making room, not performing — the rows below
+     are what the eye follows, and fading the whole region on top of them would
+     double every row's fade. --ease-soft is the long-tail deceleration the rest
+     of the app uses: quick to leave, slow to settle, never a bounce. */
+  transition: height var(--rail-files-fold) var(--ease-soft);
+}
+
+.klide-rail-files-reveal[data-open] {
+  height: 45%;
+}
+
+/* The rows drop in, top to bottom, as the box opens — each one falling out of
+   the row above it, a beat behind its predecessor. The same per-row cadence the
+   conversation tree uses, dropping rather than scaling: a conversation row
+   materialises on a fixed junction of the tree it hangs from, while a file row
+   simply arrives, so it can travel.
+
+   Keyed off [data-open] rather than mount: the tree never unmounts (that is
+   what makes reopening it instant), so the animation has to be something that
+   begins when the selector starts matching. */
+@keyframes klide-rail-files-row-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.klide-rail-files-reveal[data-open] .klide-explorer-row {
+  animation: klide-rail-files-row-drop var(--rail-files-row) var(--ease-soft)
+    var(--rail-files-row-delay, 0ms) backwards;
+}
+
+/* The stagger. Counted within each list, so an expanded folder's children
+   cascade under it on their own beat instead of inheriting the trunk's count.
+   Twelve deep is where the beat stops being legible and starts being a wait —
+   past that every remaining row lands together. */
+.klide-rail-files-reveal[data-open] li:nth-child(1) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 0); }
+.klide-rail-files-reveal[data-open] li:nth-child(2) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 1); }
+.klide-rail-files-reveal[data-open] li:nth-child(3) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 2); }
+.klide-rail-files-reveal[data-open] li:nth-child(4) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 3); }
+.klide-rail-files-reveal[data-open] li:nth-child(5) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 4); }
+.klide-rail-files-reveal[data-open] li:nth-child(6) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 5); }
+.klide-rail-files-reveal[data-open] li:nth-child(7) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 6); }
+.klide-rail-files-reveal[data-open] li:nth-child(8) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 7); }
+.klide-rail-files-reveal[data-open] li:nth-child(9) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 8); }
+.klide-rail-files-reveal[data-open] li:nth-child(10) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 9); }
+.klide-rail-files-reveal[data-open] li:nth-child(11) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 10); }
+.klide-rail-files-reveal[data-open] li:nth-child(n + 12) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 11); }
+
+/* The Explorer embedded in the rail (`Sidebar variant="rail"`) — the same tree
+   component the workbench panel used, with no card around it: the rail is
+   already the surface. */
+.klide-rail-files {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* The rail supplies the horizontal padding, so the embedded tree drops the
+   panel's own inset and keeps only its scroll room. */
+.klide-rail-files .klide-explorer-tree {
+  padding: 2px 0 6px;
 }
 
 .klide-focus-rail-body {
@@ -6817,6 +6974,10 @@ button:focus-visible .menu-leadout {
   .klide-focus-provider-history-chevron,
   .klide-focus-tree-elbow,
   .klide-focus-nav-chevron,
+  .klide-focus-nav-row:hover .klide-focus-nav-chevron,
+  .klide-focus-nav-row:focus-visible .klide-focus-nav-chevron,
+  .klide-focus-nav-row[data-active="true"] .klide-focus-nav-chevron,
+  .klide-focus-nav-chevron[data-expanded="true"],
   .klide-focus-composer,
   .klide-focus-composer::before,
   .klide-focus-send {

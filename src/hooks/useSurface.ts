@@ -156,12 +156,17 @@ export function ownsTitlebar(surface: Surface): boolean {
   return surface.kind === "focus";
 }
 
-/** The icon rail shows on the workbench and over every overlay except
- *  Settings (which renders its own full shell), and never on Welcome or
- *  Focus (Focus's own rail carries navigation).
- *  Was `!(focusMode && view === "workbench")` inside the non-settings branch. */
+/** The sidebar shows on every surface but Welcome (its own full-screen page)
+ *  and Settings (its own full shell, with its own rail).
+ *
+ *  Focus used to be excluded because it drew a second copy of the very same
+ *  component. One instance is what makes the sidebar hold still across a mode
+ *  change: two of them meant an unmount and a mount, which replays the rail's
+ *  entrance animation and throws away the tree's expanded folders and scroll.
+ *  The shells now differ only in the props they hand it. */
 export function showsRail(surface: Surface): boolean {
   return (
+    surface.kind === "focus" ||
     surface.kind === "workbench" ||
     (surface.kind === "overlay" && surface.view !== "settings")
   );

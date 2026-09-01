@@ -6,6 +6,12 @@ import type { CSSProperties, FocusEvent, KeyboardEvent } from "react";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { FileTypeIcon } from "./fileMarks";
 import type { GitFile } from "../gitTypes";
+import {
+  type GitStatusMark,
+  gitStatusLetter,
+  gitStatusMark,
+  gitStatusMarkForLetter,
+} from "../gitStatusMark";
 import { gitStatus } from "../ipc/git";
 
 type Props = {
@@ -22,18 +28,29 @@ type Props = {
   fill?: boolean;
   /** Show dotfiles in the tree. Defaults to true (Settings → General). */
   showHidden?: boolean;
+  /**
+   * Whether the tree is on screen. A hidden tree stays mounted — its entries,
+   * its expanded folders and its scroll position are what make revealing it a
+   * reveal rather than a reload — but it stops polling the filesystem, and
+   * re-reads once as it comes back.
+   */
+  active?: boolean;
+  /**
+   * Where this tree is being rendered.
+   *
+   * `"panel"` (default) is the workbench's own column — a floating-panel card
+   * with its own header. `"rail"` embeds the very same tree as a region of the
+   * global sidebar (`WorkspaceRail`): no card, and the header shrinks to the
+   * rail's eyebrow voice. There is one tree implementation either way — the
+   * same rule the AI panel follows for Focus.
+   */
+  variant?: "panel" | "rail";
 };
 
 type TreeEntry = {
   name: string;
   isDirectory: boolean;
   virtual?: boolean;
-};
-
-type GitDecoration = {
-  label: string;
-  color: string;
-  title: string;
 };
 
 type MenuTarget = {
@@ -137,56 +154,28 @@ function parentPath(path: string): string {
   return parts.join("/");
 }
 
-function gitLabel(status: string): string {
-  if (status === "??") return "U";
-  if (status.includes("M")) return "M";
-  if (status.includes("A")) return "A";
-  if (status.includes("D")) return "D";
-  if (status.includes("R")) return "R";
-  return status.trim() || "-";
-}
-
-function gitDecorationForLabel(label: string): GitDecoration | null {
-  if (label === "M") {
-    return { label, color: "var(--warning)", title: "Modified" };
-  }
-  if (label === "A" || label === "U") {
-    return {
-      label,
-      color: "var(--success)",
-      title: label === "U" ? "Untracked" : "Added",
-    };
-  }
-  if (label === "D") {
-    return { label, color: "var(--danger)", title: "Deleted" };
-  }
-  if (label === "R") {
-    // No dedicated semantic token for "renamed"; the "R" letter carries the
-    // meaning, so the accent keeps it theme-aware and distinct from D/M.
-    return { label, color: "var(--accent)", title: "Renamed" };
-  }
-  return null;
-}
-
 function gitDecoration(
   root: string,
   path: string,
   isDirectory: boolean,
   gitFiles: GitFile[]
-): GitDecoration | null {
+): GitStatusMark | null {
   const rel = relativePath(root, path);
   const exact = gitFiles.find((file) => file.path.replace(/\/$/, "") === rel);
-  if (exact) return gitDecorationForLabel(gitLabel(exact.status));
+  if (exact) return gitStatusMark(exact.status);
 
   if (!isDirectory) {
+    // git reports the untracked *folder*, not the files inside it, so a file
+    // under one has no status of its own — infer the letter.
     const untrackedParent = gitFiles.find(
       (file) => file.status === "??" && file.path.endsWith("/") && rel.startsWith(file.path)
     );
-    return untrackedParent ? gitDecorationForLabel("U") : null;
+    return untrackedParent ? gitStatusMarkForLetter("U") : null;
   }
 
+  // A folder wears the status of the first changed file beneath it.
   const child = gitFiles.find((file) => file.path.startsWith(`${rel}/`));
-  return child ? gitDecorationForLabel(gitLabel(child.status)) : null;
+  return child ? gitStatusMark(child.status) : null;
 }
 
 function gitVirtualEntries(
@@ -199,7 +188,7 @@ function gitVirtualEntries(
   const virtual = new Map<string, TreeEntry>();
 
   for (const file of gitFiles) {
-    if (gitLabel(file.status) !== "D" || file.path.includes(" -> ")) continue;
+    if (gitStatusLetter(file.status) !== "D" || file.path.includes(" -> ")) continue;
 
     const parent = parentPath(file.path);
     if (parent === baseRel) {
@@ -313,8 +302,11 @@ export function Sidebar({
   workspaceRoot,
   fill,
   showHidden = true,
+  variant = "panel",
+  active = true,
 }: Props) {
   const root = workspaceRoot;
+  const inRail = variant === "rail";
   const [entries, setEntries] = useState<TreeEntry[]>([]);
   const [children, setChildren] = useState<Record<string, TreeEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => loadExpanded(root));
@@ -501,7 +493,8 @@ export function Sidebar({
   }, [root, expanded]);
 
   useEffect(() => {
-    if (!root) return;
+    // Off screen: hold every row exactly as it is and stop reading the disk.
+    if (!root || !active) return;
     let cancelled = false;
 
     const refresh = async () => {
@@ -536,13 +529,16 @@ export function Sidebar({
       }
     };
 
+    // One read as the tree appears, so a reveal never shows a stale row for
+    // up to three seconds, then the normal cadence.
+    void refresh();
     const interval = window.setInterval(refresh, 3_000);
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [root, expanded]);
+  }, [root, expanded, active]);
 
   async function pick(path: string) {
     if (!root) return;
@@ -823,7 +819,7 @@ export function Sidebar({
       editing?.mode === "create" && editing.parent === basePath ? (
         <li key="__create__">
           <div
-            className="klide-explorer-row"
+            className="klide-file-row klide-explorer-row"
             data-editing="true"
             style={{ paddingLeft: indent, gridTemplateColumns: `16px 16px 1fr` }}
           >
@@ -862,7 +858,7 @@ export function Sidebar({
         return (
           <li key={path}>
             <div
-              className="klide-explorer-row"
+              className="klide-file-row klide-explorer-row"
               role="treeitem"
               tabIndex={-1}
               aria-level={depth + 1}
@@ -902,11 +898,12 @@ export function Sidebar({
                   onCancel={() => setEditing(null)}
                 />
               ) : (
-                <span className="klide-explorer-name">{e.name}</span>
+                <span className="klide-file-row-name">{e.name}</span>
               )}
               {decoration && (
                 <span
-                  className="klide-explorer-decoration"
+                  className="klide-file-row-mark"
+                  title={decoration.title}
                   style={{ color: decoration.color }}
                 >
                   {decoration.label}
@@ -923,13 +920,13 @@ export function Sidebar({
                 {isLoading ? (
                   <li>
                     <div
-                      className="klide-explorer-row"
+                      className="klide-file-row klide-explorer-row"
                       style={{ paddingLeft: indent + 22, cursor: "default" }}
                     >
                       <span className="klide-explorer-chevron" />
                       <span className="klide-explorer-icon" />
                       <span
-                        className="klide-explorer-name"
+                        className="klide-file-row-name"
                         style={{ color: "var(--fg-dim)", fontStyle: "italic" }}
                       >
                         Loading…
@@ -939,7 +936,7 @@ export function Sidebar({
                 ) : error ? (
                   <li>
                     <div
-                      className="klide-explorer-row"
+                      className="klide-file-row klide-explorer-row"
                       data-clickable="true"
                       onClick={async (event) => {
                         event.stopPropagation();
@@ -963,7 +960,7 @@ export function Sidebar({
                     >
                       <span className="klide-explorer-chevron" />
                       <span className="klide-explorer-icon" />
-                      <span className="klide-explorer-name" style={{ color: "var(--fg-dim)" }}>
+                      <span className="klide-file-row-name" style={{ color: "var(--fg-dim)" }}>
                         Retry folder
                       </span>
                     </div>
@@ -975,12 +972,12 @@ export function Sidebar({
                 ) : (
                   <li>
                     <div
-                      className="klide-explorer-row"
+                      className="klide-file-row klide-explorer-row"
                       style={{ paddingLeft: indent + 22, cursor: "default" }}
                     >
                       <span className="klide-explorer-chevron" />
                       <span className="klide-explorer-icon" />
-                      <span className="klide-explorer-name" style={{ color: "var(--fg-dim)" }}>
+                      <span className="klide-file-row-name" style={{ color: "var(--fg-dim)" }}>
                         Empty
                       </span>
                     </div>
@@ -997,22 +994,28 @@ export function Sidebar({
 
   return (
     <aside
-      className="floating-panel"
+      // In the rail the surface is the rail's own — no card, no margin, and
+      // the height comes from the region it is placed in.
+      className={inRail ? "klide-rail-files" : "floating-panel"}
       onContextMenu={(event) => {
         // Right-click on empty space targets the workspace root.
         if (!root) return;
         event.preventDefault();
         setMenu({ x: event.clientX, y: event.clientY, path: root, isDirectory: true });
       }}
-      style={{
-        width: fill ? "100%" : width,
-        height: fill ? "100%" : undefined,
-        margin: fill ? 0 : "4px 0 4px 4px",
-        display: fill || visible ? "flex" : "none",
-        flexDirection: "column",
-        flexShrink: 0,
-        overflow: "hidden",
-      }}
+      style={
+        inRail
+          ? undefined
+          : {
+              width: fill ? "100%" : width,
+              height: fill ? "100%" : undefined,
+              margin: fill ? 0 : "4px 0 4px 4px",
+              display: fill || visible ? "flex" : "none",
+              flexDirection: "column",
+              flexShrink: 0,
+              overflow: "hidden",
+            }
+      }
     >
       {/* Header — the panel name stays stable while the full workspace path
           remains available in the native title. At-rest: section name on
@@ -1020,7 +1023,12 @@ export function Sidebar({
           bottom edge is a gradient hairline + a 1px inset highlight for
           depth (no flat 1px line). No path is rendered; native title
           reveals it. */}
-      <header className="klide-explorer-header">
+      {/* The panel's header. In the rail there is none: the Explorer row above
+          the tree already carries the folder icon, the name and the chevron,
+          and its actions live in the row's own context menu — a second header
+          restating all of it is the busy chrome the rail exists to avoid. */}
+      {!inRail && (
+      <div className="klide-explorer-header">
         {root ? (
           <div className="klide-explorer-header-workspace" title={root}>
             <span className="klide-explorer-header-workspace-name">
@@ -1078,7 +1086,8 @@ export function Sidebar({
             </button>
           )}
         </div>
-      </header>
+      </div>
+      )}
 
       {fsNotice && (
         <div

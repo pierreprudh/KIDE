@@ -18,6 +18,12 @@ export function ImageView({ src, name }: Props) {
         flex: 1,
         minHeight: 0,
         display: "grid",
+        // Definite tracks, not auto ones: the image's percentage max-height
+        // resolves against the track, and an auto track sized by a tall
+        // picture would resolve it against the picture — which is how an
+        // oversized screenshot kept its natural height instead of fitting.
+        gridTemplateColumns: "minmax(0, 1fr)",
+        gridTemplateRows: "minmax(0, 1fr)",
         placeItems: "center",
         overflow: "auto",
         padding: 24,

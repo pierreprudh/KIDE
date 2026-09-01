@@ -17,6 +17,8 @@ import { WorkspaceRail, type RailNavItem } from "./components/WorkspaceRail";
 import {
   CloseIcon,
   FocusLayoutIcon,
+  FreeLayoutIcon,
+  TerminalIcon,
   FolderIcon,
   GitIcon,
   MemoryIcon,
@@ -193,6 +195,12 @@ function App() {
   // Focus screen state: home (hero composer) vs the live conversation, and
   // the hero composer's text on its way into the AI panel.
   const [focusChatActive, setFocusChatActive] = useState(false);
+  // Focus's half of the rail's selection state. It lives up here because the
+  // rail does: one instance across every surface, so the state a rail click
+  // sets cannot sit inside one of the shells. `focusConvoError` is the
+  // "conversation unavailable" apology Focus draws on its canvas.
+  const [focusSelectedConvoId, setFocusSelectedConvoId] = useState<string | null>(null);
+  const [focusConvoError, setFocusConvoError] = useState<{ title: string } | null>(null);
   const [focusInitialMessage, setFocusInitialMessage] = useState<string | null>(null);
   // Photos/documents staged on the start stage, travelling with that first
   // message. Cleared by the same consume callback, so a second task never
@@ -666,9 +674,29 @@ function App() {
       ? gridLayouts.find((g) => g.id === activeGridId) ?? null
       : null;
   const effectiveGitReviewRoot = workspaceRoot;
+  // Whether the file tree is a region of the global sidebar rather than a
+  // surface of the layout. Both panel workbenches hand it to the rail — the
+  // anchored one gave up its second column, the free one its drawer — and the
+  // rail is drawn over every overlay, so unlike the panel tools the tree does
+  // not go away when you open Git Review or the Orchestrator. A grid layout is
+  // the exception: its cells are placed by hand and saved layouts name a
+  // `files` cell, so a grid keeps its own.
+  const explorerInRail = surfaceCore.base.kind === "panels";
+  // Whether the sidebar's files region is unfolded right now. The region stays
+  // mounted on every surface — including Focus, which never opens it — because
+  // a wrapper that only appears with the surface would mount already-open and
+  // have nothing to animate from. Mounted and closed, a mode change is a
+  // transition of `height` like any other fold.
+  const filesRegionOpen = explorerInRail && explorerVisible;
   const activityState: Record<ActivityPanel, boolean> = {
     home: overlay === null,
-    explorer: overlay === null && (explorerVisible || sidebarSlot2 === "explorer"),
+    // In the rail, the row reports the region you can still see. Gating it on
+    // `overlay === null` — right when the tree was a column an overlay
+    // replaced — made the row go quiet under Git Review and the Orchestrator
+    // while the tree was plainly still there.
+    explorer: explorerInRail
+      ? explorerVisible
+      : overlay === null && (explorerVisible || sidebarSlot2 === "explorer"),
     git: overlay === "git-review",
     memory: overlay === null && memoryVisible,
     skills: overlay === null && (skillsVisible || sidebarSlot2 === "skills"),
@@ -830,19 +858,40 @@ function App() {
     offerRaceSplit(convo.id);
   }
 
+  /** The workspace tree, as a region of the sidebar. Mounted on every surface
+   *  so the fold always has somewhere to animate from and the tree keeps its
+   *  expanded folders across a mode change; `filesRegionOpen` decides whether
+   *  it is unfolded, and it never is in Focus — the chat-first surface has no
+   *  editor to open a file into, so a tree there would browse somewhere else. */
+  function renderRailFiles(): ReactNode {
+    if (!workspaceRoot) return null;
+    return (
+      <Sidebar
+        variant="rail"
+        /* Mounted whether or not it shows: toggling Explorer is a reveal of
+           the tree you left, not a re-read of the workspace. `active` is what
+           stops it polling the disk while folded away. */
+        active={filesRegionOpen}
+        visible
+        width={0}
+        showHidden={showHiddenFiles}
+        workspaceRoot={workspaceRoot}
+        onOpen={openFile}
+        onRootChange={changeRoot}
+        onEntryRenamed={onEntryRenamed}
+        onEntryDeleted={onEntryDeleted}
+        onFilePreview={setPreviewPath}
+        activePath={active?.path ?? null}
+      />
+    );
+  }
+
   const railNav: RailNavItem[] = [
     {
       id: "new-task",
       label: "New task",
       icon: <NewTaskIcon size={15} />,
       onClick: () => startWorkbenchTask(),
-    },
-    {
-      id: "explorer",
-      label: "Explorer",
-      icon: <FolderIcon size={15} />,
-      active: activityState.explorer,
-      onClick: (meta) => togglePanel("explorer", meta),
     },
     {
       id: "git",
@@ -883,6 +932,83 @@ function App() {
       icon: <SkillsIcon size={15} />,
       active: activityState.skills,
       onClick: (meta) => togglePanel("skills", meta),
+    },
+    {
+      // Last row, and a disclosure rather than a destination: the tree unfolds
+      // directly beneath it. It sits at the foot of the actions because that
+      // is where it opens — a row whose chevron points at a region above the
+      // rest of the list would be pointing at nothing.
+      id: "explorer",
+      label: "Explorer",
+      icon: <FolderIcon size={15} />,
+      active: activityState.explorer,
+      expanded: explorerInRail ? explorerVisible : undefined,
+      onClick: (meta) => togglePanel("explorer", meta),
+    },
+  ];
+
+  function clearFocusConvoNavigation() {
+    setFocusSelectedConvoId(null);
+    setFocusConvoError(null);
+  }
+
+  /** Focus's rows. The workbench's `railNav` above and this differ only where
+   *  the two shells genuinely do: "New task" means a fresh canvas here and a
+   *  fresh panel there, Mission Control is an overlay either way, and Focus has
+   *  no Explorer row because it has no editor to open a file into. Everything
+   *  else is the same destination reached the same way. */
+  const focusRailNav: RailNavItem[] = [
+    {
+      id: "new-task",
+      label: "New task",
+      icon: <NewTaskIcon size={15} />,
+      onClick: () => {
+        endFocusRaceWatch();
+        setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
+        setFocusChatActive(false);
+      },
+    },
+    {
+      // Git Review is a full-window surface, not a panel, so Focus reaches the
+      // very same one the workbench does. It earns its own row: the git island
+      // carries the branch on the home screen but is gone the moment a
+      // conversation is up, which in Focus is nearly always.
+      id: "git",
+      label: "Git",
+      icon: <GitIcon size={15} />,
+      active: activityState.git,
+      onClick: () => togglePanel("git"),
+    },
+    {
+      id: "runs",
+      label: "Mission Control",
+      icon: <MissionIcon size={15} />,
+      active: activityState.runs,
+      onClick: () => openOverlay("runs"),
+    },
+    {
+      id: "orchestrator",
+      label: "Orchestrator",
+      icon: <OrchestratorIcon size={15} />,
+      active: activityState.orchestrator,
+      onClick: () => togglePanel("orchestrator"),
+    },
+    {
+      id: "memory",
+      label: "Memory",
+      icon: <MemoryIcon size={15} />,
+      active: activityState.memory,
+      onClick: () => togglePanel("memory"),
+    },
+    {
+      id: "skills",
+      label: "Skills",
+      icon: <SkillsIcon size={15} />,
+      active: activityState.skills,
+      // Skills is a modal here. togglePanel treats it as a sidebar view and
+      // would collapse the free-mode explorer on the way, which Focus has no
+      // business touching.
+      onClick: () => setSkillsVisible((cur) => !cur),
     },
   ];
 
@@ -2862,36 +2988,124 @@ function App() {
                 gains is the conversation history that used to exist in Focus
                 alone. Focus hides the rail because it draws its own copy. */}
             {showsRail(surface) && (
+            /* The one sidebar, and one instance of it — Focus used to draw a
+               second copy, which meant a mode change unmounted one rail and
+               mounted another: the entrance animation replayed and the tree's
+               expanded folders and scroll went with it. The shells differ only
+               in the props below, so switching mode now morphs the icons and
+               leaves the column where it stands. */
             <WorkspaceRail
+              /* Files as a region of the sidebar. The anchored workbench used
+                 to draw this very tree as a second left column and free mode
+                 as a drawer, so the app had two sidebars abreast. Same
+                 component (`variant="rail"`), one column. Grid layouts still
+                 place their own explorer cell — saved layouts name it — and
+                 Focus gets no tree at all: no editor to open a file into. */
+              filesOpen={filesRegionOpen}
+              filesRegion={renderRailFiles()}
               workspaceRoot={workspaceRoot}
               projects={recentFolders}
-              nav={railNav}
+              nav={focusBase ? focusRailNav : railNav}
               activeProvider={aiPanels[0]?.provider ?? "ollama"}
-              /* The focused panel's conversation is the one you are looking
-                 at, so it takes the tree's active route; the rest are marked
-                 as merely open. */
-              selectedConversationId={railActiveConversationId}
-              openConversationIds={openConversations.map((c) => c.convoId)}
-              onSwitchProject={changeRoot}
-              onOpenConversation={openConversationInAiPanel}
-              onConversationUnavailable={(convo) =>
+              /* The focused pane's conversation is the one you are looking at,
+                 so it takes the tree's active route; the rest are marked as
+                 merely open. In Focus the panel bindings are the truth while a
+                 chat is up — they follow a drop into the split — and the local
+                 click state covers the apology row and the moment between a
+                 click and the binding catching up. */
+              selectedConversationId={
+                focusBase
+                  ? focusChatActive && !focusConvoError
+                    ? railActiveConversationId ?? focusSelectedConvoId
+                    : focusSelectedConvoId
+                  : railActiveConversationId
+              }
+              /* Focus: only while the canvas is actually showing them — on the
+                 hero home nothing is open, whatever the panels still hold. */
+              openConversationIds={
+                focusBase && !focusChatActive ? [] : openConversations.map((c) => c.convoId)
+              }
+              onSwitchProject={(root) => {
+                if (focusBase) {
+                  endFocusRaceWatch();
+                  setFocusChatActive(false);
+                }
+                changeRoot(root);
+              }}
+              onOpenConversation={(convo) => {
+                if (focusBase) {
+                  setFocusSelectedConvoId(convo.id);
+                  setFocusConvoError(null);
+                  // History is navigation, not a second reader mode: resume it
+                  // into the same fully wired AiPanel a live Focus chat uses.
+                  openFocusConversation(convo, "primary");
+                  return;
+                }
+                openConversationInAiPanel(convo);
+              }}
+              onConversationUnavailable={(convo) => {
+                if (focusBase) {
+                  // Focus swaps its canvas for a plain apology rather than
+                  // silently reopening whatever was up.
+                  setFocusSelectedConvoId(convo.id);
+                  setFocusConvoError({ title: convo.title || "Untitled conversation" });
+                  return;
+                }
                 notify(
                   `"${convo.title || "That conversation"}" is no longer in local history.`,
                   { tone: "warn" },
-                )
-              }
+                );
+              }}
+              onNavigateAway={focusBase ? clearFocusConvoNavigation : undefined}
+              reloadKey={focusBase ? focusChatActive : undefined}
               onOpenSettings={() => togglePanel("settings")}
               onOpenProfile={() => togglePanel("profile")}
+              /* The same two controls in both shells, so the foot never gains
+                 or loses a button on a mode change — only the view switch's
+                 icon morphs. They sit apart from the destinations above because
+                 they change the shell rather than opening a surface. */
               footActions={
-                <button
-                  type="button"
-                  className="klide-rail-view-switch"
-                  aria-label="Focus layout"
-                  title="Focus layout"
-                  onClick={enterFocus}
-                >
-                  <FocusLayoutIcon size={14} />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="klide-rail-view-switch"
+                    data-active={(focusBase ? focusTerminalOpen : terminalVisible) || undefined}
+                    aria-label={
+                      (focusBase ? focusTerminalOpen : terminalVisible)
+                        ? "Hide the terminal"
+                        : "Show the terminal"
+                    }
+                    aria-pressed={focusBase ? focusTerminalOpen : terminalVisible}
+                    title={
+                      (focusBase ? focusTerminalOpen : terminalVisible)
+                        ? "Hide the terminal"
+                        : "Terminal"
+                    }
+                    onClick={() =>
+                      focusBase
+                        ? setFocusTerminalOpen((open) => !open)
+                        : setTerminalVisible((shown) => !shown)
+                    }
+                  >
+                    <TerminalIcon size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="klide-rail-view-switch"
+                    aria-label={focusBase ? "Leave Focus — Free layout" : "Focus layout"}
+                    title={focusBase ? "Leave Focus — Free layout" : "Focus layout"}
+                    onClick={() => {
+                      if (focusBase) {
+                        clearFocusConvoNavigation();
+                        enterWorkbench("free");
+                        return;
+                      }
+                      enterFocus();
+                    }}
+                  >
+                    {focusBase ? <FreeLayoutIcon size={14} /> : <FocusLayoutIcon size={14} />}
+                  </button>
+                </>
               }
             />
             )}
@@ -2979,22 +3193,25 @@ function App() {
                     : ""}
                   projects={recentFolders}
                   chatActive={focusChatActive}
-                  /* What the canvas panes actually hold, so the rail can mark
-                     both halves of a split — the focused one selected, the
-                     other merely open. Same derivation as the workbench rail. */
-                  activeConversationId={railActiveConversationId}
-                  openConversationIds={openConversations.map((c) => c.convoId)}
-                  onSwitchProject={(root) => {
-                    endFocusRaceWatch();
-                    setFocusChatActive(false);
-                    changeRoot(root);
+                  /* The apology the canvas shows for a conversation history no
+                     longer holds. The sidebar that navigates there is the
+                     host's, so its state is too. */
+                  conversationOpenError={focusConvoError}
+                  onConversationUnavailable={(convo) => {
+                    setFocusSelectedConvoId(convo.id);
+                    setFocusConvoError({ title: convo.title || "Untitled conversation" });
                   }}
+                  onClearConversationNavigation={clearFocusConvoNavigation}
                   onNewChat={() => {
                     endFocusRaceWatch();
                     setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
                     setFocusChatActive(false);
                   }}
-                  onOpenConversation={(convo) => openFocusConversation(convo, "primary")}
+                  onOpenConversation={(convo) => {
+                    setFocusSelectedConvoId(convo.id);
+                    setFocusConvoError(null);
+                    openFocusConversation(convo, "primary");
+                  }}
                   onSubmit={(text, attachments) => {
                     markFolderWorked(workspaceRoot);
                     // A normal Focus task runs in the open Workspace. Worktree
@@ -3005,15 +3222,13 @@ function App() {
                     setFocusInitialAttachments(attachments);
                     setFocusChatActive(true);
                   }}
-                  onOpenMissionControl={() => openOverlay("runs")}
-                  /* Focus's rail reaches the shared destinations through the
-                     very same handler the activity bar uses — one Git view,
-                     one Memory modal, one Settings. */
+                  /* Focus's canvas reaches the shared destinations through the
+                     very same handler the rail uses — one Git view, one Memory
+                     modal, one Settings. */
                   onOpenPanel={(panel) => {
                     // Skills is the one exception: togglePanel treats it as a
-                    // sidebar view and collapses the free-mode explorer on the
-                    // way. Focus has no sidebar, so open the modal directly and
-                    // leave the panel layout untouched.
+                    // sidebar view and would collapse the free-mode explorer on
+                    // the way, which Focus has no business touching.
                     if (panel === "skills") {
                       setSkillsVisible((cur) => !cur);
                       return;
@@ -3024,16 +3239,10 @@ function App() {
                     setSettingsInitial(section);
                     openOverlay("settings");
                   }}
-                  /* Leaving Focus lands on the free (floating) workbench —
-                     a deliberate taste call, now one verb. */
-                  onExitFocus={() => enterWorkbench("free")}
                   /* Terminal on the full canvas. There is one native shell, so
                      this is the same PTY the workbench drawer shows — and
                      because the drawer is unmounted while Focus is up, exactly
                      one xterm is ever attached to it. */
-                  terminalOpen={focusTerminalOpen}
-                  onOpenTerminal={() => setFocusTerminalOpen(true)}
-                  onCloseTerminal={() => setFocusTerminalOpen(false)}
                   renderTerminal={() =>
                     // Mounts on first open, then stays — same as the workbench
                     // drawer, so closing can animate out and the shell's
@@ -3163,6 +3372,9 @@ function App() {
                 focusedPanel={focusedPanel}
                 zCounter={zCounter}
                 explorerVisible={explorerVisible}
+                /* One sidebar: the tree is a region of the rail, so this
+                   layout no longer draws a column for it. */
+                explorerInRail={explorerInRail}
                 terminalVisible={terminalVisible}
                 aiVisible={aiVisible}
                 sidebarSlot2={sidebarSlot2}
@@ -3277,7 +3489,7 @@ function App() {
                     </button>
                   </div>
                 )}
-                {explorerVisible && explorerFloating && (
+                {explorerVisible && explorerFloating && !explorerInRail && (
                   <FloatingPanel
                     panelId="explorer"
                     rect={explorerRect}
@@ -3296,7 +3508,7 @@ function App() {
                     from the left edge on click (same compositor-only motion
                     as the editor dock) and slides away on toggle. The
                     "Floating explorer" setting restores the draggable panel. */}
-                {!explorerFloating && (
+                {!explorerFloating && !explorerInRail && (
                   <div
                     className="explorer-dock-overlay"
                     data-open={explorerVisible ? "true" : "false"}

@@ -29,22 +29,12 @@ import {
 import { Z } from "../zLayers";
 import {
   AttachIcon,
-  FreeLayoutIcon,
   GitIcon,
-  MemoryIcon,
-  MissionIcon,
-  NewTaskIcon,
-  OrchestratorIcon,
   SendIcon,
-  SkillsIcon,
-  TerminalIcon,
 } from "../icons";
-import {
-  WorkspaceRail,
-  railProjectRoots,
-  retrievableConversation,
-  type RailNavItem,
-} from "./WorkspaceRail";
+// The rail itself is the host's now (App.tsx renders the app's one instance);
+// these two are pure helpers Focus's hero shares with it.
+import { railProjectRoots, retrievableConversation } from "./WorkspaceRail";
 import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
 import { usePortalMenu } from "../hooks/usePortalMenu";
 import { useCustomProviders } from "../hooks/useCustomProviders";
@@ -87,20 +77,19 @@ type Props = {
   /** Recent project roots (the same list the activity-bar popover shows). */
   projects: string[];
   chatActive: boolean;
-  onSwitchProject: (root: string) => void;
   /** Back to the hero home — the next submit starts a fresh conversation. */
   onNewChat: () => void;
   /** Resume a saved conversation in the same live Focus chat surface. */
   onOpenConversation: (convo: Conversation) => void;
-  /** The conversation the canvas is actually showing — with a split, the
-   *  focused half's. The host derives it from its panel bindings, so it stays
-   *  right however the conversation arrived (rail click, hero card, drop). */
-  activeConversationId?: string | null;
-  /** Every conversation a canvas pane holds right now. One id normally, two
-   *  with a split open — the rail marks the non-selected ones as open. */
-  openConversationIds?: string[];
   onSubmit: (text: string, attachments: Attachment[]) => void;
-  onOpenMissionControl: () => void;
+  /** The apology the canvas shows in place of a conversation local history no
+   *  longer holds. The host owns it because the sidebar that navigates there
+   *  is the host's. */
+  conversationOpenError: { title: string } | null;
+  /** A hero resume card pointed at a conversation that is gone. */
+  onConversationUnavailable: (convo: Conversation) => void;
+  /** Drop the apology and any rail selection — the way back to the hero. */
+  onClearConversationNavigation: () => void;
   /** The rail's shared destinations — the same handler the free-mode activity
    *  bar calls, so Focus opens the identical Git view / Memory / Skills /
    *  Settings / Profile surfaces instead of parallel ones. */
@@ -109,9 +98,6 @@ type Props = {
    *  sends keyless providers to "api" (API keys) instead of dead-ending on a
    *  row you can't run. */
   onOpenSettingsSection: (section: string) => void;
-  /** Leave Focus for the Free (floating-panel) layout. Focus has no status
-   *  bar, so this rail icon is the only way out. */
-  onExitFocus: () => void;
   renderChat: () => ReactNode;
   /** Terminal — the native shell docked under the canvas. It stands beneath the
    *  home/chat surface rather than replacing it, so the conversation keeps its
@@ -119,9 +105,6 @@ type Props = {
    *  work in the shell. One shell app-wide: the same PTY the workbench drawer
    *  shows, at the same remembered height, so opening it here doesn't start a
    *  second one. The parent renders the whole dock; this is the slot. */
-  terminalOpen: boolean;
-  onOpenTerminal: () => void;
-  onCloseTerminal: () => void;
   renderTerminal: () => ReactNode;
   /** Composer run settings — the same per-panel / per-model state the AI
    *  panel and Settings read (provider → model → effort → context). */
@@ -166,20 +149,15 @@ export function FocusMode({
   gitRefreshToken,
   projects,
   chatActive,
-  onSwitchProject,
   onNewChat,
   onOpenConversation,
-  activeConversationId,
-  openConversationIds,
   onSubmit,
-  onOpenMissionControl,
+  conversationOpenError,
+  onConversationUnavailable,
+  onClearConversationNavigation,
   onOpenPanel,
   onOpenSettingsSection,
-  onExitFocus,
   renderChat,
-  terminalOpen,
-  onOpenTerminal,
-  onCloseTerminal,
   renderTerminal,
   provider,
   onProviderChange,
@@ -205,13 +183,6 @@ export function FocusMode({
     [activeProjectRoot, projects],
   );
 
-  // Which conversation the canvas is showing. The rail marks it; opening one
-  // that local history no longer holds swaps the canvas for a plain apology
-  // rather than silently reopening whatever was up.
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
-  const [conversationOpenError, setConversationOpenError] = useState<{
-    title: string;
-  } | null>(null);
   const { username, avatarUrl } = useUserInfo();
   // Bumped when the composer strip's branch is clicked, so the git island can
   // pulse. A counter rather than a boolean: every click has to land, including
@@ -236,12 +207,6 @@ export function FocusMode({
   }, []);
   useEffect(() => {
     setConvos(loadConversations<Conversation>());
-  }, [chatActive]);
-
-  // Leaving the live chat means there is no active conversation for the rail
-  // to mark. Opening history sets the id again before the live panel appears.
-  useEffect(() => {
-    if (!chatActive) setSelectedConversationId(null);
   }, [chatActive]);
 
   const projectName = activeProjectRoot ? basename(activeProjectRoot) : null;
@@ -287,21 +252,6 @@ export function FocusMode({
       onOpenSettingsSection,
     ]
   );
-  function clearConversationNavigation() {
-    setSelectedConversationId(null);
-    setConversationOpenError(null);
-  }
-
-  // What the rail highlights. While a chat is up, the host's panel bindings
-  // are the truth — they follow a drop into the split and a new split's focus,
-  // which the local click state cannot see. The local state still covers the
-  // "conversation unavailable" apology (that row stays selected) and the
-  // moment between a rail click and the panel binding catching up.
-  const railSelectedConversationId =
-    chatActive && !conversationOpenError
-      ? activeConversationId ?? selectedConversationId
-      : selectedConversationId;
-
   /** Open a conversation from the hero's resume cards. The rail resolves its
    *  own rows; this is the same guard for the cards, which read the same
    *  possibly-stale snapshot. */
@@ -310,14 +260,10 @@ export function FocusMode({
       conversation.id,
       loadConversations<Conversation>(),
     );
-    setSelectedConversationId(conversation.id);
     if (!resolved) {
-      setConversationOpenError({
-        title: conversation.title || "Untitled conversation",
-      });
+      onConversationUnavailable(conversation);
       return;
     }
-    setConversationOpenError(null);
     onOpenConversation(resolved);
   }
 
@@ -326,114 +272,15 @@ export function FocusMode({
   // rails legitimately differ, and it is a difference in this array, not in two
   // components. Everything both shells *can* reach sits in the same slot in
   // both, so the rail does not rearrange itself when you switch layouts.
-  const nav: RailNavItem[] = [
-    {
-      id: "new-task",
-      label: "New task",
-      icon: <NewTaskIcon size={15} />,
-      onClick: () => onNewChat(),
-    },
-    {
-      // Git Review is a full-window surface, not a panel, so Focus reaches the
-      // very same one the workbench does. It needs its own row here: the git
-      // island carries the branch on the home screen, but it is gone the moment
-      // a conversation is up — which in Focus is nearly always — and there was
-      // then no way to Git at all without leaving the layout.
-      id: "git",
-      label: "Git",
-      icon: <GitIcon size={15} />,
-      onClick: () => onOpenPanel("git"),
-    },
-    {
-      id: "runs",
-      label: "Mission Control",
-      icon: <MissionIcon size={15} />,
-      onClick: () => onOpenMissionControl(),
-    },
-    {
-      id: "orchestrator",
-      label: "Orchestrator",
-      icon: <OrchestratorIcon size={15} />,
-      onClick: () => onOpenPanel("orchestrator"),
-    },
-    {
-      id: "memory",
-      label: "Memory",
-      icon: <MemoryIcon size={15} />,
-      onClick: () => onOpenPanel("memory"),
-    },
-    {
-      id: "skills",
-      label: "Skills",
-      icon: <SkillsIcon size={15} />,
-      onClick: () => onOpenPanel("skills"),
-    },
-  ];
 
   return (
     <div className="klide-focus-shell">
-      {/* ── Left rail ─────────────────────────────────────────────── */}
-      {/* One rail, shared with the free/anchored workbench. Focus differs only
-          in `nav` (no panel tools), in where a conversation lands (its own
-          canvas), and in the two shell controls at the foot. */}
-      <WorkspaceRail
-        workspaceRoot={workspaceRoot}
-        projects={projects}
-        nav={nav}
-        activeProvider={provider}
-        selectedConversationId={railSelectedConversationId}
-        /* Only while the canvas is showing them — on the hero home nothing is
-           open on screen, whatever sessions the panels still hold. */
-        openConversationIds={chatActive ? openConversationIds : undefined}
-        onSwitchProject={onSwitchProject}
-        onOpenConversation={(convo) => {
-          setSelectedConversationId(convo.id);
-          setConversationOpenError(null);
-          // History is navigation, not a second reader mode. Resume the saved
-          // conversation into the fully wired AiPanel every live Focus chat uses.
-          onOpenConversation(convo);
-        }}
-        onConversationUnavailable={(convo) => {
-          setSelectedConversationId(convo.id);
-          setConversationOpenError({ title: convo.title || "Untitled conversation" });
-        }}
-        onNavigateAway={clearConversationNavigation}
-        onOpenSettings={() => onOpenPanel("settings")}
-        onOpenProfile={() => onOpenPanel("profile")}
-        reloadKey={chatActive}
-        footActions={
-          <>
-            {/* Terminal — icon only, on the rail's bottom-right edge beside the
-                view switch. It earns no label: it toggles a dock rather than
-                opening a destination, and the two shell-level controls read as
-                a pair down here instead of another written row above. */}
-            <button
-              type="button"
-              className="klide-rail-view-switch"
-              data-active={terminalOpen || undefined}
-              aria-label={terminalOpen ? "Hide the terminal" : "Show the terminal"}
-              aria-pressed={terminalOpen}
-              title={terminalOpen ? "Hide the terminal" : "Terminal"}
-              onClick={() => (terminalOpen ? onCloseTerminal() : onOpenTerminal())}
-            >
-              <TerminalIcon size={14} />
-            </button>
-            <button
-              type="button"
-              className="klide-rail-view-switch"
-              aria-label="Leave Focus — Free layout"
-              title="Leave Focus — Free layout"
-              onClick={() => {
-                clearConversationNavigation();
-                onExitFocus();
-              }}
-            >
-              <FreeLayoutIcon size={14} />
-            </button>
-          </>
-        }
-      />
-
+      {/* No rail here. The host renders the app's one sidebar for every
+          surface (App.tsx) — Focus drawing its own copy meant a mode change
+          unmounted one rail and mounted another, which replayed its entrance
+          animation and lost the tree's state. Focus supplies its own `nav`,
+          its own conversation handlers and its own foot controls from up
+          there; this shell is the canvas beside it. */}
 
       {/* ── Canvas ────────────────────────────────────────────────── */}
       {/* Its top inset is the title-bar band, so that strip drags the window
@@ -456,7 +303,7 @@ export function FocusMode({
           <ConversationRetrievalError
             title={conversationOpenError.title}
             onBack={() => {
-              clearConversationNavigation();
+              onClearConversationNavigation();
               onNewChat();
             }}
           />

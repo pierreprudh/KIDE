@@ -3690,7 +3690,11 @@ This user request requires workspace inspection. Before answering, you MUST call
         aria-modal="true"
         aria-label="Image preview"
         onClick={() => setLightboxImage(null)}
-        style={{ position: "fixed", inset: 0, zIndex: Z.modal, display: "grid", placeItems: "center", background: "color-mix(in srgb, var(--modal-scrim) 55%, transparent)", padding: 40, cursor: "zoom-out" }}
+        // One definite grid track, not an auto one: a percentage max-height on
+        // the image resolves against the track, and an auto track sized by a
+        // tall screenshot would resolve it against the image itself — so the
+        // picture kept its natural height and spilled past the window.
+        style={{ position: "fixed", inset: 0, zIndex: Z.modal, display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr)", placeItems: "center", background: "var(--modal-scrim)", padding: 40, cursor: "zoom-out" }}
       >
         <img src={lightboxImage} alt="Attached image" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8, boxShadow: "0 12px 48px rgba(0, 0, 0, 0.4)" }} />
       </div>,
