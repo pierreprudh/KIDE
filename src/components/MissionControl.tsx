@@ -2753,6 +2753,7 @@ function RunDetail({
   onSelectLineageRun,
   race = null,
   raceEntries = [],
+  onWatchRace,
   onOpenInAiPanel,
   onResumeKlide,
   onReviewRun,
@@ -2780,6 +2781,9 @@ function RunDetail({
    *  each member's ledger entry when it has landed on the board. */
   race?: RaceGroup | null;
   raceEntries?: { member: RaceMember; entry: RunLedgerEntry | null }[];
+  /** Reopen this race's runs side by side — the Focus split view (or paired
+   *  panels on the workbench). Works whether the runs are live or settled. */
+  onWatchRace?: (group: RaceGroup) => void;
   /** Compact task state used when handing a Klide run off to an external CLI. */
   handoffPrompt: string | null;
   /** Land the user in a new AI panel pinned to the chosen delegate provider. */
@@ -3071,6 +3075,28 @@ function RunDetail({
           >
             <RaceMark size={11} />
             Race
+            {onWatchRace && (
+              <button
+                type="button"
+                onClick={() => onWatchRace(race)}
+                title="Open the racers side by side — the split view, live or settled"
+                style={{
+                  marginLeft: "auto",
+                  border: "none",
+                  background: "transparent",
+                  font: "inherit",
+                  fontSize: 11.5,
+                  color: "var(--fg-dim)",
+                  padding: 0,
+                  cursor: "pointer",
+                  transition: "color var(--motion-fast) var(--ease-out)",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; }}
+              >
+                Watch · split view
+              </button>
+            )}
           </div>
           <RaceCompareTable
             raceEntries={raceEntries}
@@ -5114,6 +5140,7 @@ export function MissionControl({
             onSelectLineageRun={selectLineageRun}
             race={selectedRace}
             raceEntries={selectedRaceEntries}
+            onWatchRace={onWatchRace}
             onOpenInAiPanel={onOpenInAiPanel}
             onResumeKlide={onResumeKlideRun}
             onReviewRun={(run) => void reviewRun(run)}

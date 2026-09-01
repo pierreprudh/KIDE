@@ -123,16 +123,6 @@ type Props = {
   onOpenTerminal: () => void;
   onCloseTerminal: () => void;
   renderTerminal: () => ReactNode;
-  /** Race watch — one tab per racing agent over the chat canvas. Empty or
-   *  absent means the normal single-conversation chat. The parent keeps every
-   *  tab's panel mounted; this component only draws the strip. */
-  raceTabs?: { panelId: string; label: string }[];
-  activeRaceTab?: string | null;
-  onSelectRaceTab?: (panelId: string) => void;
-  /** "Ask both" — send one follow-up into every racer's conversation. */
-  onRaceFollowUp?: (text: string) => void;
-  /** Leave the race view — close the racers' panels and go back home. */
-  onCloseRaceTabs?: () => void;
   /** Composer run settings — the same per-panel / per-model state the AI
    *  panel and Settings read (provider → model → effort → context). */
   provider: ProviderId;
@@ -191,11 +181,6 @@ export function FocusMode({
   onOpenTerminal,
   onCloseTerminal,
   renderTerminal,
-  raceTabs,
-  activeRaceTab,
-  onSelectRaceTab,
-  onRaceFollowUp,
-  onCloseRaceTabs,
   provider,
   onProviderChange,
   model,
@@ -227,8 +212,6 @@ export function FocusMode({
   const [conversationOpenError, setConversationOpenError] = useState<{
     title: string;
   } | null>(null);
-  // "Ask both" strip composer — local draft, cleared on send.
-  const [raceAsk, setRaceAsk] = useState("");
   const { username, avatarUrl } = useUserInfo();
   // Bumped when the composer strip's branch is clicked, so the git island can
   // pulse. A counter rather than a boolean: every click has to land, including
@@ -488,124 +471,10 @@ export function FocusMode({
               overflow: "hidden",
             }}
           >
-            {raceTabs && raceTabs.length > 0 && (
-              /* Race watch — one soft-segment tab per racing agent: the same
-                 design as the docked editor and Artifact Inspector strips.
-                 The active tab carries a quiet neutral fill (the hover token,
-                 not a saturated pill) as its only marker; the panels stay
-                 mounted in the parent, this strip only picks which is
-                 visible. */
-              <div
-                role="tablist"
-                aria-label="Racing agents"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: "0 16px",
-                  height: 38,
-                  flexShrink: 0,
-                  borderBottom: "1px solid var(--border)",
-                }}
-              >
-                {raceTabs.map((t) => {
-                  const active = t.panelId === (activeRaceTab ?? raceTabs[0].panelId);
-                  return (
-                    <button
-                      key={t.panelId}
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      onClick={() => onSelectRaceTab?.(t.panelId)}
-                      style={{
-                        border: "none",
-                        background: active ? "var(--bg-hover)" : "transparent",
-                        font: "inherit",
-                        fontSize: 12.5,
-                        fontWeight: active ? 550 : 400,
-                        color: active ? "var(--fg-strong)" : "var(--fg-subtle)",
-                        padding: "0 10px",
-                        height: 24,
-                        borderRadius: "var(--radius-sm)",
-                        cursor: "pointer",
-                        transition:
-                          "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!active) {
-                          e.currentTarget.style.color = "var(--fg-strong)";
-                          e.currentTarget.style.background =
-                            "color-mix(in srgb, var(--bg-hover) 45%, transparent)";
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!active) {
-                          e.currentTarget.style.color = "var(--fg-subtle)";
-                          e.currentTarget.style.background = "transparent";
-                        }
-                      }}
-                    >
-                      {t.label}
-                    </button>
-                  );
-                })}
-                {onRaceFollowUp && (
-                  <input
-                    type="text"
-                    name="race-follow-up"
-                    aria-label={raceTabs.length > 1 ? "Ask all racing agents" : "Ask the racing agent"}
-                    autoComplete="off"
-                    value={raceAsk}
-                    onChange={(e) => setRaceAsk(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter") return;
-                      e.preventDefault();
-                      const t = raceAsk.trim();
-                      if (!t) return;
-                      onRaceFollowUp(t);
-                      setRaceAsk("");
-                    }}
-                    placeholder={raceTabs.length > 1 ? "Ask both…" : "Ask the racer…"}
-                    title="One follow-up, sent into every racer's conversation"
-                    style={{
-                      marginLeft: "auto",
-                      width: 220,
-                      fontSize: 12,
-                      fontFamily: "inherit",
-                      color: "var(--fg-strong)",
-                      background: "var(--bg)",
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--radius-sm)",
-                      padding: "4px 8px",
-                      transition: "border-color var(--motion-fast) var(--ease-out)",
-                    }}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
-                  />
-                )}
-                <button
-                  type="button"
-                  onClick={() => onCloseRaceTabs?.()}
-                  title="Close the race view — both runs keep going and stay on Mission Control"
-                  style={{
-                    marginLeft: onRaceFollowUp ? undefined : "auto",
-                    border: "none",
-                    background: "transparent",
-                    font: "inherit",
-                    fontSize: 11.5,
-                    color: "var(--fg-dim)",
-                    padding: 0,
-                    cursor: "pointer",
-                    flexShrink: 0,
-                    transition: "color var(--motion-fast) var(--ease-out)",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; }}
-                >
-                  End watch
-                </button>
-              </div>
-            )}
+            {/* A race renders with no chrome of its own here: the racers sit
+                side by side in `renderChat`, and everything race-wide — the
+                shared composer, the way out — lives in the floating pilot box
+                the parent draws over the split. */}
             {renderChat()}
           </div>
         ) : (
