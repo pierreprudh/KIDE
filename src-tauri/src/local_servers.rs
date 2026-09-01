@@ -33,6 +33,12 @@ fn is_local_server_provider(provider: &str) -> bool {
     matches!(provider, "ollama" | "mlx")
 }
 
+/// Whether a managed local server is up right now. `false` for a provider that
+/// isn't one. Auto routing asks this before it spends a probe on a local model.
+pub(crate) async fn local_server_is_up(provider: &str) -> bool {
+    is_local_server_provider(provider) && local_server_ready(provider).await
+}
+
 fn local_server_command(provider: &str, model: &str) -> Result<(String, Vec<String>), String> {
     match provider {
         "ollama" => Ok(("ollama".to_string(), vec!["serve".to_string()])),

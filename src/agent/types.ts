@@ -13,6 +13,10 @@ export type AgentRunStatus =
   | "cancelled";
 
 export type ProviderId =
+  // The router: not a Provider that serves models, but the id the picker
+  // sends when the user leaves the choice to Klide. See `AUTO_PROVIDER` in
+  // ./providers.ts and `agent::routing` in Rust.
+  | "auto"
   | "ollama"
   | "mlx"
   | "lmstudio"
@@ -264,7 +268,11 @@ export type AgentEvent =
    *  otherwise the reloaded transcript looks like an unbroken conversation
    *  that mysteriously forgot its early turns. */
   | { type: "context_compacted"; runId: string; summary: string; ts: number }
-  | { type: "steering_injected"; runId: string; reason: string; ts: number };
+  | { type: "steering_injected"; runId: string; reason: string; ts: number }
+  /** An `auto` request settled on this pair. Follows `run_started` (which
+   *  already carries the resolved provider/model); `skipped` names each
+   *  candidate ranked above the pick and why it was ruled out. */
+  | { type: "route_resolved"; runId: string; provider: ProviderId; model: string; reason: string; skipped: string[]; ts: number };
 
 export type AgentMessageView = {
   id: string;
@@ -351,6 +359,10 @@ export type StartAgentRunInput = {
   testAfterEditCommand?: string;
   /** When this run is a spawned sub-agent, the parent run's id. */
   parentId?: string;
+  /** The user's starred models, sent when `provider` is `auto` so the Rust
+   *  router can prefer them. Stars live in this renderer's storage
+   *  (favModels.ts); the policy that reads them lives in Rust. */
+  preferredModels?: { provider: string; model: string }[];
   /** Optional durable Mission attempt linkage. Task id and Run id stay distinct. */
   missionId?: string;
   missionTaskId?: string;

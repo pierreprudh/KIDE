@@ -9,6 +9,7 @@ pub mod failure_budget;
 mod network_allowlist;
 mod permission;
 mod retained;
+pub mod routing;
 mod run_core;
 mod steering;
 pub mod subagents;
@@ -51,7 +52,8 @@ use self::types::{
     AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentMode, AgentRunStatus,
     AgentRunSummary, AgentTurnTiming, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest,
     PermissionOption,
-    PermissionRequest, StartRunRequest, StartRunResponse, SubmitUserTurnRequest, ToolResult,
+    PermissionRequest, RouteDecision, StartRunRequest, StartRunResponse, SubmitUserTurnRequest,
+    ToolResult,
 };
 use crate::providers::{AiChatResponse, AiUsage, StreamChunk};
 use serde::Deserialize;
@@ -387,6 +389,8 @@ async fn run_subagent_to_completion(
         reflection_level: None,
         max_parallel_tools: None,
         max_turns: spec.max_turns,
+        preferred_models: vec![],
+        routed: None,
         command_timeout_secs: None,
         test_after_edit_command: None,
         command_allowlist: vec![],
@@ -1173,6 +1177,28 @@ async fn start_run(
         .unwrap_or_else(run_id);
     // The id names the transcript file — refuse anything path-shaped.
     validate_run_id(&id)?;
+    // `auto` becomes a concrete pair here, before anything downstream reads the
+    // provider: the failure budget, the summary, the RunStarted line and the
+    // adapters all see what will actually run. A continuation reuses the pair
+    // its own transcript recorded — the choice is locked for the conversation,
+    // never remade per turn.
+    if routing::is_auto(&request.provider) {
+        match read_run_origin(&runs_dir, &id)? {
+            Some(origin) => {
+                request.provider = origin.provider;
+                request.model = origin.model;
+            }
+            None => {
+                let resolved = routing::resolve(&request).await?;
+                request.provider = resolved.provider;
+                request.model = resolved.model;
+                request.routed = Some(RouteDecision {
+                    reason: resolved.reason,
+                    skipped: resolved.skipped,
+                });
+            }
+        }
+    }
     let mission_link = match (
         request.workspace_root.clone(),
         request.mission_id.clone(),
@@ -1356,6 +1382,16 @@ async fn run_agent_loop(
             model: request.model.clone(),
             ts: now_ms(),
         })?;
+        if let Some(routed) = request.routed.clone() {
+            emit(AgentEvent::RouteResolved {
+                run_id: id.clone(),
+                provider: request.provider.clone(),
+                model: request.model.clone(),
+                reason: routed.reason,
+                skipped: routed.skipped,
+                ts: now_ms(),
+            })?;
+        }
         emit(AgentEvent::ContextSnapshot {
             run_id: id.clone(),
             snapshot: snapshot_for(&request),
