@@ -3643,14 +3643,8 @@ button:focus-visible .menu-leadout {
     transition: none;
   }
   .klide-file-row,
-  .klide-file-row-actions,
-  .klide-rail-files-reveal,
-  .klide-rail-files-reveal[data-open] {
+  .klide-file-row-actions {
     transition: none;
-  }
-  /* No drop either: the rows must land at rest, not 9px out of place. */
-  .klide-rail-files-reveal[data-open] .klide-explorer-row {
-    animation: none;
   }
   .klide-explorer-tree ul ul::before {
     transition: none;
@@ -3926,12 +3920,6 @@ button:focus-visible .menu-leadout {
      quicker on the way out, where a lingering fade follows the pointer around
      the rail. */
   --rail-chevron-in: 320ms;
-  /* The files region's fold: the box opening. */
-  --rail-files-fold: 420ms;
-  /* One row's drop into that box, and the beat between consecutive rows. The
-     rows are what read as the motion — the box is only making room. */
-  --rail-files-row: 300ms;
-  --rail-files-row-step: 24ms;
   width: 252px;
   flex-shrink: 0;
   display: flex;
@@ -4383,97 +4371,6 @@ button:focus-visible .menu-leadout {
 
 .klide-focus-section-label:first-child {
   margin-top: 2px;
-}
-
-/* ── The rail's files region ──────────────────────────────────────────────
-   The global sidebar carries more than one list now: the workspace's tree,
-   unfolding under the Explorer row that names it, and the projects and
-   conversations below the hairline. Both scroll on their own, so a deep tree
-   never buries the history and a long history never pushes the tree away.
-
-   The fold is a reveal, not a mount. The tree stays in the DOM while closed —
-   its rows, its open folders and its scroll position are exactly what make
-   reopening it instant — and what animates is a real length: `height` against
-   the rail's own definite height. (`flex-grow` expresses the same split, but
-   its animation depends on how much free space the column happens to have; a
-   percentage of a known height does not.) `flex: none` keeps the region at
-   exactly that height instead of letting the body squeeze it, and the clip is
-   what hides the rows on the way through. */
-.klide-rail-files-reveal {
-  flex: none;
-  height: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  /* Only the height. The box is making room, not performing — the rows below
-     are what the eye follows, and fading the whole region on top of them would
-     double every row's fade. --ease-soft is the long-tail deceleration the rest
-     of the app uses: quick to leave, slow to settle, never a bounce. */
-  transition: height var(--rail-files-fold) var(--ease-soft);
-}
-
-.klide-rail-files-reveal[data-open] {
-  height: 45%;
-}
-
-/* The rows drop in, top to bottom, as the box opens — each one falling out of
-   the row above it, a beat behind its predecessor. The same per-row cadence the
-   conversation tree uses, dropping rather than scaling: a conversation row
-   materialises on a fixed junction of the tree it hangs from, while a file row
-   simply arrives, so it can travel.
-
-   Keyed off [data-open] rather than mount: the tree never unmounts (that is
-   what makes reopening it instant), so the animation has to be something that
-   begins when the selector starts matching. */
-@keyframes klide-rail-files-row-drop {
-  from {
-    opacity: 0;
-    transform: translateY(-9px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.klide-rail-files-reveal[data-open] .klide-explorer-row {
-  animation: klide-rail-files-row-drop var(--rail-files-row) var(--ease-soft)
-    var(--rail-files-row-delay, 0ms) backwards;
-}
-
-/* The stagger. Counted within each list, so an expanded folder's children
-   cascade under it on their own beat instead of inheriting the trunk's count.
-   Twelve deep is where the beat stops being legible and starts being a wait —
-   past that every remaining row lands together. */
-.klide-rail-files-reveal[data-open] li:nth-child(1) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 0); }
-.klide-rail-files-reveal[data-open] li:nth-child(2) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 1); }
-.klide-rail-files-reveal[data-open] li:nth-child(3) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 2); }
-.klide-rail-files-reveal[data-open] li:nth-child(4) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 3); }
-.klide-rail-files-reveal[data-open] li:nth-child(5) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 4); }
-.klide-rail-files-reveal[data-open] li:nth-child(6) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 5); }
-.klide-rail-files-reveal[data-open] li:nth-child(7) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 6); }
-.klide-rail-files-reveal[data-open] li:nth-child(8) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 7); }
-.klide-rail-files-reveal[data-open] li:nth-child(9) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 8); }
-.klide-rail-files-reveal[data-open] li:nth-child(10) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 9); }
-.klide-rail-files-reveal[data-open] li:nth-child(11) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 10); }
-.klide-rail-files-reveal[data-open] li:nth-child(n + 12) { --rail-files-row-delay: calc(var(--rail-files-row-step) * 11); }
-
-/* The Explorer embedded in the rail (`Sidebar variant="rail"`) — the same tree
-   component the workbench panel used, with no card around it: the rail is
-   already the surface. */
-.klide-rail-files {
-  flex: 1 1 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-}
-
-/* The rail supplies the horizontal padding, so the embedded tree drops the
-   panel's own inset and keeps only its scroll room. */
-.klide-rail-files .klide-explorer-tree {
-  padding: 2px 0 6px;
 }
 
 .klide-focus-rail-body {

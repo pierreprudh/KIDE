@@ -674,29 +674,9 @@ function App() {
       ? gridLayouts.find((g) => g.id === activeGridId) ?? null
       : null;
   const effectiveGitReviewRoot = workspaceRoot;
-  // Whether the file tree is a region of the global sidebar rather than a
-  // surface of the layout. Both panel workbenches hand it to the rail — the
-  // anchored one gave up its second column, the free one its drawer — and the
-  // rail is drawn over every overlay, so unlike the panel tools the tree does
-  // not go away when you open Git Review or the Orchestrator. A grid layout is
-  // the exception: its cells are placed by hand and saved layouts name a
-  // `files` cell, so a grid keeps its own.
-  const explorerInRail = surfaceCore.base.kind === "panels";
-  // Whether the sidebar's files region is unfolded right now. The region stays
-  // mounted on every surface — including Focus, which never opens it — because
-  // a wrapper that only appears with the surface would mount already-open and
-  // have nothing to animate from. Mounted and closed, a mode change is a
-  // transition of `height` like any other fold.
-  const filesRegionOpen = explorerInRail && explorerVisible;
   const activityState: Record<ActivityPanel, boolean> = {
     home: overlay === null,
-    // In the rail, the row reports the region you can still see. Gating it on
-    // `overlay === null` — right when the tree was a column an overlay
-    // replaced — made the row go quiet under Git Review and the Orchestrator
-    // while the tree was plainly still there.
-    explorer: explorerInRail
-      ? explorerVisible
-      : overlay === null && (explorerVisible || sidebarSlot2 === "explorer"),
+    explorer: overlay === null && (explorerVisible || sidebarSlot2 === "explorer"),
     git: overlay === "git-review",
     memory: overlay === null && memoryVisible,
     skills: overlay === null && (skillsVisible || sidebarSlot2 === "skills"),
@@ -858,34 +838,6 @@ function App() {
     offerRaceSplit(convo.id);
   }
 
-  /** The workspace tree, as a region of the sidebar. Mounted on every surface
-   *  so the fold always has somewhere to animate from and the tree keeps its
-   *  expanded folders across a mode change; `filesRegionOpen` decides whether
-   *  it is unfolded, and it never is in Focus — the chat-first surface has no
-   *  editor to open a file into, so a tree there would browse somewhere else. */
-  function renderRailFiles(): ReactNode {
-    if (!workspaceRoot) return null;
-    return (
-      <Sidebar
-        variant="rail"
-        /* Mounted whether or not it shows: toggling Explorer is a reveal of
-           the tree you left, not a re-read of the workspace. `active` is what
-           stops it polling the disk while folded away. */
-        active={filesRegionOpen}
-        visible
-        width={0}
-        showHidden={showHiddenFiles}
-        workspaceRoot={workspaceRoot}
-        onOpen={openFile}
-        onRootChange={changeRoot}
-        onEntryRenamed={onEntryRenamed}
-        onEntryDeleted={onEntryDeleted}
-        onFilePreview={setPreviewPath}
-        activePath={active?.path ?? null}
-      />
-    );
-  }
-
   const railNav: RailNavItem[] = [
     {
       id: "new-task",
@@ -942,7 +894,6 @@ function App() {
       label: "Explorer",
       icon: <FolderIcon size={15} />,
       active: activityState.explorer,
-      expanded: explorerInRail ? explorerVisible : undefined,
       onClick: (meta) => togglePanel("explorer", meta),
     },
   ];
@@ -2995,14 +2946,6 @@ function App() {
                in the props below, so switching mode now morphs the icons and
                leaves the column where it stands. */
             <WorkspaceRail
-              /* Files as a region of the sidebar. The anchored workbench used
-                 to draw this very tree as a second left column and free mode
-                 as a drawer, so the app had two sidebars abreast. Same
-                 component (`variant="rail"`), one column. Grid layouts still
-                 place their own explorer cell — saved layouts name it — and
-                 Focus gets no tree at all: no editor to open a file into. */
-              filesOpen={filesRegionOpen}
-              filesRegion={renderRailFiles()}
               workspaceRoot={workspaceRoot}
               projects={recentFolders}
               nav={focusBase ? focusRailNav : railNav}
@@ -3372,9 +3315,6 @@ function App() {
                 focusedPanel={focusedPanel}
                 zCounter={zCounter}
                 explorerVisible={explorerVisible}
-                /* One sidebar: the tree is a region of the rail, so this
-                   layout no longer draws a column for it. */
-                explorerInRail={explorerInRail}
                 terminalVisible={terminalVisible}
                 aiVisible={aiVisible}
                 sidebarSlot2={sidebarSlot2}
@@ -3489,7 +3429,7 @@ function App() {
                     </button>
                   </div>
                 )}
-                {explorerVisible && explorerFloating && !explorerInRail && (
+                {explorerVisible && explorerFloating && (
                   <FloatingPanel
                     panelId="explorer"
                     rect={explorerRect}
@@ -3508,7 +3448,7 @@ function App() {
                     from the left edge on click (same compositor-only motion
                     as the editor dock) and slides away on toggle. The
                     "Floating explorer" setting restores the draggable panel. */}
-                {!explorerFloating && !explorerInRail && (
+                {!explorerFloating && (
                   <div
                     className="explorer-dock-overlay"
                     data-open={explorerVisible ? "true" : "false"}

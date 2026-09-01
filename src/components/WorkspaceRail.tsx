@@ -106,22 +106,6 @@ type Props = {
   onOpenProfile: () => void;
   /** Icon buttons on the identity row's ragged right edge. */
   footActions?: ReactNode;
-  /**
-   * The workspace's files, in the shells that have an editor to open them
-   * into (`Sidebar variant="rail"`). The workbench used to draw that tree as a
-   * second left column, so the app had two sidebars side by side; it is a
-   * region of this one now, unfolding under the action rows. Hosts that are
-   * not editing (Focus) simply leave it off, the same way they leave `nav`
-   * rows off.
-   *
-   * Pass it whenever the host *has* a tree and let `filesOpen` say whether it
-   * shows: the region stays mounted while closed, so opening it is a reveal of
-   * the tree you left — same rows, same folders, same scroll — and not a
-   * remount that re-reads the whole workspace.
-   */
-  filesRegion?: ReactNode;
-  /** Whether the files region is unfolded. */
-  filesOpen?: boolean;
   /** Bump to re-read local history — for host events the rail cannot see
    *  (Focus leaving its live chat). The changed-conversations event covers
    *  the rest. */
@@ -930,8 +914,6 @@ export function WorkspaceRail({
   onOpenSettings,
   onOpenProfile,
   footActions,
-  filesRegion,
-  filesOpen = false,
   reloadKey,
 }: Props) {
   const activeProjectRoot = canonicalWorkspaceRoot(workspaceRoot);
@@ -1382,21 +1364,6 @@ export function WorkspaceRail({
               />
             ))}
           </div>
-
-          {/* The tree unfolds under the Explorer row — that row, with its
-              folder icon and its chevron, is the region's only label; a second
-              written eyebrow over the same tree said it twice. The wrapper is
-              always here so the tree inside keeps its rows while folded; what
-              animates is the share of the column it takes. */}
-          {filesRegion ? (
-            <div
-              className="klide-rail-files-reveal"
-              data-open={filesOpen || undefined}
-              inert={!filesOpen}
-            >
-              {filesRegion}
-            </div>
-          ) : null}
 
           {/* Section break — a gradient hairline, not another written label,
               separating the actions and the tree above from the history

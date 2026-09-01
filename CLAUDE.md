@@ -282,8 +282,9 @@ runs, transcripts, conversations, and review state.
 
 The sidebar is one `WorkspaceRail`, rendered once by `App.tsx` for every
 surface — Focus included, so switching mode morphs the foot icon and leaves the
-column standing rather than remounting it. Focus differs only in the `nav`, the
-conversation handlers and the absence of a files region (no editor to open into).
+column standing rather than remounting it. Focus differs only in the `nav` and the
+conversation handlers. The Explorer is not part of the rail: the anchored
+workbench draws it as its own column beside the rail, free mode as a drawer.
 
 Icons across every rail come from `src/icons.tsx` (Phosphor Light behind an
 `Icon` primitive, one weight lever). Provider logos, file-type marks and
