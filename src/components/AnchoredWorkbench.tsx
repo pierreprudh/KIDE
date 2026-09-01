@@ -39,6 +39,13 @@ type Props = {
 
   // Visibility / routing
   explorerVisible: boolean;
+  /**
+   * The Explorer is a region of the global sidebar (`WorkspaceRail`) rather
+   * than a column of this layout. True in the anchored workbench since the
+   * two sidebars became one; the side column then renders only the skills
+   * slot, when something has stacked one there.
+   */
+  explorerInRail?: boolean;
   terminalVisible: boolean;
   aiVisible: boolean;
   sidebarSlot2: Panel | null;
@@ -96,6 +103,7 @@ export function AnchoredWorkbench(props: Props) {
     workbenchRef,
     panelLayout,
     explorerVisible,
+    explorerInRail,
     sidebarSlot2,
     terminalVisible,
     aiVisible,
@@ -132,7 +140,7 @@ export function AnchoredWorkbench(props: Props) {
     onClosePreview,
   } = props;
 
-  const sideVisible = explorerVisible;
+  const sideVisible = explorerInRail ? sidebarSlot2 === "skills" : explorerVisible;
   const sidePanelWidth = panelLayout.explorer?.w ?? 280;
   const aiPanel = aiPanels[0];
   const aiPanelWidth = aiPanel?.rect.w ?? 360;
@@ -142,7 +150,9 @@ export function AnchoredWorkbench(props: Props) {
   // skills below it via a SplitPane (matches the existing behaviour).
   const renderSide = () => {
     if (!sideVisible) return null;
-    const explorer = (
+    // With the tree in the rail, this column exists only for a stacked skills
+    // slot — there is never a second copy of the Explorer on screen.
+    const explorer = explorerInRail ? null : (
       <Sidebar
         fill
         visible
@@ -157,21 +167,25 @@ export function AnchoredWorkbench(props: Props) {
       />
     );
     if (sidebarSlot2 === "skills") {
+      const skillsPane = (
+        <Suspense fallback={null}>
+          <SkillsModal
+            open
+            skills={skills}
+            onChange={setSkills}
+            onReloadFilesystemSkills={reloadFilesystemSkills}
+            onClose={() => setSidebarSlot2(null)}
+          />
+        </Suspense>
+      );
+      // Alone in the column when the tree has moved to the rail; stacked
+      // under it otherwise.
+      if (!explorer) return skillsPane;
       return (
         <SplitPane
           top={explorer}
-          bottom={
-            <Suspense fallback={null}>
-              <SkillsModal
-                open
-                skills={skills}
-                onChange={setSkills}
-                onReloadFilesystemSkills={reloadFilesystemSkills}
-                onClose={() => setSidebarSlot2(null)}
-              />
-            </Suspense>
-          }
-          defaultSplit={(sidePanelWidth) * 0.55}
+          bottom={skillsPane}
+          defaultSplit={sidePanelWidth * 0.55}
           minPane={80}
         />
       );

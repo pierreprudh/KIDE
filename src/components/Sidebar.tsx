@@ -28,6 +28,23 @@ type Props = {
   fill?: boolean;
   /** Show dotfiles in the tree. Defaults to true (Settings → General). */
   showHidden?: boolean;
+  /**
+   * Whether the tree is on screen. A hidden tree stays mounted — its entries,
+   * its expanded folders and its scroll position are what make revealing it a
+   * reveal rather than a reload — but it stops polling the filesystem, and
+   * re-reads once as it comes back.
+   */
+  active?: boolean;
+  /**
+   * Where this tree is being rendered.
+   *
+   * `"panel"` (default) is the workbench's own column — a floating-panel card
+   * with its own header. `"rail"` embeds the very same tree as a region of the
+   * global sidebar (`WorkspaceRail`): no card, and the header shrinks to the
+   * rail's eyebrow voice. There is one tree implementation either way — the
+   * same rule the AI panel follows for Focus.
+   */
+  variant?: "panel" | "rail";
 };
 
 type TreeEntry = {
@@ -285,8 +302,11 @@ export function Sidebar({
   workspaceRoot,
   fill,
   showHidden = true,
+  variant = "panel",
+  active = true,
 }: Props) {
   const root = workspaceRoot;
+  const inRail = variant === "rail";
   const [entries, setEntries] = useState<TreeEntry[]>([]);
   const [children, setChildren] = useState<Record<string, TreeEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => loadExpanded(root));
@@ -473,7 +493,8 @@ export function Sidebar({
   }, [root, expanded]);
 
   useEffect(() => {
-    if (!root) return;
+    // Off screen: hold every row exactly as it is and stop reading the disk.
+    if (!root || !active) return;
     let cancelled = false;
 
     const refresh = async () => {
@@ -508,13 +529,16 @@ export function Sidebar({
       }
     };
 
+    // One read as the tree appears, so a reveal never shows a stale row for
+    // up to three seconds, then the normal cadence.
+    void refresh();
     const interval = window.setInterval(refresh, 3_000);
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [root, expanded]);
+  }, [root, expanded, active]);
 
   async function pick(path: string) {
     if (!root) return;
@@ -970,22 +994,28 @@ export function Sidebar({
 
   return (
     <aside
-      className="floating-panel"
+      // In the rail the surface is the rail's own — no card, no margin, and
+      // the height comes from the region it is placed in.
+      className={inRail ? "klide-rail-files" : "floating-panel"}
       onContextMenu={(event) => {
         // Right-click on empty space targets the workspace root.
         if (!root) return;
         event.preventDefault();
         setMenu({ x: event.clientX, y: event.clientY, path: root, isDirectory: true });
       }}
-      style={{
-        width: fill ? "100%" : width,
-        height: fill ? "100%" : undefined,
-        margin: fill ? 0 : "4px 0 4px 4px",
-        display: fill || visible ? "flex" : "none",
-        flexDirection: "column",
-        flexShrink: 0,
-        overflow: "hidden",
-      }}
+      style={
+        inRail
+          ? undefined
+          : {
+              width: fill ? "100%" : width,
+              height: fill ? "100%" : undefined,
+              margin: fill ? 0 : "4px 0 4px 4px",
+              display: fill || visible ? "flex" : "none",
+              flexDirection: "column",
+              flexShrink: 0,
+              overflow: "hidden",
+            }
+      }
     >
       {/* Header — the panel name stays stable while the full workspace path
           remains available in the native title. At-rest: section name on
@@ -993,7 +1023,12 @@ export function Sidebar({
           bottom edge is a gradient hairline + a 1px inset highlight for
           depth (no flat 1px line). No path is rendered; native title
           reveals it. */}
-      <header className="klide-explorer-header">
+      {/* The panel's header. In the rail there is none: the Explorer row above
+          the tree already carries the folder icon, the name and the chevron,
+          and its actions live in the row's own context menu — a second header
+          restating all of it is the busy chrome the rail exists to avoid. */}
+      {!inRail && (
+      <div className="klide-explorer-header">
         {root ? (
           <div className="klide-explorer-header-workspace" title={root}>
             <span className="klide-explorer-header-workspace-name">
@@ -1051,7 +1086,8 @@ export function Sidebar({
             </button>
           )}
         </div>
-      </header>
+      </div>
+      )}
 
       {fsNotice && (
         <div

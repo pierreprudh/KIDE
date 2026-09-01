@@ -241,7 +241,9 @@ describe("surface predicates", () => {
   // surface → [ownsTitlebar, showsRail, showsStatusBar, baseShowing]
   const table: Array<[string, Surface, boolean, boolean, boolean, boolean]> = [
     ["welcome", WELCOME, false, false, false, false],
-    ["focus", FOCUS_S, true, false, false, true],
+    // Focus shows the rail too: one instance across every surface is what
+    // keeps the sidebar still through a mode change.
+    ["focus", FOCUS_S, true, true, false, true],
     ["workbench anchored", ANCHORED_S, false, true, true, true],
     ["workbench free", FREE_S, false, true, true, true],
     ["workbench grid", GRID_S, false, true, true, true],
