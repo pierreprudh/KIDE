@@ -8,6 +8,7 @@ pub mod evidence;
 pub mod failure_budget;
 mod network_allowlist;
 mod permission;
+mod retained;
 mod run_core;
 mod steering;
 pub mod subagents;
@@ -639,13 +640,37 @@ fn snapshot_for(request: &StartRunRequest) -> AgentContextSnapshot {
 ///
 /// Thinking blocks are dropped in both shapes — the model already consumed
 /// them. Compaction that already ran in the parent is preserved as-is.
+///
+/// `values` is the run's retained-value store (`runs_dir`, `run_id`), or
+/// `None` when retention is off for this run: a large prior result folds
+/// back in as its `[retained #id]` stub only when its value file is actually
+/// on disk, and rides along in full otherwise.
 fn reconstruct_prior_messages(
     prior_events: &[AgentEvent],
     structured: bool,
+    values: Option<(&Path, &str)>,
 ) -> Vec<serde_json::Value> {
     if structured {
-        return reconstruct_structured_messages(prior_events);
+        return reconstruct_structured_messages(prior_events, values);
     }
+    // tool_call_id -> tool name from the assistant turns, so a folded
+    // result's stub names the tool that produced it — the same text the
+    // live loop put in front of the model.
+    let call_names: std::collections::HashMap<&str, &str> = prior_events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::AssistantMessage { content, .. } => Some(content.iter().filter_map(|b| {
+                match b {
+                    AgentContentBlock::ToolCall {
+                        tool_call_id, name, ..
+                    } => Some((tool_call_id.as_str(), name.as_str())),
+                    _ => None,
+                }
+            })),
+            _ => None,
+        })
+        .flatten()
+        .collect();
     let mut out: Vec<serde_json::Value> = Vec::new();
     // Tool results waiting to be folded into the next assistant turn.
     // They don't carry across a user message — a tool result from a
@@ -693,8 +718,20 @@ fn reconstruct_prior_messages(
                 flush_tool_results(&mut pending_tool_results, &mut text, "[tool_result]\n");
                 out.push(serde_json::json!({ "role": "assistant", "content": text }));
             }
-            AgentEvent::ToolCallFinished { result, .. } => {
-                pending_tool_results.push(result.content.clone());
+            AgentEvent::ToolCallFinished {
+                tool_call_id,
+                result,
+                ..
+            } => {
+                // Replay mirrors the live loop: a result whose value file is
+                // on disk folds in as the same stub, not the full text.
+                let name = call_names.get(tool_call_id.as_str()).copied().unwrap_or("tool");
+                pending_tool_results.push(retained::stub_for_replay(
+                    values,
+                    name,
+                    tool_call_id,
+                    &result.content,
+                ));
             }
             AgentEvent::ContextCompacted { summary, .. } => {
                 // Collapse everything before the marker into one system
@@ -730,7 +767,10 @@ fn reconstruct_prior_messages(
 /// that was cancelled mid-call (started, never finished) would otherwise
 /// poison the whole request. We pre-scan for finished ids and drop the
 /// orphans — matching the text-fold path, which also drops them.
-fn reconstruct_structured_messages(prior_events: &[AgentEvent]) -> Vec<serde_json::Value> {
+fn reconstruct_structured_messages(
+    prior_events: &[AgentEvent],
+    values: Option<(&Path, &str)>,
+) -> Vec<serde_json::Value> {
     use std::collections::{HashMap, HashSet};
 
     // Tool calls that actually returned a result. Calls without one are
@@ -796,9 +836,13 @@ fn reconstruct_structured_messages(prior_events: &[AgentEvent]) -> Vec<serde_jso
                 // the originating call (shouldn't happen — finished implies
                 // started), fall back to an empty name.
                 let name = call_names.get(tool_call_id).cloned().unwrap_or_default();
+                // Replay mirrors the live loop: a retained result comes back
+                // as its stub — the full text stays on disk behind peek_value.
+                let content =
+                    retained::stub_for_replay(values, &name, tool_call_id, &result.content);
                 out.push(serde_json::json!({
                     "role": "tool",
-                    "content": result.content,
+                    "content": content,
                     "name": name,
                     "tool_call_id": tool_call_id,
                 }));
@@ -1334,12 +1378,23 @@ async fn run_agent_loop(
     // context the user does on screen. Without this, every follow-up
     // turn would arrive as a fresh chat — the "agent has no memory"
     // bug the user kept hitting.
+    let tools = schemas_for_mode(
+        &request.mode,
+        &request.disabled_tools,
+        request.workspace_root.as_deref(),
+    );
+    // Retention only makes sense while the model can actually peek the
+    // stored value back: without `peek_value` in this run's tool list, a
+    // stub would be a dead end, so results ride in context verbatim and
+    // replay carries prior results in full too.
+    let retention_enabled = tools::tools_include(&tools, "peek_value");
     if resuming {
         // See ProviderCaps::structured_replay: Ollama's native `/api/chat` is
         // the lone provider that needs the text-fold workaround; every
         // OpenAI-wire provider gets the faithful structured replay.
         let structured_replay = ProviderCaps::for_provider(&request.provider).structured_replay;
-        let prior = reconstruct_prior_messages(&prior_events, structured_replay);
+        let values = retention_enabled.then(|| (runs_dir.as_path(), id.as_str()));
+        let prior = reconstruct_prior_messages(&prior_events, structured_replay, values);
         // `provider_messages` always returns `[..., user]` with the new
         // turn at the tail. Pop it, splice the history in, push it back.
         if let Some(new_user) = messages.pop() {
@@ -1347,11 +1402,6 @@ async fn run_agent_loop(
             messages.push(new_user);
         }
     }
-    let tools = schemas_for_mode(
-        &request.mode,
-        &request.disabled_tools,
-        request.workspace_root.as_deref(),
-    );
     // Count this turn's user message on top of the turns already on disk so
     // the Mission Control "Messages" tally reflects the whole conversation.
     let mut message_count = prior_turns as u32 + 1;
@@ -1825,7 +1875,23 @@ async fn run_agent_loop(
                 result: tool_result.clone(),
                 ts: now_ms(),
             })?;
-            messages.push(tool_provider_message(&call, &tool_result));
+            // The transcript (event above) keeps the full result; the provider
+            // carries a stub when the result is large enough to retain. The
+            // full text stays addressable through `peek_value` — which is why
+            // retention only runs when this run's tool list offers that tool.
+            let mut provider_result = tool_result.clone();
+            if retention_enabled {
+                if let Some(stub) = retained::retain_large_result(
+                    runs_dir.as_path(),
+                    &id,
+                    &call.id,
+                    &call.name,
+                    &tool_result.content,
+                ) {
+                    provider_result.content = stub;
+                }
+            }
+            messages.push(tool_provider_message(&call, &provider_result));
 
             apply_clean_context_if_requested(&call, &mut messages);
         }
@@ -2631,6 +2697,13 @@ mod replay_tests {
     use super::*;
     use crate::agent::types::{AgentContentBlock, AgentMode};
 
+    /// Test shorthand: replay with no retained-value store. Without value
+    /// files on disk every result folds back in full; retention-specific
+    /// tests build a store and call `reconstruct_prior_messages` directly.
+    fn reconstruct(prior_events: &[AgentEvent], structured: bool) -> Vec<serde_json::Value> {
+        reconstruct_prior_messages(prior_events, structured, None)
+    }
+
     fn user_msg(text: &str) -> AgentEvent {
         AgentEvent::UserMessage {
             run_id: "r".into(),
@@ -2687,12 +2760,12 @@ mod replay_tests {
 
     #[test]
     fn empty_events_produces_empty_messages() {
-        assert!(reconstruct_prior_messages(&[], false).is_empty());
+        assert!(reconstruct(&[], false).is_empty());
     }
 
     #[test]
     fn user_message_becomes_user_role() {
-        let out = reconstruct_prior_messages(&[user_msg("hello")], false);
+        let out = reconstruct(&[user_msg("hello")], false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "user");
         assert_eq!(out[0]["content"], "hello");
@@ -2705,7 +2778,7 @@ mod replay_tests {
             summary: "we set up auth and fixed the parser".into(),
             ts: 9,
         };
-        let out = reconstruct_prior_messages(
+        let out = reconstruct(
             &[
                 user_msg("old turn 1"),
                 assistant_text("old reply 1"),
@@ -2731,7 +2804,7 @@ mod replay_tests {
 
     #[test]
     fn assistant_text_becomes_assistant_role_with_content() {
-        let out = reconstruct_prior_messages(&[assistant_text("hi back")], false);
+        let out = reconstruct(&[assistant_text("hi back")], false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "assistant");
         assert_eq!(out[0]["content"], "hi back");
@@ -2741,10 +2814,90 @@ mod replay_tests {
     }
 
     #[test]
+    fn a_large_prior_tool_result_replays_as_its_retained_stub_in_both_shapes() {
+        // Mirrors the live loop: a result big enough to have been retained —
+        // and whose value file is on disk — must fold back in as the same
+        // [retained #id] stub, never as the full text — otherwise one resume
+        // re-poisons the context the retention just saved.
+        let big = "x".repeat(30_000);
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-replay-retained-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&runs_dir);
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        retained::retain_large_result(&runs_dir, "r", "tc1", "read_file", &big)
+            .expect("fixture value stored");
+        let values = Some((runs_dir.as_path(), "r"));
+        let events = [
+            user_msg("run the tests"),
+            assistant_with_tool_call(),
+            tool_result("tc1", &big),
+            assistant_text("done"),
+        ];
+
+        let folded = reconstruct_prior_messages(&events, false, values);
+        let last = folded.last().unwrap()["content"].as_str().unwrap();
+        assert!(last.contains("[retained #tc1]"), "text-fold stub missing");
+        assert!(last.len() < 10_000, "full text leaked into the text fold");
+        // The fold learned the tool's real name from the assistant turn, so
+        // the stub reads exactly as the live loop wrote it.
+        assert!(last.contains("read_file returned"), "stub must name the tool: {last}");
+
+        let structured = reconstruct_prior_messages(&events, true, values);
+        let tool_msg = structured
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .expect("structured replay keeps the tool message");
+        let content = tool_msg["content"].as_str().unwrap();
+        assert!(content.contains("[retained #tc1]"), "structured stub missing");
+        assert!(content.len() < 10_000, "full text leaked into structured replay");
+        assert_eq!(
+            last.contains("read_file returned"),
+            content.contains("read_file returned"),
+            "both shapes carry the same stub text"
+        );
+        let _ = std::fs::remove_dir_all(&runs_dir);
+    }
+
+    #[test]
+    fn a_large_prior_result_without_a_value_file_replays_in_full() {
+        // If the live write failed, the model saw the full text that turn —
+        // a resume must carry the full text too, never a stub pointing at a
+        // value peek_value can't read.
+        let big = "x".repeat(30_000);
+        let runs_dir = std::env::temp_dir().join(format!(
+            "klide-replay-unretained-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        let values = Some((runs_dir.as_path(), "r"));
+        let events = [
+            user_msg("run the tests"),
+            assistant_with_tool_call(),
+            tool_result("tc1", &big),
+            assistant_text("done"),
+        ];
+
+        let folded = reconstruct_prior_messages(&events, false, values);
+        let last = folded.last().unwrap()["content"].as_str().unwrap();
+        assert!(!last.contains("[retained #tc1]"), "no file → no stub");
+        assert!(last.len() > 30_000, "full text must ride along");
+
+        let structured = reconstruct_prior_messages(&events, true, values);
+        let tool_msg = structured
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .expect("structured replay keeps the tool message");
+        assert_eq!(tool_msg["content"].as_str().unwrap(), big);
+        let _ = std::fs::remove_dir_all(&runs_dir);
+    }
+
+    #[test]
     fn assistant_with_tool_call_drops_call_keeps_text() {
         // Tool calls are folded into the next assistant turn as
         // inline tool results, not surfaced as a structured array.
-        let out = reconstruct_prior_messages(&[assistant_with_tool_call()], false);
+        let out = reconstruct(&[assistant_with_tool_call()], false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "assistant");
         assert!(out[0]["content"]
@@ -2759,7 +2912,7 @@ mod replay_tests {
         // The orphan tool_call_finished event from a prior turn is
         // not emitted as its own message; it waits for the closing
         // assistant turn and gets appended to that text.
-        let out = reconstruct_prior_messages(
+        let out = reconstruct(
             &[
                 assistant_text("let me check"),
                 tool_result("tc1", "file contents"),
@@ -2789,7 +2942,7 @@ mod replay_tests {
             tool_result("tc1", "hello world"),
             assistant_text("the readme says hi"),
         ];
-        let out = reconstruct_prior_messages(&events, false);
+        let out = reconstruct(&events, false);
         // 1 user + 1 pre-tool assistant + 1 closing assistant with the
         // tool result folded in = 3 messages. The tool_call_finished
         // was folded into the closing turn, the ToolCall block on
@@ -2815,7 +2968,7 @@ mod replay_tests {
         // as `role: "tool"` is exactly the Ollama parse-error case
         // we just fixed.
         let out =
-            reconstruct_prior_messages(&[user_msg("ping"), tool_result("tc1", "pong")], false);
+            reconstruct(&[user_msg("ping"), tool_result("tc1", "pong")], false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "user");
     }
@@ -2825,7 +2978,7 @@ mod replay_tests {
         // A buffered tool result from a previous turn must not leak
         // into the next user turn — the model shouldn't see a
         // tool result on the wrong side of a user message.
-        let out = reconstruct_prior_messages(
+        let out = reconstruct(
             &[
                 user_msg("first turn"),
                 tool_result("tc1", "stale result"),
@@ -2858,7 +3011,7 @@ mod replay_tests {
             },
             user_msg("hi"),
         ];
-        let out = reconstruct_prior_messages(&events, false);
+        let out = reconstruct(&events, false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["role"], "user");
     }
@@ -2892,7 +3045,7 @@ mod replay_tests {
 
     #[test]
     fn structured_replay_emits_tool_calls_and_tool_role() {
-        let out = reconstruct_prior_messages(
+        let out = reconstruct(
             &[
                 user_msg("read the readme"),
                 assistant_with_tool_call(),
@@ -2943,7 +3096,7 @@ mod replay_tests {
         // A turn that called a tool but never got a result (e.g. cancelled
         // mid-call) must not replay an unanswered assistant.tool_calls —
         // OpenAI-compatible APIs reject that. The call is dropped.
-        let out = reconstruct_prior_messages(&[user_msg("go"), assistant_with_tool_call()], true);
+        let out = reconstruct(&[user_msg("go"), assistant_with_tool_call()], true);
         assert_eq!(out.len(), 2);
         assert_eq!(out[1]["role"], "assistant");
         assert_eq!(out[1]["content"], "let me read that");
@@ -2956,7 +3109,7 @@ mod replay_tests {
 
     #[test]
     fn structured_replay_preserves_compaction() {
-        let out = reconstruct_prior_messages(
+        let out = reconstruct(
             &[
                 user_msg("old"),
                 assistant_text("old reply"),
@@ -4013,6 +4166,75 @@ mod run_loop_tests {
         )
         .await
         .expect("run loop settles without an infrastructure error");
+    }
+
+    /// The retention seam end-to-end through the real loop: a huge read is
+    /// stored on disk and stubbed for the provider, the transcript keeps the
+    /// full text, and a scripted `peek_value` reads the stored value back —
+    /// the exact call sequence a model follows when it meets a stub.
+    #[tokio::test]
+    async fn a_huge_tool_result_is_stubbed_for_the_provider_and_peekable() {
+        let (runs_dir, root) = sandbox("retained-e2e");
+        let id = "retained-e2e-run";
+        let big = (1..=1200)
+            .map(|n| format!("pub const ROW_{n}: usize = {n};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(big.len() > 20_000, "fixture must clear the retention threshold");
+        std::fs::write(format!("{root}/big.rs"), &big).unwrap();
+
+        let caller = ScriptedProviderCaller::new(vec![
+            scripted_turn(
+                "",
+                vec![scripted_tool_call(
+                    "read1", "read_file", serde_json::json!({ "path": "big.rs" }),
+                )],
+            ),
+            scripted_turn(
+                "",
+                vec![scripted_tool_call(
+                    "peek1", "peek_value",
+                    serde_json::json!({ "id": "read1", "query": "ROW_777:" }),
+                )],
+            ),
+            scripted_turn("ROW_777 is 777.", vec![]),
+        ]);
+        drive_loop(
+            Arc::new(FakeSupervisor::with_run(id)),
+            &runs_dir, id, test_request(&root, &[]), caller.clone(),
+        )
+        .await;
+
+        // The value file landed next to the transcript, holding the full read.
+        let value_file = runs_dir.join(format!("{id}.values")).join("read1.txt");
+        let stored = std::fs::read_to_string(&value_file).expect("value file written");
+        assert!(stored.contains("ROW_600"), "stored value keeps the middle of the output");
+
+        let seen = caller.seen_messages.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        // Turn 2: the provider carries the stub, not the 30KB+ read.
+        let turn2 = serde_json::to_string(&seen[1]).unwrap();
+        assert!(turn2.contains("[retained #read1]"), "provider must see the stub");
+        assert!(
+            !turn2.contains("ROW_600"),
+            "the middle of the read must not reach the provider"
+        );
+        // Turn 3: the peek result surfaces the searched line.
+        let turn3 = serde_json::to_string(&seen[2]).unwrap();
+        assert!(
+            turn3.contains("ROW_777: usize = 777"),
+            "peek must return the matching line: {turn3}"
+        );
+
+        // The durable transcript still records the full result — the UI and
+        // Mission Control never see the stub.
+        let events = read_events(&runs_dir, id).expect("transcript readable");
+        let full_read = events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallFinished { tool_call_id, result, .. }
+                if tool_call_id == "read1" && result.content.contains("ROW_600")
+        ));
+        assert!(full_read, "transcript keeps the full tool result");
     }
 
     /// Exercise the real TODO refresh call site after a file read, where

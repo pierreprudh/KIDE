@@ -20,6 +20,20 @@ still open.
 
 ### Harness
 
+- **A huge tool output is retained on disk, not carried in context.** A tool
+  result over 20 KB is written once to `<runs>/<run id>.values/<call id>.txt`
+  and the provider sees a `[retained #id]` stub with a head-and-tail preview
+  instead of the full text. A new `peek_value` tool reads numbered line ranges
+  (up to 400 per call) or searches the stored text by substring; its output is
+  capped at 16 KB, below the retention threshold by construction, so a peek can
+  never itself be retained. The Transcript keeps the full result, so Mission
+  Control and the UI show everything, and both replay shapes rebuild the
+  identical stub from the Transcript — a resume sees exactly what the live turn
+  saw, and a stub only ever points at a file that exists. If the disk write
+  fails the result stays in context verbatim. Value files land owner-only like
+  transcripts, and travel with the run when the runs folder moves. Compaction
+  remains the second line of defense; a retained result is no longer lost when
+  it runs. (Prime Agent, arXiv 2608.23552.)
 - **The command gate can be waived per conversation.** A Goal run dispatched
   with `autoApproveCommands` executes `run_command` as if allowlisted — even
   over a rejection remembered earlier in the run, since escalating is the
