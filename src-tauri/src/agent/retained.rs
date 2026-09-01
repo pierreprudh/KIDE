@@ -142,7 +142,9 @@ pub(super) fn retain_large_result(
         return None;
     }
     let path = value_path(runs_dir, run_id, tool_call_id);
-    match crate::durable::write_atomic(&path, content.as_bytes()) {
+    // A value file is a verbatim tool result — file contents, command output —
+    // so it lands owner-only, the same mode transcripts use.
+    match crate::durable::write_atomic_private(&path, content.as_bytes()) {
         Ok(()) => Some(stub),
         Err(_) => None,
     }
