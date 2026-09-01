@@ -7157,12 +7157,13 @@ button:focus-visible .menu-leadout {
   opacity: 0;
   visibility: hidden;
   will-change: transform, opacity;
-  /* Leaving is quicker than arriving, and the fade finishes before the slide
-     does, so nothing half-visible lingers on the way out. */
+  /* Closing mirrors opening: the same slide, and a fade that starts a beat in
+     and ends with it — so the sheet is seen leaving, not switched off. The
+     drawer is hidden only once both have finished. */
   transition:
-    transform 280ms var(--ease-soft),
-    opacity 160ms var(--ease-out),
-    visibility 0s linear 280ms;
+    transform var(--explorer-reveal) var(--ease-soft),
+    opacity 240ms var(--ease-out) 60ms,
+    visibility 0s linear var(--explorer-reveal);
 }
 
 .explorer-dock-overlay[data-open="true"] {
@@ -7201,13 +7202,34 @@ button:focus-visible .menu-leadout {
   background: transparent;
 }
 
+/* Closed: the fade starts a beat into the collapse and ends with it, so the
+   curtain is seen drawing across the rows rather than over an empty column. */
 .klide-anchored-side > * {
   opacity: 0;
-  transition: opacity 140ms var(--ease-out);
+  transition: opacity 220ms var(--ease-out) 100ms;
 }
 
+/* Open: the same beat, the other way — the rows arrive into a space that is
+   already opening and are solid as it settles. */
 .klide-anchored-side[data-open="true"] > * {
   opacity: 1;
+  transition: opacity 220ms var(--ease-out) 90ms;
+}
+
+/* The hairline between the column and the editor rides the same fade as the
+   rows, instead of blinking on and off at the ends of the motion. While
+   closed it takes no pointer, so its ±5px grab zone cannot catch a click at
+   the rail's edge. */
+.klide-anchored-splitter {
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms var(--ease-out) 100ms;
+}
+
+.klide-anchored-splitter[data-open="true"] {
+  opacity: 1;
+  pointer-events: auto;
   transition: opacity 220ms var(--ease-out) 90ms;
 }
 
@@ -7215,6 +7237,8 @@ button:focus-visible .menu-leadout {
   .klide-anchored-columns,
   .klide-anchored-side > *,
   .klide-anchored-side[data-open="true"] > *,
+  .klide-anchored-splitter,
+  .klide-anchored-splitter[data-open="true"],
   .explorer-dock-overlay,
   .explorer-dock-overlay[data-open="true"] {
     transition: none;

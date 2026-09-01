@@ -314,7 +314,7 @@ export function AnchoredWorkbench(props: Props) {
           <div className="klide-anchored-side" data-open={sideVisible ? "true" : "false"}>
             {renderSide()}
           </div>
-          <div style={{ visibility: sideVisible ? "visible" : "hidden", minWidth: 0 }}>
+          <div className="klide-anchored-splitter" data-open={sideVisible ? "true" : "false"}>
             <SideSplitter
               side="left"
               current={sidePanelWidth}
