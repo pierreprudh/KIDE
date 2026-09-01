@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://klide.dev/schemas/klide-memory-entry.schema.json",
+  "title": "Klide Project Memory entry",
+  "description": "Versioned, reviewed knowledge owned by one Klide Workspace.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "path",
+    "relPath",
+    "createdAtMs",
+    "dateIso",
+    "title",
+    "kind",
+    "reviewState",
+    "tags",
+    "sourceRefs",
+    "supersedes",
+    "goal",
+    "plan",
+    "decisions",
+    "filesTouched",
+    "nextSteps",
+    "notes",
+    "runId",
+    "provider",
+    "model",
+    "mode",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "maxLength": 180
+    },
+    "path": {
+      "type": "string",
+      "description": "Absolute local path. Never send this field to a remote consumer."
+    },
+    "relPath": {
+      "type": "string",
+      "pattern": "^\\.klide/memory/[A-Za-z0-9_-]+\\.md$"
+    },
+    "createdAtMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dateIso": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "kind": {
+      "$ref": "#/$defs/memoryKind"
+    },
+    "reviewState": {
+      "$ref": "#/$defs/reviewState"
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      }
+    },
+    "sourceRefs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/sourceRef"
+      }
+    },
+    "supersedes": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "plan": {
+      "$ref": "#/$defs/stringList"
+    },
+    "decisions": {
+      "$ref": "#/$defs/stringList"
+    },
+    "filesTouched": {
+      "$ref": "#/$defs/stringList"
+    },
+    "nextSteps": {
+      "$ref": "#/$defs/stringList"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "runId": {
+      "type": ["string", "null"]
+    },
+    "provider": {
+      "type": ["string", "null"]
+    },
+    "model": {
+      "type": ["string", "null"]
+    },
+    "mode": {
+      "type": ["string", "null"],
+      "enum": ["chat", "plan", "goal", null]
+    },
+    "status": {
+      "type": ["string", "null"]
+    }
+  },
+  "$defs": {
+    "memoryKind": {
+      "type": "string",
+      "enum": [
+        "run",
+        "handoff",
+        "decision",
+        "convention",
+        "fact",
+        "failure",
+        "pattern"
+      ]
+    },
+    "reviewState": {
+      "type": "string",
+      "enum": ["proposed", "reviewed", "superseded", "stale"]
+    },
+    "stringList": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceType", "id"],
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": ["run", "transcript", "commit", "file"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative path when sourceType is file."
+        },
+        "lineStart": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lineEnd": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

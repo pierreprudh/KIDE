@@ -37,8 +37,10 @@ _Avoid_: agent type, permission level
 **Goal policy**:
 What a `goal` run does with its two review gates — `review` (every edit pauses,
 commands ask), `auto` (edits apply, still checkpointed; commands ask), `full`
-(edits and commands, no prompts). Chosen per conversation from the foot bar,
-stamped onto each run request, never persisted — a reload reverts to prompting.
+(edits and commands, no prompts). Chosen per conversation — the live foot bar's
+note cycles it; before a conversation exists, Focus's start-stage "+" menu lists
+it — stamped onto each run request, never persisted (a reload reverts to
+prompting).
 _Avoid_: autonomy level, trust mode, rung (the ladder is gone)
 
 **Tool**:
@@ -123,6 +125,27 @@ Workspace, lineage, Git metadata, and current Run activity. It owns navigation
 between fresh, restored, resumed, and branched Conversations; it is not itself
 a Run, because one Conversation session may be idle between Runs.
 _Avoid_: chat state, thread state, panel globals
+
+**Project Memory**:
+Reviewed, Workspace-scoped knowledge that survives Runs: decisions,
+conventions, facts, failures, patterns, and handoffs. One entry is a versioned
+Markdown file under `.klide/memory/`; Markdown is authoritative and any search
+index is derived. A draft is not Project Memory until the user accepts it.
+_Avoid_: external memory provider, vector database, chat memory
+
+**Memory source**:
+A structured reference from Project Memory back to the evidence that produced
+it — a Run, Transcript region, commit, or Workspace-relative file/line. Recall
+preserves these references so a model and reviewer can inspect the why behind
+the knowledge.
+_Avoid_: citation string, confidence score
+
+**Memory recall**:
+A native Harness read of reviewed Project Memory. `memory_search` returns
+ranked summaries and match reasons; `memory_read` resolves one authoritative
+entry. Both carry the `ReadProjectMemory` capability, and their Tool events make
+the recalled knowledge part of the Transcript evidence.
+_Avoid_: RAG call, prompt stuffing, MCP lookup
 
 **Panel fleet**:
 The host-owned collection of live Conversation sessions. It routes targeted

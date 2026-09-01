@@ -51,8 +51,11 @@ Klide/
 ├── Ideas.md                   Future ideas + inspiration (git-ignored, local only)
 ├── HARNESS_CONTRACT.md        The harness trust model (modes, capabilities, permissions)
 ├── KLIDE_HARNESS_SCHEMA.md    Tool interface schema
+├── KLIDE_MEMORY_SCHEMA.md     Project Memory entry + retrieval/MCP contract
+├── MEMORY_ENGINE.md           All-in-one memory architecture + PR sequence
 ├── Design.md                  Design system — tokens, themes, principles (mirror changes in styles/tokens.css)
 ├── docs/                      Design docs (delegate replay, competitors, website) + adr/ (git-ignored, local only)
+├── schemas/                   Versioned JSON Schemas for durable/wire contracts
 ├── src/                       React + TypeScript frontend
 │   ├── main.tsx                 React boot
 │   ├── monaco-setup.ts          Self-host Monaco from the npm bundle (no CDN fetch)
@@ -225,7 +228,7 @@ Klide/
     │   ├── search.rs             Find-in-files over a Workspace with ignore policy
     │   ├── workspace.rs          Workspace module — owns the Workspace-rooted invariant
     │   ├── worktree_setup.rs     Per-workspace worktree bootstrap recipe (copy/link/port/script)
-    │   ├── memory.rs             Project memory markdown I/O
+    │   ├── memory.rs             Project Memory schema, Markdown I/O, and local retrieval
     │   ├── storage.rs            Where the runs dir lives — user-choosable folder, validated moves, cache accounting
     │   ├── missions.rs           Durable Missions — authored specs, append-only events, drive loop
     │   ├── durable.rs            Atomic + append-only write primitives for on-disk state
@@ -239,7 +242,7 @@ Klide/
     │   └── agent/
     │       ├── mod.rs             Agent supervisor + run loop
     │       ├── run_core.rs        Tauri-free turn prep — provider quirks, message assembly, compaction
-    │       ├── tools.rs           Tool registry (schema + capability + execution)
+    │       ├── tools.rs           Tool registry (schema + capability + execution, including native memory recall)
     │       ├── tool_handlers.rs   Per-capability call ceremony — permission gates, pauses, checkpoints
     │       ├── conversation_search.rs Workspace-scoped search over prior Harness transcripts
     │       ├── glob_match.rs      Shared */? matcher (glob tool + command allowlist)
@@ -320,7 +323,7 @@ after an app restart. Full design + roadmap: `docs/delegate-session-replay.md`.
 
 Durable end-of-session notes in `<workspace>/.klide/memory/` so a future agent (or future you) can pick up where the last session stopped.
 
-- **Storage** — `src-tauri/src/memory.rs` writes one markdown file per entry with a YAML frontmatter (date, runId, provider, model, mode, status) + structured body (Goal / Plan / Decisions / Files touched / Next steps / Notes). Commands: `memory_write`, `memory_list`, `memory_read`.
+- **Storage** — `src-tauri/src/memory.rs` writes one versioned markdown file per entry with machine frontmatter (kind, review state, tags, source refs, supersession, Run/provider metadata) + structured body (Goal / Plan / Decisions / Files touched / Next steps / Notes). Markdown is authoritative; retrieval is local and deterministic. Commands: `memory_write`, `memory_list`, `memory_read`; Harness Tools: `memory_search`, `memory_read`.
 - **Frontend** — `src/memory.ts` typed data layer; `MemoryPanel` is the list+detail body; `MemoryModal` is the centered overlay (same pattern as `SkillsModal`).
 - **Trigger** — the AI panel header has a "Summarize" bookmark button (`src/components/ai/summarize.ts`) that calls the model once with a structured prompt, parses the response, and writes via `memory_write`. The first user message becomes the title; file paths are extracted from the conversation; the model produces Notes + Decisions + Goal.
 
@@ -447,7 +450,7 @@ enforce wrapper coverage for the git family.
 - [x] Monaco editor with syntax highlighting, Cmd+S, 7 themes
 - [x] Status bar — file path, language, git branch, theme/terminal/layout toggles, dot separators
 - [x] Terminal panel with real shell via Rust portable-pty
-- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted endpoints, 19 built-in tools, inline diff review + the foot-bar Goal-policy decider (review / auto-accept / full auto)
+- [x] AI panel — streaming chat across Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter + self-hosted endpoints, 22 built-in tools, inline diff review + the foot-bar Goal-policy decider (review / auto-accept / full auto)
 - [x] Agent mode — goal/plan modes, diff-reviewed edits, tool loop
 - [x] Git panel — full-view Git Review workbench (staging + diffs)
 - [x] Mission Control — aggregate agent run board (Claude Code, Codex, OpenCode, Oh My Pi, Klide) with handoff to AI panel

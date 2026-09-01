@@ -11,13 +11,41 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+export type MemoryKind =
+  | "run"
+  | "handoff"
+  | "decision"
+  | "convention"
+  | "fact"
+  | "failure"
+  | "pattern";
+
+export type MemoryReviewState = "proposed" | "reviewed" | "superseded" | "stale";
+
+export type MemorySourceType = "run" | "transcript" | "commit" | "file";
+
+export type MemorySourceRef = {
+  sourceType: MemorySourceType;
+  id: string;
+  label?: string;
+  path?: string;
+  lineStart?: number;
+  lineEnd?: number;
+};
+
 export type MemoryEntry = {
+  schemaVersion: number;
   id: string;
   path: string;
   relPath: string;
   createdAtMs: number;
   dateIso: string;
   title: string;
+  kind: MemoryKind;
+  reviewState: MemoryReviewState;
+  tags: string[];
+  sourceRefs: MemorySourceRef[];
+  supersedes: string | null;
   goal: string;
   plan: string[];
   decisions: string[];
@@ -33,7 +61,13 @@ export type MemoryEntry = {
 
 export type MemoryInput = Omit<
   MemoryEntry,
-  "id" | "path" | "relPath" | "createdAtMs" | "dateIso"
+  | "schemaVersion"
+  | "id"
+  | "path"
+  | "relPath"
+  | "createdAtMs"
+  | "dateIso"
+  | "reviewState"
 >;
 
 // Read the most-recent memory entries (newest first). Empty when the

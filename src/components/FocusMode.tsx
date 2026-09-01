@@ -58,7 +58,7 @@ import type { AgentAttachment as Attachment, AgentMode, ProviderId } from "../ag
 import { stageFiles, stagedImageBytes } from "./ai/attachments";
 import { AttachmentTray } from "./ai/AttachmentTray";
 import { notify } from "../toast";
-import { MODE_CHOICES, effectiveMode as effectiveModeFor, goalPolicyOf, nextGoalPolicy } from "./ai/autonomyLadder";
+import { GOAL_POLICIES, MODE_CHOICES, effectiveMode as effectiveModeFor, goalPolicyOf } from "./ai/autonomyLadder";
 import {
   PROVIDER_GROUPS,
   defaultModelForProvider,
@@ -1311,7 +1311,12 @@ function StarterIcon({ kind }: { kind: StarterKind }) {
 
 /** Focus home's counterpart to the live AI panel's + menu. It persists the
  *  selected mode before the first message hands off to AiPanel, so the first
- *  run and every later turn share one mode/review setting. */
+ *  run and every later turn share one mode/review setting.
+ *
+ *  The Goal policy lives in here too, as rows rather than as the foot bar's
+ *  cycling note: before a run exists there is nothing for a standing note to
+ *  report on, and the start stage should read as one line of intent. Once the
+ *  first message lands, AiPanel's foot bar carries the note as usual. */
 function FocusAddMenu({
   workspaceRoot,
   mode,
@@ -1322,6 +1327,10 @@ function FocusAddMenu({
   canAttachFiles,
   supportsVision,
   onAttachFiles,
+  requireDiffReview,
+  autoApproveCommands,
+  onRequireDiffReviewChange,
+  onAutoApproveCommandsChange,
 }: {
   workspaceRoot: string | null;
   mode: AgentMode;
@@ -1336,6 +1345,10 @@ function FocusAddMenu({
   /** Whether the chosen model can see a photo — decides what this row promises. */
   supportsVision: boolean;
   onAttachFiles: (files: File[]) => void;
+  requireDiffReview: boolean;
+  autoApproveCommands: boolean;
+  onRequireDiffReviewChange: (v: boolean) => void;
+  onAutoApproveCommandsChange: (v: boolean) => void;
 }) {
   const [view, setView] = useState<"actions" | "files">("actions");
   // The OS file picker, for a photo or document that isn't in the workspace.
@@ -1407,6 +1420,7 @@ function FocusAddMenu({
     modelSupportsTools: supportsTools,
     providerDelegatesWork,
   });
+  const activePolicy = goalPolicyOf(requireDiffReview, autoApproveCommands);
   const matchingFiles = (files ?? [])
     .filter((path) => !fileQuery || isSubsequence(fileQuery, path))
     .slice(0, 12);
@@ -1550,6 +1564,42 @@ function FocusAddMenu({
                   </button>
                 );
               })}
+              {/* Only Goal has gates to set, so the policy rows appear only
+                  when Goal is what the first run will actually be. */}
+              {effectiveMode === "goal" && (
+                <>
+                  <div className="klide-focus-add-menu-divider" />
+                  <div className="klide-focus-add-menu-caption">When it edits</div>
+                  {GOAL_POLICIES.map((policy) => {
+                    const active = policy.key === activePolicy.key;
+                    return (
+                      <button
+                        key={policy.key}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={active}
+                        title={policy.description}
+                        className="klide-focus-add-menu-row"
+                        onClick={() => {
+                          onRequireDiffReviewChange(policy.review);
+                          onAutoApproveCommandsChange(policy.commands);
+                          close();
+                        }}
+                      >
+                        <span>
+                          {policy.label}
+                          <small>{policy.description}</small>
+                        </span>
+                        {active ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </>
+              )}
             </>
           )}
         </div>,
@@ -1855,43 +1905,11 @@ function FocusComposer({
               canAttachFiles={canAttachFiles}
               supportsVision={supportsVision}
               onAttachFiles={(files) => void addFiles(files)}
+              requireDiffReview={requireDiffReview}
+              autoApproveCommands={autoApproveCommands}
+              onRequireDiffReviewChange={onRequireDiffReviewChange}
+              onAutoApproveCommandsChange={onAutoApproveCommandsChange}
             />
-            {/* The Goal policy's decider, same as the AI panel's foot bar —
-                the menu above picks the Mode, this note names the policy and
-                a click cycles it. */}
-            {effectiveModeFor({
-              mode: agentMode,
-              modelSupportsTools: supportsTools,
-              providerDelegatesWork: isDelegateProvider(provider),
-            }) === "goal" && (() => {
-              const policy = goalPolicyOf(requireDiffReview, autoApproveCommands);
-              return (
-                <button
-                  type="button"
-                  className={
-                    policy.key === "review"
-                      ? "klide-ai-mode-note klide-ai-mode-note--muted"
-                      : "klide-ai-mode-note"
-                  }
-                  onClick={() => {
-                    const next = nextGoalPolicy(policy.key);
-                    onRequireDiffReviewChange(next.review);
-                    onAutoApproveCommandsChange(next.commands);
-                  }}
-                  title={
-                    policy.key === "review"
-                      ? "Review: each edit pauses for your approval; commands ask too. Click: auto-accept edits."
-                      : policy.key === "auto"
-                        ? "Auto-accept: edits apply without a prompt (still checkpointed); commands still ask. Click: full auto."
-                        : "Full auto: edits apply and shell commands run without asking. Click: back to reviewing every edit."
-                  }
-                >
-                  <span key={policy.key} className="klide-ai-mode-note-label">
-                    {policy.label}
-                  </span>
-                </button>
-              );
-            })()}
             <InlineMenu
               label="Provider"
               display={providerName(provider)}

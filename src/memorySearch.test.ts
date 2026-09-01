@@ -8,12 +8,18 @@ import {
 } from "./memorySearch";
 
 const entry = (over: Partial<MemoryEntry>): MemoryEntry => ({
+  schemaVersion: 1,
   id: "2026-07-10-1000-note",
   path: "/ws/.klide/memory/note.md",
   relPath: ".klide/memory/note.md",
   createdAtMs: 0,
   dateIso: "2026-07-10T10:00:00Z",
   title: "Ship the advisor",
+  kind: "handoff",
+  reviewState: "reviewed",
+  tags: [],
+  sourceRefs: [],
+  supersedes: null,
   goal: "Wire the advisor seam",
   plan: [],
   decisions: [],

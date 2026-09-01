@@ -19,7 +19,7 @@ Modes are capability tiers:
 | Mode | Tool surface | Trust rule |
 |---|---|---|
 | `chat` | No tools | The model can only answer from provided context. |
-| `plan` | Built-in read-only tools | The model can inspect the Workspace, but cannot write files, run commands, use dynamic tools, or pause for approval. |
+| `plan` | Built-in read-only tools | The model can inspect the Workspace, Conversation history, and reviewed Project Memory, but cannot write files, run commands, use dynamic tools, or pause for approval. |
 | `goal` | All built-in tools plus dynamic tools | Writes require Diff review; commands and dynamic tools require permission. |
 
 Mode filtering happens twice:
@@ -70,6 +70,8 @@ Every Tool has one capability:
 | Capability | Current Tool kind | Rule |
 |---|---|---|
 | `ReadWorkspace` | `ReadOnly` | May run in `plan` and `goal`. Must resolve paths through the Workspace module when touching files. |
+| `ReadConversationHistory` | `ConversationHistory` | May run in `plan` and `goal`. Reads app-owned prior Harness Transcripts for the current Workspace, not Workspace files. |
+| `ReadProjectMemory` | `ProjectMemory` | May run in `plan` and `goal`. Reads reviewed entries under `.klide/memory/`; normal recall excludes stale and superseded entries. |
 | `WriteWorkspace` | `Write` | Goal-only. Produces a Diff proposal and waits for Diff review before writing. |
 | `RunCommand` | `Command` | Goal-only. Produces a permission request and runs only after approval. |
 | `PauseForUser` | `Pause` | Goal-only. Pauses the Run and resumes on an outside answer — typed user input (`userAnswerQuestion`), a nested subagent Run (`spawn_subagent`), or an advisor model (`consult_advisor`). |
@@ -197,6 +199,12 @@ The Harness emits Agent events for:
 
 The Transcript is append-only JSONL. Mission Control and follow-up turns should
 derive from these events rather than guessing from UI state.
+
+Project Memory recall uses the same evidence path. `memory_search` and
+`memory_read` emit ordinary Tool start/finish events stamped with capability
+`read_project_memory`; result metadata carries the entry schema, match fields,
+and source references. A reader never has to infer that boundary from the Tool
+name.
 
 Run summaries derive a Validation snapshot from the Transcript. The snapshot is
 evidence, not a correctness proof:

@@ -28,7 +28,27 @@ const STORAGE_KEY = "klide.memoryDrafts";
 
 const store = createPersistedStore<MemoryDraft[]>({
   key: STORAGE_KEY,
-  validate: (parsed) => (Array.isArray(parsed) ? (parsed as MemoryDraft[]) : []),
+  // Drafts persisted before MemoryInput gained kind/tags/sourceRefs/supersedes
+  // still live in localStorage without them; backfill so the type's promise
+  // holds at runtime and an accepted legacy draft writes a well-formed entry.
+  validate: (parsed) => {
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as Array<Partial<MemoryDraft> | null>)
+      .filter(
+        (d): d is Partial<MemoryDraft> =>
+          !!d && typeof d === "object" && typeof d.draftId === "string"
+      )
+      .map(
+        (d) =>
+          ({
+            kind: "handoff",
+            tags: [],
+            sourceRefs: [],
+            supersedes: null,
+            ...d,
+          }) as MemoryDraft
+      );
+  },
 });
 
 function genId(): string {

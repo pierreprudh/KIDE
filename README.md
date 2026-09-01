@@ -87,7 +87,7 @@ Klide has three capability modes:
 | **Editor and shell** | Monaco editor, file explorer, tabs, search, command palette, Git review, commit graph, and persistent PTY terminals |
 | **Workspace surfaces** | Welcome launcher, focus mode, free-mode floating panels, fixed layout presets, and a freeform grid builder |
 | **Models** | Ollama, MLX, Anthropic, OpenAI, Mistral, xAI, DeepSeek, OpenRouter, and OpenAI-compatible endpoints |
-| **Project context** | `AGENTS.md`, `CLAUDE.md`, file mentions, image and document attachments, skills, dynamic tools, search over previous conversations, and reviewed project memory |
+| **Project context** | `AGENTS.md`, `CLAUDE.md`, file mentions, image and document attachments, skills, dynamic tools, search over previous conversations, and native recall over reviewed Project Memory with provenance |
 | **Local security** | Workspace-rooted file access, operating-system keychain storage, project command allowlists, network permissions, and a user-choosable transcript folder |
 
 ## Get started
@@ -151,6 +151,7 @@ Klide separates the interface from the durable execution layer:
 The Rust harness checks capabilities when it advertises tools and again before execution. Writes pause for diff review. Commands and network access pause for permission.
 
 Read the [Harness contract](./HARNESS_CONTRACT.md) for the trust model and [Harness schema](./KLIDE_HARNESS_SCHEMA.md) for the tool interface.
+The [Memory Engine](./MEMORY_ENGINE.md) and [Project Memory schema](./KLIDE_MEMORY_SCHEMA.md) describe Klide's local learning layer and its future embedded-MCP boundary.
 
 ## Project status
 

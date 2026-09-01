@@ -6,9 +6,10 @@
 //
 // **Goal policy** is what Goal mode does with its two gates: review every edit
 // (the default), auto-accept edits (commands still ask), or full auto (edits
-// and commands, no prompts). The conversation foot bar is the decider — its
-// standing note names the policy and a click cycles to the next — so the menu
-// never grows a rung per policy again.
+// and commands, no prompts). In a live conversation the foot bar is the decider
+// — its standing note names the policy and a click cycles to the next — so Mode
+// never grows a rung per policy. Focus's start stage has no run to report on
+// yet, so its "+" menu lists the policies as rows below the Mode rows instead.
 
 import type { AgentMode } from "../../agent/types";
 
@@ -32,6 +33,9 @@ export type GoalPolicyChoice = {
   key: GoalPolicy;
   /** The foot-bar note's text. Lower-case: it sits beside the branch label. */
   label: string;
+  /** One short clause, for the surfaces that list the policies as rows (the
+   *  start-stage + menu) instead of cycling one note. */
+  description: string;
   /** What the run request gets. `commands: true` is never persisted — on
    *  reload every panel falls back to prompting. */
   review: boolean;
@@ -41,9 +45,9 @@ export type GoalPolicyChoice = {
 /** Cycle order — each click on the foot-bar note escalates one step, then
  *  wraps back to the reviewing default. */
 export const GOAL_POLICIES: GoalPolicyChoice[] = [
-  { key: "review", label: "reviewing edits", review: true, commands: false },
-  { key: "auto", label: "auto-accept edits", review: false, commands: false },
-  { key: "full", label: "full auto", review: false, commands: true },
+  { key: "review", label: "reviewing edits", description: "every edit waits for you", review: true, commands: false },
+  { key: "auto", label: "auto-accept edits", description: "edits apply, commands ask", review: false, commands: false },
+  { key: "full", label: "full auto", description: "edits and commands, no prompts", review: false, commands: true },
 ];
 
 /** Which policy the current pair of gate flags spells. An off-ladder combo

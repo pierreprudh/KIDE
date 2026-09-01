@@ -180,6 +180,12 @@ export async function generateMemoryNote(
 
   return {
     title: deriveTitle(input.msgs),
+    kind: "handoff",
+    tags: [],
+    sourceRefs: input.runId
+      ? [{ sourceType: "run", id: input.runId, label: "Source Run" }]
+      : [],
+    supersedes: null,
     goal: parsed.goal,
     plan: [],
     decisions: parsed.decisions,

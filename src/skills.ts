@@ -40,6 +40,8 @@ export const SKILL_TOOLS: { id: string; label: string; description: string }[] =
   { id: "grep", label: "Grep", description: "Search text files in the workspace for a literal pattern." },
   { id: "get_git_status", label: "Git status", description: "Return git branch and changed files for the workspace." },
   { id: "get_git_diff", label: "Git diff", description: "Return git diff for the workspace or one path." },
+  { id: "memory_search", label: "Search memory", description: "Search reviewed Project Memory with provenance." },
+  { id: "memory_read", label: "Read memory", description: "Read one authoritative Project Memory entry." },
   { id: "clean_context", label: "Clean context", description: "Discard tool results that led nowhere from the current turn." },
   { id: "web_search", label: "Web search", description: "Search the web for documentation or current information." },
   { id: "web_fetch", label: "Web fetch", description: "Fetch the content of a URL as text." },
