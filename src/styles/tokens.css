@@ -6494,6 +6494,15 @@ button:focus-visible .menu-leadout {
   font-size: 11px;
 }
 
+/* Names the group of Goal-policy rows below it, so six radio rows in one menu
+   don't read as one flat list. Quiet caption, not a chip. */
+.klide-focus-add-menu-caption {
+  padding: 3px 9px 2px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+}
+
 .klide-focus-add-menu-divider {
   height: 1px;
   margin: 4px 8px;

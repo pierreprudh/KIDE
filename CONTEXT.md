@@ -37,8 +37,10 @@ _Avoid_: agent type, permission level
 **Goal policy**:
 What a `goal` run does with its two review gates — `review` (every edit pauses,
 commands ask), `auto` (edits apply, still checkpointed; commands ask), `full`
-(edits and commands, no prompts). Chosen per conversation from the foot bar,
-stamped onto each run request, never persisted — a reload reverts to prompting.
+(edits and commands, no prompts). Chosen per conversation — the live foot bar's
+note cycles it; before a conversation exists, Focus's start-stage "+" menu lists
+it — stamped onto each run request, never persisted (a reload reverts to
+prompting).
 _Avoid_: autonomy level, trust mode, rung (the ladder is gone)
 
 **Tool**:
