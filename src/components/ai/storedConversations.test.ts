@@ -3,6 +3,7 @@ import { memoryStorage } from "../../testStorage";
 import type { Conversation, Msg } from "./types";
 import {
   CONVERSATIONS_CHANGED_EVENT,
+  CONVERSATION_DELETED_EVENT,
   SNAPSHOT_IMAGE_BUDGET,
   cacheableMessages,
   cachedConversationSizes,
@@ -457,5 +458,21 @@ describe("what a snapshot may cache", () => {
     expect(forgetStoredConversation("a").map((c) => c.id)).toEqual(["b"]);
     expect(clearStoredConversations()).toEqual([]);
     expect(loadConversations()).toEqual([]);
+  });
+});
+
+describe("forgetting a conversation", () => {
+  it("announces the deletion so a panel showing the thread can let go of it", () => {
+    persistConversation(conversation({ id: "a" }));
+    persistConversation(conversation({ id: "b" }));
+    const deleted: string[] = [];
+    window.addEventListener(CONVERSATION_DELETED_EVENT, (event) => {
+      deleted.push((event as CustomEvent<{ conversationId: string }>).detail.conversationId);
+    });
+
+    expect(forgetStoredConversation("a").map((c) => c.id)).toEqual(["b"]);
+
+    expect(deleted).toEqual(["a"]);
+    expect(loadConversations<Conversation>().map((c) => c.id)).toEqual(["b"]);
   });
 });
