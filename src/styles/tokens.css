@@ -5297,11 +5297,24 @@ button:focus-visible .menu-leadout {
   color: var(--fg-dim);
   font-family: var(--font-mono);
   font-size: 10.5px;
+  animation: klide-segmented-count-in var(--motion-med) var(--ease-soft) both;
+}
+
+@keyframes klide-segmented-count-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .klide-segmented-thumb {
     transition: none;
+  }
+  .klide-segmented-count {
+    animation: none;
   }
 }
 

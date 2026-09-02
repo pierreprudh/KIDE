@@ -1118,7 +1118,10 @@ function SegmentedTabs<T extends string>({
             onClick={() => onChange(option.id)}
           >
             {option.label}
-            {option.count !== undefined && option.count > 0 && (
+            {/* Only the chosen segment says how many; the others are just
+                names until the thumb reaches them, and the count fades in
+                behind it. */}
+            {active && option.count !== undefined && option.count > 0 && (
               <span className="klide-segmented-count">{option.count}</span>
             )}
           </button>
