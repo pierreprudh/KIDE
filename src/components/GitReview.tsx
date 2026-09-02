@@ -1039,27 +1039,24 @@ function PRExpandedDetail({ detail, loading, nowMs }: {
 
 // Just the section header now — the current-branch PR lives in the list like
 // any other, marked inline. No pinned, colour-washed "main" card on top.
-/** The head of the GitHub pane: one line — the title, how many are open, and
- *  at the far end the refresh mark and New PR. There is no "GitHub" eyebrow
- *  above it any more; the pane is the pull requests, so it says that once. */
+/** The head of the GitHub pane: one line — the title, and at the far end the
+ *  refresh mark and New PR. No count beside the title: the Open segment below
+ *  already says how many are in flight, and there is no "GitHub" eyebrow
+ *  above it any more — the pane is the pull requests, so it says that once. */
 function GitHubSummaryCard({
-  counts,
   canCreate,
   refreshing,
   onCreate,
   onRefresh,
 }: {
-  counts: { open: number; draft: number; all: number };
   canCreate: boolean;
   refreshing: boolean;
   onCreate: () => void;
   onRefresh: () => void;
 }) {
-  const summary = counts.draft > 0 ? `${counts.open} open, ${counts.draft} draft` : `${counts.open} open`;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 12px 10px" }}>
       <span style={{ color: "var(--fg-strong)", fontSize: 13, fontWeight: 650, letterSpacing: "-0.01em" }}>Pull requests</span>
-      <span style={{ color: "var(--fg-dim)", fontSize: 11.5 }}>{summary}</span>
       <span style={{ flex: 1 }} />
       <button
         type="button"
@@ -1121,7 +1118,10 @@ function SegmentedTabs<T extends string>({
             onClick={() => onChange(option.id)}
           >
             {option.label}
-            {option.count !== undefined && option.count > 0 && (
+            {/* Only the chosen segment says how many; the others are just
+                names until the thumb reaches them, and the count fades in
+                behind it. */}
+            {active && option.count !== undefined && option.count > 0 && (
               <span className="klide-segmented-count">{option.count}</span>
             )}
           </button>
@@ -1190,7 +1190,7 @@ function PRFilterTabs({
   onChange,
 }: {
   value: PullRequestFilter;
-  counts: { open: number; draft: number; merged: number; all: number };
+  counts: { open: number; draft: number; merged: number; closed: number };
   onChange: (value: PullRequestFilter) => void;
 }) {
   return (
@@ -1198,10 +1198,8 @@ function PRFilterTabs({
       value={value}
       onChange={onChange}
       options={[
-        { id: "open", label: "Open", count: counts.open },
-        { id: "draft", label: "Draft", count: counts.draft },
-        { id: "merged", label: "Merged", count: counts.merged },
-        { id: "all", label: "All", count: counts.all },
+        { id: "open", label: "Open", count: counts.open + counts.draft },
+        { id: "closed", label: "Closed", count: counts.merged + counts.closed },
       ]}
     />
   );
@@ -2034,7 +2032,6 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
         {/* Right: PRs */}
         <div style={{ width: rightWidth, transition: PANE_TRANSITION, display: "flex", flexDirection: "column", minHeight: 0, borderLeft: "1px solid var(--border)" }}>
           <GitHubSummaryCard
-            counts={prCounts}
             canCreate={stagedFiles.length > 0}
             refreshing={prsLoading}
             onCreate={createPr}
@@ -2063,7 +2060,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
               <GitHubPanelState title="Loading GitHub" detail="Fetching pull requests." />
             )}
             {!prsLoading && !prError && prs && prs.length > 0 && visiblePrs.length === 0 && (
-              <GitHubPanelState title={prFilter === "all" ? "No pull requests" : `No ${prFilter} pull requests`} />
+              <GitHubPanelState title={`No ${prFilter} pull requests`} />
             )}
             {withDepartingPrs(visiblePrs, departingPrs).map(({ pr, departing }) =>
               departing ? (
