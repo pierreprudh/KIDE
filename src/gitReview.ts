@@ -154,9 +154,11 @@ export function checkoutPrOutcome(n: number, expandedPr: number | null): GitActi
 }
 
 export function mergePrOutcome(n: number, expandedPr: number | null): GitActionOutcome {
+  // Log first: the merge command has already fetched, so the graph can draw
+  // the merge commit in while the slower GitHub re-fetch is still in flight.
   return {
     message: `Merged #${n}`,
-    refresh: ["prs", "log", "status"],
+    refresh: ["log", "status", "prs"],
     collapseExpandedPr: expandedPr === n,
   };
 }

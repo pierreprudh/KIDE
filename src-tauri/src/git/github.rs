@@ -856,6 +856,25 @@ pub(crate) async fn git_pr_merge(
             &workspace_root,
             &["pr", "merge", &number.to_string(), flag, "--delete-branch"],
         )?;
+        // The merge happened on GitHub; the local repo has not heard. Fetch so
+        // the merge commit exists here (the history graph reads every ref, so
+        // it draws in on origin/<base> at once), and if the base branch is the
+        // one checked out, fast-forward it — that is what `gh` itself does when
+        // run from the PR branch. Both are best-effort: the merge is done, a
+        // flaky remote or a dirty tree must not turn it into an error.
+        let _ = run_git(&workspace_root, &["fetch", "--all", "--prune"]);
+        let base = gh_output(
+            &workspace_root,
+            &["pr", "view", &number.to_string(), "--json", "baseRefName", "-q", ".baseRefName"],
+        )
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+        let current = git_output(&workspace_root, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if !base.is_empty() && base == current {
+            let _ = run_git(&workspace_root, &["merge", "--ff-only", "@{u}"]);
+        }
         Ok(out.trim().to_string())
     })
     .await
