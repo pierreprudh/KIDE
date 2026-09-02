@@ -115,10 +115,12 @@ import {
 import { buildRunHandoff, type HandoffSummary } from "../agentHandoff";
 import {
   CONVERSATIONS_CHANGED_EVENT,
+  CONVERSATION_DELETED_EVENT,
+  forgetStoredConversation,
+  type ConversationDeletedDetail,
   deriveTitle,
   loadConversations,
   persistConversation,
-  saveConversations,
 } from "./ai/storedConversations";
 import {
   genId,
@@ -2481,20 +2483,34 @@ This user request requires workspace inspection. Before answering, you MUST call
   function deleteConversation(id: string, e: ReactMouseEvent) {
     e.stopPropagation();
     // Deletion is another whole-index write, so base it on the durable store
-    // rather than this panel's possibly stale rendered copy.
-    setConversations(
-      saveConversations(
-        loadConversations<Conversation>().filter((conversation) => conversation.id !== id),
-      ),
-    );
+    // rather than this panel's possibly stale rendered copy. Forgetting it
+    // publishes the deletion, and the listener below is what lets go of the
+    // thread if it is the one this panel is showing — the same path the rail
+    // and Settings storage take, so there is one reaction, not three.
+    setConversations(forgetStoredConversation(id));
     deleteKlideConvo(id);
-    if (id === currentId) {
-      const nid = genId();
-      transitionConversation({ type: "fresh-started", conversationId: nid, branch: workspaceBranch });
-      setMeasuredPromptTokens(null);
-      setMeasuredUsageTokens(null);
-    }
   }
+
+  // The thread this panel is showing was deleted — here, from the rail, or
+  // from Settings storage. Start fresh rather than keep rendering a snapshot
+  // that the next persist would quietly write back into history. Read through
+  // a ref so the subscription is made once yet always sees the live identity.
+  const onConversationDeletedRef = useRef<(deletedId: string) => void>(() => {});
+  onConversationDeletedRef.current = (deletedId) => {
+    if (deletedId !== currentId) return;
+    const nid = genId();
+    transitionConversation({ type: "fresh-started", conversationId: nid, branch: workspaceBranch });
+    setMeasuredPromptTokens(null);
+    setMeasuredUsageTokens(null);
+  };
+  useEffect(() => {
+    const onDeleted = (event: Event) => {
+      const detail = (event as CustomEvent<ConversationDeletedDetail | undefined>).detail;
+      if (detail) onConversationDeletedRef.current(detail.conversationId);
+    };
+    window.addEventListener(CONVERSATION_DELETED_EVENT, onDeleted);
+    return () => window.removeEventListener(CONVERSATION_DELETED_EVENT, onDeleted);
+  }, []);
 
   // Only auto-scroll on token updates when the user is at the bottom.
   // The ref read is intentional — we don't want a state dependency here,

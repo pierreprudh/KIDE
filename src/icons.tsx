@@ -40,6 +40,7 @@ import { Paperclip } from "@phosphor-icons/react/dist/csr/Paperclip";
 import { PuzzlePiece } from "@phosphor-icons/react/dist/csr/PuzzlePiece";
 import { Rectangle } from "@phosphor-icons/react/dist/csr/Rectangle";
 import { Terminal } from "@phosphor-icons/react/dist/csr/Terminal";
+import { Trash } from "@phosphor-icons/react/dist/csr/Trash";
 import { User } from "@phosphor-icons/react/dist/csr/User";
 import { X } from "@phosphor-icons/react/dist/csr/X";
 
@@ -151,6 +152,13 @@ export function NewTaskIcon(p: GlyphProps) {
 
 export function CloseIcon(p: GlyphProps) {
   return <Icon as={X} {...p} />;
+}
+
+/** Removing something for good — a conversation from local history. Distinct
+ *  from CloseIcon on purpose: an X on a row reads as "put this away", and the
+ *  row it sits on does not come back. */
+export function DeleteIcon(p: GlyphProps) {
+  return <Icon as={Trash} {...p} />;
 }
 
 /** Attaching a photo or a document to a turn. */

@@ -18,6 +18,12 @@ export type ConversationChangedDetail = {
   provider: ProviderId;
   cwd: string | null;
 };
+/** One conversation was deliberately removed from local history. Distinct from
+ *  the changed event above because the two mean opposite things to a panel
+ *  showing that thread: a change is metadata to refresh, a deletion is a
+ *  thread to let go of before the next persist quietly brings it back. */
+export const CONVERSATION_DELETED_EVENT = "klide:conversation-deleted";
+export type ConversationDeletedDetail = { conversationId: string };
 const MAX_CONVERSATIONS = 100;
 let conversationStorageFailureNotified = false;
 let conversationStoragePressureNotified = false;
@@ -494,11 +500,19 @@ export function dropCachedImages(): number {
   return Math.max(0, before - conversationBytes(next));
 }
 
-/** Forget one cached conversation. The Run transcript stays on disk. */
+/** Forget one cached conversation. The Run transcript stays on disk. Every
+ *  surface still showing the thread hears about it — the rail, Settings
+ *  storage and a panel's own history list all delete through here, so a panel
+ *  drops to a fresh chat instead of re-persisting the snapshot you removed. */
 export function forgetStoredConversation(id: string): Conversation[] {
-  return saveConversations(
+  const next = saveConversations(
     loadConversations<Conversation>().filter((conv) => conv.id !== id),
   );
+  if (typeof window !== "undefined") {
+    const detail: ConversationDeletedDetail = { conversationId: id };
+    window.dispatchEvent(new CustomEvent(CONVERSATION_DELETED_EVENT, { detail }));
+  }
+  return next;
 }
 
 /** Forget the whole local index. */

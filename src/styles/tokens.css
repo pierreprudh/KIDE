@@ -4932,15 +4932,35 @@ button:focus-visible .menu-leadout {
   padding-left: var(--rail-fill-lead);
 }
 
+/* The row's open action. It is the row, as far as the eye goes: no chrome of
+   its own, it inherits the row's colour and type and lets the content span
+   keep drawing the fill exactly where it did when the row itself was the
+   button. */
+.klide-focus-convo-open {
+  display: flex;
+  align-items: center;
+  gap: var(--rail-gap);
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  text-align: left;
+  border-radius: var(--radius-lg);
+}
+
+/* Focus now lands on the button inside the row, so the row reads it through
+   :focus-within — hover and keyboard focus light the same surface. */
 .klide-focus-convo-row:hover,
-.klide-focus-convo-row:focus-visible {
+.klide-focus-convo-row:focus-within {
   color: var(--fg-strong);
 }
 
 .klide-focus-convo-row:not([data-nested="true"]):hover,
-.klide-focus-convo-row:not([data-nested="true"]):focus-visible,
+.klide-focus-convo-row:not([data-nested="true"]):focus-within,
 .klide-focus-convo-row[data-nested="true"]:hover .klide-focus-convo-content,
-.klide-focus-convo-row[data-nested="true"]:focus-visible .klide-focus-convo-content {
+.klide-focus-convo-row[data-nested="true"]:focus-within .klide-focus-convo-content {
   background: var(--rail-fill-hover);
 }
 
@@ -4975,6 +4995,60 @@ button:focus-visible .menu-leadout {
   font-family: var(--font-mono);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+  transition:
+    opacity var(--motion-slow) var(--ease-soft),
+    transform var(--motion-slow) var(--ease-soft);
+}
+
+/* Delete lives in the trailing slot too, over the timestamp: the row keeps one
+   trailing mark, and it says the thing you can do right now. Hidden until the
+   row is hovered or holds focus, when it drifts in from the right as the
+   timestamp drifts out — one crossfade, on the Git island's easing. Quiet ink
+   until you reach it, then the full text colour — near-black on a light theme,
+   near-white on a dark one. No box of its own, ever: the row's fill is already
+   under it, and a second shape inside a rail row is exactly the chrome this
+   rail refuses. The glyph alone changes, and it dips slightly on click. */
+.klide-focus-convo-delete {
+  position: absolute;
+  top: 50%;
+  right: var(--rail-row-pad);
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 0;
+  color: var(--fg-strong);
+  background: none;
+  opacity: 0;
+  transform: translate(4px, -50%);
+  pointer-events: none;
+  transition:
+    opacity var(--motion-slow) var(--ease-soft),
+    transform var(--motion-slow) var(--ease-soft);
+}
+
+.klide-focus-convo-row:hover .klide-focus-convo-time,
+.klide-focus-convo-row:focus-within .klide-focus-convo-time {
+  opacity: 0;
+  transform: translateX(-3px);
+}
+
+.klide-focus-convo-row:hover .klide-focus-convo-delete,
+.klide-focus-convo-row:focus-within .klide-focus-convo-delete {
+  opacity: 0.55;
+  transform: translate(0, -50%);
+  pointer-events: auto;
+}
+
+.klide-focus-convo-row .klide-focus-convo-delete:hover,
+.klide-focus-convo-row .klide-focus-convo-delete:focus-visible {
+  opacity: 1;
+  background: none;
+}
+
+.klide-focus-convo-row .klide-focus-convo-delete:active {
+  transform: translate(0, -50%) scale(0.92);
+  transition-duration: 80ms;
 }
 
 /* The running slot takes the timestamp's place at the row's trailing edge. It
@@ -6948,6 +7022,8 @@ button:focus-visible .menu-leadout {
   .klide-focus-provider-groups,
   .klide-focus-nav-row,
   .klide-focus-convo-content,
+  .klide-focus-convo-time,
+  .klide-focus-convo-delete,
   .klide-focus-provider-history-content,
   .klide-focus-more-projects,
   .klide-focus-more-conversations,

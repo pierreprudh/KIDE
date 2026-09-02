@@ -2986,6 +2986,18 @@ function App() {
                 }
                 openConversationInAiPanel(convo);
               }}
+              onConversationDeleted={(convo) => {
+                // The panel showing it has already dropped to a fresh chat.
+                // What the rail cannot see is Focus's canvas: if the thread
+                // you were looking at is the one that went, the start stage
+                // is the honest place to be, not an empty chat under a route
+                // that leads nowhere.
+                if (!focusBase) return;
+                if (convo.id !== focusSelectedConvoId && convo.id !== railActiveConversationId) return;
+                endFocusRaceWatch();
+                clearFocusConvoNavigation();
+                setFocusChatActive(false);
+              }}
               onConversationUnavailable={(convo) => {
                 if (focusBase) {
                   // Focus swaps its canvas for a plain apology rather than

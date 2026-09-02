@@ -40,7 +40,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { CloseIcon, FolderIcon, SearchIcon, SidebarIcon } from "../icons";
+import { CloseIcon, DeleteIcon, FolderIcon, SearchIcon, SidebarIcon } from "../icons";
 import { Z } from "../zLayers";
 import { beginDragSession } from "../dragSession";
 import { SETTINGS, getSetting, useSetting } from "../settingsStore";
@@ -49,9 +49,11 @@ import { useUserInfo, initialsOf } from "../hooks/useUserInfo";
 import {
   CONVERSATIONS_CHANGED_EVENT,
   conversationIsRestorable,
+  forgetStoredConversation,
   loadConversations,
   type ConversationChangedDetail,
 } from "./ai/storedConversations";
+import { deleteKlideConvo } from "../klideConvos";
 import { relativeTime, isSubsequence } from "./ai/utils";
 import type { Conversation } from "./ai/types";
 import type { ProviderId } from "../agent/types";
@@ -99,6 +101,11 @@ type Props = {
   onOpenConversation: (convo: Conversation) => void;
   /** The row pointed at a conversation local history no longer holds. */
   onConversationUnavailable?: (convo: Conversation) => void;
+  /** A row's delete action removed the conversation from local history. The
+   *  panels showing it have already let go of it; this is for canvas state the
+   *  rail cannot see — Focus goes back to its start stage when the thread it
+   *  was showing is the one that went. */
+  onConversationDeleted?: (convo: Conversation) => void;
   /** Fired before any rail navigation, so a host can drop transient canvas
    *  state (Focus clears its "conversation unavailable" screen). */
   onNavigateAway?: () => void;
@@ -424,6 +431,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
 function ConvoRow({
   convo,
   onOpen,
+  onDelete,
   indent = false,
   selected = false,
   open = false,
@@ -432,6 +440,9 @@ function ConvoRow({
 }: {
   convo: Conversation;
   onOpen: () => void;
+  /** Remove this conversation from local history. Revealed on hover in the
+   *  trailing slot, where the timestamp was — the row keeps one trailing mark. */
+  onDelete?: () => void;
   indent?: boolean;
   selected?: boolean;
   /** Loaded in a panel, but not the one being shown. Strong text, no route —
@@ -456,27 +467,11 @@ function ConvoRow({
   const entranceDelay = useEntranceValue(revealDelay);
 
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      /* Draggable as well as clickable: a click opens the conversation where
-         Focus normally puts one, a drag lets you say *which half* of a split
-         canvas it lands in. The row keeps its click — HTML drag only starts
-         once the pointer actually moves. */
-      draggable
-      onDragStart={(e) => {
-        if (e.dataTransfer) setConversationDrag(e.dataTransfer, convo.id);
-      }}
-      /* One line, most urgent fact first — the tooltip is where a screen
-         reader and a hovering pointer get what the route and the text weight
-         say silently. */
-      title={
-        running
-          ? `${convo.title} — running`
-          : open && !selected
-            ? `${convo.title} — open in a panel`
-            : convo.title
-      }
+    /* The row is a plain box around two buttons, because a button cannot hold
+       another: the open action is the whole row, the delete action is a small
+       target at its trailing edge. The tree spine, the fill and the slide all
+       still hang off the row itself, so nothing in tokens.css moved. */
+    <div
       className="klide-focus-convo-row"
       data-nested={indent || undefined}
       data-selected={selected || undefined}
@@ -484,35 +479,76 @@ function ConvoRow({
       data-selected-path={onSelectedPath || undefined}
       /* How the slide finds this row again after the list re-sorts. */
       data-convo-id={convo.id}
-      aria-current={selected ? "page" : undefined}
       style={
         entranceDelay ? ({ "--rail-reveal-delay": entranceDelay } as CSSProperties) : undefined
       }
     >
       {indent ? <TreeElbow /> : null}
-      <span className="klide-focus-convo-content">
-        {mark ? (
-          <span className="klide-focus-convo-model" title={mark.label} aria-hidden="true">
-            {mark.node}
-          </span>
-        ) : null}
-        <span className="klide-focus-convo-title">{convo.title || "Untitled"}</span>
-        {/* The trailing slot says one thing at a time. While a run is going,
-            "4m ago" is the least interesting fact about the row — the panel's
-            own working animation takes the slot instead, so the same motion
-            means the same thing in the rail as it does inside the chat. It
-            replaces the timestamp rather than sitting next to it: the row keeps
-            one trailing mark, and no badge is added to a rail that deliberately
-            has none. */}
-        {running ? (
-          <span className="klide-focus-convo-live">
-            <DotGridLoader size={11} color="var(--accent)" label="Running" />
-          </span>
-        ) : (
-          <span className="klide-focus-convo-time">{relativeTime(convo.updatedAt)}</span>
-        )}
-      </span>
-    </button>
+      <button
+        type="button"
+        className="klide-focus-convo-open"
+        onClick={onOpen}
+        /* Draggable as well as clickable: a click opens the conversation where
+           Focus normally puts one, a drag lets you say *which half* of a split
+           canvas it lands in. The row keeps its click — HTML drag only starts
+           once the pointer actually moves. */
+        draggable
+        onDragStart={(e) => {
+          if (e.dataTransfer) setConversationDrag(e.dataTransfer, convo.id);
+        }}
+        /* One line, most urgent fact first — the tooltip is where a screen
+           reader and a hovering pointer get what the route and the text weight
+           say silently. */
+        title={
+          running
+            ? `${convo.title} — running`
+            : open && !selected
+              ? `${convo.title} — open in a panel`
+              : convo.title
+        }
+        aria-current={selected ? "page" : undefined}
+      >
+        <span className="klide-focus-convo-content">
+          {mark ? (
+            <span className="klide-focus-convo-model" title={mark.label} aria-hidden="true">
+              {mark.node}
+            </span>
+          ) : null}
+          <span className="klide-focus-convo-title">{convo.title || "Untitled"}</span>
+          {/* The trailing slot says one thing at a time. While a run is going,
+              "4m ago" is the least interesting fact about the row — the panel's
+              own working animation takes the slot instead, so the same motion
+              means the same thing in the rail as it does inside the chat. It
+              replaces the timestamp rather than sitting next to it: the row keeps
+              one trailing mark, and no badge is added to a rail that deliberately
+              has none. */}
+          {running ? (
+            <span className="klide-focus-convo-live">
+              <DotGridLoader size={11} color="var(--accent)" label="Running" />
+            </span>
+          ) : (
+            <span className="klide-focus-convo-time">{relativeTime(convo.updatedAt)}</span>
+          )}
+        </span>
+      </button>
+      {/* Same slot, on hover: the timestamp steps aside and the delete takes
+          its place. Not offered while the run is live — its snapshot is still
+          being written, and the loader already owns the slot. */}
+      {onDelete && !running ? (
+        <button
+          type="button"
+          className="klide-focus-convo-delete"
+          title="Delete conversation"
+          aria-label={`Delete conversation “${convo.title || "Untitled"}”`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <DeleteIcon size={13} />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -698,6 +734,7 @@ function ProviderHistoryGroup({
   conversationRevealBase,
   onToggle,
   onOpen,
+  onDelete,
 }: {
   group: ProviderHistory;
   expanded: boolean;
@@ -712,6 +749,7 @@ function ProviderHistoryGroup({
   conversationRevealBase: number;
   onToggle: () => void;
   onOpen: (conversation: Conversation) => void;
+  onDelete: (conversation: Conversation) => void;
 }) {
   const [showAllConversations, setShowAllConversations] = useState(false);
   const conversationListRef = useRef<HTMLDivElement>(null);
@@ -877,6 +915,7 @@ function ProviderHistoryGroup({
                   open={openConversationIds.has(conversation.id)}
                   onSelectedPath={visibleSelectedConversationIndex >= index}
                   onOpen={() => onOpen(conversation)}
+                  onDelete={() => onDelete(conversation)}
                 />
               );
             })}
@@ -910,6 +949,7 @@ export function WorkspaceRail({
   onSwitchProject,
   onOpenConversation,
   onConversationUnavailable,
+  onConversationDeleted,
   onNavigateAway,
   onOpenSettings,
   onOpenProfile,
@@ -1160,6 +1200,17 @@ export function WorkspaceRail({
       .slice(0, 20);
   }, [convos, query]);
 
+  /** Remove a conversation from local history. The Run transcript stays on
+   *  disk and in Mission Control; only the resumable snapshot goes. Forgetting
+   *  it publishes the deletion, so any panel showing the thread drops it
+   *  before its next persist could write it back. */
+  function deleteHistoryConversation(conversation: Conversation) {
+    forgetStoredConversation(conversation.id);
+    deleteKlideConvo(conversation.id);
+    setConvos(loadConversations<Conversation>());
+    onConversationDeleted?.(conversation);
+  }
+
   function openHistoryConversation(conversation: Conversation) {
     // The row is a rendered snapshot. Resolve it against durable local history
     // once more before handing it to the host so a pruned/corrupt entry gets a
@@ -1385,6 +1436,7 @@ export function WorkspaceRail({
                         selected={selectedConversationId === c.id}
                         open={openIds.has(c.id)}
                         onOpen={() => openHistoryConversation(c)}
+                        onDelete={() => deleteHistoryConversation(c)}
                       />
                     ))}
                   </div>
@@ -1461,6 +1513,7 @@ export function WorkspaceRail({
                                     )
                                   }
                                   onOpen={openHistoryConversation}
+                                  onDelete={deleteHistoryConversation}
                                 />
                               );
                             })}
