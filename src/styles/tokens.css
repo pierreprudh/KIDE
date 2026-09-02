@@ -5293,10 +5293,13 @@ button:focus-visible .menu-leadout {
   outline-offset: -1.5px;
 }
 
+/* The count is set in the label's own face and size, a step dimmer, with
+   tabular figures — a smaller mono number sat visibly off the label's
+   baseline; sharing the metrics is what lines the two up. */
 .klide-segmented-count {
   color: var(--fg-dim);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
   animation: klide-segmented-count-in var(--motion-med) var(--ease-soft) both;
 }
 
