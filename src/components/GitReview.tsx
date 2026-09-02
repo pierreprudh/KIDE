@@ -54,10 +54,8 @@ import {
   type GitActionOutcome,
   type GitReviewRefresh,
   type PullRequestFilter,
-  branchAgentMark,
   branchDisplay,
   mergeBranchesForMenu,
-  type BranchAgentMark,
 } from "../gitReview";
 import {
   createPr as createPrRequest,
@@ -89,7 +87,7 @@ import {
   type PullRequestDetails,
 } from "../ipc/git";
 import { renderMarkdown } from "./markdown";
-import { DotGridLoader, KlideMark, ProviderLogo } from "./ai/icons";
+import { KlideMark, ProviderLogo } from "./ai/icons";
 import { SearchIcon } from "../icons";
 import { useFlipIndicator } from "../hooks/useFlipIndicator";
 
@@ -259,52 +257,17 @@ const DiffViewer = memo(function DiffViewer({ workspaceRoot, open }: DiffViewerP
   );
 });
 
-/** Two marks in one cell; `show` picks which is up and the other shrinks away
- *  underneath it (`.klide-icon-morph` owns the motion). Both stay mounted. */
-function IconMorph({ show, size, a, b }: { show: "a" | "b"; size: number; a: React.ReactNode; b: React.ReactNode }) {
-  return (
-    <span className="klide-icon-morph" style={{ width: size, height: size }} aria-hidden>
-      <span data-shown={show === "a"}>{a}</span>
-      <span data-shown={show === "b"}>{b}</span>
-    </span>
-  );
-}
-
-/** The mark an agent branch wears — the same one the branch menu uses. */
-function AgentBranchMark({ agent, size }: { agent: BranchAgentMark; size: number }) {
-  return agent === "klide" ? <KlideMark size={size} /> : <ProviderLogo id={agent} size={size} />;
-}
-
 function BranchLabel({ branch, ahead, behind }: { branch: string; ahead: number; behind: number }) {
-  // The branch glyph morphs into the agent's logo on a `codex/`, `claude/` or
-  // `klide/` branch, and back on a plain one. The last agent seen is held so
-  // the logo has something to shrink *from* when you check out `main`.
-  const d = branchDisplay(branch);
-  const agent = branchAgentMark(branch);
-  const [heldAgent, setHeldAgent] = useState<BranchAgentMark | null>(agent);
-  if (agent && agent !== heldAgent) setHeldAgent(agent);
   return (
-    <div title={agent ? branch : undefined} style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--fg-strong)", fontSize: 13 }}>
-      <IconMorph
-        show={agent ? "b" : "a"}
-        size={12}
-        a={
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--fg-subtle)" }}>
-            <circle cx="6" cy="5" r="2.3" />
-            <circle cx="6" cy="19" r="2.3" />
-            <circle cx="18" cy="12" r="2.3" />
-            <path d="M6 7.3v9.4" />
-            <path d="M8.1 6.2A8.3 8.3 0 0 1 15.8 10" />
-          </svg>
-        }
-        b={heldAgent ? <AgentBranchMark agent={heldAgent} size={12} /> : null}
-      />
-      {/* As in the menu: the logo stands in for the agent prefix, so only the
-          leaf is typeset. The full name stays in the tooltip. */}
-      <span style={{ fontFamily: "var(--font-mono)" }}>
-        {d.prefix && <span style={{ color: "var(--fg-subtle)" }}>{d.prefix}</span>}
-        {d.leaf}
-      </span>
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--fg-strong)", fontSize: 13 }}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, color: "var(--fg-subtle)" }}>
+        <circle cx="6" cy="5" r="2.3" />
+        <circle cx="6" cy="19" r="2.3" />
+        <circle cx="18" cy="12" r="2.3" />
+        <path d="M6 7.3v9.4" />
+        <path d="M8.1 6.2A8.3 8.3 0 0 1 15.8 10" />
+      </svg>
+      <span style={{ fontFamily: "var(--font-mono)" }}>{branch}</span>
       {ahead > 0 && <span style={{ color: "var(--success)", fontFamily: "var(--font-mono)", fontSize: 11 }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: "var(--warning)", fontFamily: "var(--font-mono)", fontSize: 11 }}>↓{behind}</span>}
     </div>
@@ -1847,20 +1810,20 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
           <span style={{ flex: 1 }} />
         )}
         <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
-          <TopAction onClick={() => void fetch()} busy={actionLoading === "Fetched"} title="Fetch from all remotes" iconOnly>
+          <TopAction onClick={() => void fetch()} busy={actionLoading === "Fetched"} motion="spin" title="Fetch from all remotes" iconOnly>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M20 6v5h-5" /><path d="M4 18v-5h5" />
               <path d="M18.3 9A7 7 0 0 0 6.4 6.4L4 9" /><path d="M5.7 15A7 7 0 0 0 17.6 17.6L20 15" />
             </svg>
           </TopAction>
-          <TopAction onClick={() => void pull()} busy={actionLoading === "Pulled"} title="Pull (fast-forward only)" iconOnly>
+          <TopAction onClick={() => void pull()} busy={actionLoading === "Pulled"} motion="down" title="Pull (fast-forward only)" iconOnly>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M12 3v13" /><path d="M6 11l6 6 6-6" /><path d="M5 21h14" />
+              <g className="klide-git-arrow"><path d="M12 3v13" /><path d="M6 11l6 6 6-6" /></g><path d="M5 21h14" />
             </svg>
           </TopAction>
-          <TopAction onClick={() => void push()} busy={actionLoading === "Pushed"} title="Push to upstream" iconOnly>
+          <TopAction onClick={() => void push()} busy={actionLoading === "Pushed"} motion="up" title="Push to upstream" iconOnly>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M12 21V8" /><path d="M6 13l6-6 6 6" /><path d="M5 3h14" />
+              <g className="klide-git-arrow"><path d="M12 21V8" /><path d="M6 13l6-6 6 6" /></g><path d="M5 3h14" />
             </svg>
           </TopAction>
           <button
@@ -2013,13 +1976,17 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
             <button
               onClick={() => void refreshPrs()}
               disabled={prsLoading}
+              aria-busy={prsLoading || undefined}
               title="Refresh GitHub"
+              aria-label="Refresh GitHub"
               style={{ ...iconButtonStyle, width: 22, height: 22 }}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 6v5h-5" /><path d="M4 18v-5h5" />
-                <path d="M18.3 9A7 7 0 0 0 6.4 6.4L4 9" /><path d="M5.7 15A7 7 0 0 0 17.6 17.6L20 15" />
-              </svg>
+              <SyncMark busy={prsLoading} motion="spin">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M20 6v5h-5" /><path d="M4 18v-5h5" />
+                  <path d="M18.3 9A7 7 0 0 0 6.4 6.4L4 9" /><path d="M5.7 15A7 7 0 0 0 17.6 17.6L20 15" />
+                </svg>
+              </SyncMark>
             </button>
           </div>
           <GitHubSummaryCard
@@ -2147,11 +2114,33 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   );
 }
 
-function TopAction({ onClick, disabled, busy, title, iconOnly, children }: { onClick: () => void; disabled?: boolean; busy?: boolean; title: string; iconOnly?: boolean; children: React.ReactNode }) {
+type SyncMotion = "spin" | "down" | "up";
+
+/** A sync icon that moves while its action runs (`motion` picks how — see
+ *  .klide-git-sync-mark). It keeps playing until the cycle under way finishes
+ *  after `busy` clears, so the mark never snaps back mid-frame and a
+ *  sub-second fetch still shows one complete turn. */
+function SyncMark({ busy, motion, children }: { busy?: boolean; motion?: SyncMotion; children: React.ReactNode }) {
+  const [playing, setPlaying] = useState(false);
+  if (busy && !playing) setPlaying(true);
+  return (
+    <span
+      className="klide-git-sync-mark"
+      data-motion={motion}
+      data-playing={playing}
+      onAnimationIteration={() => { if (!busy) setPlaying(false); }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function TopAction({ onClick, disabled, busy, motion, title, iconOnly, children }: {
+  onClick: () => void; disabled?: boolean; busy?: boolean; motion?: SyncMotion; title: string; iconOnly?: boolean; children: React.ReactNode;
+}) {
   // Icon-only actions are bare marks — no container, just a hover brighten,
-  // matching the quiet icon buttons in the PR list. While the action runs the
-  // mark morphs into the orbit loader and back — the loader *is* the signal,
-  // so a busy button is not also dimmed the way a merely disabled one is.
+  // matching the quiet icon buttons in the PR list. The motion is the busy
+  // signal, so a busy button is not also dimmed the way a disabled one is.
   if (iconOnly) {
     return (
       <button
@@ -2169,12 +2158,7 @@ function TopAction({ onClick, disabled, busy, title, iconOnly, children }: { onC
         onMouseEnter={(e) => { if (!disabled && !busy) e.currentTarget.style.color = "var(--fg-strong)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; }}
       >
-        <IconMorph
-          show={busy ? "b" : "a"}
-          size={14}
-          a={children}
-          b={<DotGridLoader size={12} color="currentColor" label={title} />}
-        />
+        <SyncMark busy={busy} motion={motion}>{children}</SyncMark>
       </button>
     );
   }
