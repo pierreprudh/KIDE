@@ -5229,6 +5229,85 @@ button:focus-visible .menu-leadout {
    (TopAction watches animationiteration), so a fast fetch still shows one
    full turn and nothing ever snaps back from mid-frame. Linear for the spin —
    an eased infinite rotation stutters at every loop seam. */
+/* Merged-PR exit — the card lingers wearing its Merged badge, then fades and
+   folds shut: a grid row track easing 1fr → 0fr, which is interruptible and
+   needs no measured height. The wrapper clips whatever the shrinking track
+   can no longer hold; the trailing negative margin swallows the list gap so
+   the cards below close up as the row goes. Unhurried on purpose — a merge is
+   the moment the panel exists for. The end event is what removes the card. */
+.klide-pr-depart {
+  display: grid;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  pointer-events: none;
+  animation: klide-pr-depart 1100ms var(--ease-soft) 420ms both;
+}
+
+.klide-pr-depart > * {
+  min-height: 0;
+}
+
+@keyframes klide-pr-depart {
+  0% {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    margin-bottom: 0;
+  }
+  40% {
+    grid-template-rows: 1fr;
+    opacity: 0;
+    margin-bottom: 0;
+  }
+  100% {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    margin-bottom: -8px;
+  }
+}
+
+/* History graph draw-in. A clip rect scales down the row to reveal the lanes
+   top-to-bottom (a clip, not stroke-dashoffset, so pass-through lines, curves
+   and every density draw the same way with no path-length bookkeeping); the
+   node scales in once the line has reached the row's middle. Delay comes from
+   the row (--draw-delay), so rows ink one after another. */
+.klide-graph-draw .klide-graph-draw-reveal {
+  transform-origin: 0 0;
+  transform: scaleY(0);
+  animation: klide-graph-reveal 420ms var(--ease-soft) var(--draw-delay, 0ms) forwards;
+}
+
+.klide-graph-draw .klide-graph-draw-node {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(0);
+  animation: klide-graph-node 300ms var(--ease-out) calc(var(--draw-delay, 0ms) + 180ms) forwards;
+}
+
+@keyframes klide-graph-reveal {
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes klide-graph-node {
+  to {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The exit still has to end — the end event is what unmounts the card. */
+  .klide-pr-depart {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+  .klide-graph-draw .klide-graph-draw-reveal,
+  .klide-graph-draw .klide-graph-draw-node {
+    animation: none;
+    transform: none;
+  }
+}
+
 .klide-git-sync-mark {
   display: inline-grid;
   place-items: center;

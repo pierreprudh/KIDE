@@ -12,7 +12,7 @@
 // those froze the pane). Do NOT add content-visibility here: WKWebView's
 // compositor is fragile (see the backdrop-filter and zIndex incidents).
 
-import { Component, memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Component, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { layoutGraph, splitRefs, type GraphCommit, type GraphRow } from "../gitGraph";
 import { gitGraph, githubCommitAvatars, type CommitDetails } from "../ipc/git";
 import { parseDiffBlocks, DiffView, FileStatusIcon } from "./diffView";
@@ -23,6 +23,7 @@ import type { ProviderId } from "../agent/types";
 const GRAPH_PAD = 8;
 const MAX_GRAPH_LANES = 10;
 const LANE_COLORS = 8; // --lane-1 … --lane-8 (muted multi-hue, graph-only)
+const DRAW_STAGGER_MS = 40; // between one row starting to draw and the next
 
 /** Row density: "roomy" is the default — big rows, few of them, and the
  *  least information (no hash column, avatar instead of author name; the
@@ -193,24 +194,48 @@ function bottomPath(from: number, to: number, d: Dims): string {
   return `M ${x1} ${mid} C ${x1} ${mid + mid * 0.8}, ${x2} ${mid + mid * 0.2}, ${x2} ${d.rowH}`;
 }
 
-const GraphCell = memo(function GraphCell({ row, width, isHead, dims }: { row: GraphRow; width: number; isHead: boolean; dims: Dims }) {
+/** One row's slice of the graph. With `drawDelay` set the row draws itself
+ *  in: the lanes are revealed top-to-bottom through a clip that grows down
+ *  the row, and the node settles in once the line has reached it (see
+ *  .klide-graph-draw). Rows draw one after another, so the graph is inked
+ *  down the screen rather than appearing whole. */
+const GraphCell = memo(function GraphCell({ row, width, isHead, dims, drawDelay }: {
+  row: GraphRow; width: number; isHead: boolean; dims: Dims; drawDelay?: number;
+}) {
   const nodeX = laneX(row.lane, dims);
+  const clipId = useId();
+  const drawing = drawDelay !== undefined;
   return (
-    <svg width={width} height={dims.rowH} style={{ display: "block", flexShrink: 0 }} aria-hidden>
-      {row.passThrough.map((l) => (
-        <line key={`p${l.lane}`} x1={laneX(l.lane, dims)} y1={0} x2={laneX(l.lane, dims)} y2={dims.rowH} stroke={laneColor(l.color)} strokeWidth={1.5} />
-      ))}
-      {row.intoNode.map((l) => (
-        <path key={`i${l.lane}`} d={topPath(l.lane, row.lane, dims)} stroke={laneColor(l.color)} strokeWidth={1.5} fill="none" />
-      ))}
-      {row.outOfNode.map((l, i) => (
-        <path key={`o${i}-${l.lane}`} d={bottomPath(row.lane, l.lane, dims)} stroke={laneColor(l.color)} strokeWidth={1.5} fill="none" />
-      ))}
-      {isHead ? (
-        <circle cx={nodeX} cy={dims.rowH / 2} r={dims.node + 0.5} fill="var(--bg)" stroke={laneColor(row.color)} strokeWidth={2} />
-      ) : (
-        <circle cx={nodeX} cy={dims.rowH / 2} r={dims.node} fill={laneColor(row.color)} />
+    <svg
+      width={width}
+      height={dims.rowH}
+      className={drawing ? "klide-graph-draw" : undefined}
+      style={{ display: "block", flexShrink: 0, ...(drawing ? { "--draw-delay": `${drawDelay}ms` } as React.CSSProperties : null) }}
+      aria-hidden
+    >
+      {drawing && (
+        <clipPath id={clipId}>
+          <rect className="klide-graph-draw-reveal" x={0} y={0} width={width} height={dims.rowH} />
+        </clipPath>
       )}
+      <g clipPath={drawing ? `url("#${clipId}")` : undefined}>
+        {row.passThrough.map((l) => (
+          <line key={`p${l.lane}`} x1={laneX(l.lane, dims)} y1={0} x2={laneX(l.lane, dims)} y2={dims.rowH} stroke={laneColor(l.color)} strokeWidth={1.5} />
+        ))}
+        {row.intoNode.map((l) => (
+          <path key={`i${l.lane}`} d={topPath(l.lane, row.lane, dims)} stroke={laneColor(l.color)} strokeWidth={1.5} fill="none" />
+        ))}
+        {row.outOfNode.map((l, i) => (
+          <path key={`o${i}-${l.lane}`} d={bottomPath(row.lane, l.lane, dims)} stroke={laneColor(l.color)} strokeWidth={1.5} fill="none" />
+        ))}
+      </g>
+      <g className="klide-graph-draw-node">
+        {isHead ? (
+          <circle cx={nodeX} cy={dims.rowH / 2} r={dims.node + 0.5} fill="var(--bg)" stroke={laneColor(row.color)} strokeWidth={2} />
+        ) : (
+          <circle cx={nodeX} cy={dims.rowH / 2} r={dims.node} fill={laneColor(row.color)} />
+        )}
+      </g>
     </svg>
   );
 });
@@ -255,6 +280,7 @@ const HistoryRow = memo(function HistoryRow({
   isHead,
   isSelected,
   dims,
+  drawDelay,
   onSelect,
 }: {
   row: GraphRow;
@@ -262,6 +288,7 @@ const HistoryRow = memo(function HistoryRow({
   isHead: boolean;
   isSelected: boolean;
   dims: Dims;
+  drawDelay?: number;
   onSelect: (hash: string) => void;
 }) {
   const c = row.commit;
@@ -280,7 +307,7 @@ const HistoryRow = memo(function HistoryRow({
       onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = isSelected ? selectedBg : ""; }}
     >
-      <GraphCell row={row} width={graphW} isHead={isHead} dims={dims} />
+      <GraphCell row={row} width={graphW} isHead={isHead} dims={dims} drawDelay={drawDelay} />
       {dims.author === "avatar" && (
         <span style={{ width: dims.avatar + 14, flexShrink: 0, display: "flex", justifyContent: "center" }} title={c.author}>
           <AuthorAvatar name={c.author} email={c.authorEmail} size={dims.avatar} />
@@ -752,6 +779,26 @@ const GitHistoryGraphInner = memo(function GitHistoryGraphInner({ workspaceRoot,
   }, [workspaceRoot, refreshToken]);
 
   const rows = useMemo(() => (commits ? layoutGraph(commits) : []), [commits]);
+  // Which rows draw in, and when. Everything is new on first load, so the
+  // whole graph inks down the screen; after a refresh (a merge landed, a
+  // commit was made) only the commits that were not there before draw, one
+  // after another from the top. The stagger is capped so a 300-row history
+  // finishes in about a second, and the map is rebuilt per fetch so a row
+  // that already drew keeps its final state rather than replaying.
+  const seenHashes = useRef<Set<string> | null>(null);
+  const drawDelays = useMemo(() => {
+    const delays = new Map<string, number>();
+    if (!commits) return delays;
+    const seen = seenHashes.current;
+    let i = 0;
+    for (const c of commits) {
+      if (seen?.has(c.hash)) continue;
+      delays.set(c.hash, Math.min(i, 24) * DRAW_STAGGER_MS);
+      i += 1;
+    }
+    seenHashes.current = new Set(commits.map((c) => c.hash));
+    return delays;
+  }, [commits]);
   const graphW = useMemo(() => {
     const lanes = Math.min(MAX_GRAPH_LANES, Math.max(1, ...rows.map((r) => r.width)));
     return GRAPH_PAD * 2 + (lanes - 1) * dims.laneW;
@@ -824,6 +871,7 @@ const GitHistoryGraphInner = memo(function GitHistoryGraphInner({ workspaceRoot,
             isHead={row.commit.hash === headHash}
             isSelected={selectedCommit === row.commit.hash}
             dims={dims}
+            drawDelay={drawDelays.get(row.commit.hash)}
             onSelect={onSelect}
           />
         ))}

@@ -1124,6 +1124,22 @@ function SegmentedTabs<T extends string>({
   );
 }
 
+/** The PR list with departing cards spliced back in where they stood. A
+ *  departing PR the list still shows (the merge is in flight, or the filter is
+ *  "all" and it stays as Merged) is not doubled — the live card wins. */
+function withDepartingPrs(
+  visible: PullRequest[],
+  departing: { pr: PullRequest; index: number }[],
+): { pr: PullRequest; departing: boolean }[] {
+  const out = visible.map((pr) => ({ pr, departing: false }));
+  const live = new Set(visible.map((pr) => pr.number));
+  for (const d of [...departing].sort((a, b) => a.index - b.index)) {
+    if (live.has(d.pr.number)) continue;
+    out.splice(Math.min(d.index, out.length), 0, { pr: d.pr, departing: true });
+  }
+  return out;
+}
+
 function PRFilterTabs({
   value,
   counts,
@@ -1364,6 +1380,11 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   const [logLoading, setLogLoading] = useState(false);
   const [localStatus, setLocalStatus] = useState<GitStatus | null>(null);
   const [prs, setPrs] = useState<PullRequest[] | null>(null);
+  // A PR merged from here lingers one beat after the re-fetch drops it from
+  // the list — wearing its Merged badge, then fading and folding shut — instead
+  // of vanishing on the refresh. Kept at the index its card had, so it leaves
+  // from where it stood. Cleared when its exit animation ends.
+  const [departingPrs, setDepartingPrs] = useState<{ pr: PullRequest; index: number }[]>([]);
   const [prsLoading, setPrsLoading] = useState(false);
   const [prError, setPrError] = useState<string | null>(null);
   const [stashes, setStashes] = useState<GitStash[] | null>(null);
@@ -1534,14 +1555,14 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   // The one place a Git Review action lands: run the command, show the
   // outcome's notice (or the error), and — on success only — apply what the
   // outcome says the surface needs: cleared selections first, re-fetches after.
-  async function runGitAction(outcome: GitActionOutcome, fn: () => Promise<unknown>) {
+  async function runGitAction(outcome: GitActionOutcome, fn: () => Promise<unknown>): Promise<boolean> {
     setActionLoading(outcome.message);
     try {
       await fn();
       setActionMessage({ kind: "ok", text: outcome.message });
     } catch (e) {
       setActionMessage({ kind: "err", text: errMessage(e) });
-      return;
+      return false;
     } finally {
       setActionLoading(null);
     }
@@ -1554,6 +1575,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
     }
     if (outcome.closePrComposer) setPrComposer(null);
     for (const target of outcome.refresh) await refreshers[target]();
+    return true;
   }
 
   async function stageFile(path: string) {
@@ -1648,7 +1670,13 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   async function mergePr(n: number) {
     if (!workspaceRoot) return;
     if (!confirm(`Merge PR #${n}?`)) return;
-    await runGitAction(mergePrOutcome(n, expandedPr), () => gitPrMerge(workspaceRoot, n));
+    const index = visiblePrs.findIndex((p) => p.number === n);
+    if (index >= 0) {
+      const leaving = { ...visiblePrs[index], badge: "merged" as const };
+      setDepartingPrs((d) => [...d.filter((x) => x.pr.number !== n), { pr: leaving, index }]);
+    }
+    const ok = await runGitAction(mergePrOutcome(n, expandedPr), () => gitPrMerge(workspaceRoot, n));
+    if (!ok) setDepartingPrs((d) => d.filter((x) => x.pr.number !== n));
   }
   // Inline composer instead of window.prompt() — Tauri's macOS webview returns
   // null from prompt(), so the old flow silently did nothing.
@@ -2019,20 +2047,44 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
             {!prsLoading && !prError && prs && prs.length > 0 && visiblePrs.length === 0 && (
               <GitHubPanelState title={prFilter === "all" ? "No pull requests" : `No ${prFilter} pull requests`} />
             )}
-            {visiblePrs.map((pr) => (
-              <PRCard
-                key={pr.number}
-                pr={pr}
-                nowMs={nowMs}
-                selected={expandedPr === pr.number}
-                detail={selectedPr?.number === pr.number ? selectedPr : null}
-                detailLoading={prDetailLoading}
-                onSelect={selectPr}
-                onOpen={openPrInBrowser}
-                onCheckout={checkoutPr}
-                onMerge={mergePr}
-              />
-            ))}
+            {withDepartingPrs(visiblePrs, departingPrs).map(({ pr, departing }) =>
+              departing ? (
+                <div
+                  key={`departing-${pr.number}`}
+                  className="klide-pr-depart"
+                  aria-hidden
+                  onAnimationEnd={(e) => {
+                    if (e.target !== e.currentTarget) return;
+                    setDepartingPrs((d) => d.filter((x) => x.pr.number !== pr.number));
+                  }}
+                >
+                  <PRCard
+                    pr={pr}
+                    nowMs={nowMs}
+                    selected={false}
+                    detail={null}
+                    detailLoading={false}
+                    onSelect={() => {}}
+                    onOpen={() => {}}
+                    onCheckout={() => {}}
+                    onMerge={() => {}}
+                  />
+                </div>
+              ) : (
+                <PRCard
+                  key={pr.number}
+                  pr={pr}
+                  nowMs={nowMs}
+                  selected={expandedPr === pr.number}
+                  detail={selectedPr?.number === pr.number ? selectedPr : null}
+                  detailLoading={prDetailLoading}
+                  onSelect={selectPr}
+                  onOpen={openPrInBrowser}
+                  onCheckout={checkoutPr}
+                  onMerge={mergePr}
+                />
+              ),
+            )}
           </div>
         </div>
       </div>
