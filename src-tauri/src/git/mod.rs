@@ -88,6 +88,23 @@ pub(crate) struct GitLog {
     last_fetch_ms: Option<i64>,
     commits: Vec<GitCommit>,
     branches: Vec<GitBranch>,
+    /// Newest first (by creator date). Annotated and lightweight alike.
+    tags: Vec<GitTag>,
+    /// The branch the remote calls HEAD (`origin/HEAD` → `main`), falling
+    /// back to a local `main` or `master`. None when neither exists.
+    default_branch: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GitTag {
+    name: String,
+    /// The tagged commit's subject (an annotated tag's own message would
+    /// repeat the release note; the commit is what the row is for).
+    subject: String,
+    /// Seconds since unix epoch — the tag's creator date, falling back to the
+    /// commit date for lightweight tags.
+    timestamp: i64,
 }
 
 #[derive(serde::Serialize)]
@@ -473,6 +490,21 @@ fn resolve_git_log(workspace_root: &str, limit: usize) -> Result<GitLog, String>
             last_subject: parts[5].to_string(),
         });
     }
+    let default_branch = git_output(
+        workspace_root,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .and_then(|s| s.split_once('/').map(|(_, b)| b.to_string()))
+    .filter(|s| !s.is_empty())
+    .or_else(|| {
+        ["main", "master"]
+            .iter()
+            .find(|c| branches.iter().any(|b| !b.is_remote && b.name == **c))
+            .map(|c| c.to_string())
+    });
+
     // Local branches first, then remotes — but keep the current branch pinned
     // at the very top of the local group.
     branches.sort_by(|a, b| {
@@ -481,6 +513,35 @@ fn resolve_git_log(workspace_root: &str, limit: usize) -> Result<GitLog, String>
             .then(a.is_remote.cmp(&b.is_remote))
             .then(a.name.cmp(&b.name))
     });
+
+    // Tags — newest first. `%(*subject)` is the tagged commit's subject for an
+    // annotated tag (the `*` dereferences to the object); a lightweight tag
+    // has no tag object, so `%(subject)` already is the commit's.
+    let tag_out = git_output(
+        workspace_root,
+        &[
+            "for-each-ref",
+            "--sort=-creatordate",
+            "--format=%(refname:short)%00%(creatordate:unix)%00%(*subject)%00%(subject)",
+            "refs/tags",
+        ],
+    )?;
+    let tags: Vec<GitTag> = tag_out
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split('\0').collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            let subject = if parts[2].is_empty() { parts[3] } else { parts[2] };
+            Some(GitTag {
+                name: parts[0].to_string(),
+                timestamp: parse_porcelain_timestamp(parts[1]),
+                subject: subject.to_string(),
+            })
+        })
+        .collect();
 
     // Commits — use a custom format so we can pull refs (tags, branch tips) in
     // the same pass.
@@ -567,6 +628,8 @@ fn resolve_git_log(workspace_root: &str, limit: usize) -> Result<GitLog, String>
         last_fetch_ms,
         commits,
         branches,
+        tags,
+        default_branch,
     })
 }
 

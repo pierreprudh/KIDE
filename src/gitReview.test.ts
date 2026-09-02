@@ -24,6 +24,10 @@ import {
   unstageFileOutcome,
   visiblePrs,
   type GitActionOutcome,
+  branchAgentMark,
+  branchDisplay,
+  mergeBranchesForMenu,
+  sortBranchesForMenu,
 } from "./gitReview";
 
 function pr(number: number, badge: PullRequest["badge"]): PullRequest {
@@ -181,5 +185,50 @@ describe("action outcomes — the refresh policy per action", () => {
     expect(mergePrOutcome(7, 3).collapseExpandedPr).toBe(false);
     expect(checkoutPrOutcome(7, 7).collapseExpandedPr).toBe(true);
     expect(checkoutPrOutcome(7, 3).collapseExpandedPr).toBe(false);
+  });
+});
+
+describe("branch menu — order and agent marks", () => {
+  it("reads the agent off the first segment, past a remote", () => {
+    expect(branchAgentMark("codex/agent-coordination")).toBe("codex");
+    expect(branchAgentMark("claude/fix-thing")).toBe("claude-code");
+    expect(branchAgentMark("klide/goal-title-ab12")).toBe("klide");
+    expect(branchAgentMark("origin/codex/agent-coordination", true)).toBe("codex");
+    expect(branchAgentMark("origin/main", true)).toBeNull();
+    expect(branchAgentMark("feat/auto-model-routing")).toBeNull();
+    expect(branchAgentMark("main")).toBeNull();
+  });
+
+  it("sorts alphabetically, case-insensitively, without mutating the input", () => {
+    const input = [{ name: "origin/main" }, { name: "main" }, { name: "Feat/x" }, { name: "codex/y" }];
+    const sorted = sortBranchesForMenu(input);
+    expect(sorted.map((b) => b.name)).toEqual(["codex/y", "Feat/x", "main", "origin/main"]);
+    expect(input[0].name).toBe("origin/main");
+  });
+});
+
+describe("branch menu — display and grouping", () => {
+  it("lifts the remote, swaps an agent prefix for its mark, dims other prefixes", () => {
+    expect(branchDisplay("codex/agent-coordination")).toEqual({ remote: null, agent: "codex", prefix: null, leaf: "agent-coordination" });
+    expect(branchDisplay("origin/codex/agent-coordination", true)).toEqual({ remote: "origin", agent: "codex", prefix: null, leaf: "agent-coordination" });
+    expect(branchDisplay("feat/auto-model-routing")).toEqual({ remote: null, agent: null, prefix: "feat/", leaf: "auto-model-routing" });
+    expect(branchDisplay("origin/main", true)).toEqual({ remote: "origin", agent: null, prefix: null, leaf: "main" });
+    expect(branchDisplay("main")).toEqual({ remote: null, agent: null, prefix: null, leaf: "main" });
+  });
+
+  it("merges a local with its remote twin, keeps remote-only rows, pins the default first", () => {
+    const rows = mergeBranchesForMenu([
+      { name: "origin/main", isCurrent: false, isRemote: true, ahead: 0, behind: 0, lastSubject: "remote main" },
+      { name: "feat/x", isCurrent: true, isRemote: false, ahead: 2, behind: 0, lastSubject: "x" },
+      { name: "origin/feat/x", isCurrent: false, isRemote: true, ahead: 0, behind: 0, lastSubject: "x" },
+      { name: "main", isCurrent: false, isRemote: false, ahead: 0, behind: 1, lastSubject: "local main" },
+      { name: "origin/codex/y", isCurrent: false, isRemote: true, ahead: 0, behind: 0, lastSubject: "y" },
+    ], "main");
+    expect(rows.map((r) => [r.name, r.isDefault, r.isCurrent, r.remoteOnly, r.ahead, r.behind])).toEqual([
+      ["main", true, false, false, 0, 1],
+      ["codex/y", false, false, true, 0, 0],
+      ["feat/x", false, true, false, 2, 0],
+    ]);
+    expect(rows[0].lastSubject).toBe("local main");
   });
 });

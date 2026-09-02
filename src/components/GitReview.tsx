@@ -4,8 +4,10 @@
 // managing PRs.
 //
 // Layout: 3-pane horizontal — files (left), diff (center), PRs (right).
-// Top bar carries the branch selector, commit composer, and sync actions.
-// A bottom shelf shows stashes and history at a glance.
+// The header is a plain typographic row — project name, branch, the commit
+// composer (only while there is something to commit), and sync actions. No
+// bottom shelf: stashes live at the foot of the files pane, the last fetch
+// time sits beside the branch. History is the graph itself.
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { relativeTimeLong } from "../time";
@@ -46,13 +48,16 @@ import {
   stashPopOutcome,
   stashPushOutcome,
   submitPrOutcome,
-  totalAdditions as deriveTotalAdditions,
   unstageAllOutcome,
   unstageFileOutcome,
   visiblePrs as deriveVisiblePrs,
   type GitActionOutcome,
   type GitReviewRefresh,
   type PullRequestFilter,
+  branchAgentMark,
+  branchDisplay,
+  mergeBranchesForMenu,
+  type BranchAgentMark,
 } from "../gitReview";
 import {
   createPr as createPrRequest,
@@ -77,12 +82,16 @@ import {
   gitUnstage,
   type CommitDetails,
   type GitBranch,
+  type GitTag,
   type GitLog,
   type GitStash,
   type PullRequest,
   type PullRequestDetails,
 } from "../ipc/git";
 import { renderMarkdown } from "./markdown";
+import { DotGridLoader, KlideMark, ProviderLogo } from "./ai/icons";
+import { SearchIcon } from "../icons";
+import { useFlipIndicator } from "../hooks/useFlipIndicator";
 
 type Props = {
   workspaceRoot: string | null;
@@ -250,17 +259,52 @@ const DiffViewer = memo(function DiffViewer({ workspaceRoot, open }: DiffViewerP
   );
 });
 
-function BranchLabel({ branch, ahead, behind }: { branch: string; ahead: number; behind: number }) {
+/** Two marks in one cell; `show` picks which is up and the other shrinks away
+ *  underneath it (`.klide-icon-morph` owns the motion). Both stay mounted. */
+function IconMorph({ show, size, a, b }: { show: "a" | "b"; size: number; a: React.ReactNode; b: React.ReactNode }) {
   return (
-    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--fg-strong)", fontSize: 12, fontWeight: 600 }}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, color: "var(--fg-subtle)" }}>
-        <circle cx="6" cy="5" r="2.3" />
-        <circle cx="6" cy="19" r="2.3" />
-        <circle cx="18" cy="12" r="2.3" />
-        <path d="M6 7.3v9.4" />
-        <path d="M8.1 6.2A8.3 8.3 0 0 1 15.8 10" />
-      </svg>
-      <span style={{ fontFamily: "var(--font-mono)" }}>{branch}</span>
+    <span className="klide-icon-morph" style={{ width: size, height: size }} aria-hidden>
+      <span data-shown={show === "a"}>{a}</span>
+      <span data-shown={show === "b"}>{b}</span>
+    </span>
+  );
+}
+
+/** The mark an agent branch wears — the same one the branch menu uses. */
+function AgentBranchMark({ agent, size }: { agent: BranchAgentMark; size: number }) {
+  return agent === "klide" ? <KlideMark size={size} /> : <ProviderLogo id={agent} size={size} />;
+}
+
+function BranchLabel({ branch, ahead, behind }: { branch: string; ahead: number; behind: number }) {
+  // The branch glyph morphs into the agent's logo on a `codex/`, `claude/` or
+  // `klide/` branch, and back on a plain one. The last agent seen is held so
+  // the logo has something to shrink *from* when you check out `main`.
+  const d = branchDisplay(branch);
+  const agent = branchAgentMark(branch);
+  const [heldAgent, setHeldAgent] = useState<BranchAgentMark | null>(agent);
+  if (agent && agent !== heldAgent) setHeldAgent(agent);
+  return (
+    <div title={agent ? branch : undefined} style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--fg-strong)", fontSize: 13 }}>
+      <IconMorph
+        show={agent ? "b" : "a"}
+        size={12}
+        a={
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--fg-subtle)" }}>
+            <circle cx="6" cy="5" r="2.3" />
+            <circle cx="6" cy="19" r="2.3" />
+            <circle cx="18" cy="12" r="2.3" />
+            <path d="M6 7.3v9.4" />
+            <path d="M8.1 6.2A8.3 8.3 0 0 1 15.8 10" />
+          </svg>
+        }
+        b={heldAgent ? <AgentBranchMark agent={heldAgent} size={12} /> : null}
+      />
+      {/* As in the menu: the logo stands in for the agent prefix, so only the
+          leaf is typeset. The full name stays in the tooltip. */}
+      <span style={{ fontFamily: "var(--font-mono)" }}>
+        {d.prefix && <span style={{ color: "var(--fg-subtle)" }}>{d.prefix}</span>}
+        {d.leaf}
+      </span>
       {ahead > 0 && <span style={{ color: "var(--success)", fontFamily: "var(--font-mono)", fontSize: 11 }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: "var(--warning)", fontFamily: "var(--font-mono)", fontSize: 11 }}>↓{behind}</span>}
     </div>
@@ -339,6 +383,7 @@ type FileRowProps = {
 
 function FileRow({ file, active, onOpen, onStage, onUnstage, onDiscard, loading }: FileRowProps) {
   const { name, folder } = splitPath(file.path);
+  const mark = gitStatusMark(file.status) ?? UNNAMED_GIT_STATUS;
   return (
     <div
       // Chrome — fills, radius, ellipsis, the action reveal — comes from
@@ -347,11 +392,13 @@ function FileRow({ file, active, onOpen, onStage, onUnstage, onDiscard, loading 
       className="klide-file-row"
       data-active={active}
       onClick={() => onOpen(file)}
-      style={{ gridTemplateColumns: "auto 1fr auto", gap: 8, padding: "5px 10px", fontSize: 13 }}
+      style={{ gridTemplateColumns: "1fr auto", gap: 8, padding: "5px 10px", fontSize: 13 }}
     >
-      <StatusLetter status={file.status} />
+      {/* No status letter: the name itself wears the status colour (warning
+          for modified, success for new, danger for deleted). The word stays
+          in the tooltip for anyone who needs it spelled out. */}
       <div style={{ minWidth: 0 }}>
-        <div className="klide-file-row-name">{name}</div>
+        <div className="klide-file-row-name" title={mark.title} style={{ color: mark.color }}>{name}</div>
         {folder && <div className="klide-file-row-sub">{folder}</div>}
       </div>
       <div className="klide-file-row-actions">
@@ -391,19 +438,20 @@ const iconButtonStyle: React.CSSProperties = {
   color: "var(--fg-subtle)", border: "none", background: "none", cursor: "pointer", fontSize: 14, lineHeight: 1,
 };
 
-function SectionHeader({ title, count, onAction, actionLabel, actionIcon }: {
-  title: string; count: number; onAction?: () => void; actionLabel?: string; actionIcon?: React.ReactNode;
+function SectionHeader({ title, count, spaced, onAction, actionLabel, actionIcon }: {
+  title: string; count: number; spaced?: boolean; onAction?: () => void; actionLabel?: string; actionIcon?: React.ReactNode;
 }) {
   // Icon-only action, but hover reveals its label inline in the header —
   // the Klide hover-reveal pattern, so the icon never has to be guessed.
   const [hover, setHover] = useState(false);
   return (
     <div style={{
-      height: 28, padding: "0 10px", display: "flex", alignItems: "center", gap: 6,
+      height: 28, marginTop: spaced ? 14 : 0, padding: "0 10px", display: "flex", alignItems: "center", gap: 6,
       color: "var(--fg-subtle)", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase",
     }}>
       <span style={{ color: "var(--fg)" }}>{title}</span>
-      <span style={{ color: "var(--fg-dim)" }}>{count}</span>
+      {/* An empty section says its name and nothing else — a "0" is noise. */}
+      {count > 0 && <span style={{ color: "var(--fg-dim)" }}>{count}</span>}
       <span style={{ flex: 1 }} />
       {onAction && actionLabel && (
         <button
@@ -1048,28 +1096,27 @@ function GitHubSummaryCard({
   );
 }
 
-function PRFilterTabs({
+/** The one segmented switch — a soft-fill track, the active segment raised.
+ *  The PR filter and the branch/tag switch are the same control. */
+function SegmentedTabs<T extends string>({
   value,
-  counts,
+  options,
   onChange,
+  margin = "0 12px 8px",
 }: {
-  value: PullRequestFilter;
-  counts: { open: number; draft: number; merged: number; all: number };
-  onChange: (value: PullRequestFilter) => void;
+  value: T;
+  options: { id: T; label: string; count?: number }[];
+  onChange: (value: T) => void;
+  margin?: string;
 }) {
-  const options: { id: PullRequestFilter; label: string; count: number }[] = [
-    { id: "open", label: "Open", count: counts.open },
-    { id: "draft", label: "Draft", count: counts.draft },
-    { id: "merged", label: "Merged", count: counts.merged },
-    { id: "all", label: "All", count: counts.all },
-  ];
   return (
     <div
+      role="tablist"
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(4, 1fr)",
+        gridTemplateColumns: `repeat(${options.length}, 1fr)`,
         gap: 2,
-        margin: "0 12px 8px",
+        margin,
         padding: 3,
         borderRadius: "var(--radius-md)",
         background: "var(--bg-hover)",
@@ -1081,6 +1128,8 @@ function PRFilterTabs({
           <button
             key={option.id}
             type="button"
+            role="tab"
+            aria-selected={active}
             onClick={() => onChange(option.id)}
             onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--fg-strong)"; }}
             onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--fg-subtle)"; }}
@@ -1102,11 +1151,36 @@ function PRFilterTabs({
             }}
           >
             {option.label}
-            <span style={{ color: active ? "var(--fg-dim)" : "var(--fg-dim)", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>{option.count}</span>
+            {option.count !== undefined && option.count > 0 && (
+              <span style={{ color: "var(--fg-dim)", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>{option.count}</span>
+            )}
           </button>
         );
       })}
     </div>
+  );
+}
+
+function PRFilterTabs({
+  value,
+  counts,
+  onChange,
+}: {
+  value: PullRequestFilter;
+  counts: { open: number; draft: number; merged: number; all: number };
+  onChange: (value: PullRequestFilter) => void;
+}) {
+  return (
+    <SegmentedTabs
+      value={value}
+      onChange={onChange}
+      options={[
+        { id: "open", label: "Open", count: counts.open },
+        { id: "draft", label: "Draft", count: counts.draft },
+        { id: "merged", label: "Merged", count: counts.merged },
+        { id: "all", label: "All", count: counts.all },
+      ]}
+    />
   );
 }
 
@@ -1130,72 +1204,193 @@ function GitHubPanelState({
   );
 }
 
-function BranchMenu({ branches, current, onSelect, onClose }: {
-  branches: GitBranch[]; current: string;
+function BranchMenu({ branches, tags, defaultBranch, current, onSelect, onClose }: {
+  branches: GitBranch[]; tags: GitTag[]; defaultBranch: string | null; current: string;
   onSelect: (name: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return branches;
-    return branches.filter((b) => b.name.toLowerCase().includes(q));
-  }, [branches, query]);
+  const [tab, setTab] = useState<"branches" | "tags">("branches");
+  // The tab underline is one bar that slides between the two words (the
+  // TabBar's FLIP move), sized to the active word each time it lands.
+  const flip = useFlipIndicator(tab, { size: 1.5, active: true, axis: "x" });
+  const tabEls = useRef<Map<string, HTMLElement | null>>(new Map());
+  const [barWidth, setBarWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = tabEls.current.get(tab);
+    if (el) setBarWidth(el.getBoundingClientRect().width);
+  }, [tab]);
+  const q = query.trim().toLowerCase();
+  const rows = useMemo(() => mergeBranchesForMenu(branches, defaultBranch), [branches, defaultBranch]);
+  const shownBranches = useMemo(() => (q ? rows.filter((b) => b.name.toLowerCase().includes(q)) : rows), [rows, q]);
+  const shownTags = useMemo(() => (q ? tags.filter((t) => t.name.toLowerCase().includes(q)) : tags), [tags, q]);
+  const first = tab === "branches" ? shownBranches[0]?.name : shownTags[0]?.name;
+  // Rows are soft: a little taller than a list needs, a wide radius, and
+  // the fill eases in rather than snapping.
+  const rowStyle: React.CSSProperties = {
+    display: "grid", gridTemplateColumns: "12px 1fr auto", alignItems: "center", gap: 8,
+    height: 30, padding: "0 10px", borderRadius: "var(--radius-md)", border: "none", background: "transparent",
+    color: "var(--fg)", font: "inherit", textAlign: "left", cursor: "pointer",
+    transition: "background var(--motion-med) var(--ease-soft)",
+  };
+  const tabStyle = (active: boolean): React.CSSProperties => ({
+    border: "none", background: "transparent", padding: "2px 1px 9px", font: "inherit", fontSize: 12,
+    cursor: "pointer", color: active ? "var(--fg-strong)" : "var(--fg-subtle)",
+    display: "inline-flex", alignItems: "center", gap: 4, position: "relative",
+    transition: "color var(--motion-med) var(--ease-soft)",
+  });
+  const hover = {
+    onMouseEnter: (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = "var(--bg-hover)"; },
+    onMouseLeave: (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.background = "transparent"; },
+  };
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 99 }} />
       <div
-        className="floating-panel"
+        className="floating-panel popover-enter"
         style={{
-          position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 100,
-          width: 320, maxHeight: 420, overflow: "auto", padding: 6,
-          display: "flex", flexDirection: "column", gap: 2,
+          position: "absolute", top: "calc(100% + 10px)", left: -12, zIndex: 100,
+          width: 304, maxHeight: 440, overflow: "hidden", padding: 8, borderRadius: "var(--radius-lg)",
+          display: "flex", flexDirection: "column", gap: 0, transformOrigin: "top left",
         }}
       >
-        <input
-          autoFocus
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && filtered[0]) { onSelect(filtered[0].name); }
-            if (e.key === "Escape") onClose();
-          }}
-          placeholder="Filter branches…"
-          style={{
-            height: 28, margin: "2px 4px 6px", padding: "0 8px",
-            border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-            background: "var(--bg)", color: "var(--fg-strong)", font: "inherit", fontSize: 12, outline: "none",
-          }}
-        />
-        {filtered.length === 0 && (
-          <div style={{ padding: "12px 8px", color: "var(--fg-subtle)", fontSize: 12 }}>No branches match.</div>
-        )}
-        {filtered.map((b) => (
-          <button
-            key={b.name}
-            onClick={() => onSelect(b.name)}
-            style={{
-              display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 6,
-              padding: "6px 8px", borderRadius: "var(--radius-xs)", border: "none", background: "transparent",
-              color: "var(--fg)", font: "inherit", textAlign: "left", cursor: "pointer",
+        {/* Head — the filter as a bare text line with a dim glyph, then the
+            Branches / Tags words on a hairline. Everything shares one left
+            edge with the row text below (8px pad + 12px check column + 8px gap). */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, height: 38, padding: "0 10px", flexShrink: 0 }}>
+          <SearchIcon size={12} style={{ color: query ? "var(--fg-subtle)" : "var(--fg-dim)", flexShrink: 0, transition: "color var(--motion-med) var(--ease-soft)" }} />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && first) { onSelect(first); }
+              if (e.key === "Escape") { if (query) setQuery(""); else onClose(); }
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: b.name === current ? "var(--accent)" : "var(--fg-strong)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {b.name}
-              </div>
-              <div style={{ fontSize: 11, color: "var(--fg-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {b.lastSubject}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6, fontSize: 11, fontFamily: "var(--font-mono)" }}>
-              {b.ahead > 0 && <span style={{ color: "var(--success)" }}>↑{b.ahead}</span>}
-              {b.behind > 0 && <span style={{ color: "var(--warning)" }}>↓{b.behind}</span>}
-            </div>
-          </button>
-        ))}
+            placeholder={tab === "branches" ? "Find a branch" : "Find a tag"}
+            aria-label={tab === "branches" ? "Find a branch" : "Find a tag"}
+            className="klide-bare-filter"
+            style={{
+              flex: 1, minWidth: 0, height: "100%", padding: 0,
+              border: "none", background: "transparent",
+              color: "var(--fg-strong)", font: "inherit", fontSize: 12.5, outline: "none",
+            }}
+          />
+        </div>
+        <div
+          role="tablist"
+          ref={flip.trackRef}
+          data-flip={flip.flip}
+          className="klide-flip-track"
+          style={{ position: "relative", display: "flex", gap: 16, padding: "0 10px 0 30px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}
+        >
+          {([
+            { id: "branches" as const, label: "Branches", count: rows.length },
+            { id: "tags" as const, label: "Tags", count: tags.length },
+          ]).map((o) => {
+            const active = tab === o.id;
+            const setFlipRef = flip.setItemRef(o.id);
+            return (
+              <button
+                key={o.id}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(o.id)}
+                style={tabStyle(active)}
+                ref={(el) => { tabEls.current.set(o.id, el); setFlipRef(el); }}
+              >
+                {o.label}
+                {o.count > 0 && <span style={{ fontSize: 10.5, color: "var(--fg-dim)", fontFamily: "var(--font-mono)" }}>{o.count}</span>}
+              </button>
+            );
+          })}
+          <span
+            aria-hidden
+            className="klide-flip-indicator"
+            style={{ ...flip.style, left: 0, bottom: -1, height: 1.5, width: barWidth, borderRadius: 1, background: "var(--fg-strong)" }}
+          />
+        </div>
+        <div key={tab} className="klide-enter-rise" style={{ overflow: "auto", minHeight: 0, display: "flex", flexDirection: "column", gap: 1, padding: "8px 0 2px" }}>
+          {tab === "branches" && shownBranches.length === 0 && (
+            <div style={{ padding: "10px 8px", color: "var(--fg-subtle)", fontSize: 12 }}>No branches match.</div>
+          )}
+          {tab === "tags" && shownTags.length === 0 && (
+            <div style={{ padding: "10px 8px", color: "var(--fg-subtle)", fontSize: 12 }}>{tags.length === 0 ? "No tags yet." : "No tags match."}</div>
+          )}
+          {tab === "branches" && shownBranches.map((b) => {
+            const d = branchDisplay(b.name);
+            const isCurrent = b.name === current;
+            return (
+              <button
+                key={b.name}
+                onClick={() => onSelect(b.name)}
+                title={b.remoteOnly ? `${b.name} — on the remote only; checking out creates the local branch` : b.lastSubject}
+                style={rowStyle}
+                {...hover}
+              >
+                {/* Check column — the current branch, GitHub-style, in the
+                    accent with a light stroke so it reads as a note, not a stamp. */}
+                <span aria-hidden style={{ display: "grid", placeItems: "center", width: 12, height: 12 }}>
+                  {isCurrent && (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 12.5l4.5 4.5L19 7.5" />
+                    </svg>
+                  )}
+                </span>
+                <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                  {/* The agent's mark stands in for its `codex/` or `claude/`
+                      prefix — one small glyph in the text run. */}
+                  {d.agent && (
+                    <span aria-hidden style={{ display: "inline-grid", placeItems: "center", width: 13, height: 13, flexShrink: 0, opacity: 0.85 }}>
+                      {d.agent === "klide" ? <KlideMark size={12} /> : <ProviderLogo id={d.agent} size={12} />}
+                    </span>
+                  )}
+                  <span style={{
+                    minWidth: 0, fontFamily: "var(--font-mono)", fontSize: 11.5,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    // The current branch is the strong one; the rest sit a
+                    // step quieter, and a remote-only branch (not here yet) two.
+                    color: isCurrent ? "var(--fg-strong)" : b.remoteOnly ? "var(--fg-subtle)" : "var(--fg)",
+                  }}>
+                    {d.prefix && <span style={{ color: "var(--fg-subtle)" }}>{d.prefix}</span>}
+                    {d.leaf}
+                  </span>
+                </span>
+                <span style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 10.5, flexShrink: 0 }}>
+                  {b.ahead > 0 && <span style={{ color: "var(--fg-dim)", fontFamily: "var(--font-mono)" }}>↑{b.ahead}</span>}
+                  {b.behind > 0 && <span style={{ color: "var(--fg-dim)", fontFamily: "var(--font-mono)" }}>↓{b.behind}</span>}
+                  {b.isDefault && <span style={{ color: "var(--fg-dim)" }}>default</span>}
+                </span>
+              </button>
+            );
+          })}
+          {tab === "tags" && shownTags.map((t) => (
+            <button
+              key={t.name}
+              onClick={() => onSelect(t.name)}
+              title={`${t.subject} — checks out ${t.name} (detached)`}
+              style={rowStyle}
+              {...hover}
+            >
+              <span aria-hidden style={{ display: "grid", placeItems: "center", width: 12, height: 12 }}>
+                {current === t.name && (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M5 12.5l4.5 4.5L19 7.5" />
+                  </svg>
+                )}
+              </span>
+              <span style={{
+                minWidth: 0, fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--fg)",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>
+                {t.name}
+              </span>
+              <span style={{ fontSize: 10.5, color: "var(--fg-dim)", flexShrink: 0 }}>
+                {relativeTimeLong(t.timestamp * 1000, Date.now())}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
     </>
   );
@@ -1362,7 +1557,6 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
 
   const files = reviewStatus?.files ?? [];
   const { stagedFiles, changedFiles } = splitStatusFiles(files);
-  const totalAdditions = useMemo(() => deriveTotalAdditions(files), [files]);
   const prList = prs ?? [];
   const prCounts = useMemo(() => derivePrCounts(prList), [prList]);
   const visiblePrs = useMemo(() => deriveVisiblePrs(prList, prFilter), [prFilter, prList]);
@@ -1541,7 +1735,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
       </Center>
     );
   }
-  const reviewRootName = workspaceRoot.split("/").filter(Boolean).pop() ?? workspaceRoot;
+  const hasWork = stagedFiles.length > 0 || changedFiles.length > 0;
 
   return (
     <div
@@ -1568,42 +1762,43 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{actionMessage.text}</span>
         </div>
       )}
-      {/* Top bar */}
-      <div className="glass-chrome" style={{
-        height: 56, padding: "0 16px", display: "flex", alignItems: "center", gap: 12,
-        position: "relative", zIndex: 2,
+      {/* Header — one quiet row on the page background. A hairline below,
+          no fill, no glass. It leads with the branch (the rail already names
+          the project and the view); the fetch time sits dim beside it. */}
+      <div style={{
+        minHeight: 60, padding: "0 20px", display: "flex", alignItems: "center", gap: 16,
+        borderBottom: "1px solid var(--border)", position: "relative", zIndex: 2,
       }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-            <span style={{ fontSize: 11, color: "var(--fg-dim)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Git Review</span>
-            <span
-              title={workspaceRoot}
-              style={{
-                maxWidth: 220,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                fontSize: 10.5,
-                color: "var(--fg-subtle)",
-                fontFamily: "var(--font-mono)",
-              }}
-            >
-              {reviewRootName}
-            </span>
-          </div>
-          <div style={{ position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, minWidth: 0, flexShrink: 0 }}>
+          <div style={{ position: "relative", display: "inline-flex", alignItems: "baseline", gap: 10 }}>
             <button
               onClick={() => setBranchMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={branchMenuOpen}
               style={{
                 border: "none", background: "transparent", padding: 0, font: "inherit", cursor: "pointer",
+                display: "inline-flex", alignItems: "center", gap: 5,
               }}
               title="Switch branch"
             >
               <BranchLabel branch={log?.branch ?? reviewStatus?.branch ?? "—"} ahead={log?.ahead ?? 0} behind={log?.behind ?? 0} />
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ color: "var(--fg-dim)" }}>
+                <path d="M6 9l6 6 6-6" />
+              </svg>
             </button>
+            {(log?.lastFetchMs || logLoading) && (
+              <span
+                style={{ fontSize: 11, color: "var(--fg-dim)", whiteSpace: "nowrap" }}
+                title={log?.lastFetchMs ? new Date(log.lastFetchMs).toLocaleString() : undefined}
+              >
+                {logLoading ? "refreshing…" : `fetched ${relativeTimeLong(log!.lastFetchMs!, nowMs)}`}
+              </span>
+            )}
             {branchMenuOpen && log && (
               <BranchMenu
                 branches={log.branches}
+                tags={log.tags}
+                defaultBranch={log.defaultBranch}
                 current={log.branch}
                 onSelect={checkoutBranch}
                 onClose={() => setBranchMenuOpen(false)}
@@ -1611,52 +1806,59 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
             )}
           </div>
         </div>
-        <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
-          <input
-            value={commitMessage}
-            onChange={(e) => setCommitMessage(e.target.value)}
-            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void commit(); } }}
-            placeholder={stagedFiles.length === 0 ? "Stage changes to commit" : `Commit ${stagedFiles.length} file${stagedFiles.length === 1 ? "" : "s"}…`}
-            aria-label="Commit message"
-            style={{
-              flex: 1, minWidth: 0, height: 32, padding: "0 10px",
-              border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-              background: "var(--bg)", color: "var(--fg-strong)", font: "inherit", outline: "none",
-            }}
-          />
-          <button
-            onClick={() => void commit()}
-            disabled={!commitMessage.trim() || stagedFiles.length === 0 || commitLoading}
-            title={stagedFiles.length === 0 ? "Stage changes before committing" : "Commit staged changes (⌘↩)"}
-            style={{
-              height: 32, padding: "0 14px", borderRadius: "var(--radius-sm)", fontWeight: 600, fontSize: 12, cursor: "pointer",
-              background: commitMessage.trim() && stagedFiles.length > 0 && !commitLoading ? "var(--accent)" : "var(--bg-hover)",
-              color: commitMessage.trim() && stagedFiles.length > 0 && !commitLoading ? "var(--control-primary-fg)" : "var(--fg-subtle)",
-              border: "1px solid " + (commitMessage.trim() && stagedFiles.length > 0 && !commitLoading
-                ? "color-mix(in srgb, var(--accent) 60%, var(--inset-ring))"
-                : "var(--border)"),
-              boxShadow: commitMessage.trim() && stagedFiles.length > 0 && !commitLoading
-                ? "inset 0 1px 0 var(--inset-highlight), inset 0 0 0 1px var(--inset-ring), 0 1px 2px var(--inset-drop)"
-                : "none",
-              transition: "background var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out)",
-            }}
-          >
-            {commitLoading ? "Committing…" : "Commit"}
-          </button>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <TopAction onClick={() => void fetch()} disabled={actionLoading === "Fetched"} title="Fetch from all remotes" iconOnly>
+        {/* Commit composer — present only while there is work to commit. A
+            clean tree shows nothing here; the header states a fact instead
+            of holding a dead field. */}
+        {hasWork ? (
+          <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              value={commitMessage}
+              onChange={(e) => setCommitMessage(e.target.value)}
+              onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); void commit(); } }}
+              placeholder={stagedFiles.length === 0 ? "Stage changes to commit" : `Commit ${stagedFiles.length} file${stagedFiles.length === 1 ? "" : "s"}…`}
+              aria-label="Commit message"
+              style={{
+                flex: 1, minWidth: 0, height: 32, padding: "0 12px",
+                border: "1px solid transparent", borderRadius: "var(--radius-lg)",
+                background: "var(--bg-hover)", color: "var(--fg-strong)", font: "inherit", fontSize: 13, outline: "none",
+                transition: "border-color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)",
+              }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg)"; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = "transparent"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+            />
+            <button
+              onClick={() => void commit()}
+              disabled={!commitMessage.trim() || stagedFiles.length === 0 || commitLoading}
+              title={stagedFiles.length === 0 ? "Stage changes before committing" : "Commit staged changes (⌘↩)"}
+              style={{
+                height: 32, padding: "0 14px", borderRadius: "var(--radius-lg)", fontWeight: 600, fontSize: 12, cursor: "pointer",
+                background: commitMessage.trim() && stagedFiles.length > 0 && !commitLoading ? "var(--accent)" : "transparent",
+                color: commitMessage.trim() && stagedFiles.length > 0 && !commitLoading ? "var(--control-primary-fg)" : "var(--fg-subtle)",
+                border: "1px solid " + (commitMessage.trim() && stagedFiles.length > 0 && !commitLoading
+                  ? "color-mix(in srgb, var(--accent) 60%, var(--inset-ring))"
+                  : "var(--border)"),
+                transition: "background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out)",
+              }}
+            >
+              {commitLoading ? "Committing…" : "Commit"}
+            </button>
+          </div>
+        ) : (
+          <span style={{ flex: 1 }} />
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+          <TopAction onClick={() => void fetch()} busy={actionLoading === "Fetched"} title="Fetch from all remotes" iconOnly>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M20 6v5h-5" /><path d="M4 18v-5h5" />
               <path d="M18.3 9A7 7 0 0 0 6.4 6.4L4 9" /><path d="M5.7 15A7 7 0 0 0 17.6 17.6L20 15" />
             </svg>
           </TopAction>
-          <TopAction onClick={() => void pull()} disabled={actionLoading === "Pulled"} title="Pull (fast-forward only)" iconOnly>
+          <TopAction onClick={() => void pull()} busy={actionLoading === "Pulled"} title="Pull (fast-forward only)" iconOnly>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M12 3v13" /><path d="M6 11l6 6 6-6" /><path d="M5 21h14" />
             </svg>
           </TopAction>
-          <TopAction onClick={() => void push()} disabled={actionLoading === "Pushed"} title="Push to upstream" iconOnly>
+          <TopAction onClick={() => void push()} busy={actionLoading === "Pushed"} title="Push to upstream" iconOnly>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M12 21V8" /><path d="M6 13l6-6 6 6" /><path d="M5 3h14" />
             </svg>
@@ -1666,11 +1868,10 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
             disabled={stagedFiles.length === 0}
             title={stagedFiles.length === 0 ? "Stage changes before opening a PR" : "Open a pull request (⌘⇧P)"}
             style={{
-              height: 32, padding: "0 12px", borderRadius: "var(--radius-sm)", fontWeight: 600, fontSize: 12,
+              height: 30, marginLeft: 8, padding: "0 12px", borderRadius: "var(--radius-lg)", fontWeight: 600, fontSize: 12,
               cursor: stagedFiles.length === 0 ? "not-allowed" : "pointer",
               background: "transparent", color: stagedFiles.length === 0 ? "var(--fg-subtle)" : "var(--fg-strong)",
               border: "1px solid var(--border)",
-              boxShadow: "inset 0 1px 0 var(--panel-highlight)",
               transition: "background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out)",
             }}
             onMouseEnter={(e) => { if (stagedFiles.length > 0) e.currentTarget.style.background = "var(--bg-hover)"; }}
@@ -1710,6 +1911,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
           <SectionHeader
             title="Changes"
             count={changedFiles.length}
+            spaced
             onAction={stageAll}
             actionLabel="Stage all"
             actionIcon={<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><path d="M12 5v14" /><path d="M5 12h14" /></svg>}
@@ -1733,6 +1935,26 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
               ))
             )}
           </div>
+          {/* Stash foot — the one fact the old bottom shelf carried that the
+              panes didn't already. Shown when there is a stash to pop, or
+              working changes to stash; a clean tree with no stash shows nothing. */}
+          {((stashes && stashes.length > 0) || changedFiles.length > 0) && (
+            <div style={{
+              height: 30, padding: "0 10px", display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+              borderTop: "1px solid var(--border)",
+              fontSize: 11, color: "var(--fg-subtle)",
+            }}>
+              <span style={{ color: "var(--fg)", fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>Stash</span>
+              <span style={{ color: "var(--fg-dim)" }}>{stashes?.length ?? 0}</span>
+              <span style={{ flex: 1 }} />
+              {stashes && stashes.length > 0 && (
+                <button onClick={() => void stashPop()} style={ghostLinkStyle} title="Pop the latest stash">Pop</button>
+              )}
+              {changedFiles.length > 0 && (
+                <button onClick={() => void stashPush()} style={ghostLinkStyle} title="Stash all working changes">Stash</button>
+              )}
+            </div>
+          )}
         </div>
 
         <PaneDivider width={leftWidth} setWidth={setLeftWidth} side="left" min={LEFT_MIN} max={MAX_PANE} />
@@ -1862,45 +2084,6 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
         />
       )}
 
-      {/* Bottom: stashes + recent history + last fetch */}
-      <div className="glass-chrome-bottom" style={{
-        height: 32, padding: "0 16px", display: "flex", alignItems: "center", gap: 16,
-        position: "relative", zIndex: 2,
-        fontSize: 11, color: "var(--fg-subtle)",
-      }}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span style={{ color: "var(--fg-dim)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Stash</span>
-          {stashes && stashes.length > 0 ? (
-            <>
-              <span style={{ color: "var(--fg)", fontFamily: "var(--font-mono)" }}>{stashes.length}</span>
-              <button onClick={() => void stashPop()} style={ghostLinkStyle}>Pop</button>
-            </>
-          ) : (
-            <button onClick={() => void stashPush()} style={ghostLinkStyle} title="Stash all working changes">Stash</button>
-          )}
-        </span>
-        <span style={{ width: 1, height: 14, background: "var(--border)" }} />
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
-          <span style={{ color: "var(--fg-dim)", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>History</span>
-          {log && log.commits[0] ? (
-            <span style={{ color: "var(--fg)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {log.commits[0].shortHash} · {log.commits[0].subject}
-            </span>
-          ) : (
-            <span style={{ color: "var(--fg-dim)" }}>—</span>
-          )}
-        </span>
-        <span style={{ flex: 1 }} />
-        {log?.lastFetchMs && (
-          <span style={{ color: "var(--fg-dim)" }} title={new Date(log.lastFetchMs).toLocaleString()}>
-            fetched {relativeTimeLong(log.lastFetchMs, nowMs)}
-          </span>
-        )}
-        {logLoading && <span style={{ color: "var(--fg-dim)" }}>refreshing…</span>}
-        <span style={{ color: "var(--fg-dim)", fontFamily: "var(--font-mono)" }}>
-          {totalAdditions === 0 ? "clean" : `${totalAdditions} change${totalAdditions === 1 ? "" : "s"}`}
-        </span>
-      </div>
       {prComposer && (
         <div
           onMouseDown={(e) => { if (e.target === e.currentTarget) setPrComposer(null); }}
@@ -1964,26 +2147,34 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
   );
 }
 
-function TopAction({ onClick, disabled, title, iconOnly, children }: { onClick: () => void; disabled?: boolean; title: string; iconOnly?: boolean; children: React.ReactNode }) {
+function TopAction({ onClick, disabled, busy, title, iconOnly, children }: { onClick: () => void; disabled?: boolean; busy?: boolean; title: string; iconOnly?: boolean; children: React.ReactNode }) {
   // Icon-only actions are bare marks — no container, just a hover brighten,
-  // matching the quiet icon buttons in the PR list.
+  // matching the quiet icon buttons in the PR list. While the action runs the
+  // mark morphs into the orbit loader and back — the loader *is* the signal,
+  // so a busy button is not also dimmed the way a merely disabled one is.
   if (iconOnly) {
     return (
       <button
         onClick={onClick}
-        disabled={disabled}
+        disabled={disabled || busy}
+        aria-busy={busy || undefined}
         title={title}
         aria-label={title}
         style={{
           width: 30, height: 30, display: "grid", placeItems: "center",
           border: "none", background: "transparent", color: "var(--fg-subtle)",
-          cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.4 : 1,
+          cursor: disabled || busy ? "default" : "pointer", opacity: disabled && !busy ? 0.4 : 1,
           transition: "color var(--motion-fast) var(--ease-out)",
         }}
-        onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.color = "var(--fg-strong)"; }}
+        onMouseEnter={(e) => { if (!disabled && !busy) e.currentTarget.style.color = "var(--fg-strong)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; }}
       >
-        {children}
+        <IconMorph
+          show={busy ? "b" : "a"}
+          size={14}
+          a={children}
+          b={<DotGridLoader size={12} color="currentColor" label={title} />}
+        />
       </button>
     );
   }

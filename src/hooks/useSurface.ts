@@ -173,14 +173,15 @@ export function showsRail(surface: Surface): boolean {
 }
 
 /** The status bar shows everywhere but Focus (chrome-free), Welcome (its own
- *  full-screen page), and Settings — which, like Welcome, renders its own full
+ *  full-screen page), Settings — which, like Welcome, renders its own full
  *  shell (its own rail, its own back affordance) and has no file, branch or
- *  editor state for the bar to report. */
+ *  editor state for the bar to report — and Git Review, whose header already
+ *  names the branch, so the bar would only repeat it under the panes. */
 export function showsStatusBar(surface: Surface): boolean {
   return (
     surface.kind !== "focus" &&
     surface.kind !== "welcome" &&
-    !(surface.kind === "overlay" && surface.view === "settings")
+    !(surface.kind === "overlay" && (surface.view === "settings" || surface.view === "git-review"))
   );
 }
 
