@@ -1140,6 +1140,43 @@ function withDepartingPrs(
   return out;
 }
 
+/** A merged card on its way out. Its height is measured once on mount and
+ *  handed to the CSS as --depart-h, so the fold animates real pixels (the
+ *  cards below glide up with it) rather than a grid track the webview may
+ *  snap. The body fades and lifts while the shell folds; the shell's end
+ *  event, the later of the two, is what removes the card. */
+function DepartingPrCard({ pr, nowMs, onDone }: { pr: PullRequest; nowMs: number; onDone: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (ref.current) setHeight(ref.current.getBoundingClientRect().height);
+  }, []);
+  return (
+    <div
+      ref={ref}
+      className="klide-pr-depart"
+      data-measured={height !== null || undefined}
+      style={height !== null ? ({ "--depart-h": `${height}px` } as React.CSSProperties) : undefined}
+      aria-hidden
+      onAnimationEnd={(e) => { if (e.target === e.currentTarget) onDone(); }}
+    >
+      <div className="klide-pr-depart-body">
+        <PRCard
+          pr={pr}
+          nowMs={nowMs}
+          selected={false}
+          detail={null}
+          detailLoading={false}
+          onSelect={() => {}}
+          onOpen={() => {}}
+          onCheckout={() => {}}
+          onMerge={() => {}}
+        />
+      </div>
+    </div>
+  );
+}
+
 function PRFilterTabs({
   value,
   counts,
@@ -2049,27 +2086,12 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
             )}
             {withDepartingPrs(visiblePrs, departingPrs).map(({ pr, departing }) =>
               departing ? (
-                <div
+                <DepartingPrCard
                   key={`departing-${pr.number}`}
-                  className="klide-pr-depart"
-                  aria-hidden
-                  onAnimationEnd={(e) => {
-                    if (e.target !== e.currentTarget) return;
-                    setDepartingPrs((d) => d.filter((x) => x.pr.number !== pr.number));
-                  }}
-                >
-                  <PRCard
-                    pr={pr}
-                    nowMs={nowMs}
-                    selected={false}
-                    detail={null}
-                    detailLoading={false}
-                    onSelect={() => {}}
-                    onOpen={() => {}}
-                    onCheckout={() => {}}
-                    onMerge={() => {}}
-                  />
-                </div>
+                  pr={pr}
+                  nowMs={nowMs}
+                  onDone={() => setDepartingPrs((d) => d.filter((x) => x.pr.number !== pr.number))}
+                />
               ) : (
                 <PRCard
                   key={pr.number}
