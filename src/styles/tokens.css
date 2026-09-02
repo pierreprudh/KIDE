@@ -312,6 +312,7 @@
 
   --accent:       #8EA2FF;
   --accent-soft:  #242B45;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   /* The :root default is near-black at 40% — invisible on a dark surface.
      Every dark theme owes itself an override. */
@@ -358,6 +359,7 @@
 
   --accent:       #007ACC;
   --accent-soft:  #04395E;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   --code-comment: #6A9955;
 
@@ -402,6 +404,7 @@
 
   --accent:       #0969DA;
   --accent-soft:  #DDF4FF;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   --control-primary-bg: #1F2328;
   --control-primary-fg: #FFFFFF;
@@ -439,6 +442,7 @@
 
   --accent:       #B58900;
   --accent-soft:  #2E4C3B;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   --code-comment: #657B83;
 
