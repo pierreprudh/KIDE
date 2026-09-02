@@ -347,6 +347,7 @@ type FileRowProps = {
 function FileRow({ file, active, onOpen, onStage, onUnstage, onDiscard, loading }: FileRowProps) {
   const { name, folder } = splitPath(file.path);
   const mark = gitStatusMark(file.status) ?? UNNAMED_GIT_STATUS;
+  const [hovered, setHovered] = useState(false);
   return (
     <div
       // Chrome — fills, radius, ellipsis, the action reveal — comes from
@@ -355,14 +356,28 @@ function FileRow({ file, active, onOpen, onStage, onUnstage, onDiscard, loading 
       className="klide-file-row"
       data-active={active}
       onClick={() => onOpen(file)}
-      style={{ gridTemplateColumns: "1fr auto", gap: 8, padding: "5px 10px", fontSize: 13 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      // Rows sit one step in from their section header (10px) so the list
+      // reads as header → children, not a flat column.
+      style={{ gridTemplateColumns: "1fr auto", gap: 8, padding: "5px 10px 5px 18px", fontSize: 13 }}
     >
       {/* No status letter: the name itself wears the status colour (warning
           for modified, success for new, danger for deleted). The word stays
           in the tooltip for anyone who needs it spelled out. */}
       <div style={{ minWidth: 0 }}>
         <div className="klide-file-row-name" title={mark.title} style={{ color: mark.color }}>{name}</div>
-        {folder && <div className="klide-file-row-sub">{folder}</div>}
+        {/* The folder whispers under the name, set one step further in —
+            quieter than the Explorer's shared sub style, since here the
+            status-coloured name is the point. Hovering the row brings it up. */}
+        {folder && (
+          <div
+            className="klide-file-row-sub"
+            style={{ paddingLeft: 8, opacity: hovered || active ? 1 : 0.55, transition: "opacity var(--motion-fast) var(--ease-out)" }}
+          >
+            {folder}
+          </div>
+        )}
       </div>
       <div className="klide-file-row-actions">
         <button
@@ -652,8 +667,10 @@ function PRActionButton({
       title={title}
       onMouseEnter={(e) => {
         if (disabled) return;
-        // Primary is a real button (fill deepens); ghost is bare text (colour only).
-        if (primary) e.currentTarget.style.background = "var(--accent-hover)";
+        // Primary is a real button (fill lifts a touch toward the foreground,
+        // hue kept — --accent-hover isn't themed everywhere and would flash the
+        // root sage); ghost is bare text (colour only).
+        if (primary) e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 90%, var(--fg-strong))";
         else e.currentTarget.style.color = "var(--fg-strong)";
       }}
       onMouseLeave={(e) => {
@@ -815,17 +832,38 @@ function PRCard({ pr, selected, detail, detailLoading, nowMs, onSelect, onOpen, 
           </div>
           <PRBranchLine pr={pr} />
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, minWidth: 0, minHeight: 24 }}>
-            <PRMetric value={`+${pr.additions}`} tone="good" label="Additions" />
-            <PRMetric value={`−${pr.deletions}`} tone="bad" label="Deletions" />
-            <GlyphMetric icon={<GlyphFile />} value={pr.changedFiles} title="Changed files" />
-            <span style={{ flex: 1 }} />
-            <PRGithubLink onClick={() => onOpen(pr.number)} />
-            {hovered && canCheckout && (
-              <PRCheckoutLink onClick={() => onCheckout(pr.number)} />
-            )}
-            {canMerge && (
-              <PRActionButton title="Merge pull request" onClick={() => onMerge(pr.number)} primary>Merge</PRActionButton>
-            )}
+            {/* Metrics yield first: when the card is narrow they clip, so the
+                actions never get pushed past the card edge. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0, overflow: "hidden" }}>
+              <PRMetric value={`+${pr.additions}`} tone="good" label="Additions" />
+              <PRMetric value={`−${pr.deletions}`} tone="bad" label="Deletions" />
+              <GlyphMetric icon={<GlyphFile />} value={pr.changedFiles} title="Changed files" />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+              <PRGithubLink onClick={() => onOpen(pr.number)} />
+              {canCheckout && (
+                // At rest the GitHub mark hugs Merge; on hover the checkout glyph
+                // slides in between them (width 0 → glyph + gap). The metrics
+                // group beside us clips, so the slide never pushes past the card.
+                <span
+                  aria-hidden={!hovered}
+                  style={{
+                    display: "grid", justifyContent: "end", alignItems: "center",
+                    width: hovered ? 15 + 12 : 0,
+                    overflow: "hidden",
+                    opacity: hovered ? 1 : 0,
+                    transition: "width 160ms var(--ease-out), opacity var(--motion-fast) var(--ease-out)",
+                  }}
+                >
+                  <PRCheckoutLink onClick={() => onCheckout(pr.number)} />
+                </span>
+              )}
+              {canMerge && (
+                <span style={{ marginLeft: 12, display: "inline-grid" }}>
+                  <PRActionButton title="Merge pull request" onClick={() => onMerge(pr.number)} primary>Merge</PRActionButton>
+                </span>
+              )}
+            </div>
           </div>
           {pr.commentAuthors.length > 0 && (
             <div style={{ marginTop: 9 }}>
