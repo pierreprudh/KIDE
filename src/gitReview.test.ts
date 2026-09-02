@@ -157,7 +157,7 @@ describe("action outcomes — the refresh policy per action", () => {
     [
       "merge PR",
       mergePrOutcome(7, null),
-      { message: "Merged #7", refresh: ["prs", "log", "status"], collapseExpandedPr: false },
+      { message: "Merged #7", refresh: ["log", "status", "prs"], collapseExpandedPr: false },
     ],
     [
       "submit PR",
