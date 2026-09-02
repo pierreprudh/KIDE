@@ -250,7 +250,7 @@ describe("surface predicates", () => {
     ["overlay runs", RUNS_S, false, true, true, false],
     ["overlay orchestrator", ORCH_S, false, true, true, false],
     ["overlay settings", SETTINGS_S, false, false, false, false],
-    ["overlay git-review", GIT_S, false, true, true, false],
+    ["overlay git-review", GIT_S, false, true, false, false],
   ];
 
   for (const [name, surface, titlebar, rail, statusBar, base] of table) {

@@ -527,6 +527,14 @@ textarea:focus-visible:not(.inputarea):not(.xterm-helper-textarea):not(.klide-di
   outline-offset: 1px;
 }
 
+/* A bare filter line inside a popover (the branch menu's "Find a branch") is
+   the popover's only text field and takes focus the moment the menu opens —
+   the caret and the popover's own appearance are the indicator. A 2px ring
+   would box the one element the menu was designed not to box. */
+input.klide-bare-filter:focus-visible {
+  outline: none !important;
+}
+
 /* Custom interactive controls built from non-button elements (div/span with
    role="button" or a tabindex) get the same keyboard-focus ring — they have
    no native focus-visible affordance otherwise. outline (not box-shadow) so
@@ -5212,6 +5220,41 @@ button:focus-visible .menu-leadout {
      shortened. */
   .klide-focus-git-island[data-ping="true"] {
     scale: 1;
+  }
+}
+
+/* Icon morph — two marks share one cell and trade places. The leaving one
+   shrinks and fades while the arriving one grows in, both on the soft curve,
+   so a branch glyph becoming an agent's logo (or a sync arrow becoming the
+   working loader) reads as one mark changing shape rather than a swap. Both
+   stay in the DOM, which is what lets an image logo fade instead of popping
+   in on decode. Deliberately a beat slower than a hover: the change is news. */
+.klide-icon-morph {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.klide-icon-morph > * {
+  grid-area: 1 / 1;
+  display: inline-grid;
+  place-items: center;
+  transition:
+    opacity var(--motion-slow) var(--ease-soft),
+    transform var(--motion-slow) var(--ease-soft);
+}
+
+.klide-icon-morph > [data-shown="false"] {
+  opacity: 0;
+  transform: scale(0.55);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-icon-morph > * {
+    transition: none;
   }
 }
 
