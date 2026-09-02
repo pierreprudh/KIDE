@@ -5229,39 +5229,47 @@ button:focus-visible .menu-leadout {
    (TopAction watches animationiteration), so a fast fetch still shows one
    full turn and nothing ever snaps back from mid-frame. Linear for the spin —
    an eased infinite rotation stutters at every loop seam. */
-/* Merged-PR exit — the card lingers wearing its Merged badge, then fades and
-   folds shut: a grid row track easing 1fr → 0fr, which is interruptible and
-   needs no measured height. The wrapper clips whatever the shrinking track
-   can no longer hold; the trailing negative margin swallows the list gap so
-   the cards below close up as the row goes. Unhurried on purpose — a merge is
-   the moment the panel exists for. The end event is what removes the card. */
+/* Merged-PR exit — the card lingers wearing its Merged badge, then the body
+   fades and lifts while the shell folds shut underneath it, the two
+   overlapping so it reads as one motion. The shell animates its measured
+   height (--depart-h, set by DepartingPrCard) down to 0 and swallows the list
+   gap with a trailing negative margin, so the cards below glide up in step.
+   Unhurried on purpose — a merge is the moment the panel exists for. The
+   shell's end event, the later of the two, is what removes the card. */
 .klide-pr-depart {
-  display: grid;
-  grid-template-rows: 1fr;
   overflow: hidden;
   pointer-events: none;
-  animation: klide-pr-depart 1100ms var(--ease-soft) 420ms both;
+  flex-shrink: 0;
 }
 
-.klide-pr-depart > * {
-  min-height: 0;
+.klide-pr-depart[data-measured] {
+  height: var(--depart-h);
+  animation: klide-pr-depart-fold 1000ms var(--ease-soft) 560ms both;
 }
 
-@keyframes klide-pr-depart {
-  0% {
-    grid-template-rows: 1fr;
-    opacity: 1;
+.klide-pr-depart[data-measured] .klide-pr-depart-body {
+  animation: klide-pr-depart-fade 700ms var(--ease-soft) 320ms both;
+}
+
+@keyframes klide-pr-depart-fold {
+  from {
+    height: var(--depart-h);
     margin-bottom: 0;
   }
-  40% {
-    grid-template-rows: 1fr;
-    opacity: 0;
-    margin-bottom: 0;
-  }
-  100% {
-    grid-template-rows: 0fr;
-    opacity: 0;
+  to {
+    height: 0;
     margin-bottom: -8px;
+  }
+}
+
+@keyframes klide-pr-depart-fade {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
   }
 }
 
@@ -5296,8 +5304,9 @@ button:focus-visible .menu-leadout {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* The exit still has to end — the end event is what unmounts the card. */
-  .klide-pr-depart {
+  /* The exit still has to end — the shell's end event unmounts the card. */
+  .klide-pr-depart[data-measured],
+  .klide-pr-depart[data-measured] .klide-pr-depart-body {
     animation-duration: 1ms;
     animation-delay: 0ms;
   }
