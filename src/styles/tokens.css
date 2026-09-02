@@ -5223,38 +5223,75 @@ button:focus-visible .menu-leadout {
   }
 }
 
-/* Icon morph — two marks share one cell and trade places. The leaving one
-   shrinks and fades while the arriving one grows in, both on the soft curve,
-   so a branch glyph becoming an agent's logo (or a sync arrow becoming the
-   working loader) reads as one mark changing shape rather than a swap. Both
-   stay in the DOM, which is what lets an image logo fade instead of popping
-   in on decode. Deliberately a beat slower than a hover: the change is news. */
-.klide-icon-morph {
-  position: relative;
+/* Git sync icons — the mark itself moves while its action runs. Fetch's
+   arrows spin, Pull's arrow drops onto its baseline, Push's rises off it. The
+   loop keeps playing until the current cycle ends after the action settles
+   (TopAction watches animationiteration), so a fast fetch still shows one
+   full turn and nothing ever snaps back from mid-frame. Linear for the spin —
+   an eased infinite rotation stutters at every loop seam. */
+.klide-git-sync-mark {
   display: inline-grid;
   place-items: center;
-  flex-shrink: 0;
-  vertical-align: middle;
 }
 
-.klide-icon-morph > * {
-  grid-area: 1 / 1;
-  display: inline-grid;
-  place-items: center;
-  transition:
-    opacity var(--motion-slow) var(--ease-soft),
-    transform var(--motion-slow) var(--ease-soft);
+.klide-git-sync-mark > svg {
+  transform-origin: 50% 50%;
 }
 
-.klide-icon-morph > [data-shown="false"] {
-  opacity: 0;
-  transform: scale(0.55);
-  pointer-events: none;
+.klide-git-sync-mark[data-playing="true"][data-motion="spin"] > svg {
+  animation: klide-git-spin 1400ms linear infinite;
+}
+
+.klide-git-sync-mark[data-playing="true"][data-motion="down"] .klide-git-arrow {
+  animation: klide-git-arrow-down 1000ms var(--ease-soft) infinite;
+}
+
+.klide-git-sync-mark[data-playing="true"][data-motion="up"] .klide-git-arrow {
+  animation: klide-git-arrow-up 1000ms var(--ease-soft) infinite;
+}
+
+@keyframes klide-git-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The arrow travels one shaft-length and fades at both ends, so it reads as a
+   stream of arrows passing through rather than one arrow bouncing. */
+@keyframes klide-git-arrow-down {
+  0% {
+    transform: translateY(-5px);
+    opacity: 0;
+  }
+  30%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(5px);
+    opacity: 0;
+  }
+}
+
+@keyframes klide-git-arrow-up {
+  0% {
+    transform: translateY(5px);
+    opacity: 0;
+  }
+  30%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-5px);
+    opacity: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .klide-icon-morph > * {
-    transition: none;
+  .klide-git-sync-mark > svg,
+  .klide-git-sync-mark .klide-git-arrow {
+    animation: none;
   }
 }
 
