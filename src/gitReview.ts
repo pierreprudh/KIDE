@@ -9,25 +9,31 @@ import type { PrComment, PrCommit, PullRequest, PullRequestDetails } from "./ipc
 
 // ── Derivations ──────────────────────────────────────────────────────────────
 
-export type PullRequestFilter = "open" | "draft" | "merged" | "all";
+/** Two views, as on GitHub's own list: what is in flight and what is done. A
+ *  draft is an open PR that is not ready yet, so it lives under Open wearing
+ *  its Draft badge; Closed holds the merged and the closed-unmerged, and each
+ *  row's badge says which. Four segments (Open · Draft · Merged · All) mirrored
+ *  the badge's four states, not a question anyone asks the panel. */
+export type PullRequestFilter = "open" | "closed";
 
 export function visiblePrs(prs: PullRequest[], filter: PullRequestFilter): PullRequest[] {
-  return prs.filter((pr) => {
-    if (filter === "open") return pr.badge === "open";
-    if (filter === "draft") return pr.badge === "draft";
-    if (filter === "merged") return pr.badge === "merged";
-    return true;
-  });
+  return prs.filter((pr) => (filter === "open" ? isOpenPr(pr) : !isOpenPr(pr)));
 }
 
-export type PrCounts = { open: number; draft: number; merged: number; all: number };
+function isOpenPr(pr: PullRequest): boolean {
+  return pr.badge === "open" || pr.badge === "draft";
+}
+
+/** Per-badge counts; `open` excludes drafts so the head can say "2 open,
+ *  1 draft". The Open segment shows open + draft, Closed shows merged + closed. */
+export type PrCounts = { open: number; draft: number; merged: number; closed: number };
 
 export function prCounts(prs: PullRequest[]): PrCounts {
   return {
     open: prs.filter((pr) => pr.badge === "open").length,
     draft: prs.filter((pr) => pr.badge === "draft").length,
     merged: prs.filter((pr) => pr.badge === "merged").length,
-    all: prs.length,
+    closed: prs.filter((pr) => pr.badge === "closed").length,
   };
 }
 

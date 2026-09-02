@@ -94,16 +94,16 @@ describe("PR timeline merge", () => {
 describe("PR list derivations", () => {
   const list = [pr(1, "open"), pr(2, "draft"), pr(3, "merged"), pr(4, "closed"), pr(5, "open")];
 
-  it("filters by badge, and 'all' really is all (closed included)", () => {
-    expect(visiblePrs(list, "open").map((p) => p.number)).toEqual([1, 5]);
-    expect(visiblePrs(list, "draft").map((p) => p.number)).toEqual([2]);
-    expect(visiblePrs(list, "merged").map((p) => p.number)).toEqual([3]);
-    expect(visiblePrs(list, "all").map((p) => p.number)).toEqual([1, 2, 3, 4, 5]);
+  it("splits PRs into in-flight and done: drafts count as open, closed-unmerged as closed", () => {
+    // Drafts are open PRs that are not ready, so they sit under Open; Closed
+    // is merged and closed-unmerged together — the row's badge tells them apart.
+    expect(visiblePrs(list, "open").map((p) => p.number)).toEqual([1, 2, 5]);
+    expect(visiblePrs(list, "closed").map((p) => p.number)).toEqual([3, 4]);
   });
 
-  it("counts per badge; 'all' counts closed PRs even though no tab shows only them", () => {
-    expect(prCounts(list)).toEqual({ open: 2, draft: 1, merged: 1, all: 5 });
-    expect(prCounts([])).toEqual({ open: 0, draft: 0, merged: 0, all: 0 });
+  it("counts per badge, closed-unmerged included", () => {
+    expect(prCounts(list)).toEqual({ open: 2, draft: 1, merged: 1, closed: 1 });
+    expect(prCounts([])).toEqual({ open: 0, draft: 0, merged: 0, closed: 0 });
   });
 });
 

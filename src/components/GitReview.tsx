@@ -1049,7 +1049,7 @@ function GitHubSummaryCard({
   onCreate,
   onRefresh,
 }: {
-  counts: { open: number; draft: number; all: number };
+  counts: { open: number; draft: number };
   canCreate: boolean;
   refreshing: boolean;
   onCreate: () => void;
@@ -1190,7 +1190,7 @@ function PRFilterTabs({
   onChange,
 }: {
   value: PullRequestFilter;
-  counts: { open: number; draft: number; merged: number; all: number };
+  counts: { open: number; draft: number; merged: number; closed: number };
   onChange: (value: PullRequestFilter) => void;
 }) {
   return (
@@ -1198,10 +1198,8 @@ function PRFilterTabs({
       value={value}
       onChange={onChange}
       options={[
-        { id: "open", label: "Open", count: counts.open },
-        { id: "draft", label: "Draft", count: counts.draft },
-        { id: "merged", label: "Merged", count: counts.merged },
-        { id: "all", label: "All", count: counts.all },
+        { id: "open", label: "Open", count: counts.open + counts.draft },
+        { id: "closed", label: "Closed", count: counts.merged + counts.closed },
       ]}
     />
   );
@@ -2063,7 +2061,7 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
               <GitHubPanelState title="Loading GitHub" detail="Fetching pull requests." />
             )}
             {!prsLoading && !prError && prs && prs.length > 0 && visiblePrs.length === 0 && (
-              <GitHubPanelState title={prFilter === "all" ? "No pull requests" : `No ${prFilter} pull requests`} />
+              <GitHubPanelState title={`No ${prFilter} pull requests`} />
             )}
             {withDepartingPrs(visiblePrs, departingPrs).map(({ pr, departing }) =>
               departing ? (
