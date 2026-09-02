@@ -1039,52 +1039,75 @@ function PRExpandedDetail({ detail, loading, nowMs }: {
 
 // Just the section header now — the current-branch PR lives in the list like
 // any other, marked inline. No pinned, colour-washed "main" card on top.
+/** The head of the GitHub pane: one line — the title, how many are open, and
+ *  at the far end the refresh mark and New PR. There is no "GitHub" eyebrow
+ *  above it any more; the pane is the pull requests, so it says that once. */
 function GitHubSummaryCard({
   counts,
   canCreate,
+  refreshing,
   onCreate,
+  onRefresh,
 }: {
   counts: { open: number; draft: number; all: number };
   canCreate: boolean;
+  refreshing: boolean;
   onCreate: () => void;
+  onRefresh: () => void;
 }) {
   const summary = counts.draft > 0 ? `${counts.open} open, ${counts.draft} draft` : `${counts.open} open`;
   return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "12px 12px 8px" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 12px 10px" }}>
       <span style={{ color: "var(--fg-strong)", fontSize: 13, fontWeight: 650, letterSpacing: "-0.01em" }}>Pull requests</span>
       <span style={{ color: "var(--fg-dim)", fontSize: 11.5 }}>{summary}</span>
       <span style={{ flex: 1 }} />
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={refreshing}
+        aria-busy={refreshing || undefined}
+        title="Refresh pull requests"
+        aria-label="Refresh pull requests"
+        onMouseEnter={(e) => { if (!refreshing) e.currentTarget.style.color = "var(--fg-strong)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; }}
+        style={{ ...iconButtonStyle, width: 22, height: 22, transition: "color var(--motion-fast) var(--ease-out)" }}
+      >
+        <SyncMark busy={refreshing} motion="spin">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M20 6v5h-5" /><path d="M4 18v-5h5" />
+            <path d="M18.3 9A7 7 0 0 0 6.4 6.4L4 9" /><path d="M5.7 15A7 7 0 0 0 17.6 17.6L20 15" />
+          </svg>
+        </SyncMark>
+      </button>
       <PRActionButton title={canCreate ? "Create pull request" : "Stage changes before creating a pull request"} onClick={onCreate} disabled={!canCreate}>New PR</PRActionButton>
     </div>
   );
 }
 
-/** The one segmented switch — a soft-fill track, the active segment raised.
- *  The PR filter and the branch/tag switch are the same control. */
+/** The one segmented switch, in the macOS shape: a soft track holding equal
+ *  segments and a single raised thumb that glides to whichever is chosen
+ *  (transform only, see .klide-segmented). The segments themselves never
+ *  fill — only their colour answers the thumb — so a change reads as one
+ *  thing moving, not two boxes swapping. */
 function SegmentedTabs<T extends string>({
   value,
   options,
   onChange,
-  margin = "0 12px 8px",
+  margin = "0 12px 10px",
 }: {
   value: T;
   options: { id: T; label: string; count?: number }[];
   onChange: (value: T) => void;
   margin?: string;
 }) {
+  const index = Math.max(0, options.findIndex((o) => o.id === value));
   return (
     <div
       role="tablist"
-      style={{
-        display: "grid",
-        gridTemplateColumns: `repeat(${options.length}, 1fr)`,
-        gap: 2,
-        margin,
-        padding: 3,
-        borderRadius: "var(--radius-md)",
-        background: "var(--bg-hover)",
-      }}
+      className="klide-segmented"
+      style={{ margin, "--seg-count": options.length, "--seg-index": index } as React.CSSProperties}
     >
+      <span aria-hidden className="klide-segmented-thumb" />
       {options.map((option) => {
         const active = value === option.id;
         return (
@@ -1093,29 +1116,13 @@ function SegmentedTabs<T extends string>({
             type="button"
             role="tab"
             aria-selected={active}
+            data-active={active}
+            className="klide-segmented-seg"
             onClick={() => onChange(option.id)}
-            onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--fg-strong)"; }}
-            onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--fg-subtle)"; }}
-            style={{
-              height: 26,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 5,
-              borderRadius: "var(--radius-sm)",
-              border: "none",
-              background: active ? "var(--bg-elevated)" : "transparent",
-              color: active ? "var(--fg-strong)" : "var(--fg-subtle)",
-              boxShadow: active ? "var(--shadow-raised)" : "none",
-              cursor: "pointer",
-              fontSize: 11.5,
-              fontWeight: active ? 650 : 550,
-              transition: "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)",
-            }}
           >
             {option.label}
             {option.count !== undefined && option.count > 0 && (
-              <span style={{ color: "var(--fg-dim)", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>{option.count}</span>
+              <span className="klide-segmented-count">{option.count}</span>
             )}
           </button>
         );
@@ -2026,38 +2033,12 @@ export function GitReview({ workspaceRoot, gitStatus, onRefreshGitStatus, theme:
 
         {/* Right: PRs */}
         <div style={{ width: rightWidth, transition: PANE_TRANSITION, display: "flex", flexDirection: "column", minHeight: 0, borderLeft: "1px solid var(--border)" }}>
-          <div
-            className="pane-inset-top"
-            style={{
-              height: 36, padding: "0 12px", display: "flex", alignItems: "center", gap: 8,
-              borderBottom: "1px solid var(--border)",
-              color: "var(--fg-dim)", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase",
-            }}
-          >
-            <img src="./github-invertocat.svg" alt="" width={14} height={14} style={{ color: "var(--fg)", flexShrink: 0 }} />
-            GitHub
-            {prs && <span style={{ color: "var(--fg-dim)" }}>{prs.length}</span>}
-            <span style={{ flex: 1 }} />
-            <button
-              onClick={() => void refreshPrs()}
-              disabled={prsLoading}
-              aria-busy={prsLoading || undefined}
-              title="Refresh GitHub"
-              aria-label="Refresh GitHub"
-              style={{ ...iconButtonStyle, width: 22, height: 22 }}
-            >
-              <SyncMark busy={prsLoading} motion="spin">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="M20 6v5h-5" /><path d="M4 18v-5h5" />
-                  <path d="M18.3 9A7 7 0 0 0 6.4 6.4L4 9" /><path d="M5.7 15A7 7 0 0 0 17.6 17.6L20 15" />
-                </svg>
-              </SyncMark>
-            </button>
-          </div>
           <GitHubSummaryCard
             counts={prCounts}
             canCreate={stagedFiles.length > 0}
+            refreshing={prsLoading}
             onCreate={createPr}
+            onRefresh={() => void refreshPrs()}
           />
           <PRFilterTabs value={prFilter} counts={prCounts} onChange={setPrFilter} />
           {prError && (

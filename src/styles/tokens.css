@@ -5229,6 +5229,82 @@ button:focus-visible .menu-leadout {
    (TopAction watches animationiteration), so a fast fetch still shows one
    full turn and nothing ever snaps back from mid-frame. Linear for the spin —
    an eased infinite rotation stutters at every loop seam. */
+/* Segmented control — the macOS shape. One soft track, equal segments, and a
+   single raised thumb that glides to the chosen one on the soft curve. The
+   thumb is one segment wide (the track is an equal-column grid, so no
+   measuring) and moves by transform alone; a segment answers it with colour
+   only, never a fill of its own. --seg-count / --seg-index come from the
+   component. */
+.klide-segmented {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--seg-count, 1), 1fr);
+  height: 28px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  isolation: isolate;
+}
+
+.klide-segmented-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / var(--seg-count, 1));
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  box-shadow:
+    var(--shadow-raised),
+    0 0 0 0.5px var(--border);
+  transform: translateX(calc(var(--seg-index, 0) * 100%));
+  transition: transform var(--motion-med) var(--ease-soft);
+  z-index: 0;
+}
+
+.klide-segmented-seg {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-subtle);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+
+.klide-segmented-seg:hover,
+.klide-segmented-seg[data-active="true"] {
+  color: var(--fg-strong);
+}
+
+.klide-segmented-seg:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+}
+
+.klide-segmented-count {
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-segmented-thumb {
+    transition: none;
+  }
+}
+
 /* Merged-PR exit — the card lingers wearing its Merged badge, then the body
    fades and lifts while the shell folds shut underneath it, the two
    overlapping so it reads as one motion. The shell animates its measured
