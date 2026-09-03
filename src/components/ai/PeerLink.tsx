@@ -181,7 +181,7 @@ function PeerLinkItem({
               >
                 <span aria-hidden style={{ width: 1, height: "100%", background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
               </button>
-              <div style={{ display: "grid", gap: 6, minWidth: 0, flex: 1, maxHeight: 220, overflowY: "auto", paddingRight: 2 }}>
+              <div style={{ display: "grid", gap: 3, minWidth: 0, flex: 1, maxHeight: 180, overflowY: "auto", paddingRight: 2 }}>
                 {exchange === "error" ? (
                   <div style={{ fontSize: 11, color: "var(--fg-dim)" }}>The exchange could not be read from the journal.</div>
                 ) : !workspaceRoot ? (
@@ -195,14 +195,12 @@ function PeerLinkItem({
                     const fromSelf = e.from.type === "run" && e.from.runId === selfId && e.toRunId === id && selfId !== id;
                     const sender = fromSelf || selfId === id ? mine : theirs;
                     return (
-                      <div key={e.id} style={{ display: "grid", gridTemplateColumns: `${MARK}px 1fr`, gap: 6, alignItems: "start", minWidth: 0 }}>
-                        <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK }} title={sender.label}>{sender.node}</span>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 10, color: "var(--fg-dim)", lineHeight: 1.3 }}>{e.kind}</div>
-                          <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--fg)", overflowWrap: "anywhere", display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={e.body}>
-                            {e.body}
-                          </div>
-                        </div>
+                      // One line per message: the sender's mark and the kind.
+                      // The body itself is the hover — a card this small
+                      // shows the shape of the exchange, not its text.
+                      <div key={e.id} title={e.body} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, height: MARK + 2, cursor: "help" }}>
+                        <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={sender.label}>{sender.node}</span>
+                        <span style={{ fontSize: 11, color: "var(--fg-subtle)", lineHeight: 1.3, whiteSpace: "nowrap" }}>{e.kind}</span>
                       </div>
                     );
                   })
