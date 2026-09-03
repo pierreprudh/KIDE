@@ -5,7 +5,7 @@ import {
   COORDINATION_TOOL_NAMES,
   parseDeliveryReason,
   peerName,
-  usePeerTitles,
+  usePeerIndex,
   type DeliveredEnvelopeRef,
 } from "./coordinationPeers";
 import { readCoordinationSnapshot, type CoordinationEnvelope } from "../../agent/coordination";
@@ -157,7 +157,7 @@ function coordinationArg(args: unknown, key: string): string {
 }
 
 function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown }) {
-  const titles = usePeerTitles();
+  const titles = usePeerIndex();
   const targetId = coordinationArg(args, name === "agent_send" ? "toRunId" : "runId")
     || coordinationArg(args, "fromRunId");
   // A Run id is a conversation id, so the thread's own title is its name.
@@ -905,7 +905,7 @@ export function AgentInboxRow({
   delivered: DeliveredEnvelopeRef[];
   workspaceRoot?: string | null;
 }) {
-  const titles = usePeerTitles();
+  const titles = usePeerIndex();
   const [bodies, setBodies] = useState<Map<string, CoordinationEnvelope> | null | "error">(null);
   const load = async () => {
     if (bodies || !workspaceRoot) return;

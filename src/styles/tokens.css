@@ -7897,3 +7897,33 @@ button:focus-visible .menu-leadout {
     animation: none;
   }
 }
+
+/* Peer link (AI panel, top of a thread that talks to another conversation):
+   one dot travels the hairline between the two model marks while this thread
+   is streaming — toward the peer after we sent, back toward us after a peer's
+   message landed. Still at rest; hidden under reduced motion. */
+.ai-peer-dot {
+  position: absolute;
+  top: -1.5px;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ai-peer-travel 2.4s var(--ease-soft) infinite;
+}
+.ai-peer-dot[data-direction="in"] {
+  animation-direction: reverse;
+}
+@keyframes ai-peer-travel {
+  from { left: 0; opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  to { left: calc(100% - 4px); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-peer-dot {
+    animation: none;
+    opacity: 0;
+  }
+}

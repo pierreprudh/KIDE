@@ -2,9 +2,10 @@
 //
 // Agent-to-agent traffic travels on Run ids, and a Run id is also the id of
 // the conversation that owns it (see runs.ts). The stored conversation index
-// already holds a human title for every thread in this app, so the chat can
-// say "Asked @Fix the parser" instead of "Asked @7f3a9c…". Runs with no
-// stored thread — a subagent, a Delegate — fall back to a shortened id.
+// already holds a human title, a provider and a model for every thread in
+// this app, so the chat can say "Asked @Fix the parser" and draw the other
+// thread's model mark instead of "Asked @7f3a9c…". Runs with no stored thread
+// — a subagent, a Delegate — fall back to a shortened id and no mark.
 //
 // The receiving side is recorded in the transcript as a steering marker whose
 // reason the harness writes in one fixed shape
@@ -13,6 +14,7 @@
 // "Steered" line, and fetch the message bodies from the journal on demand.
 
 import { useEffect, useState } from "react";
+import type { ProviderId } from "../../agent/types";
 import type { Conversation, Msg } from "./types";
 import { CONVERSATIONS_CHANGED_EVENT, loadConversations } from "./storedConversations";
 
@@ -53,31 +55,45 @@ export function shortRunId(runId: string): string {
   return `${runId.slice(0, 8)}…${runId.slice(-6)}`;
 }
 
-/** Thread titles by conversation id, from the stored index. Cheap enough to
+/** What the stored index knows about a peer thread. */
+export type PeerInfo = {
+  title: string;
+  provider: ProviderId | null;
+  model: string | null;
+};
+
+export type PeerIndex = Map<string, PeerInfo>;
+
+/** Peer threads by conversation id, from the stored index. Cheap enough to
  *  rebuild on every change event; the index is small and already in memory. */
-export function peerTitles(): Map<string, string> {
-  const titles = new Map<string, string>();
+export function peerIndex(): PeerIndex {
+  const index: PeerIndex = new Map();
   for (const conv of loadConversations<Conversation>()) {
-    if (conv.id && conv.title) titles.set(conv.id, conv.title);
+    if (!conv.id || !conv.title) continue;
+    index.set(conv.id, {
+      title: conv.title,
+      provider: conv.provider ?? null,
+      model: conv.model ?? null,
+    });
   }
-  return titles;
+  return index;
 }
 
-export function peerName(runId: string, titles: Map<string, string>): string {
+export function peerName(runId: string, index: PeerIndex): string {
   if (runId === "operator") return "operator";
-  const title = titles.get(runId)?.replace(/\s+/g, " ").trim();
+  const title = index.get(runId)?.title.replace(/\s+/g, " ").trim();
   if (!title) return shortRunId(runId);
   return title.length > 40 ? `${title.slice(0, 39)}…` : title;
 }
 
-export function usePeerTitles(): Map<string, string> {
-  const [titles, setTitles] = useState<Map<string, string>>(() => peerTitles());
+export function usePeerIndex(): PeerIndex {
+  const [index, setIndex] = useState<PeerIndex>(() => peerIndex());
   useEffect(() => {
-    const refresh = () => setTitles(peerTitles());
+    const refresh = () => setIndex(peerIndex());
     window.addEventListener(CONVERSATIONS_CHANGED_EVENT, refresh);
     return () => window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, refresh);
   }, []);
-  return titles;
+  return index;
 }
 
 function stringArg(args: unknown, key: string): string | null {
@@ -107,4 +123,20 @@ export function coordinationPeersOf(msgs: Msg[]): string[] {
     }
   }
   return peers;
+}
+
+/** Which way the latest exchange went: `out` when this thread last sent or
+ *  started waiting, `in` when a peer's message last landed here. Drives the
+ *  direction of the peer-link motion; `null` when nothing has moved yet. */
+export function lastCoordinationDirection(msgs: Msg[]): "out" | "in" | null {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role === "assistant") {
+      const calls = m.toolCalls ?? [];
+      if (calls.some((call) => call.name === "agent_send" || call.name === "agent_wait")) return "out";
+    } else if (m.role === "system" && m.steering && parseDeliveryReason(m.steering.reason)) {
+      return "in";
+    }
+  }
+  return null;
 }

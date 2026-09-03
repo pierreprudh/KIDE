@@ -89,7 +89,8 @@ import {
 } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
-import { coordinationPeersOf, peerName, usePeerTitles } from "./ai/coordinationPeers";
+import { coordinationPeersOf, lastCoordinationDirection, usePeerIndex } from "./ai/coordinationPeers";
+import { PeerLink } from "./ai/PeerLink";
 import { favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
 import { buildSystemPrompt } from "./ai/system-prompt";
@@ -2323,7 +2324,8 @@ This user request requires workspace inspection. Before answering, you MUST call
   // Other conversations this thread has exchanged agent messages with, derived
   // from its own messages — no polling of the coordination journal.
   const coordinationPeers = useMemo(() => coordinationPeersOf(msgs), [msgs]);
-  const peerTitles = usePeerTitles();
+  const coordinationDirection = useMemo(() => lastCoordinationDirection(msgs), [msgs]);
+  const peerIndex = usePeerIndex();
 
   // Write a structured memory note to .klide/memory/. Delegates to
   // summarizeAndHandoff so the prompt + parsing live in one place; we
@@ -3894,24 +3896,17 @@ This user request requires workspace inspection. Before answering, you MUST call
           />
         ) : (
           <>
-        {coordinationPeers.length > 0 && (
-          // Two panels talking is invisible unless something says so. One quiet
-          // line at the top of the thread names the peers; a peer that is a
-          // stored conversation gets its title, so the reader can find the
-          // other panel by eye. No dot, no badge: type carries it.
-          <div className="ai-msg-in" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 0 12px", color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", fontSize: 11.5, minWidth: 0 }}>
-            <span style={{ color: "var(--fg-strong)", fontWeight: 500, flexShrink: 0 }}>Talking with</span>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {coordinationPeers.map((id, index) => (
-                <span key={id} title={id}>
-                  {index > 0 && <span style={{ color: "var(--fg-dim)" }}> · </span>}
-                  <span style={{ color: "var(--accent)" }}>@{peerName(id, peerTitles)}</span>
-                </span>
-              ))}
-            </span>
-            <span aria-hidden style={{ flex: 1, height: 1, minWidth: 24, background: "color-mix(in srgb, var(--border) 82%, transparent)" }} />
-          </div>
-        )}
+        {/* Two panels talking is invisible unless something says so: this
+            thread's mark, a hairline, the peer's mark and title. The dot on
+            the line moves only while this thread is streaming. */}
+        <PeerLink
+          peers={coordinationPeers}
+          index={peerIndex}
+          provider={provider}
+          model={model}
+          direction={coordinationDirection}
+          active={streaming}
+        />
         {msgs.length === 0 && !serverStarting && (
           <div style={{ width: "min(300px, 86%)", textAlign: "center", color: "var(--fg-subtle)", lineHeight: 1.55, transform: "translateY(-10px)" }}>
             <div style={{ width: 38, height: 38, margin: "0 auto 14px", display: "grid", placeItems: "center" }}>
