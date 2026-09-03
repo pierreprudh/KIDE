@@ -15,16 +15,12 @@ import { peerName, type ExchangeStats, type PeerIndex } from "./coordinationPeer
 
 const MARK = 14;
 const TRACK = 44;
-const CARD_WIDTH = 240;
+const CARD_WIDTH = 200;
 
 function markFor(model: string | null | undefined, provider: ProviderId | null | undefined): { node: ReactNode; label: string } {
   // The harness chat wears Klide's own mark when the runner is unknown — a
   // subagent, or a thread saved before its provider was recorded.
   return conversationMark(model, provider, MARK) ?? { node: <AgentMark size={11} />, label: "Klide agent" };
-}
-
-function count(n: number, word: string): string {
-  return `${n} ${word}`;
 }
 
 function PeerLinkItem({
@@ -107,33 +103,27 @@ function PeerLinkItem({
             left: pos.left,
             bottom: pos.bottom,
             width: CARD_WIDTH,
-            padding: "10px 12px 11px",
+            padding: "8px 10px 9px",
             borderRadius: "var(--radius-md)",
             border: "1px solid var(--border-strong)",
             background: "var(--bg-elevated)",
             boxShadow: "0 10px 26px rgba(38, 38, 32, 0.14)",
             zIndex: Z.popover + 5,
             display: "grid",
-            gap: 8,
+            gap: 6,
             color: "var(--fg)",
           }}
         >
-          <div style={{ fontSize: 12.5, lineHeight: 1.4, color: "var(--fg-strong)", overflowWrap: "anywhere" }}>
+          <div title={id} style={{ fontSize: 12, lineHeight: 1.35, color: "var(--fg-strong)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {info?.title ?? name}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--fg-subtle)", minWidth: 0 }}>
-            <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }}>{mine.node}</span>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mine.label}</span>
-            <span aria-hidden style={{ flex: 1, height: 1, minWidth: 12, background: "color-mix(in srgb, var(--border-strong) 55%, transparent)" }} />
-            <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }}>{theirs.node}</span>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{theirs.label}</span>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11, color: "var(--fg-subtle)", fontVariantNumeric: "tabular-nums" }}>
-            <span>{count(sent, sent === 1 ? "message sent" : "messages sent")}</span>
-            <span>{count(received, "received")}</span>
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={id}>
-            {id}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "var(--fg-subtle)", minWidth: 0 }}>
+            <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={mine.label}>{mine.node}</span>
+            <span aria-hidden style={{ flex: 1, height: 1, background: "color-mix(in srgb, var(--border-strong) 55%, transparent)" }} />
+            <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={theirs.label}>{theirs.node}</span>
+            <span style={{ marginLeft: 4, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+              {sent} sent · {received} received
+            </span>
           </div>
         </div>,
         document.body,
