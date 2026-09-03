@@ -114,6 +114,7 @@ function PeerLinkItem({
             color: "var(--fg)",
           }}
         >
+          <div style={{ fontSize: 10.5, lineHeight: 1.3, color: "var(--fg-dim)" }}>Agent conversation</div>
           {/* This thread first, then the peer. Only the peer is a link — the
               card is already inside this one. */}
           <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, fontSize: 12, lineHeight: 1.35, color: "var(--fg-subtle)" }}>
