@@ -150,30 +150,37 @@ function PeerLinkItem({
             <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={mine.label}>{mine.node}</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selfTitle}</span>
           </div>
-          {/* The spine between the two conversations. Click it to unfold what
-              travelled along it: every message between exactly these two
-              threads, oldest first, each under its sender's mark. */}
-          <button
-            type="button"
-            onClick={() => void toggleExchange()}
-            aria-expanded={expanded}
-            title={expanded ? "Hide the exchange" : "Show what was exchanged"}
-            style={{ display: "flex", alignItems: "stretch", gap: 9, padding: 0, border: 0, background: "transparent", color: "var(--fg-dim)", font: "inherit", fontSize: 10.5, lineHeight: 1.3, textAlign: "left", cursor: "pointer", minHeight: 16 }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; }}
-          >
-            <span aria-hidden style={{ width: MARK, display: "grid", justifyItems: "center", flexShrink: 0 }}>
-              <span style={{ width: 1, height: "100%", minHeight: 16, background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
-            </span>
-            {/* Once open, the bar alone is the control: words would compete
-                with the messages hanging off it. */}
-            {!expanded && <span style={{ alignSelf: "center" }}>Show exchange</span>}
-          </button>
-          {expanded && (
-            <div style={{ display: "flex", gap: 9, minWidth: 0 }}>
+          {/* The spine between the two conversations. Closed, it is a short
+              bar with "Show exchange". Open, the bar runs alongside the
+              messages and is itself the control that folds them back — no
+              separate segment on top, no words. */}
+          {!expanded ? (
+            <button
+              type="button"
+              onClick={() => void toggleExchange()}
+              aria-expanded={false}
+              title="Show what was exchanged"
+              style={{ display: "flex", alignItems: "stretch", gap: 9, padding: 0, border: 0, background: "transparent", color: "var(--fg-dim)", font: "inherit", fontSize: 10.5, lineHeight: 1.3, textAlign: "left", cursor: "pointer", minHeight: 16 }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; }}
+            >
               <span aria-hidden style={{ width: MARK, display: "grid", justifyItems: "center", flexShrink: 0 }}>
-                <span style={{ width: 1, height: "100%", background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
+                <span style={{ width: 1, height: "100%", minHeight: 16, background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
               </span>
+              <span style={{ alignSelf: "center" }}>Show exchange</span>
+            </button>
+          ) : (
+            <div style={{ display: "flex", gap: 9, minWidth: 0 }}>
+              <button
+                type="button"
+                onClick={() => void toggleExchange()}
+                aria-expanded
+                aria-label="Hide the exchange"
+                title="Hide the exchange"
+                style={{ width: MARK, display: "grid", justifyItems: "center", flexShrink: 0, padding: 0, border: 0, background: "transparent", cursor: "pointer" }}
+              >
+                <span aria-hidden style={{ width: 1, height: "100%", background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
+              </button>
               <div style={{ display: "grid", gap: 6, minWidth: 0, flex: 1, maxHeight: 220, overflowY: "auto", paddingRight: 2 }}>
                 {exchange === "error" ? (
                   <div style={{ fontSize: 11, color: "var(--fg-dim)" }}>The exchange could not be read from the journal.</div>
