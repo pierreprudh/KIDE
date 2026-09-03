@@ -88,6 +88,29 @@ pub fn pause_flavor(name: &str) -> Option<PauseFlavor> {
     }
 }
 
+/// Which authenticated coordination operation a registry entry performs.
+/// The Harness dispatches on this enum so Tool names stay registry data rather
+/// than becoming a second, drifting switch in the run loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoordinationFlavor {
+    List,
+    Send,
+    Wait,
+    Cancel,
+    ReadResult,
+}
+
+pub fn coordination_flavor(name: &str) -> Option<CoordinationFlavor> {
+    match name {
+        "agent_list" => Some(CoordinationFlavor::List),
+        "agent_send" => Some(CoordinationFlavor::Send),
+        "agent_wait" => Some(CoordinationFlavor::Wait),
+        "agent_cancel" => Some(CoordinationFlavor::Cancel),
+        "agent_read_result" => Some(CoordinationFlavor::ReadResult),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct NormalizedToolCall {
     pub id: String,
@@ -123,6 +146,10 @@ pub enum ToolKind {
     // by name. A Pause entry has no run_read / run_write_preview; the harness's
     // pause arm handles the interaction.
     Pause,
+    // Authenticated inter-agent coordination. These Tools read or append the
+    // Rust-owned journal and are available in Plan and Goal modes. They never
+    // mutate workspace files or run through a frontend dispatcher.
+    Coordination,
     // Runs a shell command after the user approves it (permission gate, like
     // diff review is for edits). The harness's Command arm emits a permission
     // request, waits for approval, then calls `run_command_capture`. Goal-mode
@@ -139,6 +166,7 @@ pub enum ToolCapability {
     WriteWorkspace,
     RunCommand,
     PauseForUser,
+    CoordinateAgents,
     Network,
 }
 
@@ -153,6 +181,7 @@ impl ToolKind {
             ToolKind::Write => ToolCapability::WriteWorkspace,
             ToolKind::Command => ToolCapability::RunCommand,
             ToolKind::Pause => ToolCapability::PauseForUser,
+            ToolKind::Coordination => ToolCapability::CoordinateAgents,
         }
     }
 }
@@ -166,6 +195,7 @@ pub fn tool_allowed_in_mode(mode: &AgentMode, kind: ToolKind) -> bool {
                 | ToolKind::ConversationHistory
                 | ToolKind::ProjectMemory
                 | ToolKind::PlanState
+                | ToolKind::Coordination
         ),
         AgentMode::Goal => true,
     }
@@ -184,6 +214,7 @@ pub fn tool_capability_label(capability: ToolCapability) -> &'static str {
         ToolCapability::WriteWorkspace => "write workspace",
         ToolCapability::RunCommand => "run command",
         ToolCapability::PauseForUser => "pause for user",
+        ToolCapability::CoordinateAgents => "coordinate agents",
         ToolCapability::Network => "network",
     }
 }
@@ -202,6 +233,7 @@ impl ToolCapability {
             ToolCapability::WriteWorkspace => "write_workspace",
             ToolCapability::RunCommand => "run_command",
             ToolCapability::PauseForUser => "pause_for_user",
+            ToolCapability::CoordinateAgents => "coordinate_agents",
             ToolCapability::Network => "network",
         }
     }
@@ -787,6 +819,92 @@ fn registry() -> Vec<ToolEntry> {
             }),
             run_write_preview: None,
             summary: default_summary,
+        },
+        ToolEntry {
+            kind: ToolKind::Coordination,
+            schema: schema(
+                "agent_list",
+                "List the coordinated Runs this Run is authorized to contact: itself, direct parent/children, and peers in the same Mission. Returns durable state and labels; unrelated Runs are never exposed.",
+                serde_json::json!({}),
+                &[],
+            ),
+            run_read: None,
+            run_write_preview: None,
+            summary: |_| "inspect agent network".to_string(),
+        },
+        ToolEntry {
+            kind: ToolKind::Coordination,
+            schema: schema(
+                "agent_send",
+                "Send a durable instruction, question, answer, progress update, or handoff to an authorized Run. Set waitForReply for an atomic ask-and-wait; delivery happens only at the recipient's safe turn boundary.",
+                serde_json::json!({
+                    "toRunId": { "type": "string", "description": "Exact target Run id returned by agent_list." },
+                    "body": { "type": "string", "description": "The semantic message to deliver." },
+                    "kind": { "type": "string", "enum": ["instruction", "question", "answer", "progress", "handoff"], "description": "Message kind. Defaults to instruction." },
+                    "replyTo": { "type": "string", "description": "Envelope id being answered, when this is a reply." },
+                    "correlationId": { "type": "string", "description": "Optional stable id grouping a multi-message exchange." },
+                    "idempotencyKey": { "type": "string", "description": "Optional retry key. Reusing it with different intent is rejected." },
+                    "waitForReply": { "type": "boolean", "description": "When true, wait for a reply to this exact envelope before returning." },
+                    "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120, "description": "Wait timeout when waitForReply is true. Defaults to 30 seconds." }
+                }),
+                &["toRunId", "body"],
+            ),
+            run_read: None,
+            run_write_preview: None,
+            summary: |call| call.input.get("toRunId").and_then(|v| v.as_str())
+                .map(|id| format!("message → @{id}"))
+                .unwrap_or_else(|| "message agent".to_string()),
+        },
+        ToolEntry {
+            kind: ToolKind::Coordination,
+            schema: schema(
+                "agent_wait",
+                "Wait for a durable coordination message addressed to this Run. Optionally narrow to one sender or one envelope reply. The Run remains cancellable while waiting.",
+                serde_json::json!({
+                    "fromRunId": { "type": "string", "description": "Optional sender Run id to wait for." },
+                    "replyTo": { "type": "string", "description": "Optional envelope id whose reply should unblock the wait." },
+                    "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120, "description": "Maximum wait. Defaults to 30 seconds." }
+                }),
+                &[],
+            ),
+            run_read: None,
+            run_write_preview: None,
+            summary: |call| call.input.get("fromRunId").and_then(|v| v.as_str())
+                .map(|id| format!("wait for @{id}"))
+                .unwrap_or_else(|| "wait for agent message".to_string()),
+        },
+        ToolEntry {
+            kind: ToolKind::Coordination,
+            schema: schema(
+                "agent_cancel",
+                "Request cancellation of this Run or one of its direct children. The durable request is recorded before the live cancellation token is triggered.",
+                serde_json::json!({
+                    "runId": { "type": "string", "description": "Target Run id." },
+                    "reason": { "type": "string", "description": "Optional concise cancellation reason." }
+                }),
+                &["runId"],
+            ),
+            run_read: None,
+            run_write_preview: None,
+            summary: |call| call.input.get("runId").and_then(|v| v.as_str())
+                .map(|id| format!("cancel @{id}"))
+                .unwrap_or_else(|| "cancel agent".to_string()),
+        },
+        ToolEntry {
+            kind: ToolKind::Coordination,
+            schema: schema(
+                "agent_read_result",
+                "Read the structured result published by an authorized Run. Returns a calm not-ready response while the Run is still working.",
+                serde_json::json!({
+                    "runId": { "type": "string", "description": "Target Run id returned by agent_list." }
+                }),
+                &["runId"],
+            ),
+            run_read: None,
+            run_write_preview: None,
+            summary: |call| call.input.get("runId").and_then(|v| v.as_str())
+                .map(|id| format!("result ← @{id}"))
+                .unwrap_or_else(|| "read agent result".to_string()),
         },
         ToolEntry {
             kind: ToolKind::Write,
@@ -4301,6 +4419,32 @@ mod tests {
     }
 
     #[test]
+    fn every_coordination_entry_has_one_native_flavor() {
+        let mut seen = Vec::new();
+        for entry in registry() {
+            let name = entry.schema["function"]["name"].as_str().unwrap();
+            match (entry.kind, coordination_flavor(name)) {
+                (ToolKind::Coordination, Some(flavor)) => {
+                    assert!(!seen.contains(&flavor), "duplicate flavor for {name}");
+                    seen.push(flavor);
+                }
+                (ToolKind::Coordination, None) => {
+                    panic!("Coordination entry {name} has no CoordinationFlavor")
+                }
+                (_, Some(flavor)) => {
+                    panic!("non-Coordination entry {name} maps to {flavor:?}")
+                }
+                (_, None) => {}
+            }
+        }
+        assert_eq!(seen.len(), 5, "expected five native coordination Tools");
+        assert!(tool_allowed_in_mode(
+            &AgentMode::Plan,
+            ToolKind::Coordination
+        ));
+    }
+
+    #[test]
     fn command_invocation_resolves_builtin_and_dynamic_and_rejects_unknown() {
         let dir = std::env::temp_dir().join(format!("klide-cmd-inv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4402,6 +4546,7 @@ mod tests {
             ToolCapability::WriteWorkspace,
             ToolCapability::RunCommand,
             ToolCapability::PauseForUser,
+            ToolCapability::CoordinateAgents,
             ToolCapability::Network,
         ];
         let mut wires: Vec<&str> = all.iter().map(|c| c.wire()).collect();

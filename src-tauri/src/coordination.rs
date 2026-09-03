@@ -17,7 +17,7 @@ use crate::agent::transcripts::{now_ms, validate_run_id};
 use crate::workspace::Workspace;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub const COORDINATION_SCHEMA_VERSION: u8 = 1;
 const MAX_BODY_BYTES: usize = 32 * 1024;
@@ -29,9 +29,12 @@ const MAX_EVENTS_PER_READ: usize = 1_000;
 /// One app-process writer keeps read → validate → append atomic. Embedded MCP
 /// and socket adapters terminate in this process and therefore share the same
 /// gate. The journal remains the only durable authority across restarts.
-#[derive(Default)]
+/// The gate is `Arc`-shared so the Tauri commands can hand a clone to
+/// `spawn_blocking`: folding the journal is file IO and must never run on the
+/// main thread (the same rule `git.rs` and `storage.rs` follow).
+#[derive(Clone, Default)]
 pub struct CoordinationStoreState {
-    write_gate: Mutex<()>,
+    write_gate: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -550,13 +553,6 @@ fn validate_actor(
     Ok(())
 }
 
-fn is_parent_child(snapshot: &CoordinationSnapshot, left: &str, right: &str) -> bool {
-    find_run(snapshot, left).and_then(|run| run.registration.parent_run_id.as_deref())
-        == Some(right)
-        || find_run(snapshot, right).and_then(|run| run.registration.parent_run_id.as_deref())
-            == Some(left)
-}
-
 fn shares_mission(snapshot: &CoordinationSnapshot, left: &str, right: &str) -> bool {
     let Some(left) = find_run(snapshot, left) else {
         return false;
@@ -568,9 +564,14 @@ fn shares_mission(snapshot: &CoordinationSnapshot, left: &str, right: &str) -> b
         && left.registration.mission_id == right.registration.mission_id
 }
 
-/// A Run may exchange envelopes with its direct parent/children and with Runs
-/// participating in the same Mission. The operator can address any Run. This
-/// is deliberately narrower than "any live process on the machine".
+/// A Run may exchange envelopes with any Run registered in the same journal.
+/// The journal is per Workspace (main checkout, shared by its worktrees), so
+/// "registered here" already means "working on the same project": two AI
+/// panels opened side by side are peers, exactly like two Claude Code
+/// sessions on one machine. Lineage and Mission membership still matter for
+/// `agent_list` labels and for cancellation, which stays narrow. This is
+/// deliberately narrower than "any live process on the machine": a Run in a
+/// different Workspace is never visible.
 fn may_message(
     snapshot: &CoordinationSnapshot,
     actor: &CoordinationActor,
@@ -579,11 +580,106 @@ fn may_message(
     match actor {
         CoordinationActor::Operator => true,
         CoordinationActor::Run { run_id } => {
-            run_id == target_run_id
-                || is_parent_child(snapshot, run_id, target_run_id)
-                || shares_mission(snapshot, run_id, target_run_id)
+            run_id == target_run_id || find_run(snapshot, target_run_id).is_some()
         }
     }
+}
+
+/// How `target` relates to `actor`, for the model's benefit when it picks
+/// whom to address. Every registered Run is at least a `peer`.
+pub(crate) fn relation_label(
+    snapshot: &CoordinationSnapshot,
+    actor_run_id: &str,
+    target_run_id: &str,
+) -> &'static str {
+    if actor_run_id == target_run_id {
+        return "self";
+    }
+    let parent_of = |child: &str| {
+        find_run(snapshot, child).and_then(|run| run.registration.parent_run_id.clone())
+    };
+    if parent_of(target_run_id).as_deref() == Some(actor_run_id) {
+        return "child";
+    }
+    if parent_of(actor_run_id).as_deref() == Some(target_run_id) {
+        return "parent";
+    }
+    if shares_mission(snapshot, actor_run_id, target_run_id) {
+        return "mission_peer";
+    }
+    "peer"
+}
+
+/// The authenticated Run projection exposed to native coordination Tools.
+/// Keeping this filter beside `may_message` makes it impossible for
+/// `agent_list` / `agent_read_result` to accidentally widen visibility while
+/// the command path remains lineage-scoped.
+pub(crate) fn visible_runs_for(
+    snapshot: &CoordinationSnapshot,
+    actor_run_id: &str,
+) -> Result<Vec<CoordinationRunSnapshot>, String> {
+    validate_run_id(actor_run_id)?;
+    let actor = CoordinationActor::Run {
+        run_id: actor_run_id.to_string(),
+    };
+    validate_actor(snapshot, &actor)?;
+    Ok(snapshot
+        .runs
+        .iter()
+        .filter(|run| may_message(snapshot, &actor, &run.registration.run_id))
+        .cloned()
+        .collect())
+}
+
+/// Read one result through the same authorization boundary as messaging.
+/// Missing results remain `Ok(None)`: an active peer simply has not published
+/// one yet.
+pub(crate) fn visible_result_for(
+    snapshot: &CoordinationSnapshot,
+    actor_run_id: &str,
+    target_run_id: &str,
+) -> Result<Option<CoordinationResult>, String> {
+    validate_run_id(actor_run_id)?;
+    validate_run_id(target_run_id)?;
+    let actor = CoordinationActor::Run {
+        run_id: actor_run_id.to_string(),
+    };
+    validate_actor(snapshot, &actor)?;
+    if find_run(snapshot, target_run_id).is_none() {
+        return Err(format!(
+            "Coordination Run `{target_run_id}` is not registered."
+        ));
+    }
+    if !may_message(snapshot, &actor, target_run_id) {
+        return Err("The coordination actor cannot read that Run result.".into());
+    }
+    Ok(snapshot
+        .results
+        .iter()
+        .find(|result| result.run_id == target_run_id)
+        .cloned())
+}
+
+/// Inbox records safe to project into one authenticated Run. Delivered but
+/// unacknowledged envelopes are included so a failed provider request can
+/// retry the same semantic delivery at the next turn boundary.
+pub(crate) fn inbox_for(
+    snapshot: &CoordinationSnapshot,
+    run_id: &str,
+) -> Result<Vec<CoordinationEnvelopeSnapshot>, String> {
+    validate_run_id(run_id)?;
+    if find_run(snapshot, run_id).is_none() {
+        return Err(format!("Coordination Run `{run_id}` is not registered."));
+    }
+    Ok(snapshot
+        .envelopes
+        .iter()
+        .filter(|entry| {
+            entry.envelope.to_run_id == run_id
+                && entry.delivery_state != CoordinationDeliveryState::Acknowledged
+        })
+        .cloned()
+        .collect())
 }
 
 /// Cancellation is stronger than messaging: a Run can request cancellation
@@ -844,6 +940,16 @@ fn main_checkout_root(root: &Path) -> Option<PathBuf> {
         root.join(gitdir)
     };
     let canonical = std::fs::canonicalize(gitdir).ok()?;
+    // A submodule also has a `.git` *file*, but its gitdir points into the
+    // superproject's `.git/modules/<name>`. Walking up from there would put
+    // the journal in a repository the user never opened. A submodule is its
+    // own Workspace; only linked worktrees (`.git/worktrees/<name>`) share.
+    if canonical
+        .components()
+        .any(|part| part.as_os_str() == "modules")
+    {
+        return None;
+    }
     let mut current = canonical.as_path();
     while let Some(parent) = current.parent() {
         if current.file_name().and_then(|name| name.to_str()) == Some(".git") {
@@ -894,17 +1000,35 @@ fn read_events_unlocked(workspace_root: &str) -> Result<Vec<CoordinationEventLin
     }
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| format!("Unable to read coordination journal: {e}"))?;
+    let lines: Vec<&str> = raw.lines().collect();
+    let last_index = lines.len().saturating_sub(1);
     let mut events = Vec::new();
-    for (index, text) in raw.lines().enumerate() {
+    for (index, text) in lines.iter().enumerate() {
         if text.trim().is_empty() {
             continue;
         }
-        let line: CoordinationEventLine = serde_json::from_str(text).map_err(|e| {
-            format!(
-                "Coordination journal {path:?} is corrupt at line {}: {e}. Klide will not guess past durable inter-agent state.",
-                index + 1
-            )
-        })?;
+        let line: CoordinationEventLine = match serde_json::from_str(text) {
+            Ok(line) => line,
+            Err(e) if index == last_index => {
+                // The one crash artefact `durable::append_line` can leave: a
+                // final line written but not flushed. Same policy as the run
+                // Transcript — tolerate it, say so, never guess past anything
+                // earlier. The next accepted command trims it under the write
+                // gate (`repair_torn_tail`) before appending, so the file
+                // never carries interior corruption.
+                eprintln!(
+                    "klide: coordination journal {path:?} ends in a torn line ({e}); \
+                     dropping the final partial event."
+                );
+                break;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Coordination journal {path:?} is corrupt at line {}: {e}. Klide will not guess past durable inter-agent state.",
+                    index + 1
+                ));
+            }
+        };
         if line.schema_version != COORDINATION_SCHEMA_VERSION {
             return Err(format!(
                 "Coordination journal {path:?} line {} has unsupported schemaVersion {} (expected {COORDINATION_SCHEMA_VERSION}).",
@@ -1150,6 +1274,39 @@ fn event_for_command(
     }
 }
 
+/// Readers tolerate a torn final line; the writer removes it. Appending after
+/// a half line would leave it in the middle of the file, where the strict
+/// reader rightly refuses it. Runs under the write gate, so no other writer in
+/// this process can interleave, and the trimmed prefix is replaced atomically.
+fn repair_torn_tail(workspace_root: &str) -> Result<(), String> {
+    let Some(dir) = coordination_dir(workspace_root, false)? else {
+        return Ok(());
+    };
+    let path = events_path(&dir);
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Unable to read coordination journal: {e}"))?;
+    let trimmed = raw.trim_end_matches(['\n', '\r']);
+    let Some(last) = trimmed.rsplit('\n').next() else {
+        return Ok(());
+    };
+    if last.trim().is_empty() || serde_json::from_str::<CoordinationEventLine>(last).is_ok() {
+        return Ok(());
+    }
+    let keep = trimmed.len() - last.len();
+    let mut prefix = raw[..keep].to_string();
+    if !prefix.is_empty() && !prefix.ends_with('\n') {
+        prefix.push('\n');
+    }
+    eprintln!(
+        "klide: coordination journal {path:?} had a torn final line; trimming it before append."
+    );
+    crate::durable::write_atomic(&path, prefix.as_bytes())
+        .map_err(|e| format!("Unable to repair coordination journal: {e}"))
+}
+
 pub(crate) fn apply_coordination_command(
     state: &CoordinationStoreState,
     workspace_root: &str,
@@ -1159,6 +1316,7 @@ pub(crate) fn apply_coordination_command(
         .write_gate
         .lock()
         .map_err(|_| "Coordination store lock is poisoned.".to_string())?;
+    repair_torn_tail(workspace_root)?;
     let events = read_events_unlocked(workspace_root)?;
     let snapshot = fold_events(&events)?;
     if idempotent_event(&snapshot, &command)? {
@@ -1192,7 +1350,7 @@ pub(crate) fn apply_coordination_command(
     })
 }
 
-fn read_snapshot(
+pub(crate) fn read_snapshot(
     state: &CoordinationStoreState,
     workspace_root: &str,
 ) -> Result<CoordinationSnapshot, String> {
@@ -1203,8 +1361,19 @@ fn read_snapshot(
     fold_events(&read_events_unlocked(workspace_root)?)
 }
 
+/// Run a journal fold off the main thread. Sync Tauri commands execute on the
+/// main thread, and this journal is shared by every Run in every worktree, so
+/// a large fold would freeze the UI exactly like the `gh pr list` bug did.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("Coordination task failed: {e}"))?
+}
+
 #[tauri::command]
-pub fn coordination_apply_command(
+pub async fn coordination_apply_command(
     state: tauri::State<'_, CoordinationStoreState>,
     workspace_root: String,
     command: CoordinationCommand,
@@ -1212,35 +1381,41 @@ pub fn coordination_apply_command(
     // This is a trusted local supervisor seam. MCP/socket adapters must not
     // expose it verbatim: they bind the caller's Run identity, then construct
     // a command with that actor on the Rust side.
-    apply_coordination_command(&state, &workspace_root, command)
+    let state = state.inner().clone();
+    blocking(move || apply_coordination_command(&state, &workspace_root, command)).await
 }
 
 #[tauri::command]
-pub fn coordination_snapshot(
+pub async fn coordination_snapshot(
     state: tauri::State<'_, CoordinationStoreState>,
     workspace_root: String,
 ) -> Result<CoordinationSnapshot, String> {
-    read_snapshot(&state, &workspace_root)
+    let state = state.inner().clone();
+    blocking(move || read_snapshot(&state, &workspace_root)).await
 }
 
 #[tauri::command]
-pub fn coordination_events(
+pub async fn coordination_events(
     state: tauri::State<'_, CoordinationStoreState>,
     workspace_root: String,
     from_seq: Option<u64>,
     limit: Option<usize>,
 ) -> Result<Vec<CoordinationEventLine>, String> {
-    let _guard = state
-        .write_gate
-        .lock()
-        .map_err(|_| "Coordination store lock is poisoned.".to_string())?;
-    let from = from_seq.unwrap_or(0);
-    let limit = limit.unwrap_or(200).clamp(1, MAX_EVENTS_PER_READ);
-    Ok(read_events_unlocked(&workspace_root)?
-        .into_iter()
-        .filter(|line| line.seq >= from)
-        .take(limit)
-        .collect())
+    let state = state.inner().clone();
+    blocking(move || {
+        let _guard = state
+            .write_gate
+            .lock()
+            .map_err(|_| "Coordination store lock is poisoned.".to_string())?;
+        let from = from_seq.unwrap_or(0);
+        let limit = limit.unwrap_or(200).clamp(1, MAX_EVENTS_PER_READ);
+        Ok(read_events_unlocked(&workspace_root)?
+            .into_iter()
+            .filter(|line| line.seq >= from)
+            .take(limit)
+            .collect())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1445,13 +1620,15 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_runs_cannot_message_or_cancel_one_another() {
+    fn workspace_peers_can_message_but_not_cancel_one_another() {
         let root = temp_workspace("authority");
         let state = CoordinationStoreState::default();
         register(&state, &root, "run_a", None);
         register(&state, &root, "run_b", None);
 
-        let error = send(
+        // Two top-level Runs in one Workspace (two AI panels side by side)
+        // are peers: messaging is allowed, and the label says so.
+        let sent = send(
             &state,
             &root,
             CoordinationActor::Run {
@@ -1460,9 +1637,24 @@ mod tests {
             "run_b",
             None,
         )
-        .unwrap_err();
-        assert!(error.contains("cannot address"), "got: {error}");
+        .unwrap();
+        assert_eq!(relation_label(&sent.snapshot, "run_a", "run_b"), "peer");
+        assert_eq!(relation_label(&sent.snapshot, "run_a", "run_a"), "self");
 
+        // A Run that was never registered is not a peer of anything.
+        let error = send(
+            &state,
+            &root,
+            CoordinationActor::Run {
+                run_id: "run_a".into(),
+            },
+            "run_ghost",
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("not registered"), "got: {error}");
+
+        // Cancellation stays narrow: self or a direct child only.
         let error = apply_coordination_command(
             &state,
             root.to_str().unwrap(),
@@ -1553,6 +1745,77 @@ mod tests {
     }
 
     #[test]
+    fn native_tool_views_stay_authorized_and_retry_delivered_inbox_entries() {
+        let root = temp_workspace("native-tool-view");
+        let state = CoordinationStoreState::default();
+        register(&state, &root, "run_parent", None);
+        register(&state, &root, "run_child", Some("run_parent"));
+        register(&state, &root, "run_unrelated", None);
+
+        let sent = send(
+            &state,
+            &root,
+            CoordinationActor::Run {
+                run_id: "run_parent".into(),
+            },
+            "run_child",
+            Some("native-message"),
+        )
+        .unwrap();
+        let visible = visible_runs_for(&sent.snapshot, "run_child").unwrap();
+        let visible_ids = visible
+            .iter()
+            .map(|run| run.registration.run_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(visible_ids.contains(&"run_parent"));
+        assert!(visible_ids.contains(&"run_child"));
+        // Same Workspace, so a top-level Run is a visible peer — labelled as
+        // such rather than passed off as lineage.
+        assert!(visible_ids.contains(&"run_unrelated"));
+        assert_eq!(
+            relation_label(&sent.snapshot, "run_child", "run_parent"),
+            "parent"
+        );
+        assert_eq!(
+            relation_label(&sent.snapshot, "run_parent", "run_child"),
+            "child"
+        );
+        assert_eq!(
+            relation_label(&sent.snapshot, "run_child", "run_unrelated"),
+            "peer"
+        );
+
+        let envelope_id = sent.snapshot.envelopes[0].envelope.id.clone();
+        assert_eq!(inbox_for(&sent.snapshot, "run_child").unwrap().len(), 1);
+        let delivered = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::MarkEnvelopeDelivered {
+                run_id: "run_child".into(),
+                envelope_id: envelope_id.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            inbox_for(&delivered.snapshot, "run_child").unwrap().len(),
+            1,
+            "delivered but unacknowledged messages must retry"
+        );
+        let acknowledged = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::AcknowledgeEnvelope {
+                run_id: "run_child".into(),
+                envelope_id,
+            },
+        )
+        .unwrap();
+        assert!(inbox_for(&acknowledged.snapshot, "run_child")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn terminal_state_cannot_reopen() {
         let root = temp_workspace("terminal");
         let state = CoordinationStoreState::default();
@@ -1629,7 +1892,22 @@ mod tests {
         let root = temp_workspace("strict");
         let dir = root.join(".klide/coordination");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("events.jsonl"), "not json\n").unwrap();
+        // A bad *final* line is the tolerated crash artefact; a bad line with
+        // anything after it is interior corruption and refused.
+        let good = CoordinationEventLine {
+            schema_version: COORDINATION_SCHEMA_VERSION,
+            seq: 0,
+            ts: now_ms(),
+            event: CoordinationEvent::RunRegistered {
+                registration: registration("run_zero", None),
+                state: CoordinationRunState::Queued,
+            },
+        };
+        std::fs::write(
+            dir.join("events.jsonl"),
+            format!("not json\n{}\n", serde_json::to_string(&good).unwrap()),
+        )
+        .unwrap();
         let error = read_events_unlocked(root.to_str().unwrap()).unwrap_err();
         assert!(error.contains("corrupt at line 1"), "got: {error}");
 
@@ -1669,6 +1947,52 @@ mod tests {
             error.contains("unsupported schemaVersion 0"),
             "got: {error}"
         );
+    }
+
+    #[test]
+    fn torn_final_line_is_dropped_and_the_journal_stays_writable() {
+        let root = temp_workspace("torn");
+        let state = CoordinationStoreState::default();
+        register(&state, &root, "run_one", None);
+        let path = root.join(".klide/coordination/events.jsonl");
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        // A crash between write and flush leaves a half line at the very end.
+        raw.push_str("{\"schemaVersion\":1,\"seq\":1,\"ts\":1,\"ev");
+        std::fs::write(&path, raw).unwrap();
+
+        let snapshot = read_snapshot(&state, root.to_str().unwrap()).unwrap();
+        assert_eq!(snapshot.runs.len(), 1);
+        assert_eq!(snapshot.next_seq, 1);
+
+        // The next command appends after the torn line with the seq the
+        // parsed events expect, and every later reader agrees.
+        let outcome = register(&state, &root, "run_two", None);
+        assert_eq!(outcome.snapshot.runs.len(), 2);
+        assert_eq!(
+            read_snapshot(&state, root.to_str().unwrap())
+                .unwrap()
+                .runs
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_submodule_keeps_its_own_coordination_store() {
+        let base = temp_workspace("submodule");
+        let superproject = base.join("super");
+        let submodule = superproject.join("vendor/lib");
+        std::fs::create_dir_all(superproject.join(".git/modules/vendor/lib")).unwrap();
+        std::fs::create_dir_all(&submodule).unwrap();
+        std::fs::write(
+            submodule.join(".git"),
+            "gitdir: ../../.git/modules/vendor/lib\n",
+        )
+        .unwrap();
+        let state = CoordinationStoreState::default();
+        register(&state, &submodule, "run_one", None);
+        assert!(submodule.join(".klide/coordination/events.jsonl").exists());
+        assert!(!superproject.join(".klide").exists());
     }
 
     #[test]

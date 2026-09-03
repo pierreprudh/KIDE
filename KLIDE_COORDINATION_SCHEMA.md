@@ -196,7 +196,7 @@ It contains no second source of truth. Rust produces it by folding the journal.
 
 ## Command mapping
 
-| Rust command type | Current Tauri IPC | Future authenticated agent Tool |
+| Rust command type | Current Tauri IPC | Native authenticated agent Tool |
 |---|---|---|
 | `register_run` | `coordination_apply_command` | supervisor-owned only |
 | `set_run_state` | `coordination_apply_command` | adapter-owned only |
@@ -204,10 +204,14 @@ It contains no second source of truth. Rust produces it by folding the journal.
 | `mark_envelope_delivered` | `coordination_apply_command` | adapter-owned only |
 | `acknowledge_envelope` | `coordination_apply_command` | adapter-owned only |
 | `request_cancel` | `coordination_apply_command` | `agent_cancel` |
-| `publish_result` | `coordination_apply_command` | `agent_publish_result` |
+| `publish_result` | `coordination_apply_command` | supervisor-owned terminal publish |
 | snapshot read | `coordination_snapshot` | `agent_list` / resource |
 | cursor read | `coordination_events` | subscription/resource updates |
 
+`agent_wait` combines authenticated snapshot reads with delivery and
+acknowledgement commands. `agent_read_result` reads the authorized result
+projection without introducing another durable record.
+
 The future MCP adapter maps identity-bound agent Tools onto these Rust
 operations. It does not persist its own inbox, infer state from terminal output,
-or bypass lineage authorization.
+or bypass Workspace-scoped authorization.

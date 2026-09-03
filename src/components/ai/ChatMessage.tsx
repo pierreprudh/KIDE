@@ -142,6 +142,76 @@ function SubagentCallRow({ args }: { args: unknown }) {
   );
 }
 
+const COORDINATION_TOOL_NAMES = new Set([
+  "agent_list",
+  "agent_send",
+  "agent_wait",
+  "agent_cancel",
+  "agent_read_result",
+]);
+
+function coordinationArg(args: unknown, key: string): string {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+  const value = (args as Record<string, unknown>)[key];
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown }) {
+  const target = coordinationArg(args, name === "agent_send" ? "toRunId" : "runId")
+    || coordinationArg(args, "fromRunId");
+  const body = coordinationArg(args, "body");
+  const kind = coordinationArg(args, "kind") || "instruction";
+  const waits = !!args
+    && typeof args === "object"
+    && !Array.isArray(args)
+    && (args as Record<string, unknown>).waitForReply === true;
+  const action = name === "agent_send"
+    ? (kind === "question" || waits ? "Asked" : "Messaged")
+    : name === "agent_wait"
+      ? "Waiting for"
+      : name === "agent_cancel"
+        ? "Cancelling"
+        : name === "agent_read_result"
+          ? "Reading result from"
+          : "Checked agent network";
+  const preview = body.length > 96 ? `${body.slice(0, 95)}…` : body;
+
+  return (
+    <details style={{ margin: "5px 0 -3px" }}>
+      <summary
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: 0,
+          cursor: body.length > 96 ? "pointer" : "default",
+          listStyle: "none",
+          userSelect: "none",
+          minWidth: 0,
+        }}
+      >
+        <span aria-hidden style={{ color: "var(--accent)", flexShrink: 0 }}>·</span>
+        <span style={{ fontSize: 12, color: "var(--fg-subtle)", flexShrink: 0 }}>{action}</span>
+        {target && (
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 500, color: "var(--accent)", flexShrink: 0 }}>
+            @{target}
+          </span>
+        )}
+        {preview && (
+          <span style={{ fontSize: 12, color: "var(--fg-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            · {preview}
+          </span>
+        )}
+      </summary>
+      {body.length > 96 && (
+        <div style={{ margin: "3px 0 3px 13px", padding: "6px 10px", fontSize: 12, lineHeight: 1.55, color: "var(--fg-subtle)", background: "color-mix(in srgb, var(--bg-elevated) 60%, var(--bg))", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+          {body}
+        </div>
+      )}
+    </details>
+  );
+}
+
 // A shell call's only interesting arg is the command line itself — expanded,
 // it reads as a command, not as the JSON envelope it travelled in. Covers the
 // harness tool and the delegate CLIs' names for the same thing.
@@ -168,6 +238,7 @@ function commandArg(name: string, args: unknown): string | null {
 // args JSON (or, for a shell call, the bare command line).
 function ToolCallRow({ name, args, repeated = false }: { name: string; args: unknown; repeated?: boolean }) {
   if (name === "spawn_subagent") return <SubagentCallRow args={args} />;
+  if (COORDINATION_TOOL_NAMES.has(name)) return <AgentCoordinationCallRow name={name} args={args} />;
   const command = commandArg(name, args);
   const argsText = command ?? formatJson(args);
   const summary = summarizeArgs(args);
@@ -440,9 +511,12 @@ function ToolResultRow({
   const pending = active && /^Running /.test(content);
   const isError = /^(Tool error from|Error:)/.test(content);
   const isSubagent = toolName === "spawn_subagent";
+  const isCoordination = !!toolName && COORDINATION_TOOL_NAMES.has(toolName);
   const { line, extra } = summarizeResult(content);
   const label = isSubagent
     ? (pending ? "subagent working…" : "subagent report")
+    : isCoordination
+      ? (pending ? "coordination in progress…" : "coordination update")
     : toolName || (pending ? content.replace(/^Running\s+/, "").replace(/\.\.\.$/, "") : "tool");
   return (
     // 48 = the call rows' 14px machinery indent + the 34px elbow offset,

@@ -1,8 +1,8 @@
 mod accounts;
 mod adapters;
 mod cli;
-mod coordination;
 mod agent;
+mod coordination;
 mod custom_cli;
 mod custom_providers;
 mod delegate;

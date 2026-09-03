@@ -78,14 +78,26 @@ never pass through an arbitrary remote `actor` field.
 - The operator may address, transition, or request cancellation for any
   registered Run in the open Workspace.
 - A Run may publish normalized state only for itself.
-- A Run may exchange envelopes with itself, its direct parent or children, and
-  other Runs attached to the same Mission.
+- A Run may exchange envelopes with any Run registered in the same Workspace
+  journal: itself, its parent or children, Mission peers, and independent
+  top-level conversations opened side by side. Two AI panels are peers the
+  way two Claude Code sessions on one machine are. A Run in another Workspace
+  is never visible.
+- `agent_list` labels each visible Run `self`, `parent`, `child`,
+  `mission_peer`, or `peer`, and says whether it is live. A message to an idle
+  peer waits in its inbox until that conversation's next turn; it never wakes
+  the conversation on its own.
 - A Run may request cancellation only for itself or a direct child.
 - Registration requires an existing parent, preventing cycles and ambiguous
   lineage.
 - Mission Runs carry both `missionId` and `missionTaskId`, or neither.
 
-Adapter authentication will narrow this further; the domain never expands it.
+These rules hold given an honest supervisor. The native Harness binds the
+actor to the running Run's own id, so no Tool argument can impersonate another
+Run. The generic `coordination_apply_command` IPC takes the actor from its
+payload and is trusted local supervisor input only; a future MCP or socket
+adapter must bind the caller's authenticated Run identity in Rust before
+constructing a command, never pass a caller-asserted actor through.
 
 ## Delivery semantics
 
@@ -102,11 +114,12 @@ journal gives each accepted intent exactly one projection. The recipient Run
 id is immutable, so a replacement process, panel, or Delegate session cannot
 accidentally satisfy another Run's delivery.
 
-This foundation records the lifecycle but does not yet inject an envelope into
-a live model turn. The Harness integration must deliver only between provider
-turns, never during streaming or Tool execution. Delegate adapters must wait
-for an idle/blocked boundary and record the semantic delivery separately from
-the PTY bytes used to perform it.
+The native Harness projects queued (and delivered-but-unacknowledged) envelopes
+only between provider turns, never during streaming or Tool execution. A
+successful provider request acknowledges that projection; a failed request
+retries it at the next safe boundary. Delegate adapters must likewise wait for
+an idle/blocked boundary and record semantic delivery separately from the PTY
+bytes used to perform it.
 
 ## Snapshot and event cursors
 
@@ -148,12 +161,13 @@ owned by the Memory Engine.
 
 ### PR 2 — Native Harness integration
 
-- register native Runs and publish state from Agent events;
-- add lineage-scoped `agent_list`, `agent_send`, `agent_wait`,
+- register native Runs and publish normalized state/results from Agent events;
+- expose lineage-scoped `agent_list`, `agent_send`, `agent_wait`,
   `agent_cancel`, and `agent_read_result` Tools;
 - inject queued envelopes only at safe turn boundaries;
-- atomically send-and-wait with correlation ids;
-- auto-deliver child results when the parent reaches a safe boundary.
+- atomically send-and-wait for an exact envelope reply;
+- render contact actions in the transcript and durable traffic in Mission
+  Control.
 
 ### PR 3 — Write-capable children and Missions
 
@@ -175,8 +189,15 @@ owned by the Memory Engine.
 
 - A fresh process reconstructs the same snapshot solely from the journal.
 - Private worktrees share one inbox without sharing file mutations.
-- Unrelated Runs cannot message or cancel one another.
+- Runs in one Workspace can message one another; nobody but the operator, the
+  Run itself, or its parent can cancel it.
 - Duplicate retries do not append duplicate envelopes or results.
 - Only the addressed Run can deliver and acknowledge an envelope.
 - Terminal state cannot reopen.
-- Corrupt or logically impossible journals fail closed.
+- Interior corruption or a logically impossible journal fails closed. A torn
+  final line, the one artefact a crash between write and flush can leave, is
+  dropped by readers and trimmed by the next writer, exactly as the run
+  Transcript handles it.
+- A journal that cannot be read never stops a Run: that turn is delivered
+  without an inbox and the reason is logged. Only Plan and Goal Runs register;
+  Chat never sees the coordination Tools and never touches the journal.
