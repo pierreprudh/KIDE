@@ -89,7 +89,7 @@ import {
 } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
-import { coordinationExchangeStats, coordinationPeersOf, usePeerIndex } from "./ai/coordinationPeers";
+import { coordinationPeersOf, usePeerIndex } from "./ai/coordinationPeers";
 import { PeerLink } from "./ai/PeerLink";
 import { favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
@@ -2329,7 +2329,6 @@ This user request requires workspace inspection. Before answering, you MUST call
   // Other conversations this thread has exchanged agent messages with, derived
   // from its own messages — no polling of the coordination journal.
   const coordinationPeers = useMemo(() => coordinationPeersOf(msgs), [msgs]);
-  const coordinationStats = useMemo(() => coordinationExchangeStats(msgs), [msgs]);
   const peerIndex = usePeerIndex();
 
   // Write a structured memory note to .klide/memory/. Delegates to
@@ -4985,7 +4984,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           <PeerLink
             peers={coordinationPeers}
             index={peerIndex}
-            stats={coordinationStats}
+            selfTitle={peerIndex.get(currentId)?.title ?? deriveTitle(msgs)}
             provider={provider}
             model={model}
             active={streaming}

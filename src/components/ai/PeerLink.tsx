@@ -2,8 +2,8 @@
 // end of the conversation-status line (branch · Goal policy · this): this
 // thread's model mark, a short hairline, the peer's model mark. Nothing else
 // at rest — the marks say who. While this thread is talking, one small parcel
-// travels the line, out to the peer first, then back. Click the link for the
-// rest: the peer's title, both runners, and how much has moved each way.
+// travels the line, out to the peer first, then back. Click the link to see
+// the two conversations by name — the peer's row opens that thread.
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import type { ProviderId } from "../../agent/types";
@@ -11,7 +11,7 @@ import { conversationMark } from "../../modelIdentity";
 import { usePortalMenu } from "../../hooks/usePortalMenu";
 import { Z } from "../../zLayers";
 import { AgentMark } from "../fileMarks";
-import { peerName, type ExchangeStats, type PeerIndex } from "./coordinationPeers";
+import { peerName, type PeerIndex } from "./coordinationPeers";
 
 const MARK = 14;
 const TRACK = 44;
@@ -26,15 +26,16 @@ function markFor(model: string | null | undefined, provider: ProviderId | null |
 function PeerLinkItem({
   id,
   index,
-  stats,
   mine,
+  selfTitle,
   active,
   onOpen,
 }: {
   id: string;
   index: PeerIndex;
-  stats?: ExchangeStats;
   mine: { node: ReactNode; label: string };
+  /** This thread's own title, for the first row of the card. */
+  selfTitle: string;
   active: boolean;
   onOpen?: (id: string) => void;
 }) {
@@ -49,9 +50,6 @@ function PeerLinkItem({
     }),
     closeOnOutsideClick: true,
   });
-  const sent = stats?.sent ?? 0;
-  const received = stats?.received ?? 0;
-
   return (
     <>
       <button
@@ -116,27 +114,24 @@ function PeerLinkItem({
             color: "var(--fg)",
           }}
         >
-          {/* The peer thread is a link: open (or raise) it in its panel. This
-              thread needs none — the card is already in it. */}
+          {/* This thread first, then the peer. Only the peer is a link — the
+              card is already inside this one. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, fontSize: 12, lineHeight: 1.35, color: "var(--fg-subtle)" }}>
+            <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={mine.label}>{mine.node}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selfTitle}</span>
+          </div>
           <button
             type="button"
             disabled={!onOpen}
             onClick={() => { onOpen?.(id); close(); }}
             title={onOpen ? `Open ${info?.title ?? name}` : id}
-            style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, padding: 0, border: 0, background: "transparent", color: "var(--fg-strong)", font: "inherit", fontSize: 12, lineHeight: 1.35, textAlign: "left", cursor: onOpen ? "pointer" : "default" }}
+            style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, padding: 0, border: 0, background: "transparent", color: "var(--fg-strong)", font: "inherit", fontSize: 12, lineHeight: 1.35, textAlign: "left", cursor: onOpen ? "pointer" : "default" }}
             onMouseEnter={(e) => { if (onOpen) e.currentTarget.style.color = "var(--accent)"; }}
             onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; }}
           >
             <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={theirs.label}>{theirs.node}</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{info?.title ?? name}</span>
           </button>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "var(--fg-subtle)", minWidth: 0 }}>
-            <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={mine.label}>{mine.node}</span>
-            <span aria-hidden style={{ flex: 1, height: 1, background: "color-mix(in srgb, var(--border-strong) 55%, transparent)" }} />
-            <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-              {sent} sent · {received} received
-            </span>
-          </div>
         </div>,
         document.body,
       )}
@@ -147,7 +142,7 @@ function PeerLinkItem({
 export function PeerLink({
   peers,
   index,
-  stats,
+  selfTitle,
   provider,
   model,
   active,
@@ -156,7 +151,8 @@ export function PeerLink({
   /** Run ids this thread has exchanged messages with. */
   peers: string[];
   index: PeerIndex;
-  stats?: Map<string, ExchangeStats>;
+  /** This thread's own title, shown as the card's first row. */
+  selfTitle: string;
   /** This thread's own runner. */
   provider: ProviderId;
   model: string | null | undefined;
@@ -170,7 +166,7 @@ export function PeerLink({
   return (
     <div className="ai-msg-in" style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto", minWidth: 0, flex: "0 0 auto" }}>
       {peers.map((id) => (
-        <PeerLinkItem key={id} id={id} index={index} stats={stats?.get(id)} mine={mine} active={active} onOpen={onOpen} />
+        <PeerLinkItem key={id} id={id} index={index} mine={mine} selfTitle={selfTitle} active={active} onOpen={onOpen} />
       ))}
     </div>
   );

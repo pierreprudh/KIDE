@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Msg } from "./types";
 import {
-  coordinationExchangeStats,
   coordinationPeersOf,
   parseDeliveryReason,
   peerName,
@@ -61,14 +60,5 @@ describe("coordinationPeersOf", () => {
       { role: "assistant", content: "", toolCalls: [{ name: "agent_wait", args: { fromRunId: "run_c" } }] },
     ];
     expect(coordinationPeersOf(msgs)).toEqual(["run_b", "run_c"]);
-  });
-
-  it("counts what moved each way per peer", () => {
-    const msgs: Msg[] = [
-      { role: "assistant", content: "", toolCalls: [{ name: "agent_send", args: { toRunId: "run_b", body: "one" } }, { name: "agent_send", args: { toRunId: "run_b", body: "two" } }] },
-      { role: "system", content: "", steering: { reason: "Agent message delivered: answer from @run_b (env_1); instruction from operator (env_2)" } },
-    ];
-    expect(coordinationExchangeStats(msgs).get("run_b")).toEqual({ sent: 2, received: 1 });
-    expect(coordinationExchangeStats(msgs).has("operator")).toBe(false);
   });
 });
