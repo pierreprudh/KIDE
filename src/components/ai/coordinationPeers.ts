@@ -124,3 +124,27 @@ export function coordinationPeersOf(msgs: Msg[]): string[] {
   }
   return peers;
 }
+
+/** How much has moved between this thread and each peer: messages this
+ *  thread sent it, messages it delivered here. Feeds the peer-link popover. */
+export type ExchangeStats = { sent: number; received: number };
+
+export function coordinationExchangeStats(msgs: Msg[]): Map<string, ExchangeStats> {
+  const stats = new Map<string, ExchangeStats>();
+  const bump = (id: string | null, key: keyof ExchangeStats) => {
+    if (!id || id === "operator") return;
+    const entry = stats.get(id) ?? { sent: 0, received: 0 };
+    entry[key] += 1;
+    stats.set(id, entry);
+  };
+  for (const m of msgs) {
+    if (m.role === "assistant") {
+      for (const call of m.toolCalls ?? []) {
+        if (call.name === "agent_send") bump(stringArg(call.args, "toRunId"), "sent");
+      }
+    } else if (m.role === "system" && m.steering) {
+      for (const ref of parseDeliveryReason(m.steering.reason) ?? []) bump(ref.from, "received");
+    }
+  }
+  return stats;
+}
