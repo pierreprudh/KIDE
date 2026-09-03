@@ -5,8 +5,9 @@
 // travels the line, out to the peer first, then back. Click the link to see
 // the two conversations by name — the peer's row opens that thread.
 import { createPortal } from "react-dom";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { ProviderId } from "../../agent/types";
+import { readCoordinationSnapshot, type CoordinationEnvelope } from "../../agent/coordination";
 import { conversationMark } from "../../modelIdentity";
 import { usePortalMenu } from "../../hooks/usePortalMenu";
 import { Z } from "../../zLayers";
@@ -15,7 +16,7 @@ import { peerName, type PeerIndex } from "./coordinationPeers";
 
 const MARK = 14;
 const TRACK = 44;
-const CARD_WIDTH = 200;
+const CARD_WIDTH = 240;
 
 function markFor(model: string | null | undefined, provider: ProviderId | null | undefined): { node: ReactNode; label: string } {
   // The harness chat wears Klide's own mark when the runner is unknown — a
@@ -23,25 +24,53 @@ function markFor(model: string | null | undefined, provider: ProviderId | null |
   return conversationMark(model, provider, MARK) ?? { node: <AgentMark size={11} />, label: "Klide agent" };
 }
 
+/** The envelopes that travelled between exactly these two conversations, in
+ *  the order they were written. Self-talk (a thread messaging itself) matches
+ *  on both sides and is listed once. */
+export function exchangeBetween(envelopes: CoordinationEnvelope[], selfId: string, peerId: string): CoordinationEnvelope[] {
+  const between = (from: string, to: string) => (e: CoordinationEnvelope) =>
+    e.from.type === "run" && e.from.runId === from && e.toRunId === to;
+  return envelopes
+    .filter((e) => between(selfId, peerId)(e) || between(peerId, selfId)(e))
+    .sort((a, b) => a.createdAtMs - b.createdAtMs);
+}
+
 function PeerLinkItem({
   id,
   index,
   mine,
+  selfId,
   selfTitle,
+  workspaceRoot,
   active,
   onOpen,
 }: {
   id: string;
   index: PeerIndex;
   mine: { node: ReactNode; label: string };
-  /** This thread's own title, for the first row of the card. */
+  /** This thread's own run id and title, for the first row of the card. */
+  selfId: string;
   selfTitle: string;
+  workspaceRoot: string | null;
   active: boolean;
   onOpen?: (id: string) => void;
 }) {
   const info = index.get(id);
   const theirs = markFor(info?.model, info?.provider);
   const name = peerName(id, index);
+  const [expanded, setExpanded] = useState(false);
+  const [exchange, setExchange] = useState<CoordinationEnvelope[] | "error" | null>(null);
+  const toggleExchange = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (!next || exchange || !workspaceRoot) return;
+    try {
+      const snapshot = await readCoordinationSnapshot(workspaceRoot);
+      setExchange(exchangeBetween(snapshot.envelopes.map((entry) => entry.envelope), selfId, id));
+    } catch {
+      setExchange("error");
+    }
+  };
   const { open, pos, triggerRef, menuRef, openMenu, close } = usePortalMenu<{ left: number; bottom: number }>({
     computePos: (rect) => ({
       // Above the trigger, right edges aligned, clamped to the viewport.
@@ -121,6 +150,57 @@ function PeerLinkItem({
             <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={mine.label}>{mine.node}</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selfTitle}</span>
           </div>
+          {/* The spine between the two conversations. Click it to unfold what
+              travelled along it: every message between exactly these two
+              threads, oldest first, each under its sender's mark. */}
+          <button
+            type="button"
+            onClick={() => void toggleExchange()}
+            aria-expanded={expanded}
+            title={expanded ? "Hide the exchange" : "Show what was exchanged"}
+            style={{ display: "flex", alignItems: "stretch", gap: 9, padding: 0, border: 0, background: "transparent", color: "var(--fg-dim)", font: "inherit", fontSize: 10.5, lineHeight: 1.3, textAlign: "left", cursor: "pointer", minHeight: 16 }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; }}
+          >
+            <span aria-hidden style={{ width: MARK, display: "grid", justifyItems: "center", flexShrink: 0 }}>
+              <span style={{ width: 1, height: "100%", minHeight: 16, background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
+            </span>
+            <span style={{ alignSelf: "center" }}>{expanded ? "Hide exchange" : "Show exchange"}</span>
+          </button>
+          {expanded && (
+            <div style={{ display: "flex", gap: 9, minWidth: 0 }}>
+              <span aria-hidden style={{ width: MARK, display: "grid", justifyItems: "center", flexShrink: 0 }}>
+                <span style={{ width: 1, height: "100%", background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
+              </span>
+              <div style={{ display: "grid", gap: 6, minWidth: 0, flex: 1, maxHeight: 220, overflowY: "auto", paddingRight: 2 }}>
+                {exchange === "error" ? (
+                  <div style={{ fontSize: 11, color: "var(--fg-dim)" }}>The exchange could not be read from the journal.</div>
+                ) : !workspaceRoot ? (
+                  <div style={{ fontSize: 11, color: "var(--fg-dim)" }}>Open the project to read the exchange.</div>
+                ) : exchange === null ? (
+                  <div style={{ fontSize: 11, color: "var(--fg-dim)" }}>Loading…</div>
+                ) : exchange.length === 0 ? (
+                  <div style={{ fontSize: 11, color: "var(--fg-dim)" }}>Nothing exchanged yet.</div>
+                ) : (
+                  exchange.map((e) => {
+                    const fromSelf = e.from.type === "run" && e.from.runId === selfId && e.toRunId === id && selfId !== id;
+                    const sender = fromSelf || selfId === id ? mine : theirs;
+                    return (
+                      <div key={e.id} style={{ display: "grid", gridTemplateColumns: `${MARK}px 1fr`, gap: 6, alignItems: "start", minWidth: 0 }}>
+                        <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK }} title={sender.label}>{sender.node}</span>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 10, color: "var(--fg-dim)", lineHeight: 1.3 }}>{e.kind}</div>
+                          <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--fg)", overflowWrap: "anywhere", display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={e.body}>
+                            {e.body}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
           <button
             type="button"
             disabled={!onOpen}
@@ -143,7 +223,9 @@ function PeerLinkItem({
 export function PeerLink({
   peers,
   index,
+  selfId,
   selfTitle,
+  workspaceRoot,
   provider,
   model,
   active,
@@ -152,8 +234,11 @@ export function PeerLink({
   /** Run ids this thread has exchanged messages with. */
   peers: string[];
   index: PeerIndex;
-  /** This thread's own title, shown as the card's first row. */
+  /** This thread's own run id and title, shown as the card's first row. */
+  selfId: string;
   selfTitle: string;
+  /** Where the coordination journal lives; the exchange is read from it. */
+  workspaceRoot: string | null;
   /** This thread's own runner. */
   provider: ProviderId;
   model: string | null | undefined;
@@ -167,7 +252,7 @@ export function PeerLink({
   return (
     <div className="ai-msg-in" style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto", minWidth: 0, flex: "0 0 auto" }}>
       {peers.map((id) => (
-        <PeerLinkItem key={id} id={id} index={index} mine={mine} selfTitle={selfTitle} active={active} onOpen={onOpen} />
+        <PeerLinkItem key={id} id={id} index={index} mine={mine} selfId={selfId} selfTitle={selfTitle} workspaceRoot={workspaceRoot} active={active} onOpen={onOpen} />
       ))}
     </div>
   );

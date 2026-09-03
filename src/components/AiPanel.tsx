@@ -4984,7 +4984,9 @@ This user request requires workspace inspection. Before answering, you MUST call
           <PeerLink
             peers={coordinationPeers}
             index={peerIndex}
+            selfId={currentId}
             selfTitle={peerIndex.get(currentId)?.title ?? deriveTitle(msgs)}
+            workspaceRoot={workspaceRoot}
             provider={provider}
             model={model}
             active={streaming}
