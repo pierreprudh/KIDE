@@ -93,6 +93,36 @@ describe("agent coordination tool rows", () => {
     expect(html).not.toContain("toRunId");
   });
 
+  it("renders a delivered agent message as an inbox row, body hidden until opened", () => {
+    const message: Msg = {
+      role: "system",
+      content: "",
+      steering: { reason: "Agent message delivered: question from @run_reviewer (env_42)" },
+    };
+
+    const html = renderToStaticMarkup(renderMessageBody(message, false, { workspaceRoot: "/tmp/ws" }));
+
+    expect(html).toContain("Received");
+    expect(html).toContain("question from @run_reviewer");
+    expect(html).not.toContain("Steered");
+    expect(html).not.toContain("env_42");
+    // Closed <details>: the body slot shows only the loading placeholder.
+    expect(html).toContain("Loading…");
+  });
+
+  it("keeps ordinary steering lines as steering", () => {
+    const message: Msg = {
+      role: "system",
+      content: "",
+      steering: { reason: "Loop detected — `read_file` called 3×" },
+    };
+
+    const html = renderToStaticMarkup(renderMessageBody(message));
+
+    expect(html).toContain("Steered");
+    expect(html).not.toContain("Received");
+  });
+
   it("labels coordination results without exposing raw machinery", () => {
     const message: Msg = {
       role: "tool",

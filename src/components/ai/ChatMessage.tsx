@@ -1,6 +1,14 @@
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import type { Msg } from "./types";
 import { DelegateConsole } from "./DelegateTerminal";
+import {
+  COORDINATION_TOOL_NAMES,
+  parseDeliveryReason,
+  peerName,
+  usePeerTitles,
+  type DeliveredEnvelopeRef,
+} from "./coordinationPeers";
+import { readCoordinationSnapshot, type CoordinationEnvelope } from "../../agent/coordination";
 import { DotGridLoader, ToolIcon } from "./icons";
 import { renderMarkdown, splitThinking, stripPlanJson } from "../markdown";
 import { providerName } from "../../agent/providers";
@@ -142,14 +150,6 @@ function SubagentCallRow({ args }: { args: unknown }) {
   );
 }
 
-const COORDINATION_TOOL_NAMES = new Set([
-  "agent_list",
-  "agent_send",
-  "agent_wait",
-  "agent_cancel",
-  "agent_read_result",
-]);
-
 function coordinationArg(args: unknown, key: string): string {
   if (!args || typeof args !== "object" || Array.isArray(args)) return "";
   const value = (args as Record<string, unknown>)[key];
@@ -157,8 +157,11 @@ function coordinationArg(args: unknown, key: string): string {
 }
 
 function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown }) {
-  const target = coordinationArg(args, name === "agent_send" ? "toRunId" : "runId")
+  const titles = usePeerTitles();
+  const targetId = coordinationArg(args, name === "agent_send" ? "toRunId" : "runId")
     || coordinationArg(args, "fromRunId");
+  // A Run id is a conversation id, so the thread's own title is its name.
+  const target = targetId ? peerName(targetId, titles) : "";
   const body = coordinationArg(args, "body");
   const kind = coordinationArg(args, "kind") || "instruction";
   const waits = !!args
@@ -193,7 +196,7 @@ function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown 
         <span aria-hidden style={{ color: "var(--accent)", flexShrink: 0 }}>·</span>
         <span style={{ fontSize: 12, color: "var(--fg-subtle)", flexShrink: 0 }}>{action}</span>
         {target && (
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 500, color: "var(--accent)", flexShrink: 0 }}>
+          <span title={targetId} style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 500, color: "var(--accent)", flexShrink: 0 }}>
             @{target}
           </span>
         )}
@@ -877,6 +880,83 @@ export function CompactionRow({
   );
 }
 
+// Inbound glyph for a delivered agent message: the steering arrow mirrored,
+// coming in rather than turning away.
+function InboundGlyph() {
+  return (
+    <span aria-hidden style={{ display: "grid", placeItems: "center", color: "currentColor", flexShrink: 0 }}>
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M13 5a5 5 0 0 1-5 5H3" />
+        <path d="M6 7l-3 3 3 3" />
+      </svg>
+    </span>
+  );
+}
+
+// Messages another agent left for this conversation, delivered at a turn
+// boundary. Collapsed, it names who wrote and what kind, in the same slim idiom
+// as a steering row. The bodies live in the coordination journal, not in the
+// transcript, so they are fetched only when the row is opened — the user asked
+// for the text to stay hidden until then.
+export function AgentInboxRow({
+  delivered,
+  workspaceRoot,
+}: {
+  delivered: DeliveredEnvelopeRef[];
+  workspaceRoot?: string | null;
+}) {
+  const titles = usePeerTitles();
+  const [bodies, setBodies] = useState<Map<string, CoordinationEnvelope> | null | "error">(null);
+  const load = async () => {
+    if (bodies || !workspaceRoot) return;
+    try {
+      const snapshot = await readCoordinationSnapshot(workspaceRoot);
+      const found = new Map<string, CoordinationEnvelope>();
+      for (const entry of snapshot.envelopes) found.set(entry.envelope.id, entry.envelope);
+      setBodies(found);
+    } catch {
+      setBodies("error");
+    }
+  };
+  const summary = delivered
+    .map((ref) => `${ref.kind} from @${peerName(ref.from, titles)}`)
+    .join(" · ");
+  return (
+    <details
+      style={{ margin: "5px 0" }}
+      onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) void load(); }}
+    >
+      <summary style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", listStyle: "none", userSelect: "none", color: "var(--fg-subtle)", minWidth: 0 }}>
+        <InboundGlyph />
+        <span style={{ ...COMPACT_MONO, color: "var(--fg-strong)", fontWeight: 500, flexShrink: 0 }}>Received</span>
+        <span style={{ ...COMPACT_MONO, color: "var(--fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
+      </summary>
+      <div style={{ display: "grid", gap: 6, margin: "6px 0 2px 20px" }}>
+        {delivered.map((ref) => {
+          const envelope = bodies && bodies !== "error" ? bodies.get(ref.envelopeId) : undefined;
+          const text = bodies === "error"
+            ? "The message body could not be read from the coordination journal."
+            : !workspaceRoot
+              ? "Open the project to read this message."
+              : envelope
+                ? envelope.body
+                : bodies
+                  ? "This message is no longer in the journal."
+                  : "Loading…";
+          return (
+            <div key={ref.envelopeId} style={{ padding: "6px 10px", fontSize: 12, lineHeight: 1.55, color: "var(--fg-subtle)", background: "color-mix(in srgb, var(--bg-elevated) 60%, var(--bg))", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", whiteSpace: "pre-wrap" }}>
+              <div style={{ ...COMPACT_MONO, color: "var(--accent)", marginBottom: 3 }} title={ref.from}>
+                @{peerName(ref.from, titles)} · {ref.kind}
+              </div>
+              {text}
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 // Course-correction glyph for a steering marker: an arrow that bends away,
 // echoing the "you were heading in circles — turn" idea.
 function SteeringGlyph() {
@@ -944,9 +1024,13 @@ export function renderMessageBody(
     /** Skip the ThinkingBlock — the caller renders it elsewhere (AiPanel
      *  hoists a folded tool run's reasoning above the "N tool calls" row). */
     hideThinking?: boolean;
+    /** Lets a delivered-agent-message row fetch its bodies from the journal. */
+    workspaceRoot?: string | null;
   },
 ): ReactElement {
   if (m.role === "system" && m.steering) {
+    const delivered = parseDeliveryReason(m.steering.reason);
+    if (delivered) return <AgentInboxRow delivered={delivered} workspaceRoot={opts?.workspaceRoot} />;
     return <SteeringRow reason={m.steering.reason} />;
   }
   if (m.role === "system" && m.runError) {
