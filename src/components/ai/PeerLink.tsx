@@ -165,7 +165,9 @@ function PeerLinkItem({
             <span aria-hidden style={{ width: MARK, display: "grid", justifyItems: "center", flexShrink: 0 }}>
               <span style={{ width: 1, height: "100%", minHeight: 16, background: "color-mix(in srgb, var(--border-strong) 70%, transparent)" }} />
             </span>
-            <span style={{ alignSelf: "center" }}>{expanded ? "Hide exchange" : "Show exchange"}</span>
+            {/* Once open, the bar alone is the control: words would compete
+                with the messages hanging off it. */}
+            {!expanded && <span style={{ alignSelf: "center" }}>Show exchange</span>}
           </button>
           {expanded && (
             <div style={{ display: "flex", gap: 9, minWidth: 0 }}>
