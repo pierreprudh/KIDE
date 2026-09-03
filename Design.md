@@ -67,7 +67,9 @@ colors:
   # Accent (soft sage — chosen to avoid the AI-blue convention)
   accent:         "#5A7B4C"   # Primary interactive accent
   accent-soft:    "rgba(90, 123, 76, 0.12)"   # Subtle accent tint
-  accent-hover:   "#6B8E5A"   # Accent on hover (slightly brighter)
+  accent-hover:   "#6B8E5A"   # Accent on hover (slightly brighter). Every theme must set this:
+                              # one that only sets `accent` inherits this sage and flashes green on hover.
+                              # Themes without a hand-tuned value derive it — color-mix(accent 88%, fg-strong).
   # Status
   success:        "#5A7B4C"   # Same as accent — quiet and consistent
   warning:        "#B5832E"   # Warm amber, not red

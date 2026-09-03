@@ -81,6 +81,19 @@ export type GitLog = {
   lastFetchMs: number | null;
   commits: GitCommit[];
   branches: GitBranch[];
+  /** Newest first. */
+  tags: GitTag[];
+  /** `origin/HEAD`'s branch, else a local main/master, else null. */
+  defaultBranch: string | null;
+};
+
+/** Mirrors `GitTag`. */
+export type GitTag = {
+  name: string;
+  /** The tagged commit's subject. */
+  subject: string;
+  /** Unix seconds. */
+  timestamp: number;
 };
 
 /** Mirrors `CommitFile`. */

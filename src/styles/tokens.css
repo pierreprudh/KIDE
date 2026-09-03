@@ -173,6 +173,10 @@
   --motion-fast: 120ms;
   --motion-med: 180ms;
   --motion-slow: 240ms;
+  /* The Explorer's reveal — the anchored column sliding open, the free-mode
+     drawer gliding out. Longer than --motion-slow on purpose: a whole column
+     arriving is a bigger thing than a control, and hurrying it reads as a snap. */
+  --explorer-reveal: 320ms;
 }
 
 /* Sage Garden — Klide Light with the temperature corrected. Same bone-cream
@@ -308,6 +312,7 @@
 
   --accent:       #8EA2FF;
   --accent-soft:  #242B45;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   /* The :root default is near-black at 40% — invisible on a dark surface.
      Every dark theme owes itself an override. */
@@ -354,6 +359,7 @@
 
   --accent:       #007ACC;
   --accent-soft:  #04395E;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   --code-comment: #6A9955;
 
@@ -398,6 +404,7 @@
 
   --accent:       #0969DA;
   --accent-soft:  #DDF4FF;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   --control-primary-bg: #1F2328;
   --control-primary-fg: #FFFFFF;
@@ -435,6 +442,7 @@
 
   --accent:       #B58900;
   --accent-soft:  #2E4C3B;
+  --accent-hover: color-mix(in srgb, var(--accent) 88%, var(--fg-strong));
 
   --code-comment: #657B83;
 
@@ -521,6 +529,14 @@ input:focus-visible {
 textarea:focus-visible:not(.inputarea):not(.xterm-helper-textarea):not(.klide-diff-comment-input):not(.klide-composer-textarea) {
   outline: 2px solid var(--accent-soft) !important;
   outline-offset: 1px;
+}
+
+/* A bare filter line inside a popover (the branch menu's "Find a branch") is
+   the popover's only text field and takes focus the moment the menu opens —
+   the caret and the popover's own appearance are the indicator. A 2px ring
+   would box the one element the menu was designed not to box. */
+input.klide-bare-filter:focus-visible {
+  outline: none !important;
 }
 
 /* Custom interactive controls built from non-button elements (div/span with
@@ -3465,18 +3481,18 @@ button:focus-visible .menu-leadout {
 /* Tree rows. The grid is: [chevron] [icon] [name] [decoration]. 16px
    chevron column, 16px icon column, name takes the rest and
    truncates, decoration floats right. */
-.klide-explorer-row {
-  position: relative; /* paints hover/selected fills above the indent guides */
+/* ── The one file-row recipe ──────────────────────────────────────────────
+   The chrome every list of files shares: the fill states, the radius, the
+   ellipsis rule, the mono status mark, the hover-revealed trailing actions.
+   The Explorer tree (`.klide-explorer-row`) and Git Review's changed-file
+   list each add only their own columns on top; neither owns hover or
+   selection any more, so the two lists can no longer drift apart. */
+.klide-file-row {
+  position: relative; /* paints its fills above the tree's indent guides */
   display: grid;
-  grid-template-columns: 16px 16px 1fr auto;
   align-items: center;
-  gap: 4px;
-  height: 23px;
-  padding: 0 8px 0 0;
   border-radius: var(--radius-sm);
-  border: 1px solid transparent;
   color: var(--fg);
-  font-size: 12.5px;
   cursor: pointer;
   user-select: none;
   min-width: 0;
@@ -3485,13 +3501,74 @@ button:focus-visible .menu-leadout {
     color var(--motion-fast) var(--ease-out);
 }
 
-.klide-explorer-row:hover {
+.klide-file-row:hover {
   background: var(--bg-hover);
 }
 
-.klide-explorer-row[data-active="true"] {
+/* After :hover on purpose — equal specificity, so a hovered selected row
+   keeps the selected fill. */
+.klide-file-row[data-active="true"] {
   background: var(--bg-selected);
   color: var(--fg-strong);
+}
+
+.klide-file-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The second line some rows carry — a containing folder, dimmer and smaller. */
+.klide-file-row-sub {
+  min-width: 0;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: 11px; /* no token below --fs-xs; the scale stops at 12px */
+}
+
+/* The git status letter. Colour comes from the row (gitStatusMark.ts owns
+   which token); this owns the shape, so M in the tree and M in Git Review
+   are the same glyph at the same size. */
+.klide-file-row-mark {
+  flex-shrink: 0;
+  min-width: 14px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+/* Trailing actions: hidden at rest, revealed by hover or selection — the
+   same hover-reveal recipe as the Explorer header actions. */
+.klide-file-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.klide-file-row:hover .klide-file-row-actions,
+.klide-file-row[data-active="true"] .klide-file-row-actions {
+  opacity: 1;
+}
+
+/* Composes .klide-file-row — this adds only the tree's own columns
+   (chevron, icon, name, decoration) and its tighter density. */
+.klide-explorer-row {
+  grid-template-columns: 16px 16px 1fr auto;
+  /* Reserved so the inline-rename state can show a border without reflow. */
+  border: 1px solid transparent;
+  gap: 4px;
+  height: 23px;
+  padding: 0 8px 0 0;
+  font-size: 12.5px;
 }
 
 .klide-explorer-row[data-virtual="true"] {
@@ -3521,25 +3598,6 @@ button:focus-visible .menu-leadout {
   justify-content: center;
   color: var(--fg-subtle);
   flex-shrink: 0;
-}
-
-.klide-explorer-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.klide-explorer-decoration {
-  flex-shrink: 0;
-  min-width: 14px;
-  display: grid;
-  place-items: center;
-  font-size: 9.5px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  line-height: 1;
-  letter-spacing: 0.02em;
 }
 
 /* Nesting — a children <ul> sits flush against the parent's row. */
@@ -3600,7 +3658,8 @@ button:focus-visible .menu-leadout {
   .klide-explorer-chevron {
     transition: none;
   }
-  .klide-explorer-row {
+  .klide-file-row,
+  .klide-file-row-actions {
     transition: none;
   }
   .klide-explorer-tree ul ul::before {
@@ -3872,6 +3931,11 @@ button:focus-visible .menu-leadout {
      travel as one object instead of cross-fading on separate timings. */
   --rail-fold: 500ms;
   --rail-fold-ease: var(--ease-spring);
+  /* A nav row's chevron arriving under the pointer. Slow on the way in — it is
+     an offer, not a response, so it should surface rather than snap — and
+     quicker on the way out, where a lingering fade follows the pointer around
+     the rail. */
+  --rail-chevron-in: 320ms;
   width: 252px;
   flex-shrink: 0;
   display: flex;
@@ -4285,8 +4349,9 @@ button:focus-visible .menu-leadout {
   color: var(--fg-dim);
   opacity: 0;
   transform: rotate(0deg);
+  /* Leaving. Shorter than the arrival below. */
   transition:
-    opacity var(--motion-fast) var(--ease-out),
+    opacity var(--motion-med) var(--ease-out),
     transform var(--motion-med) var(--ease-soft);
 }
 
@@ -4295,6 +4360,11 @@ button:focus-visible .menu-leadout {
 .klide-focus-nav-row[data-active="true"] .klide-focus-nav-chevron,
 .klide-focus-nav-chevron[data-expanded="true"] {
   opacity: 1;
+  /* Arriving, slowly. The whole transition is restated because this rule
+     replaces the one above for the revealed state rather than adding to it. */
+  transition:
+    opacity var(--rail-chevron-in) var(--ease-out),
+    transform var(--motion-med) var(--ease-soft);
 }
 
 .klide-focus-nav-chevron[data-expanded="true"] {
@@ -4866,15 +4936,35 @@ button:focus-visible .menu-leadout {
   padding-left: var(--rail-fill-lead);
 }
 
+/* The row's open action. It is the row, as far as the eye goes: no chrome of
+   its own, it inherits the row's colour and type and lets the content span
+   keep drawing the fill exactly where it did when the row itself was the
+   button. */
+.klide-focus-convo-open {
+  display: flex;
+  align-items: center;
+  gap: var(--rail-gap);
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  text-align: left;
+  border-radius: var(--radius-lg);
+}
+
+/* Focus now lands on the button inside the row, so the row reads it through
+   :focus-within — hover and keyboard focus light the same surface. */
 .klide-focus-convo-row:hover,
-.klide-focus-convo-row:focus-visible {
+.klide-focus-convo-row:focus-within {
   color: var(--fg-strong);
 }
 
 .klide-focus-convo-row:not([data-nested="true"]):hover,
-.klide-focus-convo-row:not([data-nested="true"]):focus-visible,
+.klide-focus-convo-row:not([data-nested="true"]):focus-within,
 .klide-focus-convo-row[data-nested="true"]:hover .klide-focus-convo-content,
-.klide-focus-convo-row[data-nested="true"]:focus-visible .klide-focus-convo-content {
+.klide-focus-convo-row[data-nested="true"]:focus-within .klide-focus-convo-content {
   background: var(--rail-fill-hover);
 }
 
@@ -4909,6 +4999,60 @@ button:focus-visible .menu-leadout {
   font-family: var(--font-mono);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+  transition:
+    opacity var(--motion-slow) var(--ease-soft),
+    transform var(--motion-slow) var(--ease-soft);
+}
+
+/* Delete lives in the trailing slot too, over the timestamp: the row keeps one
+   trailing mark, and it says the thing you can do right now. Hidden until the
+   row is hovered or holds focus, when it drifts in from the right as the
+   timestamp drifts out — one crossfade, on the Git island's easing. Quiet ink
+   until you reach it, then the full text colour — near-black on a light theme,
+   near-white on a dark one. No box of its own, ever: the row's fill is already
+   under it, and a second shape inside a rail row is exactly the chrome this
+   rail refuses. The glyph alone changes, and it dips slightly on click. */
+.klide-focus-convo-delete {
+  position: absolute;
+  top: 50%;
+  right: var(--rail-row-pad);
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 0;
+  color: var(--fg-strong);
+  background: none;
+  opacity: 0;
+  transform: translate(4px, -50%);
+  pointer-events: none;
+  transition:
+    opacity var(--motion-slow) var(--ease-soft),
+    transform var(--motion-slow) var(--ease-soft);
+}
+
+.klide-focus-convo-row:hover .klide-focus-convo-time,
+.klide-focus-convo-row:focus-within .klide-focus-convo-time {
+  opacity: 0;
+  transform: translateX(-3px);
+}
+
+.klide-focus-convo-row:hover .klide-focus-convo-delete,
+.klide-focus-convo-row:focus-within .klide-focus-convo-delete {
+  opacity: 0.55;
+  transform: translate(0, -50%);
+  pointer-events: auto;
+}
+
+.klide-focus-convo-row .klide-focus-convo-delete:hover,
+.klide-focus-convo-row .klide-focus-convo-delete:focus-visible {
+  opacity: 1;
+  background: none;
+}
+
+.klide-focus-convo-row .klide-focus-convo-delete:active {
+  transform: translate(0, -50%) scale(0.92);
+  transition-duration: 80ms;
 }
 
 /* The running slot takes the timestamp's place at the row's trailing edge. It
@@ -5154,6 +5298,258 @@ button:focus-visible .menu-leadout {
      shortened. */
   .klide-focus-git-island[data-ping="true"] {
     scale: 1;
+  }
+}
+
+/* Git sync icons — the mark itself moves while its action runs. Fetch's
+   arrows spin, Pull's arrow drops onto its baseline, Push's rises off it. The
+   loop keeps playing until the current cycle ends after the action settles
+   (TopAction watches animationiteration), so a fast fetch still shows one
+   full turn and nothing ever snaps back from mid-frame. Linear for the spin —
+   an eased infinite rotation stutters at every loop seam. */
+/* Segmented control — the macOS shape. One soft track, equal segments, and a
+   single raised thumb that glides to the chosen one on the soft curve. The
+   thumb is one segment wide (the track is an equal-column grid, so no
+   measuring) and moves by transform alone; a segment answers it with colour
+   only, never a fill of its own. --seg-count / --seg-index come from the
+   component. */
+.klide-segmented {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--seg-count, 1), 1fr);
+  height: 28px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  isolation: isolate;
+}
+
+.klide-segmented-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / var(--seg-count, 1));
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  box-shadow:
+    var(--shadow-raised),
+    0 0 0 0.5px var(--border);
+  transform: translateX(calc(var(--seg-index, 0) * 100%));
+  transition: transform var(--motion-med) var(--ease-soft);
+  z-index: 0;
+}
+
+.klide-segmented-seg {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-subtle);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+
+.klide-segmented-seg:hover,
+.klide-segmented-seg[data-active="true"] {
+  color: var(--fg-strong);
+}
+
+.klide-segmented-seg:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+}
+
+/* The count is set in the label's own face and size, a step dimmer, with
+   tabular figures — a smaller mono number sat visibly off the label's
+   baseline; sharing the metrics is what lines the two up. */
+.klide-segmented-count {
+  color: var(--fg-dim);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  animation: klide-segmented-count-in var(--motion-med) var(--ease-soft) both;
+}
+
+@keyframes klide-segmented-count-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-segmented-thumb {
+    transition: none;
+  }
+  .klide-segmented-count {
+    animation: none;
+  }
+}
+
+/* Merged-PR exit — the card lingers wearing its Merged badge, then the body
+   fades and lifts while the shell folds shut underneath it, the two
+   overlapping so it reads as one motion. The shell animates its measured
+   height (--depart-h, set by DepartingPrCard) down to 0 and swallows the list
+   gap with a trailing negative margin, so the cards below glide up in step.
+   Unhurried on purpose — a merge is the moment the panel exists for. The
+   shell's end event, the later of the two, is what removes the card. */
+.klide-pr-depart {
+  overflow: hidden;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.klide-pr-depart[data-measured] {
+  height: var(--depart-h);
+  animation: klide-pr-depart-fold 1000ms var(--ease-soft) 560ms both;
+}
+
+.klide-pr-depart[data-measured] .klide-pr-depart-body {
+  animation: klide-pr-depart-fade 700ms var(--ease-soft) 320ms both;
+}
+
+@keyframes klide-pr-depart-fold {
+  from {
+    height: var(--depart-h);
+    margin-bottom: 0;
+  }
+  to {
+    height: 0;
+    margin-bottom: -8px;
+  }
+}
+
+@keyframes klide-pr-depart-fade {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+}
+
+/* History graph draw-in. A clip rect scales down the row to reveal the lanes
+   top-to-bottom (a clip, not stroke-dashoffset, so pass-through lines, curves
+   and every density draw the same way with no path-length bookkeeping); the
+   node scales in once the line has reached the row's middle. Delay comes from
+   the row (--draw-delay), so rows ink one after another. */
+.klide-graph-draw .klide-graph-draw-reveal {
+  transform-origin: 0 0;
+  transform: scaleY(0);
+  animation: klide-graph-reveal 420ms var(--ease-soft) var(--draw-delay, 0ms) forwards;
+}
+
+.klide-graph-draw .klide-graph-draw-node {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(0);
+  animation: klide-graph-node 300ms var(--ease-out) calc(var(--draw-delay, 0ms) + 180ms) forwards;
+}
+
+@keyframes klide-graph-reveal {
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes klide-graph-node {
+  to {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The exit still has to end — the shell's end event unmounts the card. */
+  .klide-pr-depart[data-measured],
+  .klide-pr-depart[data-measured] .klide-pr-depart-body {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+  .klide-graph-draw .klide-graph-draw-reveal,
+  .klide-graph-draw .klide-graph-draw-node {
+    animation: none;
+    transform: none;
+  }
+}
+
+.klide-git-sync-mark {
+  display: inline-grid;
+  place-items: center;
+}
+
+.klide-git-sync-mark > svg {
+  transform-origin: 50% 50%;
+}
+
+.klide-git-sync-mark[data-playing="true"][data-motion="spin"] > svg {
+  animation: klide-git-spin 1400ms linear infinite;
+}
+
+.klide-git-sync-mark[data-playing="true"][data-motion="down"] .klide-git-arrow {
+  animation: klide-git-arrow-down 1000ms var(--ease-soft) infinite;
+}
+
+.klide-git-sync-mark[data-playing="true"][data-motion="up"] .klide-git-arrow {
+  animation: klide-git-arrow-up 1000ms var(--ease-soft) infinite;
+}
+
+@keyframes klide-git-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The arrow travels one shaft-length and fades at both ends, so it reads as a
+   stream of arrows passing through rather than one arrow bouncing. */
+@keyframes klide-git-arrow-down {
+  0% {
+    transform: translateY(-5px);
+    opacity: 0;
+  }
+  30%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(5px);
+    opacity: 0;
+  }
+}
+
+@keyframes klide-git-arrow-up {
+  0% {
+    transform: translateY(5px);
+    opacity: 0;
+  }
+  30%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-5px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-git-sync-mark > svg,
+  .klide-git-sync-mark .klide-git-arrow {
+    animation: none;
   }
 }
 
@@ -6810,6 +7206,8 @@ button:focus-visible .menu-leadout {
   .klide-focus-provider-groups,
   .klide-focus-nav-row,
   .klide-focus-convo-content,
+  .klide-focus-convo-time,
+  .klide-focus-convo-delete,
   .klide-focus-provider-history-content,
   .klide-focus-more-projects,
   .klide-focus-more-conversations,
@@ -6817,6 +7215,10 @@ button:focus-visible .menu-leadout {
   .klide-focus-provider-history-chevron,
   .klide-focus-tree-elbow,
   .klide-focus-nav-chevron,
+  .klide-focus-nav-row:hover .klide-focus-nav-chevron,
+  .klide-focus-nav-row:focus-visible .klide-focus-nav-chevron,
+  .klide-focus-nav-row[data-active="true"] .klide-focus-nav-chevron,
+  .klide-focus-nav-chevron[data-expanded="true"],
   .klide-focus-composer,
   .klide-focus-composer::before,
   .klide-focus-send {
@@ -7095,20 +7497,92 @@ button:focus-visible .menu-leadout {
   opacity: 0;
   visibility: hidden;
   will-change: transform, opacity;
+  /* Closing mirrors opening: the same slide, and a fade that starts a beat in
+     and ends with it — so the sheet is seen leaving, not switched off. The
+     drawer is hidden only once both have finished. */
   transition:
-    transform 260ms var(--ease-soft),
-    opacity 150ms var(--ease-out),
-    visibility 0s linear 260ms;
+    transform var(--explorer-reveal) var(--ease-soft),
+    opacity 240ms var(--ease-out) 60ms,
+    visibility 0s linear var(--explorer-reveal);
 }
 
 .explorer-dock-overlay[data-open="true"] {
   transform: none;
   opacity: 1;
   visibility: visible;
+  /* The slide carries the reveal; the fade rides the first half of it so the
+     sheet is already solid while it is still settling into place. */
   transition:
-    transform 340ms var(--ease-soft),
-    opacity 180ms var(--ease-out),
+    transform var(--explorer-reveal) var(--ease-soft),
+    opacity 200ms var(--ease-out),
     visibility 0s;
+}
+
+/* ── The anchored Explorer column ─────────────────────────────────────────
+   The column is a grid track that animates 0 → its width. The rows inside keep
+   their full width underneath (see AnchoredWorkbench.renderSide), so the track
+   clips them like a curtain instead of reflowing the tree on every frame.
+   The content fades in a beat after the track starts moving — arriving into a
+   space that is already opening — and fades out ahead of it on the way back. */
+.klide-anchored-columns {
+  transition: grid-template-columns var(--explorer-reveal) var(--ease-soft);
+}
+
+/* Not while a splitter is being dragged: the widths follow the pointer. */
+.klide-anchored-columns[data-resizing] {
+  transition: none;
+}
+
+.klide-anchored-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* Closed: the fade starts a beat into the collapse and ends with it, so the
+   curtain is seen drawing across the rows rather than over an empty column. */
+.klide-anchored-side > * {
+  opacity: 0;
+  transition: opacity 220ms var(--ease-out) 100ms;
+}
+
+/* Open: the same beat, the other way — the rows arrive into a space that is
+   already opening and are solid as it settles. */
+.klide-anchored-side[data-open="true"] > * {
+  opacity: 1;
+  transition: opacity 220ms var(--ease-out) 90ms;
+}
+
+/* The hairline between the column and the editor rides the same fade as the
+   rows, instead of blinking on and off at the ends of the motion. While
+   closed it takes no pointer, so its ±5px grab zone cannot catch a click at
+   the rail's edge. */
+.klide-anchored-splitter {
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms var(--ease-out) 100ms;
+}
+
+.klide-anchored-splitter[data-open="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 220ms var(--ease-out) 90ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-anchored-columns,
+  .klide-anchored-side > *,
+  .klide-anchored-side[data-open="true"] > *,
+  .klide-anchored-splitter,
+  .klide-anchored-splitter[data-open="true"],
+  .explorer-dock-overlay,
+  .explorer-dock-overlay[data-open="true"] {
+    transition: none;
+  }
 }
 
 .artifact-inspector-header {

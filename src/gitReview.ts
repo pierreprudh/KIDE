@@ -9,25 +9,31 @@ import type { PrComment, PrCommit, PullRequest, PullRequestDetails } from "./ipc
 
 // ── Derivations ──────────────────────────────────────────────────────────────
 
-export type PullRequestFilter = "open" | "draft" | "merged" | "all";
+/** Two views, as on GitHub's own list: what is in flight and what is done. A
+ *  draft is an open PR that is not ready yet, so it lives under Open wearing
+ *  its Draft badge; Closed holds the merged and the closed-unmerged, and each
+ *  row's badge says which. Four segments (Open · Draft · Merged · All) mirrored
+ *  the badge's four states, not a question anyone asks the panel. */
+export type PullRequestFilter = "open" | "closed";
 
 export function visiblePrs(prs: PullRequest[], filter: PullRequestFilter): PullRequest[] {
-  return prs.filter((pr) => {
-    if (filter === "open") return pr.badge === "open";
-    if (filter === "draft") return pr.badge === "draft";
-    if (filter === "merged") return pr.badge === "merged";
-    return true;
-  });
+  return prs.filter((pr) => (filter === "open" ? isOpenPr(pr) : !isOpenPr(pr)));
 }
 
-export type PrCounts = { open: number; draft: number; merged: number; all: number };
+function isOpenPr(pr: PullRequest): boolean {
+  return pr.badge === "open" || pr.badge === "draft";
+}
+
+/** Per-badge counts; `open` excludes drafts so the head can say "2 open,
+ *  1 draft". The Open segment shows open + draft, Closed shows merged + closed. */
+export type PrCounts = { open: number; draft: number; merged: number; closed: number };
 
 export function prCounts(prs: PullRequest[]): PrCounts {
   return {
     open: prs.filter((pr) => pr.badge === "open").length,
     draft: prs.filter((pr) => pr.badge === "draft").length,
     merged: prs.filter((pr) => pr.badge === "merged").length,
-    all: prs.length,
+    closed: prs.filter((pr) => pr.badge === "closed").length,
   };
 }
 
@@ -154,13 +160,105 @@ export function checkoutPrOutcome(n: number, expandedPr: number | null): GitActi
 }
 
 export function mergePrOutcome(n: number, expandedPr: number | null): GitActionOutcome {
+  // Log first: the merge command has already fetched, so the graph can draw
+  // the merge commit in while the slower GitHub re-fetch is still in flight.
   return {
     message: `Merged #${n}`,
-    refresh: ["prs", "log", "status"],
+    refresh: ["log", "status", "prs"],
     collapseExpandedPr: expandedPr === n,
   };
 }
 
 export function submitPrOutcome(): GitActionOutcome {
   return { message: "Pull request created", refresh: ["prs"], closePrComposer: true };
+}
+
+// ── Branch menu ──────────────────────────────────────────────────────────────
+
+/** The agent whose mark leads a branch row, read off the branch's first path
+ *  segment. Delegates name their branches `codex/…` and `claude/…`; Klide's
+ *  own isolated Runs are `klide/…` (see `runIsolation.ts`). A remote-tracking
+ *  branch is read past its remote (`origin/codex/x` → codex). */
+export type BranchAgentMark = "codex" | "claude-code" | "klide";
+
+export function branchAgentMark(name: string, isRemote = false): BranchAgentMark | null {
+  const segments = name.split("/");
+  const head = isRemote && segments.length > 2 ? segments[1] : segments[0];
+  if (head === "codex") return "codex";
+  if (head === "claude") return "claude-code";
+  if (head === "klide") return "klide";
+  return null;
+}
+
+/** Alphabetical, case-insensitive, stable — the menu is a list to scan, not a
+ *  recency feed. Locals and remotes interleave by name (`origin/…` sorts as a
+ *  block under o, which is where a reader looks for it). */
+export function sortBranchesForMenu<T extends { name: string }>(branches: readonly T[]): T[] {
+  return [...branches].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+/** How one branch name is typeset in the menu. The remote is lifted out of a
+ *  remote-tracking name (it becomes the section eyebrow), an agent prefix is
+ *  replaced by that agent's mark, and any other `scope/` prefix is kept but
+ *  set dim so the leaf reads first. */
+export type BranchDisplay = {
+  remote: string | null;
+  agent: BranchAgentMark | null;
+  /** The dim `scope/` prefix — null when there is none or an agent mark took it. */
+  prefix: string | null;
+  /** The part set strong. */
+  leaf: string;
+};
+
+export function branchDisplay(name: string, isRemote = false): BranchDisplay {
+  const segments = name.split("/");
+  const remote = isRemote && segments.length > 1 ? segments[0] : null;
+  const local = remote ? segments.slice(1) : segments;
+  const agent = branchAgentMark(name, isRemote);
+  if (agent) return { remote, agent, prefix: null, leaf: local.slice(1).join("/") || local[0] };
+  if (local.length > 1) return { remote, agent: null, prefix: local.slice(0, -1).join("/") + "/", leaf: local[local.length - 1] };
+  return { remote, agent: null, prefix: null, leaf: local[0] };
+}
+
+/** One row of the branch menu. Locals and their remote-tracking twins are
+ *  one row — a reader thinks in branch names, not refs. A branch that exists
+ *  only on the remote is still listed (checking it out creates the local). */
+export type MenuBranch = {
+  name: string;
+  isCurrent: boolean;
+  isDefault: boolean;
+  /** No local ref yet — only `origin/<name>` (or another remote's). */
+  remoteOnly: boolean;
+  ahead: number;
+  behind: number;
+  lastSubject: string;
+};
+
+/** Merge local + remote refs by branch name, default branch first, then
+ *  alphabetical. A local ref wins over its remote twin (it carries the real
+ *  ahead/behind and current flags). */
+export function mergeBranchesForMenu(
+  branches: readonly { name: string; isCurrent: boolean; isRemote: boolean; ahead: number; behind: number; lastSubject: string }[],
+  defaultBranch: string | null,
+): MenuBranch[] {
+  const byName = new Map<string, MenuBranch>();
+  for (const b of branches) {
+    const name = b.isRemote ? (b.name.split("/").slice(1).join("/") || b.name) : b.name;
+    const existing = byName.get(name);
+    if (existing && !existing.remoteOnly) continue; // local already there
+    if (existing && b.isRemote) continue; // second remote for a remote-only name
+    byName.set(name, {
+      name,
+      isCurrent: b.isCurrent,
+      isDefault: name === defaultBranch,
+      remoteOnly: b.isRemote,
+      ahead: b.isRemote ? 0 : b.ahead,
+      behind: b.isRemote ? 0 : b.behind,
+      lastSubject: b.lastSubject,
+    });
+  }
+  return [...byName.values()].sort((a, b) => {
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
 }

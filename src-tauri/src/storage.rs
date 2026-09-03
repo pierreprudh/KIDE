@@ -260,12 +260,19 @@ fn is_transcript_file(name: &std::ffi::OsStr) -> bool {
     name.ends_with(".jsonl") || name.ends_with(".summary.json")
 }
 
-/// Is this a run's checkpoint folder? A Run keeps its file checkpoints in
-/// `<runs>/<run id>/checkpoints` (see `agent::mod`), so the runs dir is not
-/// flat after all, and a move that only carried files would leave every
-/// rollback behind — silently, since the transcript it belongs to arrived.
+/// Is this a run's folder? A Run keeps its file checkpoints in
+/// `<runs>/<run id>/checkpoints` (see `agent::mod`) and its retained tool
+/// outputs in `<runs>/<run id>.values` (see `agent::retained`), so the runs dir
+/// is not flat after all, and a move that only carried files would leave every
+/// rollback and every retained output behind — silently, since the transcript
+/// they belong to arrived.
 fn is_run_folder(path: &Path) -> bool {
-    path.join("checkpoints").is_dir()
+    if path.join("checkpoints").is_dir() {
+        return true;
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".values"))
 }
 
 /// Move one entry, `rename` first (instant on the same volume), copy-then-remove
@@ -598,6 +605,31 @@ mod tests {
             b"before",
         );
         assert!(!from.join("run_a").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_runs_retained_values_travel_with_its_transcript() {
+        // Retained tool outputs live in `<runs>/<run id>.values`, a sibling of
+        // the transcript. Left behind, a resumed run would replay the full
+        // result in place of the stub — graceful, but the retained text the
+        // user paid for is gone and reported as "not ours".
+        let root = scratch("values");
+        let from = root.join("from");
+        let to = root.join("to");
+        let values = from.join("run_a.values");
+        std::fs::create_dir_all(&values).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(from.join("run_a.jsonl"), b"12345").unwrap();
+        std::fs::write(values.join("call_1.txt"), b"retained").unwrap();
+
+        let (moved, _, left) = move_runs(&from, &to).unwrap();
+        assert_eq!((moved, left), (2, 0));
+        assert_eq!(
+            std::fs::read(to.join("run_a.values").join("call_1.txt")).unwrap(),
+            b"retained",
+        );
+        assert!(!from.join("run_a.values").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 

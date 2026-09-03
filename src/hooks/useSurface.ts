@@ -156,26 +156,32 @@ export function ownsTitlebar(surface: Surface): boolean {
   return surface.kind === "focus";
 }
 
-/** The icon rail shows on the workbench and over every overlay except
- *  Settings (which renders its own full shell), and never on Welcome or
- *  Focus (Focus's own rail carries navigation).
- *  Was `!(focusMode && view === "workbench")` inside the non-settings branch. */
+/** The sidebar shows on every surface but Welcome (its own full-screen page)
+ *  and Settings (its own full shell, with its own rail).
+ *
+ *  Focus used to be excluded because it drew a second copy of the very same
+ *  component. One instance is what makes the sidebar hold still across a mode
+ *  change: two of them meant an unmount and a mount, which replays the rail's
+ *  entrance animation and throws away the tree's expanded folders and scroll.
+ *  The shells now differ only in the props they hand it. */
 export function showsRail(surface: Surface): boolean {
   return (
+    surface.kind === "focus" ||
     surface.kind === "workbench" ||
     (surface.kind === "overlay" && surface.view !== "settings")
   );
 }
 
 /** The status bar shows everywhere but Focus (chrome-free), Welcome (its own
- *  full-screen page), and Settings — which, like Welcome, renders its own full
+ *  full-screen page), Settings — which, like Welcome, renders its own full
  *  shell (its own rail, its own back affordance) and has no file, branch or
- *  editor state for the bar to report. */
+ *  editor state for the bar to report — and Git Review, whose header already
+ *  names the branch, so the bar would only repeat it under the panes. */
 export function showsStatusBar(surface: Surface): boolean {
   return (
     surface.kind !== "focus" &&
     surface.kind !== "welcome" &&
-    !(surface.kind === "overlay" && surface.view === "settings")
+    !(surface.kind === "overlay" && (surface.view === "settings" || surface.view === "git-review"))
   );
 }
 

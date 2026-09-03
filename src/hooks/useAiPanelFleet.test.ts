@@ -72,8 +72,8 @@ describe("AI panel fleet reducer", () => {
       type: "race-watch-started",
       handoffs: [handoff("ai-a"), handoff("ai-b")],
       tabs: [
-        { panelId: "ai-a", label: "A" },
-        { panelId: "ai-b", label: "B" },
+        { panelId: "ai-a", label: "A", runId: "run-a", provider: "ollama" as const },
+        { panelId: "ai-b", label: "B", runId: "run-b", provider: "anthropic" as const },
       ],
       focusActiveTabId: "ai-a",
     });
@@ -107,8 +107,8 @@ describe("AI panel fleet reducer", () => {
       pendingByPanel: { "ai-a": handoff("ai-a"), "ai-b": handoff("ai-b") },
       resumeTarget: { panelId: "ai-a", convo: convo("run-1") },
       raceWatchTabs: [
-        { panelId: "ai-a", label: "A" },
-        { panelId: "ai-b", label: "B" },
+        { panelId: "ai-a", label: "A", runId: "run-a", provider: "ollama" as const },
+        { panelId: "ai-b", label: "B", runId: "run-b", provider: "anthropic" as const },
       ],
       focusActiveTabId: "ai-a",
       followUpsByPanel: {
@@ -127,7 +127,7 @@ describe("AI panel fleet reducer", () => {
 
     expect(closed.pendingByPanel["ai-a"]).toBeUndefined();
     expect(closed.resumeTarget).toBeNull();
-    expect(closed.raceWatchTabs).toEqual([{ panelId: "ai-b", label: "B" }]);
+    expect(closed.raceWatchTabs).toEqual([{ panelId: "ai-b", label: "B", runId: "run-b", provider: "anthropic" as const }]);
     expect(closed.focusActiveTabId).toBe("ai-b");
     expect(closed.followUpsByPanel["ai-a"]).toBeUndefined();
     // The settings maps live in the fleet precisely so a close clears them.
@@ -220,8 +220,8 @@ describe("resuming a conversation with a continuation", () => {
         type: "race-watch-started",
         handoffs: [],
         tabs: [
-          { panelId: "ai-a", label: "A" },
-          { panelId: "ai-b", label: "B" },
+          { panelId: "ai-a", label: "A", runId: "run-a", provider: "ollama" as const },
+          { panelId: "ai-b", label: "B", runId: "run-b", provider: "anthropic" as const },
         ],
         focusActiveTabId: "ai-a",
       },

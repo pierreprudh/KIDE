@@ -270,15 +270,21 @@ runs, transcripts, conversations, and review state.
 
 - **Welcome** (`WelcomeScreen.tsx`) — start or resume a project: recents,
   clone, new project.
-- **Focus** (`FocusMode.tsx`) — chat-first fullscreen: project/thread rail on
-  the left, one centered conversation (an `AiPanel` `variant="focus"`, never a
-  duplicate chat implementation), a Git island, and the shared terminal docked
+- **Focus** (`FocusMode.tsx`) — chat-first fullscreen: one centered
+  conversation (an `AiPanel` `variant="focus"`, never a duplicate chat
+  implementation), a Git island, and the shared terminal docked
   *under* the canvas so run subscriptions keep streaming while you shell.
   Its picker offers every provider the workbench does — **delegate CLIs
   included**, so a Claude Code or Codex subscription can start a Focus
   conversation without an API key anywhere in Klide.
 - **Workbench** (`AnchoredWorkbench.tsx`) — the editor-first IDE layout, plus
   free-mode floating panels, fixed presets, and the grid builder.
+
+The sidebar is one `WorkspaceRail`, rendered once by `App.tsx` for every
+surface — Focus included, so switching mode morphs the foot icon and leaves the
+column standing rather than remounting it. Focus differs only in the `nav` and the
+conversation handlers. The Explorer is not part of the rail: the anchored
+workbench draws it as its own column beside the rail, free mode as a drawer.
 
 Icons across every rail come from `src/icons.tsx` (Phosphor Light behind an
 `Icon` primitive, one weight lever). Provider logos, file-type marks and

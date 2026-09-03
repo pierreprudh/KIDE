@@ -4,7 +4,14 @@ import type { PendingAiPanel } from "../components/ai/panelHost";
 import type { AgentAttachment, ProviderId } from "../agent/types";
 import type { PanelRect } from "../panelLayout";
 
-export type RaceWatchTab = { panelId: string; label: string };
+export type RaceWatchTab = {
+  panelId: string;
+  label: string;
+  /** Harness run id — the column head asks it whether the run is still live. */
+  runId: string;
+  /** The racer's provider — the column head wears its logo, not a letter. */
+  provider: ProviderId;
+};
 export type RaceFollowUp = { text: string; nonce: number };
 
 /** A composed first turn parked for a panel that was just repointed at an
@@ -523,7 +530,12 @@ export function createFleetController(
             initialTask: null,
             conversationId: racer.runId,
           });
-          tabs.push({ panelId, label: racer.label });
+          tabs.push({
+            panelId,
+            label: racer.label,
+            runId: racer.runId,
+            provider: racer.provider,
+          });
         }
         dispatch({
           type: "race-watch-started",

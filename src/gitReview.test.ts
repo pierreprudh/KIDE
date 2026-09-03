@@ -24,6 +24,10 @@ import {
   unstageFileOutcome,
   visiblePrs,
   type GitActionOutcome,
+  branchAgentMark,
+  branchDisplay,
+  mergeBranchesForMenu,
+  sortBranchesForMenu,
 } from "./gitReview";
 
 function pr(number: number, badge: PullRequest["badge"]): PullRequest {
@@ -90,16 +94,16 @@ describe("PR timeline merge", () => {
 describe("PR list derivations", () => {
   const list = [pr(1, "open"), pr(2, "draft"), pr(3, "merged"), pr(4, "closed"), pr(5, "open")];
 
-  it("filters by badge, and 'all' really is all (closed included)", () => {
-    expect(visiblePrs(list, "open").map((p) => p.number)).toEqual([1, 5]);
-    expect(visiblePrs(list, "draft").map((p) => p.number)).toEqual([2]);
-    expect(visiblePrs(list, "merged").map((p) => p.number)).toEqual([3]);
-    expect(visiblePrs(list, "all").map((p) => p.number)).toEqual([1, 2, 3, 4, 5]);
+  it("splits PRs into in-flight and done: drafts count as open, closed-unmerged as closed", () => {
+    // Drafts are open PRs that are not ready, so they sit under Open; Closed
+    // is merged and closed-unmerged together — the row's badge tells them apart.
+    expect(visiblePrs(list, "open").map((p) => p.number)).toEqual([1, 2, 5]);
+    expect(visiblePrs(list, "closed").map((p) => p.number)).toEqual([3, 4]);
   });
 
-  it("counts per badge; 'all' counts closed PRs even though no tab shows only them", () => {
-    expect(prCounts(list)).toEqual({ open: 2, draft: 1, merged: 1, all: 5 });
-    expect(prCounts([])).toEqual({ open: 0, draft: 0, merged: 0, all: 0 });
+  it("counts per badge, closed-unmerged included", () => {
+    expect(prCounts(list)).toEqual({ open: 2, draft: 1, merged: 1, closed: 1 });
+    expect(prCounts([])).toEqual({ open: 0, draft: 0, merged: 0, closed: 0 });
   });
 });
 
@@ -153,7 +157,7 @@ describe("action outcomes — the refresh policy per action", () => {
     [
       "merge PR",
       mergePrOutcome(7, null),
-      { message: "Merged #7", refresh: ["prs", "log", "status"], collapseExpandedPr: false },
+      { message: "Merged #7", refresh: ["log", "status", "prs"], collapseExpandedPr: false },
     ],
     [
       "submit PR",
@@ -181,5 +185,50 @@ describe("action outcomes — the refresh policy per action", () => {
     expect(mergePrOutcome(7, 3).collapseExpandedPr).toBe(false);
     expect(checkoutPrOutcome(7, 7).collapseExpandedPr).toBe(true);
     expect(checkoutPrOutcome(7, 3).collapseExpandedPr).toBe(false);
+  });
+});
+
+describe("branch menu — order and agent marks", () => {
+  it("reads the agent off the first segment, past a remote", () => {
+    expect(branchAgentMark("codex/agent-coordination")).toBe("codex");
+    expect(branchAgentMark("claude/fix-thing")).toBe("claude-code");
+    expect(branchAgentMark("klide/goal-title-ab12")).toBe("klide");
+    expect(branchAgentMark("origin/codex/agent-coordination", true)).toBe("codex");
+    expect(branchAgentMark("origin/main", true)).toBeNull();
+    expect(branchAgentMark("feat/auto-model-routing")).toBeNull();
+    expect(branchAgentMark("main")).toBeNull();
+  });
+
+  it("sorts alphabetically, case-insensitively, without mutating the input", () => {
+    const input = [{ name: "origin/main" }, { name: "main" }, { name: "Feat/x" }, { name: "codex/y" }];
+    const sorted = sortBranchesForMenu(input);
+    expect(sorted.map((b) => b.name)).toEqual(["codex/y", "Feat/x", "main", "origin/main"]);
+    expect(input[0].name).toBe("origin/main");
+  });
+});
+
+describe("branch menu — display and grouping", () => {
+  it("lifts the remote, swaps an agent prefix for its mark, dims other prefixes", () => {
+    expect(branchDisplay("codex/agent-coordination")).toEqual({ remote: null, agent: "codex", prefix: null, leaf: "agent-coordination" });
+    expect(branchDisplay("origin/codex/agent-coordination", true)).toEqual({ remote: "origin", agent: "codex", prefix: null, leaf: "agent-coordination" });
+    expect(branchDisplay("feat/auto-model-routing")).toEqual({ remote: null, agent: null, prefix: "feat/", leaf: "auto-model-routing" });
+    expect(branchDisplay("origin/main", true)).toEqual({ remote: "origin", agent: null, prefix: null, leaf: "main" });
+    expect(branchDisplay("main")).toEqual({ remote: null, agent: null, prefix: null, leaf: "main" });
+  });
+
+  it("merges a local with its remote twin, keeps remote-only rows, pins the default first", () => {
+    const rows = mergeBranchesForMenu([
+      { name: "origin/main", isCurrent: false, isRemote: true, ahead: 0, behind: 0, lastSubject: "remote main" },
+      { name: "feat/x", isCurrent: true, isRemote: false, ahead: 2, behind: 0, lastSubject: "x" },
+      { name: "origin/feat/x", isCurrent: false, isRemote: true, ahead: 0, behind: 0, lastSubject: "x" },
+      { name: "main", isCurrent: false, isRemote: false, ahead: 0, behind: 1, lastSubject: "local main" },
+      { name: "origin/codex/y", isCurrent: false, isRemote: true, ahead: 0, behind: 0, lastSubject: "y" },
+    ], "main");
+    expect(rows.map((r) => [r.name, r.isDefault, r.isCurrent, r.remoteOnly, r.ahead, r.behind])).toEqual([
+      ["main", true, false, false, 0, 1],
+      ["codex/y", false, false, true, 0, 0],
+      ["feat/x", false, true, false, 2, 0],
+    ]);
+    expect(rows[0].lastSubject).toBe("local main");
   });
 });
