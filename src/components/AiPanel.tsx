@@ -327,6 +327,10 @@ type Props = {
   harnessSettings?: AiHarnessSettings;
   onDuplicate?: (snapshot: { provider: ProviderId; model: string }) => void;
   onForkConversationInWorktree?: (conversation: Conversation, baseRoot: string | null) => void;
+  /** Open (or raise) another conversation this thread is talking to — the
+   *  peer link's card offers the peer thread as a link. Same landing as a
+   *  click in the rail's conversation tree. */
+  onOpenPeerConversation?: (conversationId: string) => void;
   /** The host's Provider for this panel. Live, like `model` — surfaces outside
    *  the panel (the Focus hero) edit the pair, and the two must move together
    *  or a run goes out with a model the Provider doesn't serve. Absent means
@@ -639,6 +643,7 @@ export function AiPanel({
   harnessSettings,
   onDuplicate,
   onForkConversationInWorktree,
+  onOpenPeerConversation,
   provider: hostProvider,
   onProviderChange,
   onOpenSettingsSection,
@@ -4984,6 +4989,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             provider={provider}
             model={model}
             active={streaming}
+            onOpen={onOpenPeerConversation}
           />
         </div>
       </div>

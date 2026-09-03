@@ -1283,6 +1283,19 @@ function App() {
         workspaceRoot={root}
         worktreeName={worktreeName}
         workspaceBranch={!worktreeName && root === workspaceRoot ? gitStatus?.branch ?? null : null}
+        onOpenPeerConversation={(conversationId) => {
+          // The peer link's card names another thread; land it exactly where a
+          // click in the rail's tree would — raised if it is already open.
+          const convo = loadConversations<Conversation>().find((c) => c.id === conversationId);
+          if (!convo) return;
+          if (focusBase) {
+            setFocusSelectedConvoId(convo.id);
+            setFocusConvoError(null);
+            openFocusConversation(convo, "primary");
+            return;
+          }
+          openConversationInAiPanel(convo);
+        }}
         onFileWritten={onAgentWrote}
         onReviewChanges={(info) => void reviewRunChanges(info)}
         onWorkspaceChanged={() => {
