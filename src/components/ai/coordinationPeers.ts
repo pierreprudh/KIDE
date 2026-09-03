@@ -124,19 +124,3 @@ export function coordinationPeersOf(msgs: Msg[]): string[] {
   }
   return peers;
 }
-
-/** Which way the latest exchange went: `out` when this thread last sent or
- *  started waiting, `in` when a peer's message last landed here. Drives the
- *  direction of the peer-link motion; `null` when nothing has moved yet. */
-export function lastCoordinationDirection(msgs: Msg[]): "out" | "in" | null {
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i];
-    if (m.role === "assistant") {
-      const calls = m.toolCalls ?? [];
-      if (calls.some((call) => call.name === "agent_send" || call.name === "agent_wait")) return "out";
-    } else if (m.role === "system" && m.steering && parseDeliveryReason(m.steering.reason)) {
-      return "in";
-    }
-  }
-  return null;
-}

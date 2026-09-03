@@ -89,7 +89,7 @@ import {
 } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
-import { coordinationPeersOf, lastCoordinationDirection, usePeerIndex } from "./ai/coordinationPeers";
+import { coordinationPeersOf, usePeerIndex } from "./ai/coordinationPeers";
 import { PeerLink } from "./ai/PeerLink";
 import { favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
@@ -2324,7 +2324,6 @@ This user request requires workspace inspection. Before answering, you MUST call
   // Other conversations this thread has exchanged agent messages with, derived
   // from its own messages — no polling of the coordination journal.
   const coordinationPeers = useMemo(() => coordinationPeersOf(msgs), [msgs]);
-  const coordinationDirection = useMemo(() => lastCoordinationDirection(msgs), [msgs]);
   const peerIndex = usePeerIndex();
 
   // Write a structured memory note to .klide/memory/. Delegates to
@@ -3896,17 +3895,6 @@ This user request requires workspace inspection. Before answering, you MUST call
           />
         ) : (
           <>
-        {/* Two panels talking is invisible unless something says so: this
-            thread's mark, a hairline, the peer's mark and title. The dot on
-            the line moves only while this thread is streaming. */}
-        <PeerLink
-          peers={coordinationPeers}
-          index={peerIndex}
-          provider={provider}
-          model={model}
-          direction={coordinationDirection}
-          active={streaming}
-        />
         {msgs.length === 0 && !serverStarting && (
           <div style={{ width: "min(300px, 86%)", textAlign: "center", color: "var(--fg-subtle)", lineHeight: 1.55, transform: "translateY(-10px)" }}>
             <div style={{ width: 38, height: 38, margin: "0 auto 14px", display: "grid", placeItems: "center" }}>
@@ -4985,6 +4973,16 @@ This user request requires workspace inspection. Before answering, you MUST call
             </button>
           )}
         </div>
+        {/* Who this thread is talking to, under the composer, flush right:
+            this thread's mark, a hairline, the peer's mark and title. The dot
+            moves only while this thread streams — out first, then back. */}
+        <PeerLink
+          peers={coordinationPeers}
+          index={peerIndex}
+          provider={provider}
+          model={model}
+          active={streaming}
+        />
       </div>
       )}
     </aside>

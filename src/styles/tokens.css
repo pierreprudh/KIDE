@@ -7898,10 +7898,10 @@ button:focus-visible .menu-leadout {
   }
 }
 
-/* Peer link (AI panel, top of a thread that talks to another conversation):
-   one dot travels the hairline between the two model marks while this thread
-   is streaming — toward the peer after we sent, back toward us after a peer's
-   message landed. Still at rest; hidden under reduced motion. */
+/* Peer link (AI panel, under the composer of a thread that talks to another
+   conversation): one dot travels the hairline between the two model marks
+   while this thread is streaming — out to the peer first, then back. Still at
+   rest; hidden under reduced motion. */
 .ai-peer-dot {
   position: absolute;
   top: -1.5px;
@@ -7910,10 +7910,7 @@ button:focus-visible .menu-leadout {
   height: 4px;
   border-radius: 50%;
   background: var(--accent);
-  animation: ai-peer-travel 2.4s var(--ease-soft) infinite;
-}
-.ai-peer-dot[data-direction="in"] {
-  animation-direction: reverse;
+  animation: ai-peer-travel 1.8s var(--ease-soft) infinite alternate;
 }
 @keyframes ai-peer-travel {
   from { left: 0; opacity: 0; }

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { Msg } from "./types";
 import {
   coordinationPeersOf,
-  lastCoordinationDirection,
   parseDeliveryReason,
   peerName,
   shortRunId,
@@ -61,14 +60,5 @@ describe("coordinationPeersOf", () => {
       { role: "assistant", content: "", toolCalls: [{ name: "agent_wait", args: { fromRunId: "run_c" } }] },
     ];
     expect(coordinationPeersOf(msgs)).toEqual(["run_b", "run_c"]);
-  });
-
-  it("reports which way the latest exchange went", () => {
-    const sent: Msg = { role: "assistant", content: "", toolCalls: [{ name: "agent_send", args: { toRunId: "run_b", body: "Hi" } }] };
-    const received: Msg = { role: "system", content: "", steering: { reason: "Agent message delivered: answer from @run_b (env_9)" } };
-    expect(lastCoordinationDirection([sent])).toBe("out");
-    expect(lastCoordinationDirection([sent, received])).toBe("in");
-    expect(lastCoordinationDirection([received, sent])).toBe("out");
-    expect(lastCoordinationDirection([{ role: "user", content: "hello" }])).toBeNull();
   });
 });
