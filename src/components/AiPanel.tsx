@@ -4972,17 +4972,18 @@ This user request requires workspace inspection. Before answering, you MUST call
               {acceptingChanges ? "Accepting…" : "Accept modification"}
             </button>
           )}
+          {/* Who this thread is talking to, at the right end of the same line
+              as the branch and the Goal policy: this thread's mark, a hairline,
+              the peer's mark and title. The dot moves only while this thread
+              streams — out first, then back. */}
+          <PeerLink
+            peers={coordinationPeers}
+            index={peerIndex}
+            provider={provider}
+            model={model}
+            active={streaming}
+          />
         </div>
-        {/* Who this thread is talking to, under the composer, flush right:
-            this thread's mark, a hairline, the peer's mark and title. The dot
-            moves only while this thread streams — out first, then back. */}
-        <PeerLink
-          peers={coordinationPeers}
-          index={peerIndex}
-          provider={provider}
-          model={model}
-          active={streaming}
-        />
       </div>
       )}
     </aside>
