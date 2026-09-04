@@ -7,7 +7,8 @@
 import { createPortal } from "react-dom";
 import { useState, type ReactNode } from "react";
 import type { ProviderId } from "../../agent/types";
-import { readCoordinationSnapshot, type CoordinationEnvelope } from "../../agent/coordination";
+import { readCoordinationSnapshot, type CoordinationEnvelope, type CoordinationEnvelopeSnapshot } from "../../agent/coordination";
+import { relativeTime } from "../../time";
 import { conversationMark } from "../../modelIdentity";
 import { usePortalMenu } from "../../hooks/usePortalMenu";
 import { Z } from "../../zLayers";
@@ -25,14 +26,18 @@ function markFor(model: string | null | undefined, provider: ProviderId | null |
 }
 
 /** The envelopes that travelled between exactly these two conversations, in
- *  the order they were written. Self-talk (a thread messaging itself) matches
- *  on both sides and is listed once. */
-export function exchangeBetween(envelopes: CoordinationEnvelope[], selfId: string, peerId: string): CoordinationEnvelope[] {
+ *  the order they were written, with their delivery state. Self-talk (a thread
+ *  messaging itself) matches on both sides and is listed once. */
+export function exchangeBetween(
+  entries: CoordinationEnvelopeSnapshot[],
+  selfId: string,
+  peerId: string,
+): CoordinationEnvelopeSnapshot[] {
   const between = (from: string, to: string) => (e: CoordinationEnvelope) =>
     e.from.type === "run" && e.from.runId === from && e.toRunId === to;
-  return envelopes
-    .filter((e) => between(selfId, peerId)(e) || between(peerId, selfId)(e))
-    .sort((a, b) => a.createdAtMs - b.createdAtMs);
+  return entries
+    .filter(({ envelope }) => between(selfId, peerId)(envelope) || between(peerId, selfId)(envelope))
+    .sort((a, b) => a.envelope.createdAtMs - b.envelope.createdAtMs);
 }
 
 function PeerLinkItem({
@@ -59,14 +64,14 @@ function PeerLinkItem({
   const theirs = markFor(info?.model, info?.provider);
   const name = peerName(id, index);
   const [expanded, setExpanded] = useState(false);
-  const [exchange, setExchange] = useState<CoordinationEnvelope[] | "error" | null>(null);
+  const [exchange, setExchange] = useState<CoordinationEnvelopeSnapshot[] | "error" | null>(null);
   const toggleExchange = async () => {
     const next = !expanded;
     setExpanded(next);
     if (!next || exchange || !workspaceRoot) return;
     try {
       const snapshot = await readCoordinationSnapshot(workspaceRoot);
-      setExchange(exchangeBetween(snapshot.envelopes.map((entry) => entry.envelope), selfId, id));
+      setExchange(exchangeBetween(snapshot.envelopes, selfId, id));
     } catch {
       setExchange("error");
     }
@@ -191,16 +196,22 @@ function PeerLinkItem({
                 ) : exchange.length === 0 ? (
                   <div style={{ fontSize: 11, color: "var(--fg-dim)" }}>Nothing exchanged yet.</div>
                 ) : (
-                  exchange.map((e) => {
+                  exchange.map(({ envelope: e, deliveryState }) => {
                     const fromSelf = e.from.type === "run" && e.from.runId === selfId && e.toRunId === id && selfId !== id;
                     const sender = fromSelf || selfId === id ? mine : theirs;
+                    // Delivery is the one state worth a word: queued means the
+                    // reader has not paused yet; delivered, it was shown but
+                    // the turn did not finish; acknowledged, it was read.
+                    const state = deliveryState === "acknowledged" ? "read" : deliveryState === "delivered" ? "shown" : "waiting";
                     return (
-                      // One line per message: the sender's mark and the kind.
-                      // The body itself is the hover — a card this small
-                      // shows the shape of the exchange, not its text.
-                      <div key={e.id} title={e.body} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, height: MARK + 2, cursor: "help" }}>
+                      // One line per message: sender's mark, kind, when, and
+                      // whether it was read. The body itself is the hover — a
+                      // card this small shows the shape of the exchange.
+                      <div key={e.id} title={e.body} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, height: MARK + 2, cursor: "help", fontSize: 11, lineHeight: 1.3 }}>
                         <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={sender.label}>{sender.node}</span>
-                        <span style={{ fontSize: 11, color: "var(--fg-subtle)", lineHeight: 1.3, whiteSpace: "nowrap" }}>{e.kind}</span>
+                        <span style={{ color: "var(--fg-subtle)", whiteSpace: "nowrap" }}>{e.kind}</span>
+                        <span style={{ color: "var(--fg-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{relativeTime(e.createdAtMs)}</span>
+                        <span style={{ marginLeft: "auto", color: state === "read" ? "var(--fg-dim)" : "var(--fg-subtle)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{state}</span>
                       </div>
                     );
                   })

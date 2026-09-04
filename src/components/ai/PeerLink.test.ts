@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { CoordinationEnvelope } from "../../agent/coordination";
+import type { CoordinationEnvelopeSnapshot } from "../../agent/coordination";
 import { exchangeBetween } from "./PeerLink";
 
-function envelope(id: string, from: string, to: string, createdAtMs: number): CoordinationEnvelope {
-  return { id, from: { type: "run", runId: from }, toRunId: to, kind: "instruction", body: id, sourceRefs: [], createdAtMs };
+function envelope(id: string, from: string, to: string, createdAtMs: number): CoordinationEnvelopeSnapshot {
+  return {
+    envelope: { id, from: { type: "run", runId: from }, toRunId: to, kind: "instruction", body: id, sourceRefs: [], createdAtMs },
+    deliveryState: "acknowledged",
+  };
 }
 
 describe("exchangeBetween", () => {
@@ -12,9 +15,9 @@ describe("exchangeBetween", () => {
       envelope("late_reply", "b", "a", 30),
       envelope("to_other", "a", "c", 20),
       envelope("first", "a", "b", 10),
-      { ...envelope("from_operator", "a", "b", 5), from: { type: "operator" as const } },
+      { ...envelope("from_operator", "a", "b", 5), envelope: { ...envelope("from_operator", "a", "b", 5).envelope, from: { type: "operator" as const } } },
     ];
-    expect(exchangeBetween(all, "a", "b").map((e) => e.id)).toEqual(["first", "late_reply"]);
+    expect(exchangeBetween(all, "a", "b").map((e) => e.envelope.id)).toEqual(["first", "late_reply"]);
   });
 
   it("lists self-talk once", () => {
