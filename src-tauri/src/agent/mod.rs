@@ -1649,6 +1649,11 @@ async fn run_agent_loop(
     let created_ms = now_ms();
     let mut seq = prior_events.len() as u64;
     let event_channel = on_event.clone();
+    // A wake turn: no words from the user, started by the panel so the Run
+    // reads what another agent left for it once its user let that in. There
+    // is no user message to record or to send — the accepted inbox is the
+    // turn's input — and the thread keeps the title it had.
+    let wake = resuming && request.initial_text.trim().is_empty() && request.attachments.is_empty();
 
     let mut emit = |event: AgentEvent| -> Result<(), String> {
         append_event(&runs_dir, &id, seq, &event)?;
@@ -1667,7 +1672,13 @@ async fn run_agent_loop(
             .to_string_lossy()
             .to_string(),
         source: "klide".to_string(),
-        title: title_from_text(&request.initial_text),
+        title: if wake {
+            transcripts::read_summary(&runs_dir, &id)
+                .map(|prior| prior.title)
+                .unwrap_or_else(|_| title_from_text(""))
+        } else {
+            title_from_text(&request.initial_text)
+        },
         status: "running".to_string(),
         provider: request.provider.clone(),
         model: request.model.clone(),
@@ -1703,16 +1714,23 @@ async fn run_agent_loop(
             ts: now_ms(),
         })?;
     }
-    emit(AgentEvent::UserMessage {
-        run_id: id.clone(),
-        message_id: message_id("user"),
-        text: request.initial_text.clone(),
-        attachments: request.attachments.clone(),
-        ts: now_ms(),
-    })?;
+    if !wake {
+        emit(AgentEvent::UserMessage {
+            run_id: id.clone(),
+            message_id: message_id("user"),
+            text: request.initial_text.clone(),
+            attachments: request.attachments.clone(),
+            ts: now_ms(),
+        })?;
+    }
 
     let system = base_system_prompt(&request);
     let mut messages = provider_messages(&request, system, &id);
+    if wake {
+        // provider_messages ended with the (empty) user turn; the inbox
+        // injected at the boundary below is this turn's user-role input.
+        messages.pop();
+    }
     // When this run id was used before, the on-disk transcript holds the
     // whole prior conversation. Replay it into `messages` between the
     // system prompt and the new user turn, so the model sees the same
@@ -1977,6 +1995,14 @@ async fn run_agent_loop(
                 reason: coordination_delivery_reason(&coordination_inbox),
                 ts: now_ms(),
             })?;
+        } else if wake && message_count == 0 {
+            // Woken for a message that is no longer there (declined, or read
+            // by a turn that got in first). The provider still needs a user
+            // turn to answer; keep the answer short.
+            messages.push(user_provider_message(
+                "[Agent messages] Nothing is waiting for you after all. Reply in one short sentence.",
+                &[],
+            ));
         }
 
         // Race the provider stream against user cancellation so abort takes

@@ -3241,7 +3241,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     queueRef.current = [...queueRef.current, turn];
     // Stamped at send, not at dispatch: a turn can sit queued behind a running
     // one, and the conversation's start time is when the user actually asked.
-    const queuedMessage: Msg = { role: "user", content: turn.text, attachments: turn.attachments.length ? turn.attachments : undefined, projectContext: turn.projectContext, queueState: "queued", queueId: turn.clientId, subagent: turn.subagent, ts: Date.now() };
+    const queuedMessage: Msg = { role: "user", content: turn.text, attachments: turn.attachments.length ? turn.attachments : undefined, projectContext: turn.projectContext, queueState: "queued", queueId: turn.clientId, subagent: turn.subagent, wake: turn.wake, ts: Date.now() };
     msgsRef.current = [...msgsRef.current, queuedMessage];
     setMsgs(msgsRef.current);
     // The user just hit send. Even if they were scrolled up reading old
@@ -3612,6 +3612,30 @@ This user request requires workspace inspection. Before answering, you MUST call
     void resolveUserQuestion({ runId: snapshot.runId, requestId: snapshot.requestId, answer: "(skipped)" }).catch((err) => {
       console.error("Failed to skip question:", err);
       notify(`Couldn't skip the question: ${err instanceof Error ? err.message : String(err)}`, { tone: "error" });
+    });
+  }
+
+  // Letting a peer's message in should not leave it waiting for the user to
+  // find something else to say: start a turn with no words of the user's own,
+  // so the Run reads it now. Only when the conversation is idle — a live turn
+  // reaches the boundary on its own. Chat has no coordination, so a Chat
+  // picker wakes as Plan, the quietest mode that can read the inbox.
+  async function wakeForInbox() {
+    if (streaming || queueRef.current.length > 0 || reattachRef.current) return;
+    const current = agentModeRef.current;
+    const mode: AgentMode = current === "chat" ? "plan" : current;
+    const modelInspection = await activateModelInspectionForSend();
+    enqueueTurn({
+      clientId: genId(),
+      text: "",
+      wake: true,
+      mode,
+      provider,
+      model,
+      modelSupportsTools: modelInspection.supportsTools,
+      modelSupportsReflection: modelInspection.supportsReflection,
+      reflectionLevel: modelInspection.supportsReflection ? panelReflectionLevel : undefined,
+      attachments: [],
     });
   }
 
@@ -3991,6 +4015,9 @@ This user request requires workspace inspection. Before answering, you MUST call
           const dimmed = lastCompactionIndex(msgs) > 0 && i < lastCompactionIndex(msgs);
 
           if (m.role === "user") {
+            // A wake turn has nothing to show; the response it produces opens
+            // with the received line that explains it.
+            if (m.wake) return null;
             const queued = m.queueState === "queued";
             const running = m.queueState === "running";
             const isEditing = editingIdx === i;
@@ -4450,7 +4477,11 @@ This user request requires workspace inspection. Before answering, you MUST call
               command={e.body}
               detail={`${e.kind} · read by this conversation at its next turn once approved`}
               onReject={() => { void reviewEnvelope(workspaceRoot, currentId, e.id, false).catch((err) => notify(`Couldn't decline the message: ${errMessage(err)}`, { tone: "error" })); }}
-              onApproveOnce={() => { void reviewEnvelope(workspaceRoot, currentId, e.id, true).catch((err) => notify(`Couldn't approve the message: ${errMessage(err)}`, { tone: "error" })); }}
+              onApproveOnce={() => {
+                void reviewEnvelope(workspaceRoot, currentId, e.id, true)
+                  .then(() => wakeForInbox())
+                  .catch((err) => notify(`Couldn't approve the message: ${errMessage(err)}`, { tone: "error" }));
+              }}
             />
           ))}
         {pendingPermission && (
