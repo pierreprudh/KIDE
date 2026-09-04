@@ -156,7 +156,7 @@ function coordinationArg(args: unknown, key: string): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
-function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown }) {
+function AgentCoordinationCallRow({ name, args, count = 1 }: { name: string; args: unknown; count?: number }) {
   const titles = usePeerIndex();
   const targetId = coordinationArg(args, name === "agent_send" ? "toRunId" : "runId")
     || coordinationArg(args, "fromRunId");
@@ -177,7 +177,7 @@ function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown 
         : name === "agent_read_result"
           ? "Reading result from"
           : "Checked agent network";
-  return <CoordinationLine verb={action} peerId={targetId} peer={target} body={body} />;
+  return <CoordinationLine verb={action} peerId={targetId} peer={target} body={body} count={count} />;
 }
 
 // The one line every agent-to-agent event is drawn as — the sender's call
@@ -189,6 +189,7 @@ function CoordinationLine({
   peerId,
   peer,
   body,
+  count = 1,
   trailing,
   margin = "5px 0 -3px",
 }: {
@@ -196,14 +197,23 @@ function CoordinationLine({
   peerId: string;
   peer: string;
   body: string;
+  /** How many identical messages this one line stands for. */
+  count?: number;
   /** The right end: what is still to happen, when anything is. */
   trailing?: ReactNode;
   margin?: string;
 }) {
   const preview = body.length > 96 ? `${body.slice(0, 95)}…` : body;
   const folds = body.length > 96;
+  const [hover, setHover] = useState(false);
   return (
-    <details style={{ margin }}>
+    // Quieter than the prose around it — a line about the plumbing, not the
+    // conversation. Full strength under the pointer.
+    <details
+      style={{ margin, opacity: hover ? 1 : 0.72, transition: "opacity var(--motion-fast) var(--ease-out)" }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
       <summary
         style={{
           display: "flex",
@@ -225,6 +235,11 @@ function CoordinationLine({
         {preview && (
           <span style={{ fontSize: 12, color: "var(--fg-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             · {preview}
+          </span>
+        )}
+        {count > 1 && (
+          <span style={{ fontSize: 12, color: "var(--fg-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }} title={`${count} identical messages`}>
+            · ×{count}
           </span>
         )}
         {trailing && <span style={{ ...COMPACT_MONO, marginLeft: "auto", color: "var(--fg-dim)", flexShrink: 0 }}>{trailing}</span>}
@@ -262,9 +277,9 @@ function commandArg(name: string, args: unknown): string | null {
 // Minimalist tool-call line, à la Claude Code's `⏺ Read(file)`: one slim
 // mono row — tool glyph, tool name, primary arg — expandable to the full
 // args JSON (or, for a shell call, the bare command line).
-function ToolCallRow({ name, args, repeated = false }: { name: string; args: unknown; repeated?: boolean }) {
+function ToolCallRow({ name, args, repeated = false, count = 1 }: { name: string; args: unknown; repeated?: boolean; count?: number }) {
   if (name === "spawn_subagent") return <SubagentCallRow args={args} />;
-  if (COORDINATION_TOOL_NAMES.has(name)) return <AgentCoordinationCallRow name={name} args={args} />;
+  if (COORDINATION_TOOL_NAMES.has(name)) return <AgentCoordinationCallRow name={name} args={args} count={count} />;
   const command = commandArg(name, args);
   const argsText = command ?? formatJson(args);
   const summary = summarizeArgs(args);
@@ -925,6 +940,20 @@ function useEnvelopeBodies(workspaceRoot: string | null | undefined, ids: string
   return bodies;
 }
 
+/** Identical neighbours — same verb, same peer, same words — become one line
+ *  with a count. Two "ping from A" in a row are two messages, and the count
+ *  says so without the reader taking the repeat for a glitch. */
+function foldIdentical<T>(items: T[], keyOf: (item: T) => string | null): { item: T; count: number }[] {
+  const out: { item: T; count: number }[] = [];
+  for (const item of items) {
+    const last = out[out.length - 1];
+    const key = keyOf(item);
+    if (last && key !== null && keyOf(last.item) === key) last.count += 1;
+    else out.push({ item, count: 1 });
+  }
+  return out;
+}
+
 // Messages another agent left for this conversation, delivered at a turn
 // boundary. Drawn in the same line as the sender's call, from the other side:
 // "Asked by @peer · body". The panel hoists this row into the top of the
@@ -938,15 +967,17 @@ export function AgentInboxRow({
 }) {
   const titles = usePeerIndex();
   const bodies = useEnvelopeBodies(workspaceRoot, delivered.map((ref) => ref.envelopeId));
+  const bodyOf = (ref: DeliveredEnvelopeRef) => bodies.get(ref.envelopeId)?.body.replace(/\s+/g, " ").trim() ?? "";
   return (
     <>
-      {delivered.map((ref) => (
+      {foldIdentical(delivered, (ref) => `${ref.kind}\n${ref.from}\n${bodyOf(ref)}`).map(({ item: ref, count }) => (
         <CoordinationLine
           key={ref.envelopeId}
           verb={inboundVerb(ref.kind)}
           peerId={ref.from}
           peer={peerName(ref.from, titles)}
-          body={bodies.get(ref.envelopeId)?.body.replace(/\s+/g, " ").trim() ?? ""}
+          body={bodyOf(ref)}
+          count={count}
         />
       ))}
     </>
@@ -973,22 +1004,22 @@ function inboundVerb(kind: string): string {
 // sentence. The right end says what is left to happen.
 export function PendingInboxRow({ pending }: { pending: CoordinationEnvelopeSnapshot[] }) {
   const titles = usePeerIndex();
+  const fromOf = (e: CoordinationEnvelopeSnapshot) => (e.envelope.from.type === "run" ? e.envelope.from.runId : "operator");
+  const bodyOf = (e: CoordinationEnvelopeSnapshot) => e.envelope.body.replace(/\s+/g, " ").trim();
   return (
     <>
-      {pending.map(({ envelope: e, deliveryState }) => {
-        const from = e.from.type === "run" ? e.from.runId : "operator";
-        return (
-          <CoordinationLine
-            key={e.id}
-            verb={inboundVerb(e.kind)}
-            peerId={from}
-            peer={peerName(from, titles)}
-            body={e.body.replace(/\s+/g, " ").trim()}
-            trailing={deliveryState === "delivered" ? "delivered" : "for its next turn"}
-            margin="0"
-          />
-        );
-      })}
+      {foldIdentical(pending, (e) => `${e.envelope.kind}\n${fromOf(e)}\n${bodyOf(e)}\n${e.deliveryState}`).map(({ item: e, count }) => (
+        <CoordinationLine
+          key={e.envelope.id}
+          verb={inboundVerb(e.envelope.kind)}
+          peerId={fromOf(e)}
+          peer={peerName(fromOf(e), titles)}
+          body={bodyOf(e)}
+          count={count}
+          trailing={e.deliveryState === "delivered" ? "delivered" : "for its next turn"}
+          margin="0"
+        />
+      ))}
     </>
   );
 }
@@ -1145,8 +1176,12 @@ export function renderMessageBody(
             {renderMarkdown(visibleContent)}
           </div>
         )}
-        {m.toolCalls?.map((tc, i) => (
-          <ToolCallRow key={i} name={tc.name} args={tc.args} repeated={i > 0 && m.toolCalls?.[i - 1]?.name === tc.name} />
+        {/* Identical agent messages sent back to back — "pong" to two pings —
+            are one line with a count; every other call keeps its row. */}
+        {foldIdentical(m.toolCalls ?? [], (tc) =>
+          COORDINATION_TOOL_NAMES.has(tc.name) ? `${tc.name}\n${JSON.stringify(tc.args ?? null)}` : null,
+        ).map(({ item: tc, count }, i, folded) => (
+          <ToolCallRow key={i} name={tc.name} args={tc.args} count={count} repeated={i > 0 && folded[i - 1].item.name === tc.name} />
         ))}
         {m.meta && !active && visibleContent !== "" && !m.toolCalls?.length && (
           <MessageMeta meta={m.meta} />
