@@ -26,7 +26,7 @@ import {
 import { usePortalMenu } from "../hooks/usePortalMenu";
 import { Kbd } from "./Kbd";
 import { keysFor } from "../shortcuts";
-import { providerFailureMessage } from "../errors";
+import { errMessage, providerFailureMessage } from "../errors";
 import { InlineDiffReview } from "./InlineDiffReview";
 import { InlineCommandReview } from "./InlineCommandReview";
 import { conversationToConvo, deleteKlideConvo, publishKlideConvo, settleKlideConvo } from "../klideConvos";
@@ -76,7 +76,7 @@ import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } fr
 import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
-import { renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
+import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
 import { groupToolRuns, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
@@ -89,8 +89,9 @@ import {
 } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
-import { coordinationPeersOf, usePeerIndex } from "./ai/coordinationPeers";
+import { coordinationPeersOf, inboxSenders, parseDeliveryReason, peerName, useCoordinationInbox, usePeerIndex } from "./ai/coordinationPeers";
 import { PeerLink } from "./ai/PeerLink";
+import { reviewEnvelope } from "../agent/coordination";
 import { favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
 import { buildSystemPrompt } from "./ai/system-prompt";
@@ -2326,9 +2327,17 @@ This user request requires workspace inspection. Before answering, you MUST call
   // ~760px column — one computed gutter, no wrapper churn.
   const focusGutter = "calc(max(20px, (100% - 760px) / 2))";
 
-  // Other conversations this thread has exchanged agent messages with, derived
-  // from its own messages — no polling of the coordination journal.
-  const coordinationPeers = useMemo(() => coordinationPeersOf(msgs), [msgs]);
+  // Messages other agents have queued for this thread that its Run has not
+  // taken in yet — read from the journal, refreshed on its change event, so
+  // they show here the moment they are sent rather than at the next turn.
+  const pendingInbox = useCoordinationInbox(workspaceRoot, currentId);
+  // Other conversations this thread has exchanged agent messages with: from
+  // its own messages, plus whoever has something waiting for it.
+  const coordinationPeers = useMemo(() => {
+    const peers = coordinationPeersOf(msgs);
+    for (const id of inboxSenders(pendingInbox)) if (!peers.includes(id)) peers.push(id);
+    return peers;
+  }, [msgs, pendingInbox]);
   const peerIndex = usePeerIndex();
 
   // Write a structured memory note to .klide/memory/. Delegates to
@@ -2820,15 +2829,20 @@ This user request requires workspace inspection. Before answering, you MUST call
     question: string;
   } | null>(null);
   const [questionAnswer, setQuestionAnswer] = useState("");
-  // run_command approval: the harness pauses and emits a permission request;
-  // the user approves or rejects (approveCommand / rejectCommand) before the
-  // command runs. The card renders from `pendingPermission`.
+  // Permission gate: the harness pauses and emits a request — a shell command,
+  // a network target, or a message to another agent — and the user approves or
+  // rejects (approveCommand / rejectCommand) before it runs. The card renders
+  // from `pendingPermission`.
   const [pendingPermission, setPendingPermission] = useState<{
     runId: string;
     requestId: string;
     toolName: string;
-    kind: "command" | "network";
+    kind: "command" | "network" | "message";
     command: string;
+    /** For a message: who wrote it, by thread title when known, and which
+     *  envelope — so the pre-turn card for the same message is not drawn twice. */
+    peer?: string;
+    envelopeId?: string;
     summary: string;
     reason: string;
     externalPaths: string[];
@@ -2854,15 +2868,20 @@ This user request requires workspace inspection. Before answering, you MUST call
     // sends {command, cwd, externalPaths, matchedAllowRule}, a network
     // capability sends whatever it declared. Everything else is typed, and the
     // Rust `frontend_mirror_matches_agent_wire` test keeps it that way.
-    const input = (req.input ?? {}) as { command?: string; externalPaths?: string[] };
+    const input = (req.input ?? {}) as { command?: string; externalPaths?: string[]; fromRunId?: string; envelopeId?: string; body?: string };
     const isCommand = !!input.command;
-    const command = input.command ?? req.summary ?? req.toolName ?? "permission request";
+    // An incoming-message gate carries the sender and the text; the card shows
+    // the text where the command would be and names the peer as the chat does.
+    const isMessage = !isCommand && !!input.fromRunId;
+    const command = input.command ?? (isMessage ? input.body ?? "" : undefined) ?? req.summary ?? req.toolName ?? "permission request";
     return {
       runId,
       requestId: req.id,
       toolName: req.toolName ?? "permission",
-      kind: isCommand ? ("command" as const) : ("network" as const),
+      kind: isCommand ? ("command" as const) : isMessage ? ("message" as const) : ("network" as const),
       command,
+      peer: isMessage ? peerName(input.fromRunId!, peerIndex) : undefined,
+      envelopeId: isMessage ? input.envelopeId : undefined,
       summary: req.summary ?? command,
       reason: req.reason ?? "",
       externalPaths: Array.isArray(input.externalPaths) ? input.externalPaths : [],
@@ -4139,8 +4158,12 @@ This user request requires workspace inspection. Before answering, you MUST call
           }
 
           // Steering marker: a loop-monitor intervention, not an assistant
-          // utterance — render it indented to align with tool output.
+          // utterance — render it indented to align with tool output. A
+          // delivered agent message is the exception: it opens the response
+          // that follows, so that response draws it at its top, under one
+          // mark, and nothing is drawn here.
           if (m.role === "system" && m.steering) {
+            if (parseDeliveryReason(m.steering.reason) && msgs[i + 1]?.role === "assistant") return null;
             return (
               <div key={i} className="ai-msg-in" style={{ margin: "8px 0 8px 32px" }}>
                 {renderMessageBody(m, false, { workspaceRoot })}
@@ -4175,8 +4198,17 @@ This user request requires workspace inspection. Before answering, you MUST call
           // message after a user message carries Kit's K mark; the rest get a
           // 22px spacer so bodies stay column-aligned with tool rows.
           const prevMsg = msgs[i - 1];
+          // The agent messages delivered right before this response, hoisted
+          // in from the marker above (which drew nothing for itself). For the
+          // "one mark per response" rule the marker is transparent: what came
+          // before it decides.
+          const hoistedInbox =
+            m.role === "assistant" && prevMsg?.role === "system" && prevMsg.steering && parseDeliveryReason(prevMsg.steering.reason)
+              ? prevMsg
+              : null;
+          const before = hoistedInbox ? msgs[i - 2] : prevMsg;
           const isResponseStart =
-            (!prevMsg || (prevMsg.role !== "assistant" && prevMsg.role !== "tool")) &&
+            (!before || (before.role !== "assistant" && before.role !== "tool")) &&
             // …unless a folded run's header is already wearing this turn's
             // mark, in which case this row draws the spacer and keeps the
             // column aligned without a second one.
@@ -4208,6 +4240,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 <div aria-hidden="true" style={{ flexShrink: 0, width: 22 }} />
               )}
               <div style={{ flex: 1, minWidth: 0, color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.6 }}>
+                {hoistedInbox && <div style={{ margin: "0 0 4px" }}>{renderMessageBody(hoistedInbox, false, { workspaceRoot })}</div>}
                 {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive, { hideThinking: toolRunAt(i) !== null })}{isStreamingActive && <span className="ai-caret" />}</>}
                 {!isStreamingActive && !isAssistantPlaceholder && isResponseEnd && m.content?.trim() && (
                   <>
@@ -4287,6 +4320,11 @@ This user request requires workspace inspection. Before answering, you MUST call
             </div>
           );
         })()}
+        {pendingInbox.some((e) => e.deliveryState !== "queued") && (
+          <div className="ai-msg-in" style={{ display: "grid", gap: 4, margin: "8px 0 8px 32px" }}>
+            <PendingInboxRow pending={pendingInbox.filter((e) => e.deliveryState !== "queued")} />
+          </div>
+        )}
         {serverStarting && (
           <div
             className="ai-msg-in"
@@ -4398,6 +4436,23 @@ This user request requires workspace inspection. Before answering, you MUST call
 
       {!delegateSession && (
       <div style={{ padding: variant === "focus" ? `0 ${focusGutter} 16px` : "0 10px 10px" }}>
+        {/* Another agent's words wait here for the user before this
+            conversation may read them — the same card as a shell command,
+            answered into the journal. While the run itself is paused on one
+            of them, that card comes from the harness instead. */}
+        {workspaceRoot && pendingInbox
+          .filter((e) => e.deliveryState === "queued" && e.envelope.id !== pendingPermission?.envelopeId)
+          .map(({ envelope: e }) => (
+            <InlineCommandReview
+              key={e.id}
+              kind="message"
+              peer={peerName(e.from.type === "run" ? e.from.runId : "operator", peerIndex)}
+              command={e.body}
+              detail={`${e.kind} · read by this conversation at its next turn once approved`}
+              onReject={() => { void reviewEnvelope(workspaceRoot, currentId, e.id, false).catch((err) => notify(`Couldn't decline the message: ${errMessage(err)}`, { tone: "error" })); }}
+              onApproveOnce={() => { void reviewEnvelope(workspaceRoot, currentId, e.id, true).catch((err) => notify(`Couldn't approve the message: ${errMessage(err)}`, { tone: "error" })); }}
+            />
+          ))}
         {pendingPermission && (
           <InlineCommandReview
             command={pendingPermission.command}
@@ -4406,8 +4461,9 @@ This user request requires workspace inspection. Before answering, you MUST call
             externalPaths={pendingPermission.externalPaths}
             onReject={rejectCommand}
             onApproveOnce={() => approveCommand("once")}
+            peer={pendingPermission.peer}
             onApproveForRun={() => approveCommand("run")}
-            onApproveForProject={() => approveCommand("project")}
+            onApproveForProject={pendingPermission.kind === "message" ? undefined : () => approveCommand("project")}
             pattern={pendingPermission.suggestedPattern}
             onApprovePattern={(pattern) => approveCommand("project", pattern)}
           />

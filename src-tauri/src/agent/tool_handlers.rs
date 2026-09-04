@@ -834,6 +834,99 @@ pub(super) fn standard_gate_options(run_label: &str, project_label: &str) -> Vec
     ]
 }
 
+/// The choices on an incoming-message gate: let this one in, or every message
+/// from this peer for the rest of the run. No project scope — a peer Run id
+/// names one conversation.
+pub(super) fn message_gate_options() -> Vec<PermissionOption> {
+    standard_gate_options("Approve messages from this agent for this run", "")
+        .into_iter()
+        .filter(|option| option.option_id != "allow_project")
+        .collect()
+}
+
+/// The receiving side's review of another agent's words, before they reach
+/// this Run's model. Runs at the turn boundary, right before the inbox is
+/// loaded: every envelope still queued for this Run is put to the user on the
+/// same card as a shell command, and the answer is written to the journal as
+/// an accept or a decline. "For this run" is remembered per sending peer, so
+/// a peer once welcomed keeps talking without a prompt and a peer once refused
+/// is declined silently. Full auto accepts everything, as it runs commands.
+/// Returns `true` when the user cancelled the run while a card was up.
+pub(super) async fn review_coordination_inbox<E>(
+    ctx: &ToolCtx<'_>,
+    workspace_root: &str,
+    emit: &mut E,
+) -> Result<bool, String>
+where
+    E: FnMut(AgentEvent) -> Result<(), String>,
+{
+    let snapshot = ctx.sup.coordination_snapshot(workspace_root)?;
+    let awaiting = crate::coordination::awaiting_review_for(&snapshot, ctx.id)?;
+    let full_auto = ctx.request.auto_approve_commands == Some(true);
+    for entry in awaiting {
+        let envelope = &entry.envelope;
+        let peer = match &envelope.from {
+            CoordinationActor::Run { run_id } => run_id.as_str(),
+            CoordinationActor::Operator => "operator",
+        };
+        let accept = match permission::precheck(ctx, permission::Capability::Message, peer, full_auto) {
+            permission::Precheck::Execute => true,
+            permission::Precheck::AutoReject(_) => false,
+            permission::Precheck::Ask => {
+                let peer_label = snapshot
+                    .runs
+                    .iter()
+                    .find(|run| run.registration.run_id == peer)
+                    .and_then(|run| run.registration.label.clone());
+                let kind_label = format!("{:?}", envelope.kind).to_ascii_lowercase();
+                // Not a Tool call, but the gate needs a call id to pair the
+                // request with its resolution; the envelope id is that.
+                let call = NormalizedToolCall {
+                    id: format!("inbox_{}", envelope.id),
+                    name: "agent_inbox".to_string(),
+                    input: serde_json::json!({}),
+                };
+                let perm = PermissionRequest {
+                    id: permission::request_id(ctx, &call),
+                    run_id: ctx.id.to_string(),
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    input: serde_json::json!({
+                        "envelopeId": envelope.id,
+                        "fromRunId": peer,
+                        "peerLabel": peer_label,
+                        "kind": kind_label,
+                        "body": envelope.body,
+                        "replyTo": envelope.reply_to,
+                    }),
+                    summary: format!("{kind_label} from @{}", peer_label.as_deref().unwrap_or(peer)),
+                    reason: "Another agent wrote this; approve it to let this conversation read it."
+                        .to_string(),
+                    options: message_gate_options(),
+                };
+                let decision = match permission::run_gate(ctx, &call, perm, emit).await? {
+                    permission::GateDecision::Cancelled => return Ok(true),
+                    decision => decision,
+                };
+                permission::record(ctx, permission::Capability::Message, peer, peer, &decision);
+                matches!(decision, permission::GateDecision::Approved { .. })
+            }
+        };
+        ctx.sup.coordination_apply(
+            workspace_root,
+            CoordinationCommand::ReviewEnvelope {
+                actor: CoordinationActor::Run {
+                    run_id: ctx.id.to_string(),
+                },
+                run_id: ctx.id.to_string(),
+                envelope_id: envelope.id.clone(),
+                accept,
+            },
+        )?;
+    }
+    Ok(false)
+}
+
 pub(super) async fn process_command_tool<E>(
     ctx: &ToolCtx<'_>,
     call: &NormalizedToolCall,

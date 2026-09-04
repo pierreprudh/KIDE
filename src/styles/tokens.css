@@ -173,6 +173,11 @@
   --motion-fast: 120ms;
   --motion-med: 180ms;
   --motion-slow: 240ms;
+  /* Cross-fades where the reader follows one word giving way to another — a
+     label swapping for the sentence behind it. Slower than --motion-slow: the
+     eye has to read the outgoing text and then the incoming one, and a faster
+     swap looks like a flicker rather than a change. */
+  --motion-slower: 360ms;
   /* The Explorer's reveal — the anchored column sliding open, the free-mode
      drawer gliding out. Longer than --motion-slow on purpose: a whole column
      arriving is a bigger thing than a control, and hurrying it reads as a snap. */

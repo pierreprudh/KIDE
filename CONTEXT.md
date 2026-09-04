@@ -56,7 +56,7 @@ _Avoid_: tool category, permission flag
 **Permission engine**:
 The Harness decision path that classifies a Tool capability against the Mode,
 emits a permission request when needed, remembers per-run approvals/rejections,
-and only then executes command-capability Tools.
+and only then executes command-, network- and message-capability Tools.
 _Avoid_: confirmation modal, approval UI
 
 **Validation contract**:

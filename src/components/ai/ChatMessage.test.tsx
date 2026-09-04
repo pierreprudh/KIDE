@@ -93,7 +93,7 @@ describe("agent coordination tool rows", () => {
     expect(html).not.toContain("toRunId");
   });
 
-  it("renders a delivered agent message as an inbox row, body hidden until opened", () => {
+  it("renders a delivered agent message in the sender's line, from the other side", () => {
     const message: Msg = {
       role: "system",
       content: "",
@@ -102,12 +102,11 @@ describe("agent coordination tool rows", () => {
 
     const html = renderToStaticMarkup(renderMessageBody(message, false, { workspaceRoot: "/tmp/ws" }));
 
-    expect(html).toContain("Received");
-    expect(html).toContain("question from @run_reviewer");
+    expect(html).toContain("Asked by");
+    expect(html).toContain("@run_reviewer");
     expect(html).not.toContain("Steered");
+    expect(html).not.toContain("Received");
     expect(html).not.toContain("env_42");
-    // Closed <details>: the body slot shows only the loading placeholder.
-    expect(html).toContain("Loading…");
   });
 
   it("keeps ordinary steering lines as steering", () => {

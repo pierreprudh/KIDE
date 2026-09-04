@@ -2,7 +2,9 @@ import { type ReactNode } from "react";
 
 type Props = {
   command: string;
-  kind?: "command" | "network";
+  kind?: "command" | "network" | "message";
+  /** For a message: the peer it goes to, by thread title. */
+  peer?: string;
   detail?: string;
   externalPaths?: string[];
   onReject: () => void;
@@ -60,10 +62,13 @@ function BareAction({
 /** Shell-command approval — minimal: the command in mono with a `$` prompt and
  *  bare icon actions (cancel ✗, optional approve-for-run 📌, optional
  *  approve-for-project 🗂, approve-once ✓). No heavy framing, no icon
- *  containers. Lives inline under the requesting turn. */
+ *  containers. Lives inline under the requesting turn. A network target and a
+ *  message from another agent take the same card: the message shows the peer
+ *  where the `$` would be, then the text. */
 export function InlineCommandReview({
   command,
   kind = "command",
+  peer,
   detail,
   externalPaths = [],
   onReject,
@@ -74,7 +79,10 @@ export function InlineCommandReview({
   onApprovePattern,
 }: Props) {
   const canApprovePattern = !!pattern && !!onApprovePattern && pattern !== command;
-  const approveRunLabel = kind === "network" ? "Approve target for this run" : "Approve for this run";
+  const approveRunLabel =
+    kind === "network" ? "Approve target for this run"
+      : kind === "message" ? "Approve messages from this agent for this run"
+        : "Approve for this run";
   const approveProjectLabel = kind === "network" ? "Approve target for this project" : "Approve for this project";
   return (
     <div
@@ -115,6 +123,7 @@ export function InlineCommandReview({
           title={command}
         >
           {kind === "command" && <span style={{ color: "var(--fg-dim)", userSelect: "none" }}>$ </span>}
+          {kind === "message" && peer && <span style={{ color: "var(--accent)", fontWeight: 500 }}>@{peer} </span>}
           {command}
         </span>
         {(detail || externalPaths.length > 0) && (

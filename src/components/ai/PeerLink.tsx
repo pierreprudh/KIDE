@@ -40,6 +40,74 @@ export function exchangeBetween(
     .sort((a, b) => a.envelope.createdAtMs - b.envelope.createdAtMs);
 }
 
+/** One message of the exchange: sender's mark, the kind, and the time or
+ *  delivery state. Hover the row and the kind gives way to the sentence
+ *  itself, on the same line — the card shows the shape of the exchange at
+ *  rest and its words only where the pointer is. */
+function ExchangeRow({
+  envelope: e,
+  sender,
+  fromSelf,
+  reply,
+  pending,
+}: {
+  envelope: CoordinationEnvelope;
+  sender: { node: ReactNode; label: string };
+  fromSelf: boolean;
+  /** Sits one step under the message it answers. */
+  reply: boolean;
+  /** "waiting" or "shown" until the message is read; null once it is. */
+  pending: string | null;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "grid",
+        gridTemplateColumns: `${MARK}px minmax(0, 1fr) auto`,
+        columnGap: 6,
+        alignItems: "center",
+        minWidth: 0,
+        height: MARK + 2,
+        paddingLeft: reply ? MARK - 2 : 0,
+        fontSize: 11,
+        lineHeight: 1.3,
+      }}
+    >
+      <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={sender.label}>{sender.node}</span>
+      {/* Kind and body share the cell; the pointer cross-fades between them.
+          A plain fade — any drift read as the line jumping. */}
+      <span style={{ position: "relative", minWidth: 0, height: "1.3em", color: fromSelf ? "var(--fg-subtle)" : "var(--fg)" }}>
+        {[
+          { text: e.kind, shown: !hover },
+          { text: e.body, shown: hover },
+        ].map(({ text, shown }) => (
+          <span
+            key={text === e.kind ? "kind" : "body"}
+            aria-hidden={!shown}
+            style={{
+              position: "absolute",
+              inset: 0,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              // The kind is the quiet resting state; the sentence arrives at
+              // full strength.
+              opacity: !shown ? 0 : text === e.kind ? 0.55 : 1,
+              transition: "opacity var(--motion-slower) var(--ease-out)",
+            }}
+          >
+            {text}
+          </span>
+        ))}
+      </span>
+      <span style={{ color: pending ? "var(--fg-subtle)" : "var(--fg-dim)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{pending ?? relativeTime(e.createdAtMs)}</span>
+    </div>
+  );
+}
+
 function PeerLinkItem({
   id,
   index,
@@ -68,7 +136,10 @@ function PeerLinkItem({
   const toggleExchange = async () => {
     const next = !expanded;
     setExpanded(next);
-    if (!next || exchange || !workspaceRoot) return;
+    if (!next || !workspaceRoot) return;
+    // Re-read on every unfold: delivery moves from waiting to read while the
+    // card is up, and a reply may have landed. What is already shown stays
+    // in place until the fresh list arrives.
     try {
       const snapshot = await readCoordinationSnapshot(workspaceRoot);
       setExchange(exchangeBetween(snapshot.envelopes, selfId, id));
@@ -199,21 +270,19 @@ function PeerLinkItem({
                   exchange.map(({ envelope: e, deliveryState }) => {
                     const fromSelf = e.from.type === "run" && e.from.runId === selfId && e.toRunId === id && selfId !== id;
                     const sender = fromSelf || selfId === id ? mine : theirs;
-                    // Delivery is the one state worth a word: queued means the
-                    // reader has not paused yet; delivered, it was shown but
-                    // the turn did not finish; acknowledged, it was read.
-                    const state = deliveryState === "acknowledged" ? "read" : deliveryState === "delivered" ? "shown" : "waiting";
-                    return (
-                      // One line per message: sender's mark, kind, when, and
-                      // whether it was read. The body itself is the hover — a
-                      // card this small shows the shape of the exchange.
-                      <div key={e.id} title={e.body} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, height: MARK + 2, cursor: "help", fontSize: 11, lineHeight: 1.3 }}>
-                        <span style={{ display: "grid", placeItems: "center", width: MARK, height: MARK, flexShrink: 0 }} title={sender.label}>{sender.node}</span>
-                        <span style={{ color: "var(--fg-subtle)", whiteSpace: "nowrap" }}>{e.kind}</span>
-                        <span style={{ color: "var(--fg-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{relativeTime(e.createdAtMs)}</span>
-                        <span style={{ marginLeft: "auto", color: state === "read" ? "var(--fg-dim)" : "var(--fg-subtle)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{state}</span>
-                      </div>
-                    );
+                    // A reply sits one step under the message it answers, when
+                    // that message is part of this exchange.
+                    const reply = !!e.replyTo && exchange.some((s) => s.envelope.id === e.replyTo);
+                    // Delivery earns a word only until it is read: queued is
+                    // waiting on the receiving side's review; accepted waits for
+                    // its next turn; delivered was shown but the turn did not
+                    // finish; declined was refused. Read, the time takes the slot.
+                    const pending = deliveryState === "acknowledged" ? null
+                      : deliveryState === "queued" ? "to review"
+                        : deliveryState === "accepted" ? "waiting"
+                          : deliveryState === "delivered" ? "shown"
+                            : "declined";
+                    return <ExchangeRow key={e.id} envelope={e} sender={sender} fromSelf={fromSelf} reply={reply} pending={pending} />;
                   })
                 )}
               </div>

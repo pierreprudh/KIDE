@@ -17,6 +17,8 @@
         { "$ref": "#/$defs/envelopeQueued" },
         { "$ref": "#/$defs/envelopeDelivered" },
         { "$ref": "#/$defs/envelopeAcknowledged" },
+    { "$ref": "#/$defs/envelopeAccepted" },
+    { "$ref": "#/$defs/envelopeDeclined" },
         { "$ref": "#/$defs/cancelRequested" },
         { "$ref": "#/$defs/resultPublished" }
       ]
@@ -223,6 +225,28 @@
         "type": { "const": "envelope_acknowledged" },
         "envelopeId": { "$ref": "#/$defs/componentId" },
         "runId": { "$ref": "#/$defs/runId" }
+      }
+    },
+    "envelopeAccepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "envelopeId", "runId", "actor"],
+      "properties": {
+        "type": { "const": "envelope_accepted" },
+        "envelopeId": { "$ref": "#/$defs/componentId" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "actor": { "$ref": "#/$defs/actor" }
+      }
+    },
+    "envelopeDeclined": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "envelopeId", "runId", "actor"],
+      "properties": {
+        "type": { "const": "envelope_declined" },
+        "envelopeId": { "$ref": "#/$defs/componentId" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "actor": { "$ref": "#/$defs/actor" }
       }
     },
     "cancelRequested": {

@@ -133,6 +133,18 @@ separate network targets. `web_search` uses the `web_search` target; `web_fetch`
 uses `host:<domain>`, such as `host:docs.rs`. Project-scoped network approvals
 persist under `.klide/network-allowlist.json` and never imply command approval.
 
+Agent-to-agent messages are gated on the **receiving** side, through the same
+channel. Another agent's words are queued in the coordination journal and
+reach a conversation's model only once its user accepts them: from the panel
+before the next turn, or on the same card as a shell command when the turn
+boundary finds them still queued. The answer is durable (`review_envelope` →
+`envelope_accepted` / `envelope_declined`); a declined message is never
+delivered. "For this run" is remembered per sending peer, with no project scope
+— a peer Run id names one conversation. Full auto, which runs commands
+unprompted, accepts unprompted too. Three kinds skip review because the
+receiver invited them: the operator's own messages, a Run's message to itself,
+and a reply to something the receiver asked.
+
 ## Diff Review
 
 Write-capability Tools never write immediately. They create a `DiffProposal`.

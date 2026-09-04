@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Msg } from "./types";
+import type { CoordinationEnvelopeSnapshot, CoordinationSnapshot } from "../../agent/coordination";
 import {
   coordinationPeersOf,
+  inboxSenders,
   parseDeliveryReason,
   peerName,
+  pendingInboxFor,
   shortRunId,
 } from "./coordinationPeers";
 
@@ -60,5 +63,34 @@ describe("coordinationPeersOf", () => {
       { role: "assistant", content: "", toolCalls: [{ name: "agent_wait", args: { fromRunId: "run_c" } }] },
     ];
     expect(coordinationPeersOf(msgs)).toEqual(["run_b", "run_c"]);
+  });
+});
+
+describe("pendingInboxFor", () => {
+  const entry = (
+    id: string,
+    from: string,
+    to: string,
+    deliveryState: CoordinationEnvelopeSnapshot["deliveryState"],
+    createdAtMs: number,
+  ): CoordinationEnvelopeSnapshot => ({
+    envelope: { id, from: { type: "run", runId: from }, toRunId: to, kind: "question", body: "ping", sourceRefs: [], createdAtMs },
+    deliveryState,
+  });
+  const snapshot = {
+    envelopes: [
+      entry("env_3", "run_a", "run_b", "queued", 30),
+      entry("env_1", "run_c", "run_b", "delivered", 10),
+      entry("env_2", "run_a", "run_b", "acknowledged", 20),
+      entry("env_4", "run_b", "run_a", "queued", 40),
+    ],
+  } as unknown as CoordinationSnapshot;
+
+  it("keeps what this Run has not taken in yet, oldest first, and nothing addressed elsewhere", () => {
+    expect(pendingInboxFor(snapshot, "run_b").map((e) => e.envelope.id)).toEqual(["env_1", "env_3"]);
+  });
+
+  it("names the senders once each, in first-seen order", () => {
+    expect(inboxSenders(pendingInboxFor(snapshot, "run_b"))).toEqual(["run_c", "run_a"]);
   });
 });

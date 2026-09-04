@@ -54,7 +54,7 @@
     },
     "deliveryState": {
       "type": "string",
-      "enum": ["queued", "delivered", "acknowledged"]
+      "enum": ["queued", "accepted", "delivered", "acknowledged", "declined"]
     },
     "envelopeSnapshot": {
       "type": "object",

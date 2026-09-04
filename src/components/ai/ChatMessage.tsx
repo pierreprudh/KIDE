@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import type { Msg } from "./types";
 import { DelegateConsole } from "./DelegateTerminal";
 import {
@@ -8,7 +8,7 @@ import {
   usePeerIndex,
   type DeliveredEnvelopeRef,
 } from "./coordinationPeers";
-import { readCoordinationSnapshot, type CoordinationEnvelope } from "../../agent/coordination";
+import { readCoordinationSnapshot, type CoordinationEnvelope, type CoordinationEnvelopeSnapshot } from "../../agent/coordination";
 import { DotGridLoader, ToolIcon } from "./icons";
 import { renderMarkdown, splitThinking, stripPlanJson } from "../markdown";
 import { providerName } from "../../agent/providers";
@@ -177,27 +177,49 @@ function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown 
         : name === "agent_read_result"
           ? "Reading result from"
           : "Checked agent network";
-  const preview = body.length > 96 ? `${body.slice(0, 95)}…` : body;
+  return <CoordinationLine verb={action} peerId={targetId} peer={target} body={body} />;
+}
 
+// The one line every agent-to-agent event is drawn as — the sender's call
+// ("Asked @peer · body"), the receiver's delivery ("Asked by @peer · body"),
+// and a message still waiting for its turn. The verb, the peer by thread
+// title, the sentence. A long body folds open under it.
+function CoordinationLine({
+  verb,
+  peerId,
+  peer,
+  body,
+  trailing,
+  margin = "5px 0 -3px",
+}: {
+  verb: string;
+  peerId: string;
+  peer: string;
+  body: string;
+  /** The right end: what is still to happen, when anything is. */
+  trailing?: ReactNode;
+  margin?: string;
+}) {
+  const preview = body.length > 96 ? `${body.slice(0, 95)}…` : body;
+  const folds = body.length > 96;
   return (
-    <details style={{ margin: "5px 0 -3px" }}>
+    <details style={{ margin }}>
       <summary
         style={{
           display: "flex",
           alignItems: "center",
           gap: 7,
           padding: 0,
-          cursor: body.length > 96 ? "pointer" : "default",
+          cursor: folds ? "pointer" : "default",
           listStyle: "none",
           userSelect: "none",
           minWidth: 0,
         }}
       >
-        <span aria-hidden style={{ color: "var(--accent)", flexShrink: 0 }}>·</span>
-        <span style={{ fontSize: 12, color: "var(--fg-subtle)", flexShrink: 0 }}>{action}</span>
-        {target && (
-          <span title={targetId} style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 500, color: "var(--accent)", flexShrink: 0 }}>
-            @{target}
+        <span style={{ fontSize: 12, color: "var(--fg-subtle)", flexShrink: 0 }}>{verb}</span>
+        {peer && (
+          <span title={peerId} style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 500, color: "var(--accent)", flexShrink: 0 }}>
+            @{peer}
           </span>
         )}
         {preview && (
@@ -205,9 +227,10 @@ function AgentCoordinationCallRow({ name, args }: { name: string; args: unknown 
             · {preview}
           </span>
         )}
+        {trailing && <span style={{ ...COMPACT_MONO, marginLeft: "auto", color: "var(--fg-dim)", flexShrink: 0 }}>{trailing}</span>}
       </summary>
-      {body.length > 96 && (
-        <div style={{ margin: "3px 0 3px 13px", padding: "6px 10px", fontSize: 12, lineHeight: 1.55, color: "var(--fg-subtle)", background: "color-mix(in srgb, var(--bg-elevated) 60%, var(--bg))", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+      {folds && (
+        <div style={{ margin: "3px 0 3px 13px", padding: "6px 10px", fontSize: 12, lineHeight: 1.55, color: "var(--fg-subtle)", background: "color-mix(in srgb, var(--bg-elevated) 60%, var(--bg))", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", whiteSpace: "pre-wrap" }}>
           {body}
         </div>
       )}
@@ -880,24 +903,32 @@ export function CompactionRow({
   );
 }
 
-// Inbound glyph for a delivered agent message: the steering arrow mirrored,
-// coming in rather than turning away.
-function InboundGlyph() {
-  return (
-    <span aria-hidden style={{ display: "grid", placeItems: "center", color: "currentColor", flexShrink: 0 }}>
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M13 5a5 5 0 0 1-5 5H3" />
-        <path d="M6 7l-3 3 3 3" />
-      </svg>
-    </span>
-  );
+// The body of a delivered message lives in the coordination journal, not in
+// the transcript, so the row reads it once it is on screen. One local read
+// per row; the journal is small and already on disk.
+function useEnvelopeBodies(workspaceRoot: string | null | undefined, ids: string[]): Map<string, CoordinationEnvelope> {
+  const [bodies, setBodies] = useState<Map<string, CoordinationEnvelope>>(() => new Map());
+  const key = ids.join("|");
+  useEffect(() => {
+    if (!workspaceRoot || !key) return;
+    let cancelled = false;
+    readCoordinationSnapshot(workspaceRoot)
+      .then((snapshot) => {
+        if (cancelled) return;
+        const found = new Map<string, CoordinationEnvelope>();
+        for (const entry of snapshot.envelopes) found.set(entry.envelope.id, entry.envelope);
+        setBodies(found);
+      })
+      .catch(() => { /* Unreadable journal: the row still names who wrote and what kind. */ });
+    return () => { cancelled = true; };
+  }, [workspaceRoot, key]);
+  return bodies;
 }
 
 // Messages another agent left for this conversation, delivered at a turn
-// boundary. Collapsed, it names who wrote and what kind, in the same slim idiom
-// as a steering row. The bodies live in the coordination journal, not in the
-// transcript, so they are fetched only when the row is opened — the user asked
-// for the text to stay hidden until then.
+// boundary. Drawn in the same line as the sender's call, from the other side:
+// "Asked by @peer · body". The panel hoists this row into the top of the
+// response it opened, so it shares that response's model mark.
 export function AgentInboxRow({
   delivered,
   workspaceRoot,
@@ -906,54 +937,59 @@ export function AgentInboxRow({
   workspaceRoot?: string | null;
 }) {
   const titles = usePeerIndex();
-  const [bodies, setBodies] = useState<Map<string, CoordinationEnvelope> | null | "error">(null);
-  const load = async () => {
-    if (bodies || !workspaceRoot) return;
-    try {
-      const snapshot = await readCoordinationSnapshot(workspaceRoot);
-      const found = new Map<string, CoordinationEnvelope>();
-      for (const entry of snapshot.envelopes) found.set(entry.envelope.id, entry.envelope);
-      setBodies(found);
-    } catch {
-      setBodies("error");
-    }
-  };
-  const summary = delivered
-    .map((ref) => `${ref.kind} from @${peerName(ref.from, titles)}`)
-    .join(" · ");
+  const bodies = useEnvelopeBodies(workspaceRoot, delivered.map((ref) => ref.envelopeId));
   return (
-    <details
-      style={{ margin: "5px 0" }}
-      onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) void load(); }}
-    >
-      <summary style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", listStyle: "none", userSelect: "none", color: "var(--fg-subtle)", minWidth: 0 }}>
-        <InboundGlyph />
-        <span style={{ ...COMPACT_MONO, color: "var(--fg-strong)", fontWeight: 500, flexShrink: 0 }}>Received</span>
-        <span style={{ ...COMPACT_MONO, color: "var(--fg-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
-      </summary>
-      <div style={{ display: "grid", gap: 6, margin: "6px 0 2px 20px" }}>
-        {delivered.map((ref) => {
-          const envelope = bodies && bodies !== "error" ? bodies.get(ref.envelopeId) : undefined;
-          const text = bodies === "error"
-            ? "The message body could not be read from the coordination journal."
-            : !workspaceRoot
-              ? "Open the project to read this message."
-              : envelope
-                ? envelope.body
-                : bodies
-                  ? "This message is no longer in the journal."
-                  : "Loading…";
-          return (
-            <div key={ref.envelopeId} style={{ padding: "6px 10px", fontSize: 12, lineHeight: 1.55, color: "var(--fg-subtle)", background: "color-mix(in srgb, var(--bg-elevated) 60%, var(--bg))", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", whiteSpace: "pre-wrap" }}>
-              <div style={{ ...COMPACT_MONO, color: "var(--accent)", marginBottom: 3 }} title={ref.from}>
-                @{peerName(ref.from, titles)} · {ref.kind}
-              </div>
-              {text}
-            </div>
-          );
-        })}
-      </div>
-    </details>
+    <>
+      {delivered.map((ref) => (
+        <CoordinationLine
+          key={ref.envelopeId}
+          verb={inboundVerb(ref.kind)}
+          peerId={ref.from}
+          peer={peerName(ref.from, titles)}
+          body={bodies.get(ref.envelopeId)?.body.replace(/\s+/g, " ").trim() ?? ""}
+        />
+      ))}
+    </>
+  );
+}
+
+// What a peer's message does to this conversation, by kind — the receiving
+// side of the sender's "Asked" / "Messaged".
+function inboundVerb(kind: string): string {
+  switch (kind) {
+    case "question": return "Asked by";
+    case "answer": return "Answered by";
+    case "handoff": return "Handed off by";
+    case "progress": return "Progress from";
+    default: return "Instructed by";
+  }
+}
+
+// Messages another agent has queued for this conversation that the Run has
+// not taken in yet, once the user has let them through — the ones still to be
+// reviewed sit on the approval card by the composer instead. They arrive at
+// the next turn boundary; until then the panel would otherwise show nothing.
+// Same slim idiom as the sender's call row: the verb, the peer by name, the
+// sentence. The right end says what is left to happen.
+export function PendingInboxRow({ pending }: { pending: CoordinationEnvelopeSnapshot[] }) {
+  const titles = usePeerIndex();
+  return (
+    <>
+      {pending.map(({ envelope: e, deliveryState }) => {
+        const from = e.from.type === "run" ? e.from.runId : "operator";
+        return (
+          <CoordinationLine
+            key={e.id}
+            verb={inboundVerb(e.kind)}
+            peerId={from}
+            peer={peerName(from, titles)}
+            body={e.body.replace(/\s+/g, " ").trim()}
+            trailing={deliveryState === "delivered" ? "delivered" : "for its next turn"}
+            margin="0"
+          />
+        );
+      })}
+    </>
   );
 }
 

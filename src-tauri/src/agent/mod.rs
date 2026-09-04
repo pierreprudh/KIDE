@@ -15,6 +15,7 @@ pub mod subagents;
 mod tool_handlers;
 use tool_handlers::{
     last_tool_output, process_advisor_tool, process_command_tool, process_coordination_tool,
+    review_coordination_inbox,
     process_network_tool, process_pause_tool, process_subagent_tool, process_write_tool,
     steer_via_advisor, AdvisorSteer,
 };
@@ -437,7 +438,12 @@ impl RunSupervisor for TauriSupervisor {
         command: CoordinationCommand,
     ) -> Result<CoordinationCommandOutcome, String> {
         let state = self.app.state::<CoordinationStoreState>();
-        crate::coordination::apply_coordination_command(state.inner(), workspace_root, command)
+        let outcome =
+            crate::coordination::apply_coordination_command(state.inner(), workspace_root, command)?;
+        // Tell every panel in this Workspace the journal moved, so a message
+        // queued for an idle Run shows in its panel before that Run's next turn.
+        crate::coordination::emit_coordination_changed(&self.app, workspace_root, &outcome);
+        Ok(outcome)
     }
 
     fn coordination_snapshot(&self, workspace_root: &str) -> Result<CoordinationSnapshot, String> {
@@ -1357,7 +1363,7 @@ fn load_coordination_inbox(
     let snapshot = sup.coordination_snapshot(workspace_root)?;
     let inbox = crate::coordination::inbox_for(&snapshot, run_id)?;
     for entry in &inbox {
-        if entry.delivery_state == CoordinationDeliveryState::Queued {
+        if entry.delivery_state == CoordinationDeliveryState::Accepted {
             sup.coordination_apply(
                 workspace_root,
                 CoordinationCommand::MarkEnvelopeDelivered {
@@ -1934,11 +1940,34 @@ async fn run_agent_loop(
         // of it: if the shared journal cannot be read, this turn simply gets no
         // inbox. Failing the Run here would let one bad file stop every agent
         // in the Workspace, including ones that never message anyone.
+        //
+        // Before anything is loaded, whatever other agents queued for this Run
+        // goes past its user: the receiving side reviews, the sender never
+        // does. A refusal here is a cancelled run, not a skipped review.
         let coordination_inbox = match coordination_workspace_for(&request) {
-            Some(root) => load_coordination_inbox(sup, root, &id).unwrap_or_else(|error| {
-                eprintln!("klide: run {id} skipped coordination delivery this turn: {error}");
-                Vec::new()
-            }),
+            Some(root) => {
+                let ctx = ToolCtx {
+                    sup,
+                    id: id.as_str(),
+                    request: &request,
+                    cancel: &cancel,
+                    runs_dir: runs_dir.as_path(),
+                };
+                match review_coordination_inbox(&ctx, root, &mut emit).await {
+                    Ok(true) => {
+                        finish_cancelled(&mut emit, sup, &runs_dir, &id, &summary, message_count)?;
+                        return Ok(());
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!("klide: run {id} skipped coordination review this turn: {error}");
+                    }
+                }
+                load_coordination_inbox(sup, root, &id).unwrap_or_else(|error| {
+                    eprintln!("klide: run {id} skipped coordination delivery this turn: {error}");
+                    Vec::new()
+                })
+            }
             None => Vec::new(),
         };
         if !coordination_inbox.is_empty() {
@@ -4326,6 +4355,136 @@ mod run_supervisor_tests {
     fn with_run_handle_returns_none_for_a_missing_run() {
         let sup = FakeSupervisor::with_run("run-1");
         assert!(with_run_handle(&sup, "ghost", |_| ()).is_none());
+    }
+
+    /// Register two peers in a fresh journal and hand back the sandbox.
+    fn coordination_sandbox(label: &str, sup: &FakeSupervisor) -> (std::path::PathBuf, String) {
+        let root = std::env::temp_dir().join(format!(
+            "klide-{label}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root_text = root.to_string_lossy().to_string();
+        for run_id in ["run_parent", "run_peer"] {
+            sup.coordination_apply(
+                &root_text,
+                CoordinationCommand::RegisterRun {
+                    registration: CoordinationRunRegistration {
+                        run_id: run_id.to_string(),
+                        worker_kind: CoordinationWorkerKind::Harness,
+                        parent_run_id: None,
+                        mission_id: None,
+                        mission_task_id: None,
+                        label: Some(format!("{run_id} thread")),
+                    },
+                    initial_state: Some(CoordinationRunState::Working),
+                },
+            )
+            .unwrap();
+        }
+        (root, root_text)
+    }
+
+    fn unsolicited(sup: &FakeSupervisor, root_text: &str, key: &str, body: &str) -> String {
+        sup.coordination_apply(
+            root_text,
+            CoordinationCommand::SendEnvelope {
+                from: CoordinationActor::Run { run_id: "run_peer".to_string() },
+                to_run_id: "run_parent".to_string(),
+                kind: CoordinationEnvelopeKind::Question,
+                body: body.to_string(),
+                reply_to: None,
+                correlation_id: None,
+                idempotency_key: Some(key.to_string()),
+                source_refs: vec![],
+            },
+        )
+        .unwrap()
+        .snapshot
+        .envelopes
+        .last()
+        .unwrap()
+        .envelope
+        .id
+        .clone()
+    }
+
+    fn state_of(sup: &FakeSupervisor, root_text: &str, id: &str) -> CoordinationDeliveryState {
+        sup.coordination_snapshot(root_text)
+            .unwrap()
+            .envelopes
+            .iter()
+            .find(|entry| entry.envelope.id == id)
+            .unwrap()
+            .delivery_state
+    }
+
+    #[tokio::test]
+    async fn incoming_messages_are_reviewed_by_the_receiving_side() {
+        let sup = FakeSupervisor::with_run("run_parent");
+        let (root, root_text) = coordination_sandbox("inbox-review", &sup);
+        let request = test_request(&root_text, &[]);
+        let cancel = CancellationToken::new();
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "run_parent",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: root.as_path(),
+        };
+        let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let sink = events.clone();
+        let mut emit = move |event: AgentEvent| -> Result<(), String> {
+            sink.lock().unwrap().push(event);
+            Ok(())
+        };
+
+        // Declined: never reaches the inbox, and the peer is refused for the run.
+        let first = unsolicited(&sup, &root_text, "m1", "ping");
+        assert_eq!(state_of(&sup, &root_text, &first), CoordinationDeliveryState::Queued);
+        let (outcome, _) = tokio::join!(
+            review_coordination_inbox(&ctx, &root_text, &mut emit),
+            answer_permission(&sup, "run_parent", r#"{"behavior":"deny"}"#),
+        );
+        assert!(!outcome.unwrap(), "not cancelled");
+        assert_eq!(state_of(&sup, &root_text, &first), CoordinationDeliveryState::Declined);
+        let second = unsolicited(&sup, &root_text, "m2", "ping again");
+        assert!(!review_coordination_inbox(&ctx, &root_text, &mut emit).await.unwrap());
+        assert_eq!(state_of(&sup, &root_text, &second), CoordinationDeliveryState::Declined);
+        assert!(crate::coordination::inbox_for(&sup.coordination_snapshot(&root_text).unwrap(), "run_parent").unwrap().is_empty());
+
+        // A fresh run, welcomed for the run: one card, then the peer talks freely.
+        let sup = FakeSupervisor::with_run("run_parent");
+        let (root, root_text) = coordination_sandbox("inbox-review-ok", &sup);
+        let request = test_request(&root_text, &[]);
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "run_parent",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: root.as_path(),
+        };
+        let third = unsolicited(&sup, &root_text, "m3", "hello");
+        let (outcome, _) = tokio::join!(
+            review_coordination_inbox(&ctx, &root_text, &mut emit),
+            answer_permission(&sup, "run_parent", r#"{"behavior":"allow","scope":"run"}"#),
+        );
+        assert!(!outcome.unwrap());
+        assert_eq!(state_of(&sup, &root_text, &third), CoordinationDeliveryState::Accepted);
+        let fourth = unsolicited(&sup, &root_text, "m4", "still there?");
+        assert!(!review_coordination_inbox(&ctx, &root_text, &mut emit).await.unwrap());
+        assert_eq!(state_of(&sup, &root_text, &fourth), CoordinationDeliveryState::Accepted);
+        assert_eq!(crate::coordination::inbox_for(&sup.coordination_snapshot(&root_text).unwrap(), "run_parent").unwrap().len(), 2);
+
+        let requested = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::PermissionRequested { .. }))
+            .count();
+        assert_eq!(requested, 2, "one card per fresh peer decision");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

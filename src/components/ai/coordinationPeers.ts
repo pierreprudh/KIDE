@@ -15,6 +15,13 @@
 
 import { useEffect, useState } from "react";
 import type { ProviderId } from "../../agent/types";
+import {
+  onCoordinationChanged,
+  readCoordinationSnapshot,
+  type CoordinationEnvelopeSnapshot,
+  type CoordinationSnapshot,
+} from "../../agent/coordination";
+import { createListenerScope } from "../../tauriEvents";
 import type { Conversation, Msg } from "./types";
 import { CONVERSATIONS_CHANGED_EVENT, loadConversations } from "./storedConversations";
 
@@ -123,4 +130,57 @@ export function coordinationPeersOf(msgs: Msg[]): string[] {
     }
   }
   return peers;
+}
+
+/** Messages addressed to this Run that it has not yet taken in: awaiting the
+ *  user's review, accepted for the next turn, or delivered during a turn that
+ *  has not finished. Acknowledged ones are in the transcript as a received
+ *  row; declined ones are over. Oldest first. */
+export function pendingInboxFor(snapshot: CoordinationSnapshot, selfId: string): CoordinationEnvelopeSnapshot[] {
+  return snapshot.envelopes
+    .filter((entry) =>
+      entry.envelope.toRunId === selfId
+      && entry.deliveryState !== "acknowledged"
+      && entry.deliveryState !== "declined")
+    .sort((a, b) => a.envelope.createdAtMs - b.envelope.createdAtMs);
+}
+
+/** Who wrote the pending messages, in first-seen order; the operator is not a peer. */
+export function inboxSenders(pending: CoordinationEnvelopeSnapshot[]): string[] {
+  const senders: string[] = [];
+  for (const { envelope } of pending) {
+    if (envelope.from.type !== "run") continue;
+    if (!senders.includes(envelope.from.runId)) senders.push(envelope.from.runId);
+  }
+  return senders;
+}
+
+/** The live pending inbox of one conversation. Reads the journal on mount and
+ *  again on every `coordination:changed` for this Workspace — the receiving
+ *  Run may be idle, so its own messages say nothing until its next turn, and
+ *  the panel should not wait for that to show what arrived. */
+export function useCoordinationInbox(workspaceRoot: string | null, selfId: string): CoordinationEnvelopeSnapshot[] {
+  const [pending, setPending] = useState<CoordinationEnvelopeSnapshot[]>([]);
+  useEffect(() => {
+    if (!workspaceRoot) {
+      setPending([]);
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      readCoordinationSnapshot(workspaceRoot)
+        .then((snapshot) => { if (!cancelled) setPending(pendingInboxFor(snapshot, selfId)); })
+        .catch(() => { /* No journal yet, or unreadable — nothing pending to show. */ });
+    };
+    refresh();
+    const scope = createListenerScope();
+    scope.add(onCoordinationChanged((change) => {
+      if (change.workspaceRoot === workspaceRoot) refresh();
+    }));
+    return () => {
+      cancelled = true;
+      scope.dispose();
+    };
+  }, [workspaceRoot, selfId]);
+  return pending;
 }

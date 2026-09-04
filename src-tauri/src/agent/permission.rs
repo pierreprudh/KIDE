@@ -18,13 +18,17 @@ use super::types::{AgentEvent, AgentRunStatus, PermissionRequest};
 use super::{command_allowlist, network_allowlist};
 use super::{pause_for_user, with_run_handle, PauseOutcome, ToolCtx};
 
-/// Which trust namespace a gated Tool draws on. Command- and network-capability
-/// tools keep separate run-scoped sets and separate project allowlists so trust
-/// never bleeds across capability kinds.
+/// Which trust namespace a gated Tool draws on. Command-, network- and
+/// message-capability tools keep separate run-scoped sets (and, for the first
+/// two, separate project allowlists) so trust never bleeds across capability
+/// kinds. A message from another agent is keyed by the peer Run it comes from
+/// — the receiving side decides who may talk to it — and has no project scope,
+/// since a Run id does not outlive the conversation.
 #[derive(Clone, Copy)]
 pub enum Capability {
     Command,
     Network,
+    Message,
 }
 
 /// Everything the engine remembers about this run's approvals and rejections,
@@ -44,6 +48,11 @@ pub struct TrustMemory {
     approved_network: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Network targets rejected this run.
     rejected_network: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Peer Runs whose messages this run's user lets in for the rest of the run.
+    approved_messages: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Peer Runs whose messages this run's user refused; later ones are
+    /// declined without a card.
+    rejected_messages: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Edit proposals rejected this run, keyed `<path>::<new_hash>`. Write has
     /// no approved set: a write approval is the diff decision itself and is
     /// never remembered across proposals — only a rejection sticks, so one
@@ -61,6 +70,7 @@ impl TrustMemory {
         match cap {
             Capability::Command => self.approved_commands.lock().unwrap().contains(key),
             Capability::Network => self.approved_network.lock().unwrap().contains(key),
+            Capability::Message => self.approved_messages.lock().unwrap().contains(key),
         }
     }
 
@@ -68,6 +78,7 @@ impl TrustMemory {
         match cap {
             Capability::Command => self.rejected_commands.lock().unwrap().contains(key),
             Capability::Network => self.rejected_network.lock().unwrap().contains(key),
+            Capability::Message => self.rejected_messages.lock().unwrap().contains(key),
         }
     }
 
@@ -75,6 +86,7 @@ impl TrustMemory {
         let set = match cap {
             Capability::Command => &self.approved_commands,
             Capability::Network => &self.approved_network,
+            Capability::Message => &self.approved_messages,
         };
         set.lock().unwrap().insert(key.to_string());
     }
@@ -83,6 +95,7 @@ impl TrustMemory {
         let set = match cap {
             Capability::Command => &self.rejected_commands,
             Capability::Network => &self.rejected_network,
+            Capability::Message => &self.rejected_messages,
         };
         set.lock().unwrap().insert(key.to_string());
     }
@@ -178,6 +191,8 @@ impl Capability {
                 }
             }
             Capability::Network => network_allowlist::add(runs_dir, root, persist),
+            // A peer Run id names one conversation; nothing durable to add to.
+            Capability::Message => return,
         };
         if let Err(err) = result {
             eprintln!("failed to persist project {} allowlist: {err}", self.noun());
@@ -188,6 +203,7 @@ impl Capability {
         match self {
             Capability::Command => "command",
             Capability::Network => "network",
+            Capability::Message => "message",
         }
     }
 
@@ -202,6 +218,9 @@ Do not run it again — take a different approach or ask the user what they'd pr
                 "You already proposed this exact network target and the user rejected it. \
 Do not use it again — take a different approach or ask the user what they'd prefer."
             }
+            // The receiving side's review never reaches the model: a declined
+            // message is simply not delivered. Kept for the engine's shape.
+            Capability::Message => "Messages from this agent were refused for this run.",
         }
     }
 
@@ -216,6 +235,7 @@ command again — take a different approach or ask the user what they'd prefer."
                 "Rejected by user: network request not run. Do not propose this exact \
 network target again — take a different approach or ask the user what they'd prefer."
             }
+            Capability::Message => "Rejected by user: message from this agent not delivered.",
         }
     }
 }

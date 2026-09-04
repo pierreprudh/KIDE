@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /**
  * Frontend mirror of the Rust-owned coordination journal. The UI reads this
@@ -68,7 +69,9 @@ export type CoordinationEnvelope = {
   createdAtMs: number;
 };
 
-export type CoordinationDeliveryState = "queued" | "delivered" | "acknowledged";
+/** `queued` is awaiting the receiving side's review; `accepted` is cleared for
+ *  delivery at its next turn; `declined` is refused, for good. */
+export type CoordinationDeliveryState = "queued" | "accepted" | "delivered" | "acknowledged" | "declined";
 export type CoordinationResultStatus = "succeeded" | "partial" | "failed" | "cancelled";
 export type CoordinationArtifactKind = "file" | "commit" | "transcript" | "diff" | "memory";
 
@@ -105,6 +108,8 @@ export type CoordinationEvent =
   | { type: "envelope_queued"; envelope: CoordinationEnvelope }
   | { type: "envelope_delivered"; envelopeId: string; runId: string }
   | { type: "envelope_acknowledged"; envelopeId: string; runId: string }
+  | { type: "envelope_accepted"; envelopeId: string; runId: string; actor: CoordinationActor }
+  | { type: "envelope_declined"; envelopeId: string; runId: string; actor: CoordinationActor }
   | { type: "cancel_requested"; actor: CoordinationActor; runId: string; reason?: string }
   | { type: "result_published"; result: CoordinationResult };
 
@@ -172,6 +177,7 @@ export type CoordinationCommand =
     }
   | { type: "mark_envelope_delivered"; runId: string; envelopeId: string }
   | { type: "acknowledge_envelope"; runId: string; envelopeId: string }
+  | { type: "review_envelope"; actor: CoordinationActor; runId: string; envelopeId: string; accept: boolean }
   | { type: "request_cancel"; actor: CoordinationActor; runId: string; reason?: string }
   | {
       type: "publish_result";
@@ -216,5 +222,36 @@ export function readCoordinationEvents(
     workspaceRoot,
     fromSeq,
     limit,
+  });
+}
+
+/** Fired by Rust after every command that appended to a Workspace's journal
+ *  (mirrors `COORDINATION_CHANGED_EVENT` in coordination.rs). Idempotent
+ *  replays stay silent. */
+export const COORDINATION_CHANGED_EVENT = "coordination:changed";
+
+export type CoordinationChanged = {
+  workspaceRoot: string;
+  seq: number;
+};
+
+export function onCoordinationChanged(handler: (change: CoordinationChanged) => void): Promise<UnlistenFn> {
+  return listen<CoordinationChanged>(COORDINATION_CHANGED_EVENT, (e) => handler(e.payload));
+}
+
+/** The operator's review of a message another agent queued for one of their
+ *  conversations, from the panel before that conversation's next turn. */
+export function reviewEnvelope(
+  workspaceRoot: string,
+  runId: string,
+  envelopeId: string,
+  accept: boolean,
+): Promise<CoordinationCommandOutcome> {
+  return applyCoordinationCommand(workspaceRoot, {
+    type: "review_envelope",
+    actor: { type: "operator" },
+    runId,
+    envelopeId,
+    accept,
   });
 }

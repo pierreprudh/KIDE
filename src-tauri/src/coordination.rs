@@ -179,9 +179,16 @@ pub struct CoordinationEnvelope {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoordinationDeliveryState {
+    /// Written, and waiting for the receiving side to accept it. Only the
+    /// receiver's operator (or its Run, acting on the operator's answer) moves
+    /// it on: another agent's words never reach a conversation unreviewed.
     Queued,
+    /// Cleared for delivery at the receiver's next turn boundary.
+    Accepted,
     Delivered,
     Acknowledged,
+    /// Refused by the receiving side. Terminal; never delivered.
+    Declined,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -255,6 +262,16 @@ pub enum CoordinationEvent {
     EnvelopeAcknowledged {
         envelope_id: String,
         run_id: String,
+    },
+    EnvelopeAccepted {
+        envelope_id: String,
+        run_id: String,
+        actor: CoordinationActor,
+    },
+    EnvelopeDeclined {
+        envelope_id: String,
+        run_id: String,
+        actor: CoordinationActor,
     },
     CancelRequested {
         actor: CoordinationActor,
@@ -361,6 +378,15 @@ pub enum CoordinationCommand {
     AcknowledgeEnvelope {
         run_id: String,
         envelope_id: String,
+    },
+    /// The receiving side's answer to a queued envelope: accept it for
+    /// delivery, or decline it for good. `actor` is the operator, or the
+    /// addressed Run relaying what its operator chose.
+    ReviewEnvelope {
+        actor: CoordinationActor,
+        run_id: String,
+        envelope_id: String,
+        accept: bool,
     },
     RequestCancel {
         actor: CoordinationActor,
@@ -660,9 +686,11 @@ pub(crate) fn visible_result_for(
         .cloned())
 }
 
-/// Inbox records safe to project into one authenticated Run. Delivered but
-/// unacknowledged envelopes are included so a failed provider request can
-/// retry the same semantic delivery at the next turn boundary.
+/// Inbox records safe to project into one authenticated Run: accepted by the
+/// receiving side and not yet acknowledged. Delivered but unacknowledged
+/// envelopes are included so a failed provider request can retry the same
+/// semantic delivery at the next turn boundary. Queued (unreviewed) and
+/// declined envelopes never appear here.
 pub(crate) fn inbox_for(
     snapshot: &CoordinationSnapshot,
     run_id: &str,
@@ -676,7 +704,31 @@ pub(crate) fn inbox_for(
         .iter()
         .filter(|entry| {
             entry.envelope.to_run_id == run_id
-                && entry.delivery_state != CoordinationDeliveryState::Acknowledged
+                && matches!(
+                    entry.delivery_state,
+                    CoordinationDeliveryState::Accepted | CoordinationDeliveryState::Delivered
+                )
+        })
+        .cloned()
+        .collect())
+}
+
+/// Envelopes addressed to this Run that its side has not reviewed yet — what
+/// the Harness asks the operator about at the turn boundary.
+pub(crate) fn awaiting_review_for(
+    snapshot: &CoordinationSnapshot,
+    run_id: &str,
+) -> Result<Vec<CoordinationEnvelopeSnapshot>, String> {
+    validate_run_id(run_id)?;
+    if find_run(snapshot, run_id).is_none() {
+        return Err(format!("Coordination Run `{run_id}` is not registered."));
+    }
+    Ok(snapshot
+        .envelopes
+        .iter()
+        .filter(|entry| {
+            entry.envelope.to_run_id == run_id
+                && entry.delivery_state == CoordinationDeliveryState::Queued
         })
         .cloned()
         .collect())
@@ -810,9 +862,23 @@ fn apply_event(
                     );
                 }
             }
+            // Unsolicited words from another agent wait for the receiving
+            // side's review. Three cases skip it: the operator wrote it, the
+            // Run wrote it to itself, or it answers something the receiver
+            // itself asked — the receiver invited that reply.
+            let solicited = envelope.reply_to.as_deref().is_some_and(|reply_to| {
+                find_envelope(snapshot, reply_to)
+                    .is_some_and(|prior| prior.envelope.from.run_id() == Some(envelope.to_run_id.as_str()))
+            });
+            let self_talk = envelope.from.run_id() == Some(envelope.to_run_id.as_str());
+            let delivery_state = if matches!(envelope.from, CoordinationActor::Operator) || self_talk || solicited {
+                CoordinationDeliveryState::Accepted
+            } else {
+                CoordinationDeliveryState::Queued
+            };
             snapshot.envelopes.push(CoordinationEnvelopeSnapshot {
                 envelope: envelope.clone(),
-                delivery_state: CoordinationDeliveryState::Queued,
+                delivery_state,
                 delivered_at_ms: None,
                 acknowledged_at_ms: None,
             });
@@ -827,11 +893,45 @@ fn apply_event(
             if envelope.envelope.to_run_id != *run_id {
                 return Err("Only the addressed Run may receive an envelope.".into());
             }
-            if envelope.delivery_state != CoordinationDeliveryState::Queued {
-                return Err(format!("Envelope `{envelope_id}` is not queued."));
+            if envelope.delivery_state != CoordinationDeliveryState::Accepted {
+                return Err(format!(
+                    "Envelope `{envelope_id}` has not been accepted by the receiving side."
+                ));
             }
             envelope.delivery_state = CoordinationDeliveryState::Delivered;
             envelope.delivered_at_ms = Some(line.ts);
+        }
+        CoordinationEvent::EnvelopeAccepted {
+            envelope_id,
+            run_id,
+            actor,
+        }
+        | CoordinationEvent::EnvelopeDeclined {
+            envelope_id,
+            run_id,
+            actor,
+        } => {
+            validate_run_id(run_id)?;
+            validate_actor(snapshot, actor)?;
+            if let CoordinationActor::Run { run_id: reviewer } = actor {
+                if reviewer != run_id {
+                    return Err("Only the addressed Run may review its own envelopes.".into());
+                }
+            }
+            let accept = matches!(line.event, CoordinationEvent::EnvelopeAccepted { .. });
+            let envelope = find_envelope_mut(snapshot, envelope_id)
+                .ok_or_else(|| format!("Envelope `{envelope_id}` does not exist."))?;
+            if envelope.envelope.to_run_id != *run_id {
+                return Err("Only the receiving side may review an envelope.".into());
+            }
+            if envelope.delivery_state != CoordinationDeliveryState::Queued {
+                return Err(format!("Envelope `{envelope_id}` is not awaiting review."));
+            }
+            envelope.delivery_state = if accept {
+                CoordinationDeliveryState::Accepted
+            } else {
+                CoordinationDeliveryState::Declined
+            };
         }
         CoordinationEvent::EnvelopeAcknowledged {
             envelope_id,
@@ -1067,7 +1167,15 @@ fn idempotent_event(
             // Initial state is meaningful only on first registration. A
             // retry can arrive after the Run has legitimately moved on, so
             // immutable identity decides whether this is the same intent.
-            if existing.registration == *registration {
+            // The label is not identity: the harness registers again on every
+            // follow-up turn of a conversation, naming it by that turn's text,
+            // and the first label must simply win.
+            let same_identity = existing.registration.run_id == registration.run_id
+                && existing.registration.worker_kind == registration.worker_kind
+                && existing.registration.parent_run_id == registration.parent_run_id
+                && existing.registration.mission_id == registration.mission_id
+                && existing.registration.mission_task_id == registration.mission_task_id;
+            if same_identity {
                 Ok(true)
             } else {
                 Err(format!(
@@ -1126,6 +1234,25 @@ fn idempotent_event(
         } => Ok(find_envelope(snapshot, envelope_id).is_some_and(|entry| {
             entry.envelope.to_run_id == *run_id
                 && entry.delivery_state == CoordinationDeliveryState::Acknowledged
+        })),
+        CoordinationCommand::ReviewEnvelope {
+            envelope_id,
+            run_id,
+            accept,
+            ..
+        } => Ok(find_envelope(snapshot, envelope_id).is_some_and(|entry| {
+            entry.envelope.to_run_id == *run_id
+                && if *accept {
+                    // Already past review in the accepting direction.
+                    matches!(
+                        entry.delivery_state,
+                        CoordinationDeliveryState::Accepted
+                            | CoordinationDeliveryState::Delivered
+                            | CoordinationDeliveryState::Acknowledged
+                    )
+                } else {
+                    entry.delivery_state == CoordinationDeliveryState::Declined
+                }
         })),
         CoordinationCommand::RequestCancel {
             actor,
@@ -1244,6 +1371,26 @@ fn event_for_command(
         } => Ok(CoordinationEvent::EnvelopeAcknowledged {
             envelope_id,
             run_id,
+        }),
+        CoordinationCommand::ReviewEnvelope {
+            actor,
+            run_id,
+            envelope_id,
+            accept: true,
+        } => Ok(CoordinationEvent::EnvelopeAccepted {
+            envelope_id,
+            run_id,
+            actor,
+        }),
+        CoordinationCommand::ReviewEnvelope {
+            actor,
+            run_id,
+            envelope_id,
+            accept: false,
+        } => Ok(CoordinationEvent::EnvelopeDeclined {
+            envelope_id,
+            run_id,
+            actor,
         }),
         CoordinationCommand::RequestCancel {
             actor,
@@ -1372,8 +1519,40 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("Coordination task failed: {e}"))?
 }
 
+/// Global event fired after every command that appended to a Workspace's
+/// coordination journal. Panels listen so an incoming message shows up the
+/// moment it is queued — the receiving Run may be idle, and nothing else
+/// would tell its panel until the next turn boundary.
+pub const COORDINATION_CHANGED_EVENT: &str = "coordination:changed";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoordinationChanged {
+    pub workspace_root: String,
+    pub seq: u64,
+}
+
+/// Announce an applied command. Idempotent replays appended nothing and stay
+/// silent. Emission is best-effort: a panel that misses it re-reads on mount.
+pub(crate) fn emit_coordination_changed(
+    app: &tauri::AppHandle,
+    workspace_root: &str,
+    outcome: &CoordinationCommandOutcome,
+) {
+    use tauri::Emitter;
+    let Some(line) = &outcome.appended else { return };
+    let _ = app.emit(
+        COORDINATION_CHANGED_EVENT,
+        CoordinationChanged {
+            workspace_root: workspace_root.to_string(),
+            seq: line.seq,
+        },
+    );
+}
+
 #[tauri::command]
 pub async fn coordination_apply_command(
+    app: tauri::AppHandle,
     state: tauri::State<'_, CoordinationStoreState>,
     workspace_root: String,
     command: CoordinationCommand,
@@ -1382,7 +1561,10 @@ pub async fn coordination_apply_command(
     // expose it verbatim: they bind the caller's Run identity, then construct
     // a command with that actor on the Rust side.
     let state = state.inner().clone();
-    blocking(move || apply_coordination_command(&state, &workspace_root, command)).await
+    let root = workspace_root.clone();
+    let outcome = blocking(move || apply_coordination_command(&state, &root, command)).await?;
+    emit_coordination_changed(&app, &workspace_root, &outcome);
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -1708,6 +1890,11 @@ mod tests {
         )
         .unwrap();
         let id = sent.snapshot.envelopes[0].envelope.id.clone();
+        // The operator wrote it, so it needs no review.
+        assert_eq!(
+            sent.snapshot.envelopes[0].delivery_state,
+            CoordinationDeliveryState::Accepted
+        );
 
         let error = apply_coordination_command(
             &state,
@@ -1786,7 +1973,22 @@ mod tests {
         );
 
         let envelope_id = sent.snapshot.envelopes[0].envelope.id.clone();
-        assert_eq!(inbox_for(&sent.snapshot, "run_child").unwrap().len(), 1);
+        // Another agent's words: the receiving side reviews first. Until then
+        // the Run's inbox is empty and the review queue holds it.
+        assert!(inbox_for(&sent.snapshot, "run_child").unwrap().is_empty());
+        assert_eq!(awaiting_review_for(&sent.snapshot, "run_child").unwrap().len(), 1);
+        let accepted = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::ReviewEnvelope {
+                actor: CoordinationActor::Operator,
+                run_id: "run_child".into(),
+                envelope_id: envelope_id.clone(),
+                accept: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(inbox_for(&accepted.snapshot, "run_child").unwrap().len(), 1);
         let delivered = apply_coordination_command(
             &state,
             root.to_str().unwrap(),
@@ -1813,6 +2015,104 @@ mod tests {
         assert!(inbox_for(&acknowledged.snapshot, "run_child")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn review_gates_unsolicited_messages_and_waves_invited_replies_through() {
+        let root = temp_workspace("review");
+        let state = CoordinationStoreState::default();
+        register(&state, &root, "run_a", None);
+        register(&state, &root, "run_b", None);
+        let question = send(
+            &state,
+            &root,
+            CoordinationActor::Run { run_id: "run_a".into() },
+            "run_b",
+            Some("q1"),
+        )
+        .unwrap();
+        let question_id = question.snapshot.envelopes[0].envelope.id.clone();
+        assert_eq!(
+            question.snapshot.envelopes[0].delivery_state,
+            CoordinationDeliveryState::Queued
+        );
+
+        // Only the receiving side may review, and only while it is queued.
+        let error = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::ReviewEnvelope {
+                actor: CoordinationActor::Run { run_id: "run_a".into() },
+                run_id: "run_b".into(),
+                envelope_id: question_id.clone(),
+                accept: true,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("own envelopes"), "got: {error}");
+        let declined = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::ReviewEnvelope {
+                actor: CoordinationActor::Operator,
+                run_id: "run_b".into(),
+                envelope_id: question_id.clone(),
+                accept: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            declined.snapshot.envelopes[0].delivery_state,
+            CoordinationDeliveryState::Declined
+        );
+        assert!(inbox_for(&declined.snapshot, "run_b").unwrap().is_empty());
+        let error = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::MarkEnvelopeDelivered {
+                run_id: "run_b".into(),
+                envelope_id: question_id.clone(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("not been accepted"), "got: {error}");
+
+        // A reply to something run_a itself asked skips run_a's review.
+        let asked = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::SendEnvelope {
+                from: CoordinationActor::Run { run_id: "run_b".into() },
+                to_run_id: "run_a".into(),
+                kind: CoordinationEnvelopeKind::Question,
+                body: "May I?".into(),
+                reply_to: None,
+                correlation_id: None,
+                idempotency_key: Some("q2".into()),
+                source_refs: vec![],
+            },
+        )
+        .unwrap();
+        let asked_id = asked.snapshot.envelopes.last().unwrap().envelope.id.clone();
+        let answered = apply_coordination_command(
+            &state,
+            root.to_str().unwrap(),
+            CoordinationCommand::SendEnvelope {
+                from: CoordinationActor::Run { run_id: "run_a".into() },
+                to_run_id: "run_b".into(),
+                kind: CoordinationEnvelopeKind::Answer,
+                body: "Yes.".into(),
+                reply_to: Some(asked_id),
+                correlation_id: None,
+                idempotency_key: Some("a2".into()),
+                source_refs: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            answered.snapshot.envelopes.last().unwrap().delivery_state,
+            CoordinationDeliveryState::Accepted
+        );
     }
 
     #[test]

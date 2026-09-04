@@ -9,6 +9,7 @@
     { "$ref": "#/$defs/sendEnvelope" },
     { "$ref": "#/$defs/markEnvelopeDelivered" },
     { "$ref": "#/$defs/acknowledgeEnvelope" },
+    { "$ref": "#/$defs/reviewEnvelope" },
     { "$ref": "#/$defs/requestCancel" },
     { "$ref": "#/$defs/publishResult" }
   ],
@@ -96,6 +97,19 @@
         "type": { "const": "acknowledge_envelope" },
         "runId": { "$ref": "#/$defs/runId" },
         "envelopeId": { "$ref": "#/$defs/componentId" }
+      }
+    },
+    "reviewEnvelope": {
+      "description": "The receiving side accepts a queued envelope for delivery, or declines it for good. The actor is the operator or the addressed Run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "actor", "runId", "envelopeId", "accept"],
+      "properties": {
+        "type": { "const": "review_envelope" },
+        "actor": { "$ref": "#/$defs/actor" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "envelopeId": { "$ref": "#/$defs/componentId" },
+        "accept": { "type": "boolean" }
       }
     },
     "requestCancel": {
