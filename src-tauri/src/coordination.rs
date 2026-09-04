@@ -893,10 +893,14 @@ fn apply_event(
             if envelope.envelope.to_run_id != *run_id {
                 return Err("Only the addressed Run may receive an envelope.".into());
             }
-            if envelope.delivery_state != CoordinationDeliveryState::Accepted {
-                return Err(format!(
-                    "Envelope `{envelope_id}` has not been accepted by the receiving side."
-                ));
+            // Journals written before review existed delivered straight from
+            // queued; that history stays valid. New deliveries are held to
+            // acceptance at the command boundary (`event_for_command`).
+            if !matches!(
+                envelope.delivery_state,
+                CoordinationDeliveryState::Queued | CoordinationDeliveryState::Accepted
+            ) {
+                return Err(format!("Envelope `{envelope_id}` is not awaiting delivery."));
             }
             envelope.delivery_state = CoordinationDeliveryState::Delivered;
             envelope.delivered_at_ms = Some(line.ts);
@@ -1361,10 +1365,23 @@ fn event_for_command(
         CoordinationCommand::MarkEnvelopeDelivered {
             run_id,
             envelope_id,
-        } => Ok(CoordinationEvent::EnvelopeDelivered {
-            envelope_id,
-            run_id,
-        }),
+        } => {
+            // The receiving side must have let it in. Checked here, on the
+            // command, rather than in `apply_event`, so journals that predate
+            // review still replay.
+            let state = find_envelope(snapshot, &envelope_id)
+                .ok_or_else(|| format!("Envelope `{envelope_id}` does not exist."))?
+                .delivery_state;
+            if state != CoordinationDeliveryState::Accepted {
+                return Err(format!(
+                    "Envelope `{envelope_id}` has not been accepted by the receiving side."
+                ));
+            }
+            Ok(CoordinationEvent::EnvelopeDelivered {
+                envelope_id,
+                run_id,
+            })
+        }
         CoordinationCommand::AcknowledgeEnvelope {
             run_id,
             envelope_id,
@@ -2112,6 +2129,28 @@ mod tests {
         assert_eq!(
             answered.snapshot.envelopes.last().unwrap().delivery_state,
             CoordinationDeliveryState::Accepted
+        );
+    }
+
+    #[test]
+    fn journals_written_before_review_still_replay() {
+        // Delivered straight from queued, as every journal did before review
+        // existed. History is not corruption; only new deliveries need review.
+        let lines = [
+            r#"{"schemaVersion":1,"seq":1,"ts":1,"event":{"type":"run_registered","registration":{"runId":"run_a","workerKind":"harness"},"state":"working"}}"#,
+            r#"{"schemaVersion":1,"seq":2,"ts":2,"event":{"type":"run_registered","registration":{"runId":"run_b","workerKind":"harness"},"state":"working"}}"#,
+            r#"{"schemaVersion":1,"seq":3,"ts":3,"event":{"type":"envelope_queued","envelope":{"id":"env_1","from":{"type":"run","runId":"run_a"},"toRunId":"run_b","kind":"question","body":"ping","sourceRefs":[],"createdAtMs":3}}}"#,
+            r#"{"schemaVersion":1,"seq":4,"ts":4,"event":{"type":"envelope_delivered","envelopeId":"env_1","runId":"run_b"}}"#,
+            r#"{"schemaVersion":1,"seq":5,"ts":5,"event":{"type":"envelope_acknowledged","envelopeId":"env_1","runId":"run_b"}}"#,
+        ];
+        let events = lines
+            .iter()
+            .map(|line| serde_json::from_str::<CoordinationEventLine>(line).unwrap())
+            .collect::<Vec<_>>();
+        let snapshot = fold_events(&events).expect("pre-review history folds");
+        assert_eq!(
+            snapshot.envelopes[0].delivery_state,
+            CoordinationDeliveryState::Acknowledged
         );
     }
 
