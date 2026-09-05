@@ -859,6 +859,9 @@ pub fn clear_keychain_key(provider: &str) -> Result<(), String> {
 // root stays thin Tauri glue and the routing is a testable plan.
 
 pub(crate) const OLLAMA_URL: &str = "http://localhost:11434";
+/// The Ollama model Klide reaches for first (mirrors the frontend catalog's
+/// `defaultModel` for `ollama`). Auto routing leads the local tier with it.
+pub(crate) const OLLAMA_DEFAULT_MODEL: &str = "llama3.1:8b";
 pub(crate) const MLX_DEFAULT_MODEL: &str = "mlx-community/Llama-3.1-8B-Instruct-4bit";
 pub(crate) const MLX_MODEL_PRESETS: &[&str] = &[
     MLX_DEFAULT_MODEL,

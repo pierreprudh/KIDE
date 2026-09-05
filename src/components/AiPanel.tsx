@@ -46,6 +46,7 @@ import { TodoStrip } from "./TodoStrip";
 import {
   CLI_DEFAULT_MODEL,
   defaultModelForProvider,
+  isAutoProvider,
   isDelegateProvider,
   isManagedLocalProvider,
   normalizeAgentMode,
@@ -89,7 +90,7 @@ import {
 } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
-import { favModelsFor } from "../favModels";
+import { allFavModels, favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
 import { buildSystemPrompt } from "./ai/system-prompt";
 import { ATTACH_ACCEPT, isPhotoAttachment, stageFiles, stagedImageBytes } from "./ai/attachments";
@@ -1761,6 +1762,13 @@ This user request requires workspace inspection. Before answering, you MUST call
   });
   const showCompactPrompt = canCompact && contextRatio >= COMPACT_PROMPT_RATIO;
 
+  // One-shot model calls (compaction, memory notes, skill detection) go
+  // straight to `ai_chat`, which has no router. An Auto conversation asks the
+  // model its turns actually ran on — the origin `RunStarted` stamped; before
+  // a first run there is nothing to summarize anyway.
+  const oneShotProvider = isAutoProvider(provider) ? (conversationSession.originProvider ?? provider) : provider;
+  const oneShotModel = isAutoProvider(provider) ? (conversationSession.originModel ?? model) : model;
+
   async function compactConversation(
     source: "manual" | "agent" = "manual",
     contextWindow = effectiveContextLimit,
@@ -1773,7 +1781,7 @@ This user request requires workspace inspection. Before answering, you MUST call
       const older = msgs.slice(0, msgs.length - COMPACT_KEEP_RECENT);
       const recent = msgs.slice(msgs.length - COMPACT_KEEP_RECENT);
       if (older.length === 0) return false;
-      const summary = await summarizeForCompaction(provider, model, older, contextWindow);
+      const summary = await summarizeForCompaction(oneShotProvider, oneShotModel, older, contextWindow);
       if (!summary) throw new Error("Could not build a summary to compact with.");
       // Write the marker into the transcript the harness replays from — this
       // is what actually shrinks the next turn's context.
@@ -2328,8 +2336,8 @@ This user request requires workspace inspection. Before answering, you MUST call
     try {
       const entry = await summarizeAndHandoff({
         workspaceRoot,
-        provider,
-        model,
+        provider: oneShotProvider,
+        model: oneShotModel,
         mode: normalizeAgentMode(agentMode),
         msgs,
         runId: null,
@@ -2367,10 +2375,13 @@ This user request requires workspace inspection. Before answering, you MUST call
       // Reviewable memory: generate the note but DON'T write it. Park it as a
       // draft the user accepts / edits / skips from the Memory modal before it
       // becomes durable. The manual "Summarize" action still writes directly.
+      // The note is written by the model that ran the turn; on Auto that is
+      // the origin the run stamped, not the picker's sentinel.
+      const origin = conversationSessionRef.current;
       const note = await generateMemoryNote({
         workspaceRoot,
-        provider: turn.provider,
-        model: turn.model,
+        provider: isAutoProvider(turn.provider) ? (origin.originProvider ?? turn.provider) : turn.provider,
+        model: isAutoProvider(turn.provider) ? (origin.originModel ?? turn.model) : turn.model,
         mode: normalizeAgentMode(turn.mode),
         msgs: snapshot,
         runId: currentId,
@@ -2397,8 +2408,8 @@ This user request requires workspace inspection. Before answering, you MUST call
     try {
       const skill = await detectAndGenerateSkill({
         workspaceRoot,
-        provider,
-        model,
+        provider: oneShotProvider,
+        model: oneShotModel,
         mode: normalizeAgentMode(agentMode),
         msgs,
       });
@@ -3131,6 +3142,9 @@ This user request requires workspace inspection. Before answering, you MUST call
         requireDiffReview,
         autoApproveCommands: autoApproveCommands || undefined,
         testAfterEditCommand: testAfterEditCommand || undefined,
+        // Stars are the router's strongest preference and live only in this
+        // renderer's storage, so an `auto` turn carries them along.
+        preferredModels: isAutoProvider(turn.provider) ? allFavModels() : undefined,
       }, handleEvent);
       activeHarnessRunRef.current = session.runId;
       try { await session.done; } finally { activeHarnessRunRef.current = null; }
@@ -3484,6 +3498,8 @@ This user request requires workspace inspection. Before answering, you MUST call
         context: { workspaceRoot, attachments: [], lensItems: [], estimatedTokens: 0, omitted: [] },
         systemPrompt,
         requireDiffReview: false,
+        // A child of an Auto panel routes on the same stars as its parent.
+        preferredModels: isAutoProvider(provider) ? allFavModels() : undefined,
         maxTurns: harnessSettings?.maxTurns && harnessSettings.maxTurns > 0 ? harnessSettings.maxTurns : undefined,
       }, (ev) => {
         if (ev.type === "assistant_message") {
@@ -4700,13 +4716,17 @@ This user request requires workspace inspection. Before answering, you MUST call
                   {conversationCostUsd < 0.01 ? "<$0.01" : `$${conversationCostUsd.toFixed(conversationCostUsd < 1 ? 3 : 2)}`}
                 </span>
               )}
-              <ModelPicker
-                provider={provider}
-                model={model}
-                availableModels={availableModels}
-                disabled={streaming}
-                onChange={changeModel}
-              />
+              {/* Auto has nothing to pick: the model is Rust's to choose, and
+                  the turn's meta line names it once the run starts. */}
+              {!isAutoProvider(provider) && (
+                <ModelPicker
+                  provider={provider}
+                  model={model}
+                  availableModels={availableModels}
+                  disabled={streaming}
+                  onChange={changeModel}
+                />
+              )}
               {(
                 <div style={{ position: "relative", flexShrink: 0 }}>
                   <button

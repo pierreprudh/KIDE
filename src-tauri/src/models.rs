@@ -73,6 +73,11 @@ fn normalize_model_ids(value: &serde_json::Value) -> Vec<String> {
 
 #[tauri::command]
 pub(crate) async fn ai_provider_models(provider: String) -> Result<Vec<String>, String> {
+    // The `auto` Provider serves exactly one "model": the sentinel the router
+    // replaces at run start (`agent::routing`). Nothing to list, nothing to fetch.
+    if crate::agent::routing::is_auto(&provider) {
+        return Ok(vec![crate::agent::routing::AUTO_MODEL.to_string()]);
+    }
     // A registry miss falls through to the custom (self-hosted) store —
     // those endpoints expose the OpenAI `/v1/models` listing, queried
     // with their (optional) keychain token.
@@ -230,6 +235,31 @@ fn deepseek_usd_balance(value: &serde_json::Value) -> Option<f64> {
             b.as_f64()
                 .or_else(|| b.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
         })
+}
+
+/// The models Ollama has installed right now — what Auto routing may fall back
+/// to when nothing starred fits. `Err` means the daemon isn't reachable.
+pub(crate) async fn installed_ollama_models() -> Result<Vec<String>, String> {
+    fetch_ollama_tags().await
+}
+
+/// USD per million input tokens for one hosted model, from the curated price
+/// table first (Anthropic, OpenAI, …) and the Provider's `/models` metadata
+/// second (OpenRouter reports prices per model). `None` when neither knows —
+/// the router ranks an unpriced model after every priced one.
+pub(crate) async fn model_input_price(provider: &str, model: &str) -> Option<f64> {
+    if let Some(price) = crate::pricing::pricing_for_model(model) {
+        return Some(price.input_per_million);
+    }
+    if let Some(entry) = providers::lookup(provider) {
+        if matches!(entry.models, providers::ModelsHandler::OpenAiModels) {
+            return openai_model_meta(provider)
+                .await
+                .get(model)
+                .and_then(|m| m.input_per_million);
+        }
+    }
+    None
 }
 
 /// `GET {OLLAMA_URL}/api/tags` with a 10-second in-process cache.
@@ -786,6 +816,11 @@ fn find_context_window(value: &serde_json::Value) -> Option<usize> {
 
 #[tauri::command]
 pub(crate) async fn ai_context_window(provider: String, model: String) -> Result<usize, String> {
+    // Not known until routed. The name heuristic's floor is the honest gauge
+    // for the composer; the run itself accounts against the resolved model.
+    if crate::agent::routing::is_auto(&provider) {
+        return Ok(fallback_context_window(&provider, &model));
+    }
     if provider == "codex" {
         return Ok(codex_context_window(&model)
             .unwrap_or_else(|| fallback_context_window(&provider, &model)));
@@ -825,6 +860,12 @@ pub(crate) async fn ai_model_supports_tools(
     model: String,
 ) -> Result<bool, String> {
     if is_subscription_provider(&provider) {
+        return Ok(true);
+    }
+    // `auto` guarantees tools by construction: a Plan or Goal run routed
+    // through it is only ever placed on a model that reports tool support, so
+    // the picker may offer every Mode.
+    if crate::agent::routing::is_auto(&provider) {
         return Ok(true);
     }
 
@@ -899,6 +940,12 @@ pub(crate) async fn ai_model_supports_vision(
     provider: String,
     model: String,
 ) -> Result<bool, String> {
+    // Unknown until routed, and the router doesn't gate on vision — so no
+    // image attach on an `auto` composer rather than a photo sent to a blind
+    // model.
+    if crate::agent::routing::is_auto(&provider) {
+        return Ok(false);
+    }
     if provider == "anthropic" {
         return Ok(claude_model_supports_vision(
             &model.trim().to_ascii_lowercase(),
@@ -992,6 +1039,11 @@ async fn resolve_reflection_support(
     provider: &str,
     model: &str,
 ) -> Result<bool, String> {
+    // Unknown until routed; offering a reflection dial the resolved model may
+    // ignore is worse than none.
+    if crate::agent::routing::is_auto(provider) {
+        return Ok(false);
+    }
     if provider == "anthropic" {
         return Ok(true);
     }
