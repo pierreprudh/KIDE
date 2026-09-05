@@ -26,7 +26,7 @@ import {
 import { usePortalMenu } from "../hooks/usePortalMenu";
 import { Kbd } from "./Kbd";
 import { keysFor } from "../shortcuts";
-import { providerFailureMessage } from "../errors";
+import { errMessage, providerFailureMessage } from "../errors";
 import { InlineDiffReview } from "./InlineDiffReview";
 import { InlineCommandReview } from "./InlineCommandReview";
 import { conversationToConvo, deleteKlideConvo, publishKlideConvo, settleKlideConvo } from "../klideConvos";
@@ -77,7 +77,7 @@ import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } fr
 import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
-import { renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
+import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
 import { groupToolRuns, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
@@ -90,6 +90,9 @@ import {
 } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
+import { inboxSenders, latestCoordinationPeer, parseDeliveryReason, peerName, useCoordinationInbox, usePeerIndex } from "./ai/coordinationPeers";
+import { PeerLink } from "./ai/PeerLink";
+import { reviewEnvelope } from "../agent/coordination";
 import { allFavModels, favModelsFor } from "../favModels";
 import { conversationMark } from "../modelIdentity";
 import { buildSystemPrompt } from "./ai/system-prompt";
@@ -326,6 +329,10 @@ type Props = {
   harnessSettings?: AiHarnessSettings;
   onDuplicate?: (snapshot: { provider: ProviderId; model: string }) => void;
   onForkConversationInWorktree?: (conversation: Conversation, baseRoot: string | null) => void;
+  /** Open (or raise) another conversation this thread is talking to — the
+   *  peer link's card offers the peer thread as a link. Same landing as a
+   *  click in the rail's conversation tree. */
+  onOpenPeerConversation?: (conversationId: string) => void;
   /** The host's Provider for this panel. Live, like `model` — surfaces outside
    *  the panel (the Focus hero) edit the pair, and the two must move together
    *  or a run goes out with a model the Provider doesn't serve. Absent means
@@ -638,6 +645,7 @@ export function AiPanel({
   harnessSettings,
   onDuplicate,
   onForkConversationInWorktree,
+  onOpenPeerConversation,
   provider: hostProvider,
   onProviderChange,
   onOpenSettingsSection,
@@ -2327,6 +2335,20 @@ This user request requires workspace inspection. Before answering, you MUST call
   // ~760px column — one computed gutter, no wrapper churn.
   const focusGutter = "calc(max(20px, (100% - 760px) / 2))";
 
+  // Messages other agents have queued for this thread that its Run has not
+  // taken in yet — read from the journal, refreshed on its change event, so
+  // they show here the moment they are sent rather than at the next turn.
+  const pendingInbox = useCoordinationInbox(workspaceRoot, currentId);
+  // The one conversation this thread is talking to right now: whoever has
+  // something waiting for it, else the peer it last exchanged with. One link,
+  // not a row of every peer it ever met.
+  const coordinationPeers = useMemo(() => {
+    const senders = inboxSenders(pendingInbox);
+    const latest = senders.length > 0 ? senders[senders.length - 1] : latestCoordinationPeer(msgs);
+    return latest ? [latest] : [];
+  }, [msgs, pendingInbox]);
+  const peerIndex = usePeerIndex();
+
   // Write a structured memory note to .klide/memory/. Delegates to
   // summarizeAndHandoff so the prompt + parsing live in one place; we
   // just feed it the conversation + show the user a transient state.
@@ -2819,15 +2841,20 @@ This user request requires workspace inspection. Before answering, you MUST call
     question: string;
   } | null>(null);
   const [questionAnswer, setQuestionAnswer] = useState("");
-  // run_command approval: the harness pauses and emits a permission request;
-  // the user approves or rejects (approveCommand / rejectCommand) before the
-  // command runs. The card renders from `pendingPermission`.
+  // Permission gate: the harness pauses and emits a request — a shell command,
+  // a network target, or a message to another agent — and the user approves or
+  // rejects (approveCommand / rejectCommand) before it runs. The card renders
+  // from `pendingPermission`.
   const [pendingPermission, setPendingPermission] = useState<{
     runId: string;
     requestId: string;
     toolName: string;
-    kind: "command" | "network";
+    kind: "command" | "network" | "message";
     command: string;
+    /** For a message: who wrote it, by thread title when known, and which
+     *  envelope — so the pre-turn card for the same message is not drawn twice. */
+    peer?: string;
+    envelopeId?: string;
     summary: string;
     reason: string;
     externalPaths: string[];
@@ -2853,15 +2880,20 @@ This user request requires workspace inspection. Before answering, you MUST call
     // sends {command, cwd, externalPaths, matchedAllowRule}, a network
     // capability sends whatever it declared. Everything else is typed, and the
     // Rust `frontend_mirror_matches_agent_wire` test keeps it that way.
-    const input = (req.input ?? {}) as { command?: string; externalPaths?: string[] };
+    const input = (req.input ?? {}) as { command?: string; externalPaths?: string[]; fromRunId?: string; envelopeId?: string; body?: string };
     const isCommand = !!input.command;
-    const command = input.command ?? req.summary ?? req.toolName ?? "permission request";
+    // An incoming-message gate carries the sender and the text; the card shows
+    // the text where the command would be and names the peer as the chat does.
+    const isMessage = !isCommand && !!input.fromRunId;
+    const command = input.command ?? (isMessage ? input.body ?? "" : undefined) ?? req.summary ?? req.toolName ?? "permission request";
     return {
       runId,
       requestId: req.id,
       toolName: req.toolName ?? "permission",
-      kind: isCommand ? ("command" as const) : ("network" as const),
+      kind: isCommand ? ("command" as const) : isMessage ? ("message" as const) : ("network" as const),
       command,
+      peer: isMessage ? peerName(input.fromRunId!, peerIndex) : undefined,
+      envelopeId: isMessage ? input.envelopeId : undefined,
       summary: req.summary ?? command,
       reason: req.reason ?? "",
       externalPaths: Array.isArray(input.externalPaths) ? input.externalPaths : [],
@@ -3224,7 +3256,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     queueRef.current = [...queueRef.current, turn];
     // Stamped at send, not at dispatch: a turn can sit queued behind a running
     // one, and the conversation's start time is when the user actually asked.
-    const queuedMessage: Msg = { role: "user", content: turn.text, attachments: turn.attachments.length ? turn.attachments : undefined, projectContext: turn.projectContext, queueState: "queued", queueId: turn.clientId, subagent: turn.subagent, ts: Date.now() };
+    const queuedMessage: Msg = { role: "user", content: turn.text, attachments: turn.attachments.length ? turn.attachments : undefined, projectContext: turn.projectContext, queueState: "queued", queueId: turn.clientId, subagent: turn.subagent, wake: turn.wake, ts: Date.now() };
     msgsRef.current = [...msgsRef.current, queuedMessage];
     setMsgs(msgsRef.current);
     // The user just hit send. Even if they were scrolled up reading old
@@ -3597,6 +3629,30 @@ This user request requires workspace inspection. Before answering, you MUST call
     void resolveUserQuestion({ runId: snapshot.runId, requestId: snapshot.requestId, answer: "(skipped)" }).catch((err) => {
       console.error("Failed to skip question:", err);
       notify(`Couldn't skip the question: ${err instanceof Error ? err.message : String(err)}`, { tone: "error" });
+    });
+  }
+
+  // Letting a peer's message in should not leave it waiting for the user to
+  // find something else to say: start a turn with no words of the user's own,
+  // so the Run reads it now. Only when the conversation is idle — a live turn
+  // reaches the boundary on its own. Chat has no coordination, so a Chat
+  // picker wakes as Plan, the quietest mode that can read the inbox.
+  async function wakeForInbox() {
+    if (streaming || queueRef.current.length > 0 || reattachRef.current) return;
+    const current = agentModeRef.current;
+    const mode: AgentMode = current === "chat" ? "plan" : current;
+    const modelInspection = await activateModelInspectionForSend();
+    enqueueTurn({
+      clientId: genId(),
+      text: "",
+      wake: true,
+      mode,
+      provider,
+      model,
+      modelSupportsTools: modelInspection.supportsTools,
+      modelSupportsReflection: modelInspection.supportsReflection,
+      reflectionLevel: modelInspection.supportsReflection ? panelReflectionLevel : undefined,
+      attachments: [],
     });
   }
 
@@ -3976,6 +4032,9 @@ This user request requires workspace inspection. Before answering, you MUST call
           const dimmed = lastCompactionIndex(msgs) > 0 && i < lastCompactionIndex(msgs);
 
           if (m.role === "user") {
+            // A wake turn has nothing to show; the response it produces opens
+            // with the received line that explains it.
+            if (m.wake) return null;
             const queued = m.queueState === "queued";
             const running = m.queueState === "running";
             const isEditing = editingIdx === i;
@@ -4143,11 +4202,15 @@ This user request requires workspace inspection. Before answering, you MUST call
           }
 
           // Steering marker: a loop-monitor intervention, not an assistant
-          // utterance — render it indented to align with tool output.
+          // utterance — render it indented to align with tool output. A
+          // delivered agent message is the exception: it opens the response
+          // that follows, so that response draws it at its top, under one
+          // mark, and nothing is drawn here.
           if (m.role === "system" && m.steering) {
+            if (parseDeliveryReason(m.steering.reason) && msgs[i + 1]?.role === "assistant") return null;
             return (
               <div key={i} className="ai-msg-in" style={{ margin: "8px 0 8px 32px" }}>
-                {renderMessageBody(m)}
+                {renderMessageBody(m, false, { workspaceRoot })}
               </div>
             );
           }
@@ -4179,8 +4242,17 @@ This user request requires workspace inspection. Before answering, you MUST call
           // message after a user message carries Kit's K mark; the rest get a
           // 22px spacer so bodies stay column-aligned with tool rows.
           const prevMsg = msgs[i - 1];
+          // The agent messages delivered right before this response, hoisted
+          // in from the marker above (which drew nothing for itself). For the
+          // "one mark per response" rule the marker is transparent: what came
+          // before it decides.
+          const hoistedInbox =
+            m.role === "assistant" && prevMsg?.role === "system" && prevMsg.steering && parseDeliveryReason(prevMsg.steering.reason)
+              ? prevMsg
+              : null;
+          const before = hoistedInbox ? msgs[i - 2] : prevMsg;
           const isResponseStart =
-            (!prevMsg || (prevMsg.role !== "assistant" && prevMsg.role !== "tool")) &&
+            (!before || (before.role !== "assistant" && before.role !== "tool")) &&
             // …unless a folded run's header is already wearing this turn's
             // mark, in which case this row draws the spacer and keeps the
             // column aligned without a second one.
@@ -4212,6 +4284,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 <div aria-hidden="true" style={{ flexShrink: 0, width: 22 }} />
               )}
               <div style={{ flex: 1, minWidth: 0, color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.6 }}>
+                {hoistedInbox && <div style={{ margin: "0 0 4px" }}>{renderMessageBody(hoistedInbox, false, { workspaceRoot })}</div>}
                 {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive, { hideThinking: toolRunAt(i) !== null })}{isStreamingActive && <span className="ai-caret" />}</>}
                 {!isStreamingActive && !isAssistantPlaceholder && isResponseEnd && m.content?.trim() && (
                   <>
@@ -4291,6 +4364,11 @@ This user request requires workspace inspection. Before answering, you MUST call
             </div>
           );
         })()}
+        {pendingInbox.some((e) => e.deliveryState !== "queued") && (
+          <div className="ai-msg-in" style={{ display: "grid", gap: 4, margin: "8px 0 8px 32px" }}>
+            <PendingInboxRow pending={pendingInbox.filter((e) => e.deliveryState !== "queued")} />
+          </div>
+        )}
         {serverStarting && (
           <div
             className="ai-msg-in"
@@ -4402,6 +4480,27 @@ This user request requires workspace inspection. Before answering, you MUST call
 
       {!delegateSession && (
       <div style={{ padding: variant === "focus" ? `0 ${focusGutter} 16px` : "0 10px 10px" }}>
+        {/* Another agent's words wait here for the user before this
+            conversation may read them — the same card as a shell command,
+            answered into the journal. While the run itself is paused on one
+            of them, that card comes from the harness instead. */}
+        {workspaceRoot && pendingInbox
+          .filter((e) => e.deliveryState === "queued" && e.envelope.id !== pendingPermission?.envelopeId)
+          .map(({ envelope: e }) => (
+            <InlineCommandReview
+              key={e.id}
+              kind="message"
+              peer={peerName(e.from.type === "run" ? e.from.runId : "operator", peerIndex)}
+              command={e.body}
+              detail={`${e.kind} · read by this conversation at its next turn once approved`}
+              onReject={() => { void reviewEnvelope(workspaceRoot, currentId, e.id, false).catch((err) => notify(`Couldn't decline the message: ${errMessage(err)}`, { tone: "error" })); }}
+              onApproveOnce={() => {
+                void reviewEnvelope(workspaceRoot, currentId, e.id, true)
+                  .then(() => wakeForInbox())
+                  .catch((err) => notify(`Couldn't approve the message: ${errMessage(err)}`, { tone: "error" }));
+              }}
+            />
+          ))}
         {pendingPermission && (
           <InlineCommandReview
             command={pendingPermission.command}
@@ -4410,8 +4509,9 @@ This user request requires workspace inspection. Before answering, you MUST call
             externalPaths={pendingPermission.externalPaths}
             onReject={rejectCommand}
             onApproveOnce={() => approveCommand("once")}
+            peer={pendingPermission.peer}
             onApproveForRun={() => approveCommand("run")}
-            onApproveForProject={() => approveCommand("project")}
+            onApproveForProject={pendingPermission.kind === "message" ? undefined : () => approveCommand("project")}
             pattern={pendingPermission.suggestedPattern}
             onApprovePattern={(pattern) => approveCommand("project", pattern)}
           />
@@ -4985,6 +5085,21 @@ This user request requires workspace inspection. Before answering, you MUST call
               {acceptingChanges ? "Accepting…" : "Accept modification"}
             </button>
           )}
+          {/* Who this thread is talking to, at the right end of the same line
+              as the branch and the Goal policy: this thread's mark, a hairline,
+              the peer's mark and title. The dot moves only while this thread
+              streams — out first, then back. */}
+          <PeerLink
+            peers={coordinationPeers}
+            index={peerIndex}
+            selfId={currentId}
+            selfTitle={peerIndex.get(currentId)?.title ?? deriveTitle(msgs)}
+            workspaceRoot={workspaceRoot}
+            provider={provider}
+            model={model}
+            active={streaming}
+            onOpen={onOpenPeerConversation}
+          />
         </div>
       </div>
       )}

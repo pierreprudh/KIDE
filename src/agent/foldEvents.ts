@@ -381,6 +381,16 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
     }
 
     if (event.type === "steering_injected") {
+      // A marker that lands before the turn has said anything — an agent
+      // message delivered at the turn boundary is the usual case — goes
+      // *above* the still-empty open row, which then receives the turn's
+      // text. Splitting here would strand an empty assistant row above the
+      // marker, and the panel would draw a second model mark for it.
+      if (open && open.idx === rows.length - 1 && !open.row.text && !open.row.thinking && open.row.toolCalls.length === 0) {
+        rows.splice(open.idx, 0, { kind: "steering", reason: event.reason });
+        open.idx += 1;
+        return { changed: [open.idx - 1, open.idx] };
+      }
       splitRow();
       rows.push({ kind: "steering", reason: event.reason });
       return { changed: [rows.length - 1] };

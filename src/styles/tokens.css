@@ -173,6 +173,11 @@
   --motion-fast: 120ms;
   --motion-med: 180ms;
   --motion-slow: 240ms;
+  /* Cross-fades where the reader follows one word giving way to another — a
+     label swapping for the sentence behind it. Slower than --motion-slow: the
+     eye has to read the outgoing text and then the incoming one, and a faster
+     swap looks like a flicker rather than a change. */
+  --motion-slower: 360ms;
   /* The Explorer's reveal — the anchored column sliding open, the free-mode
      drawer gliding out. Longer than --motion-slow on purpose: a whole column
      arriving is a bigger thing than a control, and hurrying it reads as a snap. */
@@ -7895,5 +7900,35 @@ button:focus-visible .menu-leadout {
     transition: none;
     transform: none;
     animation: none;
+  }
+}
+
+/* Peer link (AI panel, on the branch · Goal-policy status line): one small
+   parcel travels the hairline between the two model marks while this thread
+   is streaming — out to the peer first, then back, easing at both ends like a
+   thing being carried and set down. Still at rest; hidden under reduced
+   motion. `--track` is the hairline's width, set inline by PeerLink. */
+.ai-peer-dot {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  will-change: transform, opacity;
+  animation: ai-peer-travel 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+@keyframes ai-peer-travel {
+  from { transform: translateX(0); opacity: 0.35; }
+  18% { opacity: 1; }
+  82% { opacity: 1; }
+  to { transform: translateX(calc(var(--track, 44px) - 5px)); opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-peer-dot {
+    animation: none;
+    opacity: 0;
   }
 }

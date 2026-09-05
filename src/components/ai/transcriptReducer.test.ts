@@ -62,6 +62,25 @@ function panel(initial: Msg[], regionStart = initial.length - 1) {
 
 const placeholder = (): Msg => ({ role: "assistant", content: "" });
 
+describe("a delivered agent message at the turn boundary", () => {
+  it("lands above the placeholder bubble the turn streams into — no empty row wearing a mark", () => {
+    // The live order: the panel has already put the user bubble and the empty
+    // assistant placeholder in place; the harness then injects the inbox
+    // marker before the first delta.
+    const { state, feed } = panel([
+      { role: "user", content: "answer please" },
+      { role: "assistant", content: "" },
+    ]);
+    feed(steered("Agent message delivered: question from @run_a (env_1)"));
+    feed(delta("pong"));
+    feed(message(text("pong")));
+    expect(state.msgs.map((m) => m.role)).toEqual(["user", "system", "assistant"]);
+    expect(state.msgs[1]).toMatchObject({ role: "system", steering: { reason: expect.stringContaining("env_1") } });
+    expect(state.msgs[2]).toMatchObject({ role: "assistant", content: "pong" });
+    expect(state.detachments).toHaveLength(0);
+  });
+});
+
 describe("createRunTranscript", () => {
   it("adopts the placeholder bubble: nothing to project until the stream writes", () => {
     const seed = placeholder();

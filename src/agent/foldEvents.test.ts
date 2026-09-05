@@ -566,6 +566,18 @@ describe("foldAgentEvents", () => {
     });
   });
 
+  it("puts a steering marker above an open row that has not said anything yet", () => {
+    // The turn boundary delivers a peer's message before the first delta: the
+    // marker sits above the row the turn then streams into, not above an
+    // empty row of its own.
+    const fold = createFold({ seedOpenAssistant: true });
+    fold.apply(steered("Agent message delivered: question from @run_a (env_1)"));
+    fold.apply(delta("pong"));
+    const rows = fold.rows();
+    expect(rows.map((r) => r.kind)).toEqual(["steering", "assistant"]);
+    expect(rows[1]).toMatchObject({ kind: "assistant", text: "pong" });
+  });
+
   it("preserves compaction and steering as independent transcript annotations", () => {
     const rows = foldAgentEvents([
       userMessage("one"),

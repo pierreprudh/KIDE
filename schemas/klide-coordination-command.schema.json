@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://klide.dev/schemas/klide-coordination-command.schema.json",
+  "title": "Klide coordination supervisor command",
+  "description": "Trusted provider-neutral command accepted by the Rust coordination core. Remote adapters bind actor identity before constructing this shape.",
+  "oneOf": [
+    { "$ref": "#/$defs/registerRun" },
+    { "$ref": "#/$defs/setRunState" },
+    { "$ref": "#/$defs/sendEnvelope" },
+    { "$ref": "#/$defs/markEnvelopeDelivered" },
+    { "$ref": "#/$defs/acknowledgeEnvelope" },
+    { "$ref": "#/$defs/reviewEnvelope" },
+    { "$ref": "#/$defs/requestCancel" },
+    { "$ref": "#/$defs/publishResult" }
+  ],
+  "$defs": {
+    "actor": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/actor"
+    },
+    "runId": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/runId"
+    },
+    "componentId": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/componentId"
+    },
+    "registration": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/registration"
+    },
+    "runState": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/runState"
+    },
+    "envelopeKind": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/envelopeKind"
+    },
+    "sourceRefs": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/sourceRefs"
+    },
+    "resultStatus": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/resultStatus"
+    },
+    "artifact": {
+      "$ref": "klide-coordination-event.schema.json#/$defs/artifact"
+    },
+    "registerRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "registration"],
+      "properties": {
+        "type": { "const": "register_run" },
+        "registration": { "$ref": "#/$defs/registration" },
+        "initialState": { "$ref": "#/$defs/runState" }
+      }
+    },
+    "setRunState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "actor", "runId", "state"],
+      "properties": {
+        "type": { "const": "set_run_state" },
+        "actor": { "$ref": "#/$defs/actor" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "state": { "$ref": "#/$defs/runState" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "sendEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "from", "toRunId", "kind", "body"],
+      "properties": {
+        "type": { "const": "send_envelope" },
+        "from": { "$ref": "#/$defs/actor" },
+        "toRunId": { "$ref": "#/$defs/runId" },
+        "kind": { "$ref": "#/$defs/envelopeKind" },
+        "body": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "replyTo": { "$ref": "#/$defs/componentId" },
+        "correlationId": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "sourceRefs": { "$ref": "#/$defs/sourceRefs" }
+      }
+    },
+    "markEnvelopeDelivered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "runId", "envelopeId"],
+      "properties": {
+        "type": { "const": "mark_envelope_delivered" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "envelopeId": { "$ref": "#/$defs/componentId" }
+      }
+    },
+    "acknowledgeEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "runId", "envelopeId"],
+      "properties": {
+        "type": { "const": "acknowledge_envelope" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "envelopeId": { "$ref": "#/$defs/componentId" }
+      }
+    },
+    "reviewEnvelope": {
+      "description": "The receiving side accepts a queued envelope for delivery, or declines it for good. The actor is the operator or the addressed Run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "actor", "runId", "envelopeId", "accept"],
+      "properties": {
+        "type": { "const": "review_envelope" },
+        "actor": { "$ref": "#/$defs/actor" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "envelopeId": { "$ref": "#/$defs/componentId" },
+        "accept": { "type": "boolean" }
+      }
+    },
+    "requestCancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "actor", "runId"],
+      "properties": {
+        "type": { "const": "request_cancel" },
+        "actor": { "$ref": "#/$defs/actor" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "publishResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "runId", "status", "summary"],
+      "properties": {
+        "type": { "const": "publish_result" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "status": { "$ref": "#/$defs/resultStatus" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 65536 },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "sourceRefs": { "$ref": "#/$defs/sourceRefs" }
+      }
+    }
+  }
+}

@@ -234,6 +234,424 @@ where
     }))
 }
 
+fn coordination_tool_error(message: impl Into<String>) -> ToolOutcome {
+    ToolOutcome::Produced(ToolResult {
+        ok: false,
+        content: message.into(),
+        metadata: None,
+    })
+}
+
+fn coordination_timeout_seconds(input: &serde_json::Value) -> u64 {
+    input
+        .get("timeoutSeconds")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(30)
+        .clamp(1, 120)
+}
+
+fn coordination_envelope_kind(
+    input: &serde_json::Value,
+) -> Result<CoordinationEnvelopeKind, String> {
+    match input
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("instruction")
+    {
+        "instruction" => Ok(CoordinationEnvelopeKind::Instruction),
+        "question" => Ok(CoordinationEnvelopeKind::Question),
+        "answer" => Ok(CoordinationEnvelopeKind::Answer),
+        "progress" => Ok(CoordinationEnvelopeKind::Progress),
+        "handoff" => Ok(CoordinationEnvelopeKind::Handoff),
+        other => Err(format!("Unknown coordination message kind `{other}`.")),
+    }
+}
+
+fn coordination_messages_text(inbox: &[CoordinationEnvelopeSnapshot]) -> String {
+    let mut text = String::from("Coordination messages received:");
+    for entry in inbox {
+        let envelope = &entry.envelope;
+        text.push_str(&format!(
+            "\n\n- envelopeId: {}\n  kind: {}\n  from: {}\n  body: {}",
+            envelope.id,
+            coordination_kind_label(envelope.kind),
+            coordination_actor_label(&envelope.from),
+            envelope.body
+        ));
+    }
+    text
+}
+
+async fn wait_for_coordination_messages(
+    ctx: &ToolCtx<'_>,
+    workspace_root: &str,
+    from_run_id: Option<&str>,
+    reply_to: Option<&str>,
+    timeout_seconds: u64,
+) -> Result<Option<Vec<CoordinationEnvelopeSnapshot>>, ToolOutcome> {
+    set_run_status(ctx.sup, ctx.id, AgentRunStatus::Paused);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
+    loop {
+        let inbox = match load_coordination_inbox(ctx.sup, workspace_root, ctx.id) {
+            Ok(inbox) => inbox,
+            Err(error) => {
+                set_run_status(ctx.sup, ctx.id, AgentRunStatus::Running);
+                return Err(coordination_tool_error(error));
+            }
+        };
+        let matched = inbox
+            .into_iter()
+            .filter(|entry| {
+                let sender_matches = from_run_id.map_or(true, |expected| {
+                    matches!(
+                        &entry.envelope.from,
+                        CoordinationActor::Run { run_id } if run_id == expected
+                    )
+                });
+                let reply_matches = reply_to.map_or(true, |expected| {
+                    entry.envelope.reply_to.as_deref() == Some(expected)
+                });
+                sender_matches && reply_matches
+            })
+            .collect::<Vec<_>>();
+        if !matched.is_empty() {
+            if let Err(error) =
+                acknowledge_coordination_inbox(ctx.sup, workspace_root, ctx.id, &matched)
+            {
+                set_run_status(ctx.sup, ctx.id, AgentRunStatus::Running);
+                return Err(coordination_tool_error(error));
+            }
+            set_run_status(ctx.sup, ctx.id, AgentRunStatus::Running);
+            return Ok(Some(matched));
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            set_run_status(ctx.sup, ctx.id, AgentRunStatus::Running);
+            return Ok(None);
+        }
+        let pause = std::cmp::min(
+            std::time::Duration::from_millis(250),
+            deadline.saturating_duration_since(now),
+        );
+        tokio::select! {
+            _ = ctx.cancel.cancelled() => {
+                set_run_status(ctx.sup, ctx.id, AgentRunStatus::Running);
+                return Err(ToolOutcome::Cancelled);
+            }
+            _ = tokio::time::sleep(pause) => {}
+        }
+    }
+}
+
+/// Native coordination Tools. The current Run id is always the actor; no Tool
+/// argument can impersonate another Run. The same durable command path serves
+/// Harness state, Mission Control, and future identity-bound adapters.
+pub(super) async fn process_coordination_tool<E>(
+    ctx: &ToolCtx<'_>,
+    call: &NormalizedToolCall,
+    _emit: &mut E,
+) -> Result<ToolOutcome, String>
+where
+    E: FnMut(AgentEvent) -> Result<(), String>,
+{
+    let Some(workspace_root) = ctx.request.workspace_root.as_deref() else {
+        return Ok(coordination_tool_error(
+            "Agent coordination requires a workspace-rooted Run.",
+        ));
+    };
+    let Some(flavor) = tools::coordination_flavor(&call.name) else {
+        return Ok(coordination_tool_error(format!(
+            "Unknown coordination Tool: {}",
+            call.name
+        )));
+    };
+
+    let outcome = match flavor {
+        tools::CoordinationFlavor::List => {
+            let snapshot = match ctx.sup.coordination_snapshot(workspace_root) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return Ok(coordination_tool_error(error)),
+            };
+            let visible = match crate::coordination::visible_runs_for(&snapshot, ctx.id) {
+                Ok(visible) => visible,
+                Err(error) => return Ok(coordination_tool_error(error)),
+            };
+            let rows = visible
+                .into_iter()
+                .map(|run| {
+                    let run_id = run.registration.run_id.as_str();
+                    // A top-level conversation sits in `waiting` between user
+                    // turns forever, so the journal alone cannot say whether a
+                    // peer is around. The live handle can: a message to a live
+                    // peer lands at its next turn; one to an idle peer waits
+                    // until its user speaks again.
+                    let live = ctx.sup.with_handle(run_id, &mut |_| {});
+                    serde_json::json!({
+                        "runId": run_id,
+                        "relation": crate::coordination::relation_label(&snapshot, ctx.id, run_id),
+                        "state": run.state,
+                        "live": live,
+                        "label": run.registration.label,
+                        "missionId": run.registration.mission_id,
+                        "cancelRequested": run.cancel_request.is_some(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            ToolOutcome::Produced(ToolResult {
+                ok: true,
+                content: serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".to_string()),
+                metadata: Some(serde_json::json!({ "runs": rows })),
+            })
+        }
+        tools::CoordinationFlavor::Send => {
+            let target = call
+                .input
+                .get("toRunId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            let body = call
+                .input
+                .get("body")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            if target.is_empty() || body.is_empty() {
+                return Ok(coordination_tool_error(
+                    "agent_send requires non-empty toRunId and body.",
+                ));
+            }
+            let kind = match coordination_envelope_kind(&call.input) {
+                Ok(kind) => kind,
+                Err(error) => return Ok(coordination_tool_error(error)),
+            };
+            let reply_to = call
+                .input
+                .get("replyTo")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let correlation_id = call
+                .input
+                .get("correlationId")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let idempotency_key = call
+                .input
+                .get("idempotencyKey")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let sent = match ctx.sup.coordination_apply(
+                workspace_root,
+                CoordinationCommand::SendEnvelope {
+                    from: CoordinationActor::Run {
+                        run_id: ctx.id.to_string(),
+                    },
+                    to_run_id: target.to_string(),
+                    kind,
+                    body: body.to_string(),
+                    reply_to,
+                    correlation_id,
+                    idempotency_key: idempotency_key.clone(),
+                    source_refs: vec![],
+                },
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => return Ok(coordination_tool_error(error)),
+            };
+            let envelope = sent
+                .appended
+                .as_ref()
+                .and_then(|line| match &line.event {
+                    crate::coordination::CoordinationEvent::EnvelopeQueued { envelope } => {
+                        Some(envelope.clone())
+                    }
+                    _ => None,
+                })
+                .or_else(|| {
+                    sent.snapshot.envelopes.iter().rev().find_map(|entry| {
+                        let envelope = &entry.envelope;
+                        (envelope.from
+                            == (CoordinationActor::Run {
+                                run_id: ctx.id.to_string(),
+                            })
+                            && envelope.to_run_id == target
+                            && envelope.idempotency_key == idempotency_key)
+                            .then(|| envelope.clone())
+                    })
+                });
+            let Some(envelope) = envelope else {
+                return Ok(coordination_tool_error(
+                    "The message was recorded but its envelope could not be resolved.",
+                ));
+            };
+            if call
+                .input
+                .get("waitForReply")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                match wait_for_coordination_messages(
+                    ctx,
+                    workspace_root,
+                    Some(target),
+                    Some(&envelope.id),
+                    coordination_timeout_seconds(&call.input),
+                )
+                .await
+                {
+                    Ok(Some(messages)) => ToolOutcome::Produced(ToolResult {
+                        ok: true,
+                        content: coordination_messages_text(&messages),
+                        metadata: Some(serde_json::json!({
+                            "envelopeId": envelope.id,
+                            "deliveryState": "acknowledged",
+                            "replies": messages,
+                        })),
+                    }),
+                    Ok(None) => ToolOutcome::Produced(ToolResult {
+                        ok: true,
+                        content: format!(
+                            "Message {} was queued for @{target}; no reply arrived within the wait window.",
+                            envelope.id
+                        ),
+                        metadata: Some(serde_json::json!({
+                            "envelopeId": envelope.id,
+                            "deliveryState": "queued",
+                            "timedOut": true,
+                        })),
+                    }),
+                    Err(outcome) => outcome,
+                }
+            } else {
+                ToolOutcome::Produced(ToolResult {
+                    ok: true,
+                    content: format!("Message {} queued for @{target}.", envelope.id),
+                    metadata: Some(serde_json::json!({
+                        "envelopeId": envelope.id,
+                        "deliveryState": "queued",
+                    })),
+                })
+            }
+        }
+        tools::CoordinationFlavor::Wait => {
+            let from_run_id = call
+                .input
+                .get("fromRunId")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let reply_to = call
+                .input
+                .get("replyTo")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            match wait_for_coordination_messages(
+                ctx,
+                workspace_root,
+                from_run_id,
+                reply_to,
+                coordination_timeout_seconds(&call.input),
+            )
+            .await
+            {
+                Ok(Some(messages)) => ToolOutcome::Produced(ToolResult {
+                    ok: true,
+                    content: coordination_messages_text(&messages),
+                    metadata: Some(serde_json::json!({ "messages": messages })),
+                }),
+                Ok(None) => ToolOutcome::Produced(ToolResult {
+                    ok: true,
+                    content: "No matching coordination message arrived within the wait window."
+                        .to_string(),
+                    metadata: Some(serde_json::json!({ "timedOut": true })),
+                }),
+                Err(outcome) => outcome,
+            }
+        }
+        tools::CoordinationFlavor::Cancel => {
+            let target = call
+                .input
+                .get("runId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            if target.is_empty() {
+                return Ok(coordination_tool_error("agent_cancel requires runId."));
+            }
+            let reason = call
+                .input
+                .get("reason")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            if let Err(error) = ctx.sup.coordination_apply(
+                workspace_root,
+                CoordinationCommand::RequestCancel {
+                    actor: CoordinationActor::Run {
+                        run_id: ctx.id.to_string(),
+                    },
+                    run_id: target.to_string(),
+                    reason,
+                },
+            ) {
+                return Ok(coordination_tool_error(error));
+            }
+            let live = ctx
+                .sup
+                .with_handle(target, &mut |handle| handle.cancel.cancel());
+            ToolOutcome::Produced(ToolResult {
+                ok: true,
+                content: if live {
+                    format!("Cancellation requested for @{target}; its live token was signalled.")
+                } else {
+                    format!(
+                        "Cancellation requested for @{target}; no live local handle was attached."
+                    )
+                },
+                metadata: Some(serde_json::json!({ "runId": target, "live": live })),
+            })
+        }
+        tools::CoordinationFlavor::ReadResult => {
+            let target = call
+                .input
+                .get("runId")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            if target.is_empty() {
+                return Ok(coordination_tool_error("agent_read_result requires runId."));
+            }
+            let snapshot = match ctx.sup.coordination_snapshot(workspace_root) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return Ok(coordination_tool_error(error)),
+            };
+            match crate::coordination::visible_result_for(&snapshot, ctx.id, target) {
+                Ok(Some(result)) => ToolOutcome::Produced(ToolResult {
+                    ok: true,
+                    content: serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| result.summary.clone()),
+                    metadata: Some(serde_json::json!({ "result": result })),
+                }),
+                Ok(None) => ToolOutcome::Produced(ToolResult {
+                    ok: true,
+                    content: format!("@{target} has not published a result yet."),
+                    metadata: Some(serde_json::json!({ "runId": target, "ready": false })),
+                }),
+                Err(error) => coordination_tool_error(error),
+            }
+        }
+    };
+    Ok(outcome)
+}
+
 /// Advisor consult tool (`consult_advisor`): a Pause tool that escalates one
 /// hard decision to a stronger advisor model. The loop emits `AdvisorRequested`
 /// and parks on the shared question oneshot; the frontend asks a bigger model
@@ -414,6 +832,99 @@ pub(super) fn standard_gate_options(run_label: &str, project_label: &str) -> Vec
         option("allow_project", project_label, "allow", Some("project")),
         option("deny", "Reject", "deny", None),
     ]
+}
+
+/// The choices on an incoming-message gate: let this one in, or every message
+/// from this peer for the rest of the run. No project scope — a peer Run id
+/// names one conversation.
+pub(super) fn message_gate_options() -> Vec<PermissionOption> {
+    standard_gate_options("Approve messages from this agent for this run", "")
+        .into_iter()
+        .filter(|option| option.option_id != "allow_project")
+        .collect()
+}
+
+/// The receiving side's review of another agent's words, before they reach
+/// this Run's model. Runs at the turn boundary, right before the inbox is
+/// loaded: every envelope still queued for this Run is put to the user on the
+/// same card as a shell command, and the answer is written to the journal as
+/// an accept or a decline. "For this run" is remembered per sending peer, so
+/// a peer once welcomed keeps talking without a prompt and a peer once refused
+/// is declined silently. Full auto accepts everything, as it runs commands.
+/// Returns `true` when the user cancelled the run while a card was up.
+pub(super) async fn review_coordination_inbox<E>(
+    ctx: &ToolCtx<'_>,
+    workspace_root: &str,
+    emit: &mut E,
+) -> Result<bool, String>
+where
+    E: FnMut(AgentEvent) -> Result<(), String>,
+{
+    let snapshot = ctx.sup.coordination_snapshot(workspace_root)?;
+    let awaiting = crate::coordination::awaiting_review_for(&snapshot, ctx.id)?;
+    let full_auto = ctx.request.auto_approve_commands == Some(true);
+    for entry in awaiting {
+        let envelope = &entry.envelope;
+        let peer = match &envelope.from {
+            CoordinationActor::Run { run_id } => run_id.as_str(),
+            CoordinationActor::Operator => "operator",
+        };
+        let accept = match permission::precheck(ctx, permission::Capability::Message, peer, full_auto) {
+            permission::Precheck::Execute => true,
+            permission::Precheck::AutoReject(_) => false,
+            permission::Precheck::Ask => {
+                let peer_label = snapshot
+                    .runs
+                    .iter()
+                    .find(|run| run.registration.run_id == peer)
+                    .and_then(|run| run.registration.label.clone());
+                let kind_label = format!("{:?}", envelope.kind).to_ascii_lowercase();
+                // Not a Tool call, but the gate needs a call id to pair the
+                // request with its resolution; the envelope id is that.
+                let call = NormalizedToolCall {
+                    id: format!("inbox_{}", envelope.id),
+                    name: "agent_inbox".to_string(),
+                    input: serde_json::json!({}),
+                };
+                let perm = PermissionRequest {
+                    id: permission::request_id(ctx, &call),
+                    run_id: ctx.id.to_string(),
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    input: serde_json::json!({
+                        "envelopeId": envelope.id,
+                        "fromRunId": peer,
+                        "peerLabel": peer_label,
+                        "kind": kind_label,
+                        "body": envelope.body,
+                        "replyTo": envelope.reply_to,
+                    }),
+                    summary: format!("{kind_label} from @{}", peer_label.as_deref().unwrap_or(peer)),
+                    reason: "Another agent wrote this; approve it to let this conversation read it."
+                        .to_string(),
+                    options: message_gate_options(),
+                };
+                let decision = match permission::run_gate(ctx, &call, perm, emit).await? {
+                    permission::GateDecision::Cancelled => return Ok(true),
+                    decision => decision,
+                };
+                permission::record(ctx, permission::Capability::Message, peer, peer, &decision);
+                matches!(decision, permission::GateDecision::Approved { .. })
+            }
+        };
+        ctx.sup.coordination_apply(
+            workspace_root,
+            CoordinationCommand::ReviewEnvelope {
+                actor: CoordinationActor::Run {
+                    run_id: ctx.id.to_string(),
+                },
+                run_id: ctx.id.to_string(),
+                envelope_id: envelope.id.clone(),
+                accept,
+            },
+        )?;
+    }
+    Ok(false)
 }
 
 pub(super) async fn process_command_tool<E>(

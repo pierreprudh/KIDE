@@ -138,6 +138,7 @@ motion:
   fast:        120ms   # Color/border transitions
   medium:      180ms   # Sizing, opacity
   slow:        240ms   # Layout shifts
+  slower:      360ms   # Text cross-fades — a word giving way to another
 
 elevation:
   # Klide's depth system is intentionally shallow. Borders do the work.

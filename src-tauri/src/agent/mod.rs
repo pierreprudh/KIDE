@@ -15,8 +15,10 @@ mod steering;
 pub mod subagents;
 mod tool_handlers;
 use tool_handlers::{
-    last_tool_output, process_advisor_tool, process_command_tool, process_network_tool,
-    process_pause_tool, process_subagent_tool, process_write_tool, steer_via_advisor, AdvisorSteer,
+    last_tool_output, process_advisor_tool, process_command_tool, process_coordination_tool,
+    review_coordination_inbox,
+    process_network_tool, process_pause_tool, process_subagent_tool, process_write_tool,
+    steer_via_advisor, AdvisorSteer,
 };
 #[cfg(test)]
 use tool_handlers::{network_invocation, parse_diff_decision, ADVISOR_ERROR_PREFIX};
@@ -35,25 +37,30 @@ use self::run_core::{
     TurnStep,
 };
 use self::tools::{
-    apply_write, clear_run_snapshots, execute_read_only_tool,
-    execute_read_only_tool_with_runs_dir, execute_write_tool_preview,
-    find_tool_kind_for_workspace, preflight_command, run_command_capture,
-    run_command_capture_in, schemas_for_mode, tool_summary_for_workspace, NormalizedToolCall,
-    ToolKind,
+    apply_write, clear_run_snapshots, execute_read_only_tool, execute_read_only_tool_with_runs_dir,
+    execute_write_tool_preview, find_tool_kind_for_workspace, preflight_command,
+    run_command_capture, run_command_capture_in, schemas_for_mode, tool_summary_for_workspace,
+    NormalizedToolCall, ToolKind,
 };
+#[cfg(test)]
+use self::transcripts::read_summary;
 use self::transcripts::{
     app_runs_dir, append_event, list_summaries, now_ms, read_events, read_run_origin, run_id,
     transcript_path, validate_run_id, write_summary, RunOrigin,
 };
-#[cfg(test)]
-use self::transcripts::read_summary;
 use self::types::error_code;
 use self::types::{
     AgentContentBlock, AgentContextSnapshot, AgentError, AgentEvent, AgentMode, AgentRunStatus,
     AgentRunSummary, AgentTurnTiming, AgentUsage, DiffDecisionRequest, PermissionDecisionRequest,
-    PermissionOption,
-    PermissionRequest, RouteDecision, StartRunRequest, StartRunResponse, SubmitUserTurnRequest,
-    ToolResult,
+    PermissionOption, PermissionRequest, RouteDecision, StartRunRequest, StartRunResponse,
+    SubmitUserTurnRequest, ToolResult,
+};
+use crate::coordination::{
+    CoordinationActor, CoordinationArtifact, CoordinationArtifactKind, CoordinationCommand,
+    CoordinationCommandOutcome, CoordinationDeliveryState, CoordinationEnvelopeKind,
+    CoordinationEnvelopeSnapshot, CoordinationResultStatus, CoordinationRunRegistration,
+    CoordinationRunState, CoordinationSnapshot, CoordinationSourceRef, CoordinationSourceType,
+    CoordinationStoreState, CoordinationWorkerKind,
 };
 use crate::providers::{AiChatResponse, AiUsage, StreamChunk};
 use serde::Deserialize;
@@ -73,6 +80,14 @@ use tokio_util::sync::CancellationToken;
 pub struct AgentRunHandle {
     pub status: AgentRunStatus,
     pub cancel: CancellationToken,
+    /// Workspace that owns this Run's durable coordination journal. `None`
+    /// for workspace-less chat Runs, which cannot address other agents.
+    pub coordination_workspace_root: Option<String>,
+    /// Mission attempts and child Runs are single-shot and therefore publish a
+    /// terminal coordination state/result. A top-level conversation remains
+    /// `waiting` between user turns because the Harness intentionally reuses
+    /// its conversation id for follow-ups.
+    pub coordination_is_terminal_run: bool,
     /// When the loop pauses for a diff review, it stores a oneshot sender
     /// here so agent_resolve_diff can unblock it.
     pub pending_diff: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
@@ -220,6 +235,19 @@ trait RunSupervisor: Send + Sync {
     /// when the lock is poisoned or the run handle is gone — both best-effort
     /// (the sets `f` touches are re-ask-avoidance conveniences).
     fn with_handle(&self, run_id: &str, f: &mut dyn FnMut(&AgentRunHandle)) -> bool;
+    /// Authenticated native access to the Rust-owned coordination journal.
+    /// Callers construct actors from the current Run id; renderer-provided
+    /// actor objects never cross this seam.
+    fn coordination_apply(
+        &self,
+        _workspace_root: &str,
+        _command: CoordinationCommand,
+    ) -> Result<CoordinationCommandOutcome, String> {
+        Err("Agent coordination is unavailable in this run host.".to_string())
+    }
+    fn coordination_snapshot(&self, _workspace_root: &str) -> Result<CoordinationSnapshot, String> {
+        Err("Agent coordination is unavailable in this run host.".to_string())
+    }
     /// Broadcast a persisted event on the per-run *global* channel
     /// (`agent-run:{id}`), carrying its transcript `seq`. This is the reattach
     /// stream: the request-scoped `Channel` in `agent_start_run` dies when the
@@ -285,15 +313,110 @@ impl TauriSupervisor {
     }
 }
 
+fn coordination_state_for_status(
+    status: AgentRunStatus,
+    terminal_run: bool,
+) -> CoordinationRunState {
+    match status {
+        AgentRunStatus::Queued => CoordinationRunState::Queued,
+        AgentRunStatus::Running => CoordinationRunState::Working,
+        AgentRunStatus::WaitingForPermission => CoordinationRunState::Blocked,
+        AgentRunStatus::WaitingForDiff => CoordinationRunState::Reviewing,
+        AgentRunStatus::Paused => CoordinationRunState::Waiting,
+        AgentRunStatus::Done if terminal_run => CoordinationRunState::Done,
+        AgentRunStatus::Error if terminal_run => CoordinationRunState::Failed,
+        AgentRunStatus::Cancelled if terminal_run => CoordinationRunState::Cancelled,
+        AgentRunStatus::Done | AgentRunStatus::Cancelled => CoordinationRunState::Waiting,
+        AgentRunStatus::Error => CoordinationRunState::Blocked,
+    }
+}
+
+fn coordination_result_status(status: AgentRunStatus) -> Option<CoordinationResultStatus> {
+    match status {
+        AgentRunStatus::Done => Some(CoordinationResultStatus::Succeeded),
+        AgentRunStatus::Error => Some(CoordinationResultStatus::Failed),
+        AgentRunStatus::Cancelled => Some(CoordinationResultStatus::Cancelled),
+        _ => None,
+    }
+}
+
+fn coordination_result_summary(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    status: AgentRunStatus,
+) -> String {
+    let fallback = match status {
+        AgentRunStatus::Done => "Run completed without a written report.",
+        AgentRunStatus::Error => "Run failed before publishing a written report.",
+        AgentRunStatus::Cancelled => "Run was cancelled before publishing a written report.",
+        _ => "Run has not settled.",
+    };
+    let text = app_runs_dir(app)
+        .ok()
+        .and_then(|runs_dir| last_assistant_text(&runs_dir, run_id))
+        .unwrap_or_else(|| fallback.to_string());
+    // The journal's hard maximum is byte-based. Keep native summaries well
+    // below it without slicing through a UTF-8 code point.
+    text.chars().take(12_000).collect()
+}
+
 impl RunSupervisor for TauriSupervisor {
     fn set_status(&self, run_id: &str, status: AgentRunStatus) {
         let state = self.app.state::<AgentSupervisorState>();
-        let Ok(mut runs) = state.runs.lock() else {
+        let coordination = {
+            let Ok(mut runs) = state.runs.lock() else {
+                return;
+            };
+            let Some(handle) = runs.get_mut(run_id) else {
+                return;
+            };
+            handle.status = status;
+            handle
+                .coordination_workspace_root
+                .clone()
+                .map(|root| (root, handle.coordination_is_terminal_run))
+        };
+        let Some((root, terminal_run)) = coordination else {
             return;
         };
-        if let Some(handle) = runs.get_mut(run_id) {
-            handle.status = status;
+
+        if terminal_run {
+            if let Some(result_status) = coordination_result_status(status) {
+                let summary = coordination_result_summary(&self.app, run_id, status);
+                let _ = self.coordination_apply(
+                    &root,
+                    CoordinationCommand::PublishResult {
+                        run_id: run_id.to_string(),
+                        status: result_status,
+                        summary,
+                        artifacts: vec![CoordinationArtifact {
+                            kind: CoordinationArtifactKind::Transcript,
+                            reference: run_id.to_string(),
+                            label: Some("Harness transcript".to_string()),
+                        }],
+                        source_refs: vec![CoordinationSourceRef {
+                            source_type: CoordinationSourceType::Transcript,
+                            id: run_id.to_string(),
+                            label: None,
+                            path: None,
+                            line_start: None,
+                            line_end: None,
+                        }],
+                    },
+                );
+            }
         }
+        let _ = self.coordination_apply(
+            &root,
+            CoordinationCommand::SetRunState {
+                actor: CoordinationActor::Run {
+                    run_id: run_id.to_string(),
+                },
+                run_id: run_id.to_string(),
+                state: coordination_state_for_status(status, terminal_run),
+                reason: Some(run_status_wire(&status).replace('_', " ")),
+            },
+        );
     }
 
     fn with_handle(&self, run_id: &str, f: &mut dyn FnMut(&AgentRunHandle)) -> bool {
@@ -308,6 +431,25 @@ impl RunSupervisor for TauriSupervisor {
             }
             None => false,
         }
+    }
+
+    fn coordination_apply(
+        &self,
+        workspace_root: &str,
+        command: CoordinationCommand,
+    ) -> Result<CoordinationCommandOutcome, String> {
+        let state = self.app.state::<CoordinationStoreState>();
+        let outcome =
+            crate::coordination::apply_coordination_command(state.inner(), workspace_root, command)?;
+        // Tell every panel in this Workspace the journal moved, so a message
+        // queued for an idle Run shows in its panel before that Run's next turn.
+        crate::coordination::emit_coordination_changed(&self.app, workspace_root, &outcome);
+        Ok(outcome)
+    }
+
+    fn coordination_snapshot(&self, workspace_root: &str) -> Result<CoordinationSnapshot, String> {
+        let state = self.app.state::<CoordinationStoreState>();
+        crate::coordination::read_snapshot(state.inner(), workspace_root)
     }
 
     fn broadcast(&self, run_id: &str, seq: u64, event: &AgentEvent) {
@@ -1127,6 +1269,184 @@ pub(crate) async fn start_background_run(
 /// returned. Only the nested-subagent path uses it: the parent's tool step has
 /// to know when the child settled before it can read the child's report off the
 /// transcript. Every other caller passes `None` and never waits.
+/// Only Runs that can hold the coordination Tools join the journal. Chat mode
+/// never sees `agent_*`, so registering it would only grow a shared file every
+/// reader has to fold. The Workspace is the journal's home, so a
+/// workspace-less Run has nowhere to register either.
+fn coordination_workspace_for(request: &StartRunRequest) -> Option<&str> {
+    match request.mode {
+        AgentMode::Plan | AgentMode::Goal => request.workspace_root.as_deref(),
+        AgentMode::Chat => None,
+    }
+}
+
+/// The name peers see in `agent_list`: the same rule the AI panel uses for a
+/// thread title (first user message, whitespace collapsed, 80 chars). Raw run
+/// ids are unreadable for a model choosing whom to address.
+fn coordination_label(initial_text: &str) -> Option<String> {
+    let collapsed = initial_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(if collapsed.chars().count() > 80 {
+        format!("{}…", collapsed.chars().take(79).collect::<String>())
+    } else {
+        collapsed
+    })
+}
+
+fn register_coordination_run(
+    supervisor: &dyn RunSupervisor,
+    request: &StartRunRequest,
+    run_id: &str,
+) -> Result<(), String> {
+    let Some(root) = coordination_workspace_for(request) else {
+        return Ok(());
+    };
+    supervisor.coordination_apply(
+        root,
+        CoordinationCommand::RegisterRun {
+            registration: CoordinationRunRegistration {
+                run_id: run_id.to_string(),
+                worker_kind: CoordinationWorkerKind::Harness,
+                parent_run_id: request.parent_id.clone(),
+                mission_id: request.mission_id.clone(),
+                mission_task_id: request.mission_task_id.clone(),
+                // Registration is immutable, so the label is the first user
+                // message of the thread — the same title the panel shows.
+                // Follow-up turns keep it; the transcript stays the source
+                // for anything richer.
+                label: coordination_label(&request.initial_text),
+            },
+            initial_state: Some(CoordinationRunState::Working),
+        },
+    )?;
+    // Registration is idempotent for a reused top-level conversation. Move a
+    // Run waiting between user turns back to working; a brand-new registration
+    // is already working and this becomes a no-op.
+    supervisor.coordination_apply(
+        root,
+        CoordinationCommand::SetRunState {
+            actor: CoordinationActor::Run {
+                run_id: run_id.to_string(),
+            },
+            run_id: run_id.to_string(),
+            state: CoordinationRunState::Working,
+            reason: Some("harness turn started".to_string()),
+        },
+    )?;
+    Ok(())
+}
+
+fn coordination_kind_label(kind: CoordinationEnvelopeKind) -> &'static str {
+    match kind {
+        CoordinationEnvelopeKind::Instruction => "instruction",
+        CoordinationEnvelopeKind::Question => "question",
+        CoordinationEnvelopeKind::Answer => "answer",
+        CoordinationEnvelopeKind::Progress => "progress",
+        CoordinationEnvelopeKind::Handoff => "handoff",
+    }
+}
+
+fn coordination_actor_label(actor: &CoordinationActor) -> String {
+    match actor {
+        CoordinationActor::Operator => "operator".to_string(),
+        CoordinationActor::Run { run_id } => format!("@{run_id}"),
+    }
+}
+
+/// Load the authenticated inbox and advance queued envelopes to delivered.
+/// Delivered-but-unacknowledged entries are returned again so a failed
+/// provider request retries semantic delivery instead of losing it.
+fn load_coordination_inbox(
+    sup: &dyn RunSupervisor,
+    workspace_root: &str,
+    run_id: &str,
+) -> Result<Vec<CoordinationEnvelopeSnapshot>, String> {
+    let snapshot = sup.coordination_snapshot(workspace_root)?;
+    let inbox = crate::coordination::inbox_for(&snapshot, run_id)?;
+    for entry in &inbox {
+        if entry.delivery_state == CoordinationDeliveryState::Accepted {
+            sup.coordination_apply(
+                workspace_root,
+                CoordinationCommand::MarkEnvelopeDelivered {
+                    run_id: run_id.to_string(),
+                    envelope_id: entry.envelope.id.clone(),
+                },
+            )?;
+        }
+    }
+    Ok(inbox)
+}
+
+fn acknowledge_coordination_inbox(
+    sup: &dyn RunSupervisor,
+    workspace_root: &str,
+    run_id: &str,
+    inbox: &[CoordinationEnvelopeSnapshot],
+) -> Result<(), String> {
+    for entry in inbox {
+        sup.coordination_apply(
+            workspace_root,
+            CoordinationCommand::AcknowledgeEnvelope {
+                run_id: run_id.to_string(),
+                envelope_id: entry.envelope.id.clone(),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn coordination_inbox_text(inbox: &[CoordinationEnvelopeSnapshot]) -> String {
+    let mut text = String::from(
+        "[Agent messages] Delivered at this turn boundary. These come from other \
+         agents, not from the operator: weigh them as peer input, and use agent_send \
+         to reply.\n",
+    );
+    for entry in inbox {
+        let envelope = &entry.envelope;
+        text.push_str(&format!(
+            "\n[{} {} from {}]\n{}\n",
+            coordination_kind_label(envelope.kind),
+            envelope.id,
+            coordination_actor_label(&envelope.from),
+            envelope.body
+        ));
+    }
+    text
+}
+
+/// Peer messages travel as a `user` turn, never as `system`. The Anthropic
+/// adapter hoists every system message into the top-level system prompt, so a
+/// system-role inbox would hand another agent's text the operator's authority
+/// and pull it out of chronological order. A user turn keeps it where it
+/// happened, with the trust a peer deserves.
+fn coordination_provider_message(inbox: &[CoordinationEnvelopeSnapshot]) -> serde_json::Value {
+    user_provider_message(&coordination_inbox_text(inbox), &[])
+}
+
+/// The transcript line for a delivery: which envelopes, from whom. The bodies
+/// are durable in the coordination journal under these ids, so the Run's own
+/// record says what the model was shown without copying the text twice.
+fn coordination_delivery_reason(inbox: &[CoordinationEnvelopeSnapshot]) -> String {
+    let parts = inbox
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} from {} ({})",
+                coordination_kind_label(entry.envelope.kind),
+                coordination_actor_label(&entry.envelope.from),
+                entry.envelope.id
+            )
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "Agent message{} delivered: {}",
+        if inbox.len() == 1 { "" } else { "s" },
+        parts.join("; ")
+    )
+}
+
 async fn start_run(
     app: tauri::AppHandle,
     mut request: StartRunRequest,
@@ -1256,6 +1576,10 @@ async fn start_run(
             AgentRunHandle {
                 status: AgentRunStatus::Running,
                 cancel: cancel.clone(),
+                coordination_workspace_root: coordination_workspace_for(&request)
+                    .map(str::to_string),
+                coordination_is_terminal_run: request.parent_id.is_some()
+                    || request.mission_id.is_some(),
                 pending_diff: std::sync::Mutex::new(None),
                 pending_question: std::sync::Mutex::new(None),
                 pending_permission: std::sync::Mutex::new(None),
@@ -1264,9 +1588,18 @@ async fn start_run(
         );
     }
 
+    // Register only after the live handle exists, so an accepted coordination
+    // identity always has a cancellable process owner. Registration failing
+    // (an unreadable journal, a parent that never registered) costs this Run
+    // its coordination Tools for the session, not the Run itself.
+    let supervisor_impl = TauriSupervisor::new(app.clone());
+    if let Err(error) = register_coordination_run(&supervisor_impl, &request, &id) {
+        eprintln!("klide: run {id} is not coordination-addressable: {error}");
+    }
+
     // Detach the loop so this command returns the run id immediately; the UI
     // follows progress through the event channel and can abort via the token.
-    let supervisor: Arc<dyn RunSupervisor> = Arc::new(TauriSupervisor::new(app.clone()));
+    let supervisor: Arc<dyn RunSupervisor> = Arc::new(supervisor_impl);
     let mission_app = app.clone();
     let task_id = id.clone();
     tauri::async_runtime::spawn(async move {
@@ -1316,6 +1649,13 @@ async fn run_agent_loop(
     // The loop touches run-scoped state only through this seam — no direct
     // AppHandle reach. Production passes a TauriSupervisor; tests pass a fake.
     let sup: &dyn RunSupervisor = supervisor.as_ref();
+    // Alternate/headless hosts enter through the loop directly in tests and
+    // future background runners. The production start path already registered
+    // before detaching; the journal command is idempotent there. Like every
+    // other coordination step, failure is logged and the Run goes on.
+    if let Err(error) = register_coordination_run(sup, &request, &id) {
+        eprintln!("klide: run {id} is not coordination-addressable: {error}");
+    }
     let cwd = request.workspace_root.clone();
     // A reused id means this is a follow-up turn in an existing conversation
     // (the AI panel keys runs by its convo id). Continue the transcript instead
@@ -1334,6 +1674,11 @@ async fn run_agent_loop(
     let created_ms = now_ms();
     let mut seq = prior_events.len() as u64;
     let event_channel = on_event.clone();
+    // A wake turn: no words from the user, started by the panel so the Run
+    // reads what another agent left for it once its user let that in. There
+    // is no user message to record or to send — the accepted inbox is the
+    // turn's input — and the thread keeps the title it had.
+    let wake = resuming && request.initial_text.trim().is_empty() && request.attachments.is_empty();
 
     let mut emit = |event: AgentEvent| -> Result<(), String> {
         append_event(&runs_dir, &id, seq, &event)?;
@@ -1352,7 +1697,13 @@ async fn run_agent_loop(
             .to_string_lossy()
             .to_string(),
         source: "klide".to_string(),
-        title: title_from_text(&request.initial_text),
+        title: if wake {
+            transcripts::read_summary(&runs_dir, &id)
+                .map(|prior| prior.title)
+                .unwrap_or_else(|_| title_from_text(""))
+        } else {
+            title_from_text(&request.initial_text)
+        },
         status: "running".to_string(),
         provider: request.provider.clone(),
         model: request.model.clone(),
@@ -1398,16 +1749,23 @@ async fn run_agent_loop(
             ts: now_ms(),
         })?;
     }
-    emit(AgentEvent::UserMessage {
-        run_id: id.clone(),
-        message_id: message_id("user"),
-        text: request.initial_text.clone(),
-        attachments: request.attachments.clone(),
-        ts: now_ms(),
-    })?;
+    if !wake {
+        emit(AgentEvent::UserMessage {
+            run_id: id.clone(),
+            message_id: message_id("user"),
+            text: request.initial_text.clone(),
+            attachments: request.attachments.clone(),
+            ts: now_ms(),
+        })?;
+    }
 
     let system = base_system_prompt(&request);
     let mut messages = provider_messages(&request, system, &id);
+    if wake {
+        // provider_messages ended with the (empty) user turn; the inbox
+        // injected at the boundary below is this turn's user-role input.
+        messages.pop();
+    }
     // When this run id was used before, the on-disk transcript holds the
     // whole prior conversation. Replay it into `messages` between the
     // system prompt and the new user turn, so the model sees the same
@@ -1617,8 +1975,69 @@ async fn run_agent_loop(
         if !(caps.minimal_chat_context && matches!(request.mode, AgentMode::Chat)) {
             if let Some(cwd) = &request.workspace_root {
                 let todo_text = todo::list_todos_text(cwd, &id);
-                refresh_todo_context(&mut messages, todo_text.as_deref(), caps.append_todo_updates);
+                refresh_todo_context(
+                    &mut messages,
+                    todo_text.as_deref(),
+                    caps.append_todo_updates,
+                );
             }
+        }
+
+        // Native coordination delivery has one safe boundary: after the prior
+        // turn and its Tools fully settled, immediately before the next
+        // provider request. Never splice an envelope into a live stream or
+        // Tool execution. Delivered-but-unacknowledged entries are retried if
+        // the provider call fails before consuming them.
+        //
+        // Coordination is a convenience layered on the Run, not a dependency
+        // of it: if the shared journal cannot be read, this turn simply gets no
+        // inbox. Failing the Run here would let one bad file stop every agent
+        // in the Workspace, including ones that never message anyone.
+        //
+        // Before anything is loaded, whatever other agents queued for this Run
+        // goes past its user: the receiving side reviews, the sender never
+        // does. A refusal here is a cancelled run, not a skipped review.
+        let coordination_inbox = match coordination_workspace_for(&request) {
+            Some(root) => {
+                let ctx = ToolCtx {
+                    sup,
+                    id: id.as_str(),
+                    request: &request,
+                    cancel: &cancel,
+                    runs_dir: runs_dir.as_path(),
+                };
+                match review_coordination_inbox(&ctx, root, &mut emit).await {
+                    Ok(true) => {
+                        finish_cancelled(&mut emit, sup, &runs_dir, &id, &summary, message_count)?;
+                        return Ok(());
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!("klide: run {id} skipped coordination review this turn: {error}");
+                    }
+                }
+                load_coordination_inbox(sup, root, &id).unwrap_or_else(|error| {
+                    eprintln!("klide: run {id} skipped coordination delivery this turn: {error}");
+                    Vec::new()
+                })
+            }
+            None => Vec::new(),
+        };
+        if !coordination_inbox.is_empty() {
+            messages.push(coordination_provider_message(&coordination_inbox));
+            emit(AgentEvent::SteeringInjected {
+                run_id: id.clone(),
+                reason: coordination_delivery_reason(&coordination_inbox),
+                ts: now_ms(),
+            })?;
+        } else if wake && message_count == 0 {
+            // Woken for a message that is no longer there (declined, or read
+            // by a turn that got in first). The provider still needs a user
+            // turn to answer; keep the answer short.
+            messages.push(user_provider_message(
+                "[Agent messages] Nothing is waiting for you after all. Reply in one short sentence.",
+                &[],
+            ));
         }
 
         // Race the provider stream against user cancellation so abort takes
@@ -1647,6 +2066,20 @@ async fn run_agent_loop(
                 stream,
             }) => result,
         };
+        if provider_result.is_ok() && !coordination_inbox.is_empty() {
+            if let Some(root) = coordination_workspace_for(&request) {
+                // A failed acknowledgement leaves the entries `delivered`, so
+                // the next boundary offers them again. Duplicated delivery is
+                // the safe side of this error; a dead Run is not.
+                if let Err(error) =
+                    acknowledge_coordination_inbox(sup, root, &id, &coordination_inbox)
+                {
+                    eprintln!(
+                        "klide: run {id} could not acknowledge coordination delivery: {error}"
+                    );
+                }
+            }
+        }
         let response = match provider_result {
             Ok(response) => response,
             Err(err) => {
@@ -1875,21 +2308,17 @@ async fn run_agent_loop(
                 Some(ToolKind::Command) => process_command_tool(&ctx, &call, &mut emit).await?,
                 Some(ToolKind::Network) => process_network_tool(&ctx, &call, &mut emit).await?,
                 Some(ToolKind::Write) => process_write_tool(&ctx, &call, &mut emit).await?,
+                Some(ToolKind::Coordination) => {
+                    process_coordination_tool(&ctx, &call, &mut emit).await?
+                }
                 // Non-mutating tools: serve workspace reads from the parallel
                 // batch when present; otherwise execute inline. Conversation
                 // history uses the same registry executor but also receives
                 // the app-owned Run store below.
                 _ => ToolOutcome::Produced(match request.workspace_root.as_deref() {
-                    Some(root) => precomputed
-                        .remove(&call.id)
-                        .unwrap_or_else(|| {
-                            execute_read_only_tool_with_runs_dir(
-                                root,
-                                &call,
-                                &id,
-                                runs_dir.as_path(),
-                            )
-                        }),
+                    Some(root) => precomputed.remove(&call.id).unwrap_or_else(|| {
+                        execute_read_only_tool_with_runs_dir(root, &call, &id, runs_dir.as_path())
+                    }),
                     None => no_workspace_result(),
                 }),
             };
@@ -3717,6 +4146,7 @@ mod test_support {
     /// exercised headlessly against it.
     pub(super) struct FakeSupervisor {
         pub(super) runs: Mutex<HashMap<String, AgentRunHandle>>,
+        coordination: CoordinationStoreState,
     }
 
     impl FakeSupervisor {
@@ -3725,6 +4155,7 @@ mod test_support {
             runs.insert(id.to_string(), make_handle());
             Self {
                 runs: Mutex::new(runs),
+                coordination: CoordinationStoreState::default(),
             }
         }
     }
@@ -3750,6 +4181,23 @@ mod test_support {
             }
         }
         fn broadcast(&self, _run_id: &str, _seq: u64, _event: &AgentEvent) {}
+        fn coordination_apply(
+            &self,
+            workspace_root: &str,
+            command: CoordinationCommand,
+        ) -> Result<CoordinationCommandOutcome, String> {
+            crate::coordination::apply_coordination_command(
+                &self.coordination,
+                workspace_root,
+                command,
+            )
+        }
+        fn coordination_snapshot(
+            &self,
+            workspace_root: &str,
+        ) -> Result<CoordinationSnapshot, String> {
+            crate::coordination::read_snapshot(&self.coordination, workspace_root)
+        }
         fn retire_run(&self, run_id: &str) {
             if let Ok(mut runs) = self.runs.lock() {
                 runs.remove(run_id);
@@ -3761,6 +4209,8 @@ mod test_support {
         AgentRunHandle {
             status: AgentRunStatus::Running,
             cancel: CancellationToken::new(),
+            coordination_workspace_root: None,
+            coordination_is_terminal_run: false,
             pending_diff: Mutex::new(None),
             pending_question: Mutex::new(None),
             pending_permission: Mutex::new(None),
@@ -3966,6 +4416,237 @@ mod run_supervisor_tests {
     fn with_run_handle_returns_none_for_a_missing_run() {
         let sup = FakeSupervisor::with_run("run-1");
         assert!(with_run_handle(&sup, "ghost", |_| ()).is_none());
+    }
+
+    /// Register two peers in a fresh journal and hand back the sandbox.
+    fn coordination_sandbox(label: &str, sup: &FakeSupervisor) -> (std::path::PathBuf, String) {
+        let root = std::env::temp_dir().join(format!(
+            "klide-{label}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root_text = root.to_string_lossy().to_string();
+        for run_id in ["run_parent", "run_peer"] {
+            sup.coordination_apply(
+                &root_text,
+                CoordinationCommand::RegisterRun {
+                    registration: CoordinationRunRegistration {
+                        run_id: run_id.to_string(),
+                        worker_kind: CoordinationWorkerKind::Harness,
+                        parent_run_id: None,
+                        mission_id: None,
+                        mission_task_id: None,
+                        label: Some(format!("{run_id} thread")),
+                    },
+                    initial_state: Some(CoordinationRunState::Working),
+                },
+            )
+            .unwrap();
+        }
+        (root, root_text)
+    }
+
+    fn unsolicited(sup: &FakeSupervisor, root_text: &str, key: &str, body: &str) -> String {
+        sup.coordination_apply(
+            root_text,
+            CoordinationCommand::SendEnvelope {
+                from: CoordinationActor::Run { run_id: "run_peer".to_string() },
+                to_run_id: "run_parent".to_string(),
+                kind: CoordinationEnvelopeKind::Question,
+                body: body.to_string(),
+                reply_to: None,
+                correlation_id: None,
+                idempotency_key: Some(key.to_string()),
+                source_refs: vec![],
+            },
+        )
+        .unwrap()
+        .snapshot
+        .envelopes
+        .last()
+        .unwrap()
+        .envelope
+        .id
+        .clone()
+    }
+
+    fn state_of(sup: &FakeSupervisor, root_text: &str, id: &str) -> CoordinationDeliveryState {
+        sup.coordination_snapshot(root_text)
+            .unwrap()
+            .envelopes
+            .iter()
+            .find(|entry| entry.envelope.id == id)
+            .unwrap()
+            .delivery_state
+    }
+
+    #[tokio::test]
+    async fn incoming_messages_are_reviewed_by_the_receiving_side() {
+        let sup = FakeSupervisor::with_run("run_parent");
+        let (root, root_text) = coordination_sandbox("inbox-review", &sup);
+        let request = test_request(&root_text, &[]);
+        let cancel = CancellationToken::new();
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "run_parent",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: root.as_path(),
+        };
+        let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let sink = events.clone();
+        let mut emit = move |event: AgentEvent| -> Result<(), String> {
+            sink.lock().unwrap().push(event);
+            Ok(())
+        };
+
+        // Declined: never reaches the inbox, and the peer is refused for the run.
+        let first = unsolicited(&sup, &root_text, "m1", "ping");
+        assert_eq!(state_of(&sup, &root_text, &first), CoordinationDeliveryState::Queued);
+        let (outcome, _) = tokio::join!(
+            review_coordination_inbox(&ctx, &root_text, &mut emit),
+            answer_permission(&sup, "run_parent", r#"{"behavior":"deny"}"#),
+        );
+        assert!(!outcome.unwrap(), "not cancelled");
+        assert_eq!(state_of(&sup, &root_text, &first), CoordinationDeliveryState::Declined);
+        let second = unsolicited(&sup, &root_text, "m2", "ping again");
+        assert!(!review_coordination_inbox(&ctx, &root_text, &mut emit).await.unwrap());
+        assert_eq!(state_of(&sup, &root_text, &second), CoordinationDeliveryState::Declined);
+        assert!(crate::coordination::inbox_for(&sup.coordination_snapshot(&root_text).unwrap(), "run_parent").unwrap().is_empty());
+
+        // A fresh run, welcomed for the run: one card, then the peer talks freely.
+        let sup = FakeSupervisor::with_run("run_parent");
+        let (root, root_text) = coordination_sandbox("inbox-review-ok", &sup);
+        let request = test_request(&root_text, &[]);
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "run_parent",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: root.as_path(),
+        };
+        let third = unsolicited(&sup, &root_text, "m3", "hello");
+        let (outcome, _) = tokio::join!(
+            review_coordination_inbox(&ctx, &root_text, &mut emit),
+            answer_permission(&sup, "run_parent", r#"{"behavior":"allow","scope":"run"}"#),
+        );
+        assert!(!outcome.unwrap());
+        assert_eq!(state_of(&sup, &root_text, &third), CoordinationDeliveryState::Accepted);
+        let fourth = unsolicited(&sup, &root_text, "m4", "still there?");
+        assert!(!review_coordination_inbox(&ctx, &root_text, &mut emit).await.unwrap());
+        assert_eq!(state_of(&sup, &root_text, &fourth), CoordinationDeliveryState::Accepted);
+        assert_eq!(crate::coordination::inbox_for(&sup.coordination_snapshot(&root_text).unwrap(), "run_parent").unwrap().len(), 2);
+
+        let requested = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::PermissionRequested { .. }))
+            .count();
+        assert_eq!(requested, 2, "one card per fresh peer decision");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn native_agent_send_waits_for_and_acknowledges_the_exact_reply() {
+        let root = std::env::temp_dir().join(format!(
+            "klide-native-coordination-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root_text = root.to_string_lossy().to_string();
+        let sup = FakeSupervisor::with_run("run_parent");
+        for (run_id, parent_run_id) in [("run_parent", None), ("run_child", Some("run_parent"))] {
+            sup.coordination_apply(
+                &root_text,
+                CoordinationCommand::RegisterRun {
+                    registration: CoordinationRunRegistration {
+                        run_id: run_id.to_string(),
+                        worker_kind: CoordinationWorkerKind::Harness,
+                        parent_run_id: parent_run_id.map(str::to_string),
+                        mission_id: None,
+                        mission_task_id: None,
+                        label: None,
+                    },
+                    initial_state: Some(CoordinationRunState::Working),
+                },
+            )
+            .unwrap();
+        }
+        let request = test_request(&root_text, &[]);
+        let cancel = CancellationToken::new();
+        let ctx = ToolCtx {
+            sup: &sup,
+            id: "run_parent",
+            request: &request,
+            cancel: &cancel,
+            runs_dir: root.as_path(),
+        };
+        let call = NormalizedToolCall {
+            id: "coord_1".to_string(),
+            name: "agent_send".to_string(),
+            input: serde_json::json!({
+                "toRunId": "run_child",
+                "kind": "question",
+                "body": "Did replay remain contiguous?",
+                "waitForReply": true,
+                "timeoutSeconds": 2,
+            }),
+        };
+        let mut emit = |_: AgentEvent| Ok(());
+
+        let (tool, _) = tokio::join!(process_coordination_tool(&ctx, &call, &mut emit), async {
+            loop {
+                let snapshot = sup.coordination_snapshot(&root_text).unwrap();
+                if let Some(question) = snapshot
+                    .envelopes
+                    .iter()
+                    .find(|entry| entry.envelope.to_run_id == "run_child")
+                {
+                    sup.coordination_apply(
+                        &root_text,
+                        CoordinationCommand::SendEnvelope {
+                            from: CoordinationActor::Run {
+                                run_id: "run_child".to_string(),
+                            },
+                            to_run_id: "run_parent".to_string(),
+                            kind: CoordinationEnvelopeKind::Answer,
+                            body: "Yes — seq stayed contiguous.".to_string(),
+                            reply_to: Some(question.envelope.id.clone()),
+                            correlation_id: None,
+                            idempotency_key: Some("reply-1".to_string()),
+                            source_refs: vec![],
+                        },
+                    )
+                    .unwrap();
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let ToolOutcome::Produced(result) = tool.unwrap() else {
+            panic!("coordination Tool was cancelled")
+        };
+        assert!(result.ok, "{}", result.content);
+        assert!(result.content.contains("seq stayed contiguous"));
+        let snapshot = sup.coordination_snapshot(&root_text).unwrap();
+        let reply = snapshot
+            .envelopes
+            .iter()
+            .find(|entry| entry.envelope.body.contains("seq stayed"))
+            .unwrap();
+        assert_eq!(
+            reply.delivery_state,
+            CoordinationDeliveryState::Acknowledged
+        );
+        assert_eq!(
+            with_run_handle(&sup, "run_parent", |handle| handle.status),
+            Some(AgentRunStatus::Running)
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn request_event() -> AgentEvent {
@@ -4202,6 +4883,128 @@ mod run_loop_tests {
         )
         .await
         .expect("run loop settles without an infrastructure error");
+    }
+
+    #[tokio::test]
+    async fn queued_coordination_is_injected_and_acknowledged_at_the_turn_boundary() {
+        let (runs_dir, root) = sandbox("coordination-boundary");
+        let id = "coordination-boundary-run";
+        let sup = Arc::new(FakeSupervisor::with_run(id));
+        sup.coordination_apply(
+            &root,
+            CoordinationCommand::RegisterRun {
+                registration: CoordinationRunRegistration {
+                    run_id: id.to_string(),
+                    worker_kind: CoordinationWorkerKind::Harness,
+                    parent_run_id: None,
+                    mission_id: None,
+                    mission_task_id: None,
+                    // Registration is immutable and the loop registers with
+                    // the thread title, so the pre-registration must match.
+                    label: coordination_label(&test_request(&root, &[]).initial_text),
+                },
+                initial_state: Some(CoordinationRunState::Working),
+            },
+        )
+        .unwrap();
+        sup.coordination_apply(
+            &root,
+            CoordinationCommand::SendEnvelope {
+                from: CoordinationActor::Operator,
+                to_run_id: id.to_string(),
+                kind: CoordinationEnvelopeKind::Instruction,
+                body: "Review the replay edge case before answering.".to_string(),
+                reply_to: None,
+                correlation_id: None,
+                idempotency_key: Some("boundary-message".to_string()),
+                source_refs: vec![],
+            },
+        )
+        .unwrap();
+        let caller = ScriptedProviderCaller::new(vec![scripted_turn("Reviewed.", vec![])]);
+
+        drive_loop(
+            sup.clone(),
+            &runs_dir,
+            id,
+            test_request(&root, &[]),
+            caller.clone(),
+        )
+        .await;
+
+        let seen = caller.seen_messages.lock().unwrap();
+        let inbox = seen[0]
+            .iter()
+            .find(|message| {
+                message["content"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("[Agent messages]"))
+            })
+            .expect("the inbox reached the provider on the first turn");
+        // Peer text is a user turn, never system: the Anthropic adapter would
+        // otherwise hoist it into the system prompt with operator authority.
+        assert_eq!(inbox["role"], "user");
+        assert!(inbox["content"]
+            .as_str()
+            .unwrap()
+            .contains("Review the replay edge case"));
+        drop(seen);
+        let snapshot = sup.coordination_snapshot(&root).unwrap();
+        assert_eq!(
+            snapshot.envelopes[0].delivery_state,
+            CoordinationDeliveryState::Acknowledged
+        );
+        // The Run's own record says what was delivered, by envelope id.
+        let events = read_events(&runs_dir, id).unwrap();
+        let envelope_id = snapshot.envelopes[0].envelope.id.as_str();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::SteeringInjected { reason, .. }
+                if reason.starts_with("Agent message delivered") && reason.contains(envelope_id)
+        )));
+    }
+
+    #[tokio::test]
+    async fn chat_runs_never_register_and_a_bad_journal_never_stops_a_run() {
+        let (runs_dir, root) = sandbox("coordination-chat");
+        let sup = Arc::new(FakeSupervisor::with_run("coordination-chat-run"));
+        // Interior corruption: the strict reader refuses this journal.
+        let dir = std::path::Path::new(&root).join(".klide/coordination");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("events.jsonl"), "not json\nnot json either\n").unwrap();
+
+        // Chat never touches the journal, so it never even notices.
+        let mut chat = test_request(&root, &[]);
+        chat.mode = AgentMode::Chat;
+        drive_loop(
+            sup.clone(),
+            &runs_dir,
+            "coordination-chat-run",
+            chat,
+            ScriptedProviderCaller::new(vec![scripted_turn("Hello.", vec![])]),
+        )
+        .await;
+
+        // A Goal run does, and still answers: delivery is skipped, not fatal.
+        let goal_id = "coordination-goal-run";
+        sup.runs
+            .lock()
+            .unwrap()
+            .insert(goal_id.to_string(), test_support::make_handle());
+        let caller = ScriptedProviderCaller::new(vec![scripted_turn("Done anyway.", vec![])]);
+        drive_loop(
+            sup.clone(),
+            &runs_dir,
+            goal_id,
+            test_request(&root, &[]),
+            caller.clone(),
+        )
+        .await;
+        assert_eq!(caller.seen_messages.lock().unwrap().len(), 1);
+        assert_eq!(
+            read_summary(&runs_dir, goal_id).unwrap().status,
+            run_status_wire(&AgentRunStatus::Done)
+        );
     }
 
     /// The retention seam end-to-end through the real loop: a huge read is

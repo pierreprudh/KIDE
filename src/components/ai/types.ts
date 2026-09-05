@@ -16,6 +16,10 @@ export type Msg =
       queueId?: string;
       /** Set when this turn was dispatched to a named subagent via `@<id>`. */
       subagent?: string;
+      /** A turn with no words from the user: the panel started it so the Run
+       *  reads a message another agent left, once the user let it in. Drawn
+       *  as nothing — the received line on the response says why it spoke. */
+      wake?: true;
       /** Exact token count for this message's text under the active model's own
        *  tokenizer (Ollama / Anthropic). `exact` is false when the provider has
        *  no tokenizer endpoint and the number is a length-based estimate. */
@@ -118,6 +122,8 @@ export type QueuedTurn = {
   projectContext?: ProjectContextPayload;
   /** Set when the user dispatched this turn to a named subagent via `@<id>`. */
   subagent?: string;
+  /** See `Msg.wake`. Sent with empty text; the harness records no user message. */
+  wake?: true;
 };
 
 export type Conversation = {

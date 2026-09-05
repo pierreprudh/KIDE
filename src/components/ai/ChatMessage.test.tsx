@@ -67,3 +67,72 @@ describe("tool-run thinking", () => {
     expect(html).toContain("Answer after checking.");
   });
 });
+
+describe("agent coordination tool rows", () => {
+  it("renders a durable question as a human agent-to-agent action", () => {
+    const message: Msg = {
+      role: "assistant",
+      content: "",
+      toolCalls: [{
+        name: "agent_send",
+        args: {
+          toRunId: "run_reviewer",
+          kind: "question",
+          body: "Can you verify the replay invariant?",
+          waitForReply: true,
+        },
+      }],
+    };
+
+    const html = renderToStaticMarkup(renderMessageBody(message));
+
+    expect(html).toContain("Asked");
+    expect(html).toContain("@run_reviewer");
+    expect(html).toContain("Can you verify the replay invariant?");
+    expect(html).not.toContain("agent_send");
+    expect(html).not.toContain("toRunId");
+  });
+
+  it("renders a delivered agent message in the sender's line, from the other side", () => {
+    const message: Msg = {
+      role: "system",
+      content: "",
+      steering: { reason: "Agent message delivered: question from @run_reviewer (env_42)" },
+    };
+
+    const html = renderToStaticMarkup(renderMessageBody(message, false, { workspaceRoot: "/tmp/ws" }));
+
+    expect(html).toContain("Asked by");
+    expect(html).toContain("@run_reviewer");
+    expect(html).not.toContain("Steered");
+    expect(html).not.toContain("Received");
+    expect(html).not.toContain("env_42");
+  });
+
+  it("keeps ordinary steering lines as steering", () => {
+    const message: Msg = {
+      role: "system",
+      content: "",
+      steering: { reason: "Loop detected — `read_file` called 3×" },
+    };
+
+    const html = renderToStaticMarkup(renderMessageBody(message));
+
+    expect(html).toContain("Steered");
+    expect(html).not.toContain("Received");
+  });
+
+  it("labels coordination results without exposing raw machinery", () => {
+    const message: Msg = {
+      role: "tool",
+      content: "Message env_123 queued for @run_reviewer.",
+      toolName: "agent_send",
+      toolCallId: "call_1",
+    };
+
+    const html = renderToStaticMarkup(renderMessageBody(message));
+
+    expect(html).toContain("coordination update");
+    expect(html).toContain("Message env_123 queued");
+  });
+});

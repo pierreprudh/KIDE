@@ -2,6 +2,7 @@ mod accounts;
 mod adapters;
 mod cli;
 mod agent;
+mod coordination;
 mod custom_cli;
 mod custom_providers;
 mod delegate;
@@ -682,6 +683,7 @@ pub fn run() {
         .manage(pty::DaemonBridge::default())
         .manage(delegate::status::DelegateStatusState::default())
         .manage(agent::AgentSupervisorState::default())
+        .manage(coordination::CoordinationStoreState::default())
         .manage(missions::MissionStoreState::default())
         .manage(local_servers::LocalServerState::default())
         .manage(models::ReflectionProbeCache::default())
@@ -857,6 +859,9 @@ pub fn run() {
             memory_write,
             memory_list,
             memory_read,
+            coordination::coordination_apply_command,
+            coordination::coordination_snapshot,
+            coordination::coordination_events,
             missions::mission_create,
             missions::mission_read,
             missions::mission_list,
