@@ -132,6 +132,34 @@ pub struct StartRunRequest {
     pub mission_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission_task_id: Option<String>,
+    /// The user's starred models, sent only when the Provider is `auto`. Stars
+    /// live in the renderer's storage (`favModels.ts`), so the request carries
+    /// the preference while the routing policy stays in Rust
+    /// (`agent::routing`). Ignored for a concrete Provider.
+    #[serde(default)]
+    pub preferred_models: Vec<PreferredModel>,
+    /// Backend-populated: how an `auto` request was routed, so the loop can
+    /// record the decision on the Transcript right after `RunStarted`. Renderer
+    /// input is ignored — the router is the only writer.
+    #[serde(default, skip)]
+    pub routed: Option<RouteDecision>,
+}
+
+/// One starred provider + model pair, as the picker records it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreferredModel {
+    pub provider: String,
+    pub model: String,
+}
+
+/// The router's evidence for one resolved `auto` request. Travels on the
+/// request only between `start_run` and the loop's first emit; the durable
+/// form is the `RouteResolved` event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RouteDecision {
+    pub reason: String,
+    pub skipped: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -428,7 +456,8 @@ impl AgentEvent {
             | AgentEvent::SubagentResolved { ts, .. }
             | AgentEvent::AdvisorRequested { ts, .. }
             | AgentEvent::AdvisorResolved { ts, .. }
-            | AgentEvent::SteeringInjected { ts, .. } => *ts,
+            | AgentEvent::SteeringInjected { ts, .. }
+            | AgentEvent::RouteResolved { ts, .. } => *ts,
         }
     }
 }
@@ -624,6 +653,22 @@ pub enum AgentEvent {
     SteeringInjected {
         run_id: String,
         reason: String,
+        ts: i64,
+    },
+    /// An `auto` request settled on this concrete pair. Emitted once, right
+    /// after `RunStarted` (which already carries the resolved provider and
+    /// model, so every surface shows what actually runs), and only for runs
+    /// that were requested as `auto`. `reason` is why this one; `skipped`
+    /// names each candidate ranked above it and what ruled it out — the
+    /// decision is auditable from the Transcript, not just its outcome. A
+    /// continuation of an `auto` thread reuses its origin and emits nothing:
+    /// the pair is locked for the conversation. See `routing.rs`.
+    RouteResolved {
+        run_id: String,
+        provider: String,
+        model: String,
+        reason: String,
+        skipped: Vec<String>,
         ts: i64,
     },
     /// The model called `userAnswerQuestion` and is paused waiting for the

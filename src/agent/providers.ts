@@ -8,13 +8,16 @@ export type ProviderGroup = {
   items: { id: ProviderId; name: string; available: boolean }[];
 };
 
-export type ProviderGroupId = "local" | "subscription" | "api";
+export type ProviderGroupId = "routed" | "local" | "subscription" | "api";
 export type ProviderRuntime =
   | "managed-local"
   | "external-local"
   | "delegate"
   | "hosted"
-  | "custom";
+  | "custom"
+  /** Not a Provider that serves models: the Rust router replaces it with a
+   *  concrete one at run start. Needs no key, no server, no model list. */
+  | "router";
 
 /** One frontend Provider row. Picker grouping, availability, defaults, and
  * runtime capabilities all derive from this catalog so adding a Provider is a
@@ -51,7 +54,22 @@ export const OLLAMA_MODEL_PRESETS = ["pierreprudh/klide-8b"] as const;
  *  hardcoded model here made every Claude Code session open on Sonnet. */
 export const CLI_DEFAULT_MODEL = "default";
 
+/** The Provider the picker sends for "Auto". The Rust router
+ *  (`src-tauri/src/agent/routing.rs`) turns it into a concrete provider +
+ *  model at run start — rule out what can't do the job, prefer what you
+ *  starred, lock the pick for the conversation — and `RunStarted` then carries
+ *  the real pair, so every surface shows what actually ran. Both halves are
+ *  the same word because a routed run has no model until Rust gives it one;
+ *  the Rust `frontend_auto_sentinel_matches` test keeps the two sides equal. */
+export const AUTO_PROVIDER = "auto";
+export const AUTO_MODEL = "auto";
+
+export function isAutoProvider(id: string): boolean {
+  return id === AUTO_PROVIDER;
+}
+
 export const PROVIDER_CATALOG: readonly ProviderDefinition[] = [
+  { id: AUTO_PROVIDER, name: "Auto", group: "routed", runtime: "router", available: true, defaultModel: AUTO_MODEL },
   { id: "ollama", name: "Ollama", group: "local", runtime: "managed-local", available: true, defaultModel: "llama3.1:8b" },
   { id: "mlx", name: "MLX (Apple Silicon)", shortName: "MLX", group: "local", runtime: "managed-local", available: true, defaultModel: MLX_MODEL_PRESETS[0] },
   { id: "lmstudio", name: "LM Studio", group: "local", runtime: "external-local", available: true, defaultModel: "local-model" },
@@ -71,6 +89,7 @@ export const PROVIDER_CATALOG: readonly ProviderDefinition[] = [
 ] as const;
 
 const GROUPS: Array<{ id: ProviderGroupId; label: string }> = [
+  { id: "routed", label: "Routed" },
   { id: "local", label: "Local" },
   { id: "subscription", label: "Subscription" },
   { id: "api", label: "API" },

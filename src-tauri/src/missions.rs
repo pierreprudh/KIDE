@@ -895,6 +895,10 @@ fn start_request_for(
         parent_id: None,
         mission_id: Some(bundle.mission.id.clone()),
         mission_task_id: Some(task.id.clone()),
+        // Approval froze a concrete provider and model into the task file, so a
+        // Mission attempt never arrives as `auto` and has no stars to carry.
+        preferred_models: vec![],
+        routed: None,
     })
 }
 

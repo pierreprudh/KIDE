@@ -222,6 +222,15 @@ export function ProviderLogo({ id, size = 14 }: { id: ProviderId; size?: number 
     );
   }
   switch (id) {
+    case "auto":
+      // The router: three lanes meeting one road. Hand-drawn like the other
+      // provider marks, in currentColor so it themes with the row.
+      return (
+        <svg {...line} strokeWidth="1.7">
+          <path d="M4 6h5l5 6-5 6H4M4 12h5" />
+          <path d="M14 12h6M17 9l3 3-3 3" />
+        </svg>
+      );
     case "mlx":
       // MLX wordmark: bold "ML" in the foreground color + a muted-gray "X",
       // matching Apple's mark. Rendered as a transparent SVG (no baked
