@@ -4,6 +4,7 @@ import type { CoordinationEnvelopeSnapshot, CoordinationSnapshot } from "../../a
 import {
   coordinationPeersOf,
   inboxSenders,
+  latestCoordinationPeer,
   parseDeliveryReason,
   peerName,
   pendingInboxFor,
@@ -92,5 +93,17 @@ describe("pendingInboxFor", () => {
 
   it("names the senders once each, in first-seen order", () => {
     expect(inboxSenders(pendingInboxFor(snapshot, "run_b"))).toEqual(["run_c", "run_a"]);
+  });
+});
+
+describe("latestCoordinationPeer", () => {
+  it("names the peer dealt with last, not first", () => {
+    const msgs: Msg[] = [
+      { role: "assistant", content: "", toolCalls: [{ name: "agent_send", args: { toRunId: "run_self", body: "ping" } }] },
+      { role: "system", content: "", steering: { reason: "Agent message delivered: answer from @run_b (env_9)" } },
+      { role: "assistant", content: "", toolCalls: [{ name: "agent_send", args: { toRunId: "run_b", body: "thanks" } }] },
+    ];
+    expect(latestCoordinationPeer(msgs)).toBe("run_b");
+    expect(latestCoordinationPeer([])).toBeNull();
   });
 });

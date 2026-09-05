@@ -89,7 +89,7 @@ import {
 } from "./ai/modelSelection";
 import { modificationAcceptanceMode } from "./ai/panelHost";
 import { ModelPicker, modelLabel } from "./ai/ModelPicker";
-import { coordinationPeersOf, inboxSenders, parseDeliveryReason, peerName, useCoordinationInbox, usePeerIndex } from "./ai/coordinationPeers";
+import { inboxSenders, latestCoordinationPeer, parseDeliveryReason, peerName, useCoordinationInbox, usePeerIndex } from "./ai/coordinationPeers";
 import { PeerLink } from "./ai/PeerLink";
 import { reviewEnvelope } from "../agent/coordination";
 import { favModelsFor } from "../favModels";
@@ -2331,12 +2331,13 @@ This user request requires workspace inspection. Before answering, you MUST call
   // taken in yet — read from the journal, refreshed on its change event, so
   // they show here the moment they are sent rather than at the next turn.
   const pendingInbox = useCoordinationInbox(workspaceRoot, currentId);
-  // Other conversations this thread has exchanged agent messages with: from
-  // its own messages, plus whoever has something waiting for it.
+  // The one conversation this thread is talking to right now: whoever has
+  // something waiting for it, else the peer it last exchanged with. One link,
+  // not a row of every peer it ever met.
   const coordinationPeers = useMemo(() => {
-    const peers = coordinationPeersOf(msgs);
-    for (const id of inboxSenders(pendingInbox)) if (!peers.includes(id)) peers.push(id);
-    return peers;
+    const senders = inboxSenders(pendingInbox);
+    const latest = senders.length > 0 ? senders[senders.length - 1] : latestCoordinationPeer(msgs);
+    return latest ? [latest] : [];
   }, [msgs, pendingInbox]);
   const peerIndex = usePeerIndex();
 

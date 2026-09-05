@@ -132,6 +132,29 @@ export function coordinationPeersOf(msgs: Msg[]): string[] {
   return peers;
 }
 
+/** The peer this conversation dealt with most recently — the one link worth
+ *  drawing under the composer. Contact order comes from the messages: a send
+ *  or a wait names the peer, a delivery marker names the sender. */
+export function latestCoordinationPeer(msgs: Msg[]): string | null {
+  let latest: string | null = null;
+  const note = (id: string | null) => {
+    if (id && id !== "operator") latest = id;
+  };
+  for (const m of msgs) {
+    if (m.role === "assistant") {
+      for (const call of m.toolCalls ?? []) {
+        if (!COORDINATION_TOOL_NAMES.has(call.name)) continue;
+        note(stringArg(call.args, "toRunId"));
+        note(stringArg(call.args, "fromRunId"));
+        if (call.name !== "agent_list") note(stringArg(call.args, "runId"));
+      }
+    } else if (m.role === "system" && m.steering) {
+      for (const ref of parseDeliveryReason(m.steering.reason) ?? []) note(ref.from);
+    }
+  }
+  return latest;
+}
+
 /** Messages addressed to this Run that it has not yet taken in: awaiting the
  *  user's review, accepted for the next turn, or delivered during a turn that
  *  has not finished. Acknowledged ones are in the transcript as a received
