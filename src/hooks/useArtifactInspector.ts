@@ -14,17 +14,36 @@ function artifactIdentity(request: ArtifactRequest): string {
 }
 
 /** A checkpoint set opens as one diff tab per file, not a single grouped tab. */
-function expandArtifactRequest(request: ArtifactRequest): ArtifactRequest[] {
+export function expandArtifactRequest(request: ArtifactRequest): ArtifactRequest[] {
   if (request.kind !== "checkpoint-set") return [request];
-  return request.entries.map((entry) => ({
-    kind: "diff",
-    runId: request.runId,
-    workspaceRoot: entry.workspaceRoot,
-    path: entry.path,
-    original: entry.oldContent,
-    modified: entry.newContent,
-    isCreate: entry.isCreate,
-  }));
+  const byFile = new Map<string, Extract<ArtifactRequest, { kind: "diff" }>>();
+  // Backend checkpoints arrive newest first. Visit them in timestamp order so
+  // the first snapshot is retained while each later edit advances the result.
+  for (const entry of [...request.entries].sort((a, b) => a.ts - b.ts)) {
+    const identity = JSON.stringify([entry.workspaceRoot, entry.path]);
+    const existing = byFile.get(identity);
+    if (existing) {
+      existing.modified = entry.newContent;
+    } else {
+      byFile.set(identity, {
+        kind: "diff",
+        runId: request.runId,
+        workspaceRoot: entry.workspaceRoot,
+        path: entry.path,
+        original: entry.oldContent,
+        modified: entry.newContent,
+        isCreate: entry.isCreate,
+      });
+    }
+  }
+  return [...byFile.values()];
+}
+
+export function refreshArtifactTab(existing: ArtifactTab, request: ArtifactRequest): ArtifactTab {
+  // Opening a plain file must not discard its review. New review evidence,
+  // however, replaces the previous snapshot even when the tab is already open.
+  // Keep the key: ArtifactInspector owns editor drafts by this stable identity.
+  return request.kind === "file" ? existing : { ...existing, request };
 }
 
 export function useArtifactInspector() {
@@ -60,12 +79,7 @@ export function useArtifactInspector() {
       );
       if (existingIndex >= 0) {
         const existing = next[existingIndex];
-        if (
-          existing.request.kind === "file" &&
-          (nextRequest.kind === "diff" || nextRequest.kind === "patch")
-        ) {
-          next[existingIndex] = { ...existing, request: nextRequest };
-        }
+        next[existingIndex] = refreshArtifactTab(existing, nextRequest);
         targetKey ??= existing.key;
         continue;
       }

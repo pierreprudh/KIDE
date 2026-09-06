@@ -170,6 +170,18 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
         transcript.apply(event);
         return true;
       }
+      // Evidence belongs to the fold, while these events still need the
+      // panel's file refresh, permission, and terminal-state handlers.
+      case "file_changed":
+      case "permission_resolved":
+      case "run_result": {
+        transcript.apply(event);
+        if (event.type === "run_result") {
+          cancelFlush();
+          projectCommit();
+        }
+        return false;
+      }
       case "assistant_delta": {
         if (firstTokenAt === null) firstTokenAt = now();
         if (pace) {

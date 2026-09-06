@@ -770,7 +770,10 @@ pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<Memory
     }
     let created = now_ms();
     let date_iso = iso_date(created);
-    let stem = format!("{}-{}", date_stamp(created), slugify(&input.title));
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).map_err(|e| format!("Unable to generate memory id: {e}"))?;
+    let suffix: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let stem = format!("{}-{}-{suffix}", date_stamp(created), slugify(&input.title));
     let path = dir.join(format!("{stem}.md"));
 
     let entry = MemoryEntry {
@@ -805,7 +808,7 @@ pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<Memory
     };
 
     let body = render_markdown(&entry);
-    crate::durable::write_atomic(&path, body.as_bytes())
+    crate::durable::write_atomic_new(&path, body.as_bytes())
         .map_err(|e| format!("Unable to write memory entry: {e}"))?;
     Ok(entry)
 }
@@ -1251,6 +1254,22 @@ mod tests {
         let entry = parse_entry_from_file(&path, &base).unwrap();
         assert_eq!(entry.review_state, MemoryReviewState::Stale);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn repeated_titles_preserve_both_memory_entries() {
+        let base = std::env::temp_dir().join(format!("klide-memory-repeated-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let root = base.to_string_lossy().to_string();
+        let input = |notes: &str| serde_json::from_value(serde_json::json!({
+            "title": "Same title", "notes": notes
+        })).unwrap();
+        let first = super::memory_write(root.clone(), input("first note")).unwrap();
+        let second = super::memory_write(root, input("second note")).unwrap();
+        assert_ne!(first.id, second.id);
+        assert!(std::fs::read_to_string(&first.path).unwrap().contains("first note"));
+        assert!(std::fs::read_to_string(&second.path).unwrap().contains("second note"));
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

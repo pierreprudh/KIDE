@@ -27,16 +27,21 @@ use std::path::Path;
 /// Write `bytes` to `dest` atomically. A concurrent reader sees either the
 /// previous contents or the new ones, never a truncated mix.
 pub fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<(), String> {
-    write_atomic_inner(dest, bytes, false)
+    write_atomic_inner(dest, bytes, false, false)
 }
 
 /// `write_atomic`, but the file lands at mode 0600. For anything that holds a
 /// credential or a token.
 pub fn write_atomic_private(dest: &Path, bytes: &[u8]) -> Result<(), String> {
-    write_atomic_inner(dest, bytes, true)
+    write_atomic_inner(dest, bytes, true, false)
 }
 
-fn write_atomic_inner(dest: &Path, bytes: &[u8], private: bool) -> Result<(), String> {
+/// Publish a new file atomically, refusing to replace an existing destination.
+pub fn write_atomic_new(dest: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic_inner(dest, bytes, false, true)
+}
+
+fn write_atomic_inner(dest: &Path, bytes: &[u8], private: bool, create_new: bool) -> Result<(), String> {
     let parent = dest
         .parent()
         .ok_or_else(|| format!("{dest:?} has no parent directory"))?;
@@ -47,8 +52,13 @@ fn write_atomic_inner(dest: &Path, bytes: &[u8], private: bool) -> Result<(), St
     let tmp = tmp_path(dest);
 
     {
-        let mut file =
-            fs::File::create(&tmp).map_err(|e| format!("Could not create {tmp:?}: {e}"))?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(!create_new)
+            .create_new(create_new)
+            .open(&tmp)
+            .map_err(|e| format!("Could not create {tmp:?}: {e}"))?;
         if private {
             set_private(&tmp);
         }
@@ -60,10 +70,21 @@ fn write_atomic_inner(dest: &Path, bytes: &[u8], private: bool) -> Result<(), St
             .map_err(|e| format!("Could not flush {tmp:?}: {e}"))?;
     }
 
-    fs::rename(&tmp, dest).map_err(|e| {
+    // A hard link publishes the fully flushed inode but fails if dest exists.
+    // Exclusive temp creation also prevents concurrent writers sharing an inode.
+    let publish = if create_new {
+        fs::hard_link(&tmp, dest)
+    } else {
+        fs::rename(&tmp, dest)
+    };
+    publish.map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("Could not move {tmp:?} into place: {e}")
     })?;
+
+    if create_new {
+        let _ = fs::remove_file(&tmp);
+    }
 
     // Best-effort: durably record the rename itself. Failure here means the
     // new contents are on the device but the directory entry might not survive
@@ -166,6 +187,16 @@ mod tests {
             .filter(|n| n != "mission.md")
             .collect();
         assert!(leftovers.is_empty(), "unexpected leftovers: {leftovers:?}");
+    }
+
+    #[test]
+    fn write_atomic_new_never_replaces_an_existing_entry() {
+        let dir = tmp_dir("new-only");
+        let dest = dir.join("note.md");
+        write_atomic_new(&dest, b"first").unwrap();
+        assert!(write_atomic_new(&dest, b"second").is_err());
+        assert_eq!(fs::read(&dest).unwrap(), b"first");
+        assert!(!tmp_path(&dest).exists());
     }
 
     #[test]

