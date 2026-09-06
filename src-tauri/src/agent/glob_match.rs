@@ -19,6 +19,17 @@
 /// sequence as one unit would make the allowlist's coverage check harder to
 /// reason about, not easier.
 pub fn wildcard_match(pattern: &str, text: &str) -> bool {
+    wildcard_match_where(pattern, text, |_| true)
+}
+
+/// In an approval rule, shell syntax must match literally, never through a
+/// wildcard. This includes quoting and escaping, which can change how later
+/// literal operators are interpreted by the shell.
+pub fn command_wildcard_match(pattern: &str, text: &str) -> bool {
+    wildcard_match_where(pattern, text, |byte| !b";&|`$><()\n\r\"'\\#".contains(&byte))
+}
+
+fn wildcard_match_where(pattern: &str, text: &str, may_consume: impl Fn(u8) -> bool) -> bool {
     let p = pattern.as_bytes();
     let t = text.as_bytes();
     let (mut pi, mut ti) = (0_usize, 0_usize);
@@ -29,7 +40,7 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
     let mut star_consumed = 0_usize;
 
     while ti < t.len() {
-        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
+        if pi < p.len() && ((p[pi] == b'?' && may_consume(t[ti])) || (p[pi] != b'?' && p[pi] != b'*' && p[pi] == t[ti])) {
             pi += 1;
             ti += 1;
         } else if pi < p.len() && p[pi] == b'*' {
@@ -37,6 +48,9 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
             star_consumed = ti;
             pi += 1;
         } else if let Some(star_i) = star {
+            if !may_consume(t[star_consumed]) {
+                return false;
+            }
             pi = star_i + 1;
             star_consumed += 1;
             ti = star_consumed;
