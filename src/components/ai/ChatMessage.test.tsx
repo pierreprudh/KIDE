@@ -122,6 +122,32 @@ describe("agent coordination tool rows", () => {
     expect(html).not.toContain("Received");
   });
 
+  it("draws an attached result under its own call, without repeating the tool name", () => {
+    const message: Msg = {
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        { id: "a", name: "read_file", args: { path: "src/a.ts" } },
+        { id: "b", name: "peek_value", args: { ref: "call_1" } },
+      ],
+    };
+    const results = new Map([
+      ["a", { msg: { role: "tool" as const, content: "Contents of src/a.ts (220 lines)", toolName: "read_file", toolCallId: "a" }, active: false }],
+    ]);
+
+    const html = renderToStaticMarkup(renderMessageBody(message, false, { results }));
+
+    // The result sits between its call and the next call.
+    const call = html.indexOf("read_file");
+    const result = html.indexOf("Contents of src/a.ts");
+    const next = html.indexOf("peek_value");
+    expect(call).toBeGreaterThan(-1);
+    expect(result).toBeGreaterThan(call);
+    expect(next).toBeGreaterThan(result);
+    // The call row already names the tool; the result line does not say it again.
+    expect(html.match(/read_file/g)).toHaveLength(1);
+  });
+
   it("labels coordination results without exposing raw machinery", () => {
     const message: Msg = {
       role: "tool",
