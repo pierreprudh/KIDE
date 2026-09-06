@@ -1226,9 +1226,10 @@ function App() {
     );
   }
 
-  async function reviewRunChanges({ runId, title }: { runId: string; title: string }) {
+  async function reviewRunChanges({ runId, title, path }: { runId: string; title: string; path?: string }) {
     try {
-      const entries = await listCheckpoints(runId);
+      const checkpoints = await listCheckpoints(runId);
+      const entries = path ? checkpoints.filter((entry) => entry.path === path) : checkpoints;
       if (entries.length === 0) {
         notify("This run has no reviewable file checkpoints yet.");
         return;

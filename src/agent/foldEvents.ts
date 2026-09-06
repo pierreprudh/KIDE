@@ -13,6 +13,7 @@ import type {
   AgentAttachment,
   AgentContentBlock,
   AgentEvent,
+  AgentMode,
   AgentTurnTiming,
   AgentUsage,
   ProviderId,
@@ -20,6 +21,7 @@ import type {
 import type { Msg } from "../components/ai/types";
 import type { RunMessage, RunToolCall } from "../runs";
 import { estimateTokens } from "../components/ai/utils";
+import type { RunCompletion } from "./completion";
 
 export type FoldedToolCall = {
   id: string;
@@ -67,6 +69,7 @@ export type AssistantMeta = {
 };
 
 export type FoldedRow =
+  | { kind: "completion"; completion: RunCompletion }
   | {
       kind: "user";
       text: string;
@@ -178,6 +181,12 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
   // is stamped with whatever this holds when the row opens, so the stamp is a
   // fact about that turn rather than about the conversation.
   let dispatch: { provider: ProviderId; model: string } | null = null;
+  let completionMode: AgentMode | undefined;
+  let completed = false;
+  let attemptStart = 0;
+  const changedFiles = new Set<string>();
+  const commands = new Map<string, RunCompletion["commands"][number]>();
+  const completionWarnings = new Set<string>();
 
   const newAssistant = (): AssistantRow => ({
     kind: "assistant",
@@ -244,6 +253,12 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
 
   const apply = (event: AgentEvent, live?: FoldLiveTiming): FoldStep => {
     if (event.type === "run_started") {
+      completionMode = event.mode;
+      completed = false;
+      attemptStart = open && !open.row.text && !open.row.toolCalls.length ? open.idx : rows.length;
+      changedFiles.clear();
+      commands.clear();
+      completionWarnings.clear();
       dispatch = { provider: event.provider, model: event.model };
       // The live path seeds an open placeholder *before* the run starts, so the
       // row that will carry this turn already exists and has to be stamped
@@ -344,6 +359,14 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
     }
 
     if (event.type === "tool_call_started") {
+      if (event.capability === "run_command" || (!event.capability && event.name === "run_command")) {
+        const input = event.input as { command?: unknown } | null;
+        commands.set(event.toolCallId, {
+          id: event.toolCallId,
+          label: typeof input?.command === "string" ? input.command : event.summary || event.name,
+          status: "unknown",
+        });
+      }
       const idx = upsertTool(event.toolCallId, (t) => {
         t.name = event.name;
         t.input = event.input;
@@ -357,6 +380,13 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
     }
 
     if (event.type === "tool_call_finished") {
+      const command = commands.get(event.toolCallId);
+      if (command) {
+        command.status = event.result.ok ? "passed" : "failed";
+        command.output = event.result.content.length > 2000
+          ? `Last 2,000 characters of output:\n${event.result.content.slice(-2000)}`
+          : event.result.content;
+      }
       const idx = upsertTool(event.toolCallId, (t) => {
         t.result = { content: event.result.content, ok: event.result.ok };
         t.status = "finished";
@@ -385,6 +415,32 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
         t.status = "finished";
       });
       return { changed: [idx] };
+    }
+
+    if (event.type === "file_changed") {
+      changedFiles.add(event.path);
+      return { changed: [] };
+    }
+
+    if (event.type === "permission_resolved" && event.decision.behavior === "deny") {
+      completionWarnings.add("A permission was denied. Review the conversation for work that may have been skipped.");
+      return { changed: [] };
+    }
+
+    if (event.type === "run_result" && event.result.status === "done" && completionMode === "goal" && !completed) {
+      completed = true;
+      splitRow();
+      const answer = rows.slice(attemptStart).reverse().find((row) => row.kind === "assistant" && row.text.trim());
+      const outcome = event.result.message?.trim() || (answer?.kind === "assistant" ? answer.text.trim().split(/\n\s*\n/)[0] : "") || "Run completed. Review the recorded evidence below.";
+      rows.push({ kind: "completion", completion: {
+        runId: event.runId,
+        completedAt: event.ts,
+        outcome: outcome.slice(0, 280) + (outcome.length > 280 ? "…" : ""),
+        files: [...changedFiles],
+        commands: [...commands.values()].map((command) => ({ ...command })),
+        warnings: [...completionWarnings],
+      } });
+      return { changed: [rows.length - 1] };
     }
 
     if (event.type === "context_compacted") {
@@ -557,6 +613,9 @@ export function compactionMsg(count: number, summary: string): Msg {
  *  the live path can re-project only the rows an event touched and keep every
  *  other Msg reference stable across renders. */
 export function foldedRowToMsgs(row: FoldedRow, view: FoldedMsgView = {}): Msg[] {
+  if (row.kind === "completion") {
+    return [{ role: "system", content: row.completion.outcome, completion: row.completion }];
+  }
   if (row.kind === "user") {
     return [
       {
@@ -654,7 +713,7 @@ export function foldedToRunMessages(rows: FoldedRow[]): RunMessage[] {
     // `RunMessage.role` is "user" | "assistant" by wire contract (the Rust
     // struct and every Delegate adapter agree), so AI-panel transcript
     // annotations have no row to occupy in Mission Control.
-    if (row.kind === "compaction" || row.kind === "steering") continue;
+    if (row.kind === "compaction" || row.kind === "steering" || row.kind === "completion") continue;
     if (!row.text.trim() && row.toolCalls.length === 0) continue;
     out.push({
       role: "assistant",
