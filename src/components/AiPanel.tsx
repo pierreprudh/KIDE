@@ -74,6 +74,7 @@ import type {
 import { enabledSkillsPrompt, type Skill } from "../skills";
 
 import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
+import { WorkingRow } from "./ai/WorkingRow";
 import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
@@ -4357,12 +4358,14 @@ This user request requires workspace inspection. Before answering, you MUST call
             streaming && !pendingDiff && !pendingPermission && !pendingQuestion &&
             !tailPendingTool && !tailPlaceholder && !tailStreamingText && !tailQueuedUser;
           if (!showWorking) return null;
-          return (
-            <div className="ai-msg-in" style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 6px 32px", color: "var(--fg-dim)" }}>
-              <DotGridLoader size={11} label="Working" />
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-subtle)" }}>Working…</span>
-            </div>
-          );
+          // The timer counts from the turn's own send time, so it survives the
+          // row unmounting while a tool runs and remounting after.
+          let turnStartedAt: number | undefined;
+          for (let i = lastExchangeIndex; i >= 0; i--) {
+            const m = msgs[i];
+            if (m.role === "user") { turnStartedAt = m.ts; break; }
+          }
+          return <WorkingRow label="Working" since={turnStartedAt} />;
         })()}
         {pendingInbox.some((e) => e.deliveryState !== "queued") && (
           <div className="ai-msg-in" style={{ display: "grid", gap: 4, margin: "8px 0 8px 32px" }}>

@@ -1913,6 +1913,36 @@ textarea.klide-diff-comment-input:focus-visible {
   pointer-events: auto;
 }
 
+/* Working-row label — a soft highlight sweeps through the text while the
+   model is generating. Text is painted by the gradient (background-clip), so
+   the colour stays on-palette: subtle → strong → subtle. Reduced motion
+   settles the label to plain subtle text. */
+.ai-working-label {
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-image: linear-gradient(90deg, var(--fg-subtle) 35%, var(--fg-strong) 50%, var(--fg-subtle) 65%);
+  background-size: 200% 100%;
+  animation: ai-shimmer-text 1.4s linear infinite;
+}
+
+@keyframes ai-shimmer-text {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-working-label {
+    animation: none;
+    background-image: none;
+    color: var(--fg-subtle);
+  }
+}
+
 .ai-caret {
   display: inline-block;
   width: 2px;
