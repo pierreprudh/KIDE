@@ -39,6 +39,13 @@ export function expandArtifactRequest(request: ArtifactRequest): ArtifactRequest
   return [...byFile.values()];
 }
 
+export function refreshArtifactTab(existing: ArtifactTab, request: ArtifactRequest): ArtifactTab {
+  // Opening a plain file must not discard its review. New review evidence,
+  // however, replaces the previous snapshot even when the tab is already open.
+  // Keep the key: ArtifactInspector owns editor drafts by this stable identity.
+  return request.kind === "file" ? existing : { ...existing, request };
+}
+
 export function useArtifactInspector() {
   const [artifactTabs, setArtifactTabs] = useState<ArtifactTab[]>([]);
   const [activeArtifactKey, setActiveArtifactKey] = useState<number | null>(null);
@@ -72,12 +79,7 @@ export function useArtifactInspector() {
       );
       if (existingIndex >= 0) {
         const existing = next[existingIndex];
-        if (
-          existing.request.kind === "file" &&
-          (nextRequest.kind === "diff" || nextRequest.kind === "patch")
-        ) {
-          next[existingIndex] = { ...existing, request: nextRequest };
-        }
+        next[existingIndex] = refreshArtifactTab(existing, nextRequest);
         targetKey ??= existing.key;
         continue;
       }
