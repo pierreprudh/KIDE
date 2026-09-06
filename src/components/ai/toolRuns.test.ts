@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Msg } from "./types";
-import { groupToolRuns, toolRunLabel, toolRunIndex } from "./toolRuns";
+import { groupToolRuns, pairToolResults, toolRunLabel, toolRunIndex } from "./toolRuns";
 
 const call = (name: string): Msg => ({
   role: "assistant",
@@ -122,5 +122,65 @@ describe("toolRunLabel", () => {
 
   it("says one call in the singular", () => {
     expect(toolRunLabel({ start: 0, end: 1, calls: 1, names: ["Bash"] }).count).toBe("1 tool call");
+  });
+});
+
+describe("pairToolResults", () => {
+  const calls = (...specs: { name: string; id?: string }[]): Msg => ({
+    role: "assistant",
+    content: "",
+    toolCalls: specs.map((c) => ({ ...c, args: {} })),
+  });
+  const speaks = (content: string, ...specs: { name: string; id?: string }[]): Msg => ({
+    role: "assistant",
+    content,
+    toolCalls: specs.map((c) => ({ ...c, args: {} })),
+  });
+  const answer = (toolName: string, toolCallId?: string): Msg => ({ role: "tool", content: "ok", toolName, toolCallId });
+
+  it("files each result under the call that asked for it, by id", () => {
+    const msgs = [calls({ name: "read_file", id: "a" }, { name: "peek_value", id: "b" }), answer("peek_value", "b"), answer("read_file", "a")];
+    const { byCall, claimed } = pairToolResults(msgs);
+
+    expect(byCall.get(0)?.get("a")).toBe(2);
+    expect(byCall.get(0)?.get("b")).toBe(1);
+    expect([...claimed.keys()]).toEqual([1, 2]);
+  });
+
+  it("falls back to name order when the provider sent no ids", () => {
+    const msgs = [calls({ name: "read_file" }, { name: "read_file" }), answer("read_file"), answer("read_file")];
+    const { byCall } = pairToolResults(msgs);
+
+    expect(byCall.get(0)?.get("#0")).toBe(1);
+    expect(byCall.get(0)?.get("#1")).toBe(2);
+  });
+
+  it("stops at the first message that is not a result", () => {
+    const msgs = [calls({ name: "grep", id: "a" }), says("found it"), answer("grep", "a")];
+    const { byCall, claimed } = pairToolResults(msgs);
+
+    expect(byCall.size).toBe(0);
+    expect(claimed.size).toBe(0);
+  });
+
+  it("keeps a sentence's results out of the run that follows it", () => {
+    // The prose turn draws its own glob + grep rows; their results must not
+    // seed a fold whose label repeats those names right underneath.
+    const msgs = [
+      speaks("Let me find the Rust side.", { name: "glob", id: "g" }, { name: "grep", id: "r" }),
+      answer("glob", "g"),
+      answer("grep", "r"),
+      ...burst("read_file", 3),
+    ];
+    const runs = groupToolRuns(msgs, pairToolResults(msgs));
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0].start).toBe(3);
+    expect(runs[0].names).toEqual(["read_file"]);
+  });
+
+  it("still counts orphan results as a run", () => {
+    const msgs = [answer("Bash"), answer("Bash"), answer("Bash")];
+    expect(groupToolRuns(msgs, pairToolResults(msgs))[0].calls).toBe(3);
   });
 });

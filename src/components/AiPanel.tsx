@@ -79,7 +79,8 @@ import { AttachIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
-import { groupToolRuns, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
+import { groupToolRuns, pairToolResults, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
+import type { AttachedResult } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
 import { ConversationHistory } from "./ai/ConversationHistory";
 import { mayActivateModel } from "./ai/modelActivationPolicy";
@@ -1126,7 +1127,8 @@ export function AiPanel({
   // rather than inside the loop keeps one renderer for a tool row — the rows
   // you get back on open are the very same elements, not a second drawing of
   // them.
-  const toolRuns = useMemo(() => groupToolRuns(msgs), [msgs]);
+  const toolPairing = useMemo(() => pairToolResults(msgs), [msgs]);
+  const toolRuns = useMemo(() => groupToolRuns(msgs, toolPairing), [msgs, toolPairing]);
   // Constant-time "is this message inside a folded run?" for the message loop:
   // a message in a run hands its thought process to the run's header
   // (`stackToolRuns` hoists it above the "N tool calls" row) and must not draw
@@ -1167,10 +1169,9 @@ export function AiPanel({
       for (; cursor < run.start; cursor++) out.push(nodes[cursor]);
       // The runs are computed from *messages*, but this function rewrites the
       // loop's *output* — and the loop sometimes draws nothing for a message
-      // (results after a same-name burst render null; their calls are already
-      // on screen as ⎿ rows). A run whose rows were all withheld folds
-      // nothing: emitting its header would put a "3 tool calls" row over an
-      // empty body.
+      // (a result its call already drew underneath itself renders null). A
+      // run whose rows were all withheld folds nothing: emitting its header
+      // would put a "3 tool calls" row over an empty body.
       if (nodes.slice(run.start, run.end).every((n) => n == null)) {
         cursor = run.end;
         continue;
@@ -4029,6 +4030,10 @@ This user request requires workspace inspection. Before answering, you MUST call
             m.role === "tool" &&
             /^Running /.test(m.content);
           const isStreamingActive = streaming && isLast && m.role === "assistant" && m.content !== "";
+          // A tail that has only reasoned so far is live too — the thinking
+          // header wears the shimmer + timer for it. Kept apart from
+          // `isStreamingActive`, which also draws the text caret.
+          const isThinkingActive = streaming && isLast && m.role === "assistant" && m.content === "" && !!m.thinking;
           // Messages above the last compaction marker are kept for reference but
           // no longer in the model's context — dim them so that's legible.
           const dimmed = lastCompactionIndex(msgs) > 0 && i < lastCompactionIndex(msgs);
@@ -4191,15 +4196,8 @@ This user request requires workspace inspection. Before answering, you MUST call
           }
 
           if (m.role === "tool") {
-            const previousAssistant = [...msgs.slice(0, i)]
-              .reverse()
-              .find((msg) => msg.role === "assistant");
-            const repeatedToolBurst =
-              previousAssistant?.role === "assistant" &&
-              previousAssistant.toolCalls &&
-              previousAssistant.toolCalls.length > 1 &&
-              previousAssistant.toolCalls.every((tc) => tc.name === previousAssistant.toolCalls?.[0]?.name);
-            if (repeatedToolBurst && previousAssistant.toolCalls?.[0]?.name === m.toolName) return null;
+            // The call above already drew this result under itself.
+            if (toolPairing.claimed.has(i)) return null;
             return <div key={i} className="ai-msg-in" style={{ margin: activeToolRunning ? "2px 0 3px 32px" : "1px 0 2px 32px", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>{renderMessageBody(m, activeToolRunning)}</div>;
           }
 
@@ -4270,6 +4268,18 @@ This user request requires workspace inspection. Before answering, you MUST call
           const nextMsg = msgs[i + 1];
           const isResponseEnd = !nextMsg || (nextMsg.role === "user" && nextMsg.queueState !== "queued");
           const mark = isResponseStart && m.role === "assistant" ? responseMark(m) : null;
+          // This turn's results, handed to its call rows. A result is live
+          // while it is the exchange's tail and still says "Running".
+          let attachedResults: Map<string, AttachedResult> | undefined;
+          const mine = toolPairing.byCall.get(i);
+          if (mine) {
+            attachedResults = new Map();
+            for (const [key, j] of mine) {
+              const r = msgs[j];
+              if (r.role !== "tool") continue;
+              attachedResults.set(key, { msg: r, active: streaming && j === lastExchangeIndex && /^Running /.test(r.content) });
+            }
+          }
           return (
             <div key={i} className="ai-msg-in" style={{ display: "flex", gap: 10, margin: isResponseStart ? "14px 0 8px" : "3px 0", opacity: dimmed ? 0.4 : undefined, transition: "opacity var(--motion-med) var(--ease-out)" }}>
               {isResponseStart ? (
@@ -4287,7 +4297,7 @@ This user request requires workspace inspection. Before answering, you MUST call
               )}
               <div style={{ flex: 1, minWidth: 0, color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.6 }}>
                 {hoistedInbox && <div style={{ margin: "0 0 4px" }}>{renderMessageBody(hoistedInbox, false, { workspaceRoot })}</div>}
-                {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive, { hideThinking: toolRunAt(i) !== null })}{isStreamingActive && <span className="ai-caret" />}</>}
+                {isAssistantPlaceholder && !msgs.some((msg, idx) => idx > i && msg.role === "tool" && /^Running /.test(msg.content)) ? <AssistantPlaceholderLoader /> : <>{renderMessageBody(m, isStreamingActive || isThinkingActive, { hideThinking: toolRunAt(i) !== null, results: attachedResults })}{isStreamingActive && <span className="ai-caret" />}</>}
                 {!isStreamingActive && !isAssistantPlaceholder && isResponseEnd && m.content?.trim() && (
                   <>
                     <MessageActions

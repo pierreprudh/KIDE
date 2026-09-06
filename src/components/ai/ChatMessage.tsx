@@ -14,6 +14,7 @@ import { renderMarkdown, splitThinking, stripPlanJson } from "../markdown";
 import { providerName } from "../../agent/providers";
 import type { ProviderId } from "../../agent/types";
 import { formatElapsed, useElapsed } from "./WorkingRow";
+import { toolCallKey } from "./toolRuns";
 
 // Premium thinking block. Renders as a soft card with a pulsing dot while the
 // agent is still streaming, a rotating chevron, and a markdown body so code
@@ -303,19 +304,41 @@ function commandArg(name: string, args: unknown): string | null {
 // Minimalist tool-call line, à la Claude Code's `⏺ Read(file)`: one slim
 // mono row — tool glyph, tool name, primary arg — expandable to the full
 // args JSON (or, for a shell call, the bare command line).
-function ToolCallRow({ name, args, repeated = false, count = 1 }: { name: string; args: unknown; repeated?: boolean; count?: number }) {
-  if (name === "spawn_subagent") return <SubagentCallRow args={args} />;
-  if (COORDINATION_TOOL_NAMES.has(name)) return <AgentCoordinationCallRow name={name} args={args} count={count} />;
+/** A result row the call above it owns — drawn under the call, so what came
+ *  back sits with what asked for it. `active` while the tool is still running. */
+export type AttachedResult = { msg: Extract<Msg, { role: "tool" }>; active: boolean };
+
+// Every call keeps its icon and name, a second `read_file` included: a bare
+// path on a branch read as the first call's result, not a call of its own.
+function ToolCallRow({ name, args, count = 1, result }: { name: string; args: unknown; count?: number; result?: AttachedResult }) {
+  const call =
+    name === "spawn_subagent" ? (
+      <SubagentCallRow args={args} />
+    ) : COORDINATION_TOOL_NAMES.has(name) ? (
+      <AgentCoordinationCallRow name={name} args={args} count={count} />
+    ) : (
+      <ToolCallDisclosure name={name} args={args} />
+    );
+  if (!result) return call;
+  return (
+    <>
+      {call}
+      <ToolResultRow content={result.msg.content} active={result.active} toolName={result.msg.toolName} observedBy={result.msg.observedBy} nested />
+    </>
+  );
+}
+
+function ToolCallDisclosure({ name, args }: { name: string; args: unknown }) {
   const command = commandArg(name, args);
   const argsText = command ?? formatJson(args);
   const summary = summarizeArgs(args);
   return (
-    <details style={{ margin: repeated ? "3px 0 -3px" : "5px 0 -3px" }}>
+    <details style={{ margin: "5px 0 -3px" }}>
       <summary
         style={{
           display: "flex",
           alignItems: "center",
-          gap: repeated ? 7 : 8,
+          gap: 8,
           padding: "0",
           cursor: "pointer",
           listStyle: "none",
@@ -323,67 +346,26 @@ function ToolCallRow({ name, args, repeated = false, count = 1 }: { name: string
           minWidth: 0,
           // Tool machinery sits one indent step (14px) inside the prose /
           // thought-process edge, so the hierarchy is spatial, not just tonal.
-          paddingLeft: repeated ? 23 : 14,
+          paddingLeft: 14,
         }}
       >
-        {repeated ? (
-          <span
-            aria-hidden
-            style={{
-              position: "relative",
-              width: 18,
-              height: 13,
-              flexShrink: 0,
-              color: "var(--fg-dim)",
-              transform: "translateY(-1px)",
-            }}
-          >
-            <span
-              style={{
-                position: "absolute",
-                left: 6,
-                top: 0,
-                bottom: 3,
-                width: 1,
-                borderRadius: 999,
-                background: "currentColor",
-                opacity: 0.42,
-              }}
-            />
-            <span
-              style={{
-                position: "absolute",
-                left: 6,
-                right: 1,
-                bottom: 3,
-                height: 1,
-                borderRadius: 999,
-                background: "currentColor",
-                opacity: 0.42,
-              }}
-            />
-          </span>
-        ) : (
-          <>
-            {/* One token step dimmer than prose across the whole row: tool
-                work is machinery, and it should recede next to the thought
-                process and the answer rather than compete with them. */}
-            <span aria-hidden style={{ display: "grid", placeItems: "center", color: "var(--fg-dim)", flexShrink: 0 }}>
-              <ToolIcon name={name} />
-            </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11.5,
-                color: "var(--fg-subtle)",
-                fontWeight: 500,
-                flexShrink: 0,
-              }}
-            >
-              {name}
-            </span>
-          </>
-        )}
+        {/* One token step dimmer than prose across the whole row: tool
+            work is machinery, and it should recede next to the thought
+            process and the answer rather than compete with them. */}
+        <span aria-hidden style={{ display: "grid", placeItems: "center", color: "var(--fg-dim)", flexShrink: 0 }}>
+          <ToolIcon name={name} />
+        </span>
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 11.5,
+            color: "var(--fg-subtle)",
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          {name}
+        </span>
         {summary && (
           <span
             style={{
@@ -567,6 +549,7 @@ function ToolResultRow({
   active,
   toolName,
   observedBy,
+  nested = false,
 }: {
   content: string;
   active: boolean;
@@ -574,6 +557,9 @@ function ToolResultRow({
   /** Provider id when a delegate CLI ran this itself. The row says so: Klide
    *  applied no capability, permission gate or diff review to it. */
   observedBy?: string;
+  /** Drawn directly under its own call row, which already names the tool —
+   *  the result line carries only what came back. */
+  nested?: boolean;
 }) {
   const pending = active && /^Running /.test(content);
   const isError = /^(Tool error from|Error:)/.test(content);
@@ -584,6 +570,8 @@ function ToolResultRow({
     ? (pending ? "subagent working…" : "subagent report")
     : isCoordination
       ? (pending ? "coordination in progress…" : "coordination update")
+    : nested
+      ? null
     : toolName || (pending ? content.replace(/^Running\s+/, "").replace(/\.\.\.$/, "") : "tool");
   return (
     // 48 = the call rows' 14px machinery indent + the 34px elbow offset,
@@ -641,29 +629,33 @@ function ToolResultRow({
             />
           </span>
         )}
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 11,
-            color: isError ? "var(--danger)" : "var(--fg-subtle)",
-            flexShrink: 0,
-            whiteSpace: "nowrap",
-          }}
-        >
-          {pending ? "running" : label}
-        </span>
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 11,
-            color: isError ? "var(--danger)" : "var(--fg-dim)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {pending ? label : line}
-        </span>
+        {(pending || label) && (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: isError ? "var(--danger)" : "var(--fg-subtle)",
+              flexShrink: 0,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {pending ? "running" : label}
+          </span>
+        )}
+        {(pending ? label : line) && (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: isError ? "var(--danger)" : "var(--fg-dim)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {pending ? label : line}
+          </span>
+        )}
         {!pending && extra && (
           <span
             style={{
@@ -1119,6 +1111,9 @@ export function renderMessageBody(
     hideThinking?: boolean;
     /** Lets a delivered-agent-message row fetch its bodies from the journal. */
     workspaceRoot?: string | null;
+    /** This turn's tool results, by call key (`toolCallKey`) — each call row
+     *  draws its own underneath. See `pairToolResults`. */
+    results?: Map<string, AttachedResult>;
   },
 ): ReactElement {
   if (m.role === "system" && m.steering) {
@@ -1204,10 +1199,11 @@ export function renderMessageBody(
         )}
         {/* Identical agent messages sent back to back — "pong" to two pings —
             are one line with a count; every other call keeps its row. */}
-        {foldIdentical(m.toolCalls ?? [], (tc) =>
-          COORDINATION_TOOL_NAMES.has(tc.name) ? `${tc.name}\n${JSON.stringify(tc.args ?? null)}` : null,
-        ).map(({ item: tc, count }, i, folded) => (
-          <ToolCallRow key={i} name={tc.name} args={tc.args} count={count} repeated={i > 0 && folded[i - 1].item.name === tc.name} />
+        {foldIdentical(
+          (m.toolCalls ?? []).map((tc, index) => ({ tc, key: toolCallKey(tc, index) })),
+          ({ tc }) => (COORDINATION_TOOL_NAMES.has(tc.name) ? `${tc.name}\n${JSON.stringify(tc.args ?? null)}` : null),
+        ).map(({ item: { tc, key }, count }) => (
+          <ToolCallRow key={key} name={tc.name} args={tc.args} count={count} result={opts?.results?.get(key)} />
         ))}
         {m.meta && !active && visibleContent !== "" && !m.toolCalls?.length && (
           <MessageMeta meta={m.meta} />
