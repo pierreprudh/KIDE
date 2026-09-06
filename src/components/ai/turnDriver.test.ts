@@ -4,7 +4,7 @@ import type { Msg } from "./types";
 import type { AgentContentBlock, AgentEvent, AgentUsage } from "../../agent/types";
 
 // A tiny harness standing in for AiPanel: msgsRef + commit + fake clock/timer.
-function harness(initial: Msg[]) {
+function harness(initial: Msg[], pace = false) {
   const ref = { current: initial };
   const commits: Msg[][] = [];
   let clock = 1000;
@@ -23,6 +23,7 @@ function harness(initial: Msg[]) {
     onMeasuredPromptTokens: (n) => (measured.prompt = n),
     onMeasuredUsage: (u) => (measured.usage = u),
     onDetached: () => (detachments += 1),
+    pace,
     now: () => clock,
     setTimer: (fn, ms) => {
       const t = { fn, at: clock + ms, cancelled: false };
@@ -205,6 +206,78 @@ describe("createTurnDriver", () => {
     expect(h.pendingTimers()).toBe(0);
     h.driver.finish(); // second call is a no-op
     expect(h.commits).toHaveLength(1);
+  });
+});
+
+describe("the pacer", () => {
+  const text = (h: ReturnType<typeof harness>) => (h.ref.current[0] as { content: string }).content;
+
+  it("releases a burst word by word on the tick, never behind the wire order", () => {
+    const h = harness([{ role: "assistant", content: "" }], true);
+    h.driver.handleEvent(delta("Pistachio is your fastest-growing flavor "));
+    expect(h.commits).toHaveLength(0);
+    h.tick(35);
+    expect(text(h)).toBe("Pistachio "); // 5 words → ceil(1) per tick
+    h.tick(35);
+    expect(text(h)).toBe("Pistachio is ");
+    h.tick(35);
+    h.tick(35);
+    h.tick(35);
+    expect(text(h)).toBe("Pistachio is your fastest-growing flavor ");
+    expect(h.pendingTimers()).toBe(0); // drained, tick stopped
+  });
+
+  it("catches up on a long backlog instead of falling behind a fast model", () => {
+    const h = harness([{ role: "assistant", content: "" }], true);
+    h.driver.handleEvent(delta(Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ") + " "));
+    h.tick(35);
+    expect(text(h).match(/\S+/g)).toHaveLength(8); // a fifth of 40
+  });
+
+  it("holds a half-typed word for its ending, unless it is all that is waiting", () => {
+    const h = harness([{ role: "assistant", content: "" }], true);
+    h.driver.handleEvent(delta("Sales are u"));
+    h.tick(35);
+    expect(text(h)).toBe("Sales "); // "are u" → "are " waits behind the count, "u" behind its ending
+    h.driver.handleEvent(delta("p 23%"));
+    h.tick(35);
+    expect(text(h)).toBe("Sales are ");
+    h.tick(35);
+    expect(text(h)).toBe("Sales are up "); // "23%" alone with no ending goes out next
+    h.tick(35);
+    expect(text(h)).toBe("Sales are up 23%");
+  });
+
+  it("drains everything waiting before a tool row, the final message, or finish()", () => {
+    const h = harness([{ role: "assistant", content: "" }], true);
+    h.driver.handleEvent(delta("Let me check the file first "));
+    h.driver.handleEvent({ type: "tool_call_started", runId: "r", toolCallId: "t1", name: "read_file", input: {}, summary: "read_file", ts: 0 });
+    expect(text(h)).toBe("Let me check the file first ");
+    expect(h.pendingTimers()).toBe(0);
+
+    const h2 = harness([{ role: "assistant", content: "" }], true);
+    h2.driver.handleEvent(delta("all of it"));
+    h2.driver.handleEvent(message([{ type: "text", text: "" }]));
+    expect(text(h2)).toBe("all of it");
+
+    const h3 = harness([{ role: "assistant", content: "" }], true);
+    h3.driver.handleEvent(delta("tail words here"));
+    h3.driver.finish();
+    expect(text(h3)).toBe("tail words here");
+    expect(h3.pendingTimers()).toBe(0);
+  });
+
+  it("lets thinking through immediately and keeps the first-word time honest", () => {
+    const h = harness([{ role: "assistant", content: "" }], true);
+    h.driver.handleEvent({ ...delta("", "hmm"), ts: 100 });
+    h.tick(50);
+    expect(h.ref.current[0]).toMatchObject({ content: "", thinking: "hmm" });
+    h.driver.handleEvent({ ...delta("Right, "), ts: 400 });
+    h.driver.handleEvent({ ...delta("so "), ts: 900 });
+    h.tick(35);
+    // thinkingMs is measured from the first *wire* delta that carried text (400),
+    // not from the tick that showed it.
+    expect(h.ref.current[0]).toMatchObject({ thinkingStartedAt: 100, thinkingMs: 300 });
   });
 });
 

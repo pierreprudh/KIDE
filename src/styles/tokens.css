@@ -1906,11 +1906,51 @@ textarea.klide-diff-comment-input:focus-visible {
    when invisible. The animation on the message row itself animates opacity
    via `ai-msg-in`; to avoid a flash where the actions row briefly shows
    during that entrance, we keep them pinned to opacity 0 regardless. */
-/* Per-message action row — always visible. The icons sit quietly at rest
-   (subtle color) and brighten individually on hover; see MessageActions.tsx. */
+/* Per-message action row — mounts when the response settles (AiPanel only
+   renders it on a finished final answer) and arrives with one soft rise, so
+   the end of a turn reads as a beat rather than a pop. At rest the icons sit
+   quietly (subtle color) and brighten individually on hover; see
+   MessageActions.tsx. The memory-draft button wears the same class so it
+   lands with the row. */
 .ai-msg-actions {
   opacity: 1;
   pointer-events: auto;
+  animation: ai-actions-in var(--motion-slower) var(--ease-out) both;
+}
+
+@keyframes ai-actions-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Streaming tail — each word that just arrived resolves in from a faint
+   blur (markdown.tsx wraps only the newest words; settled text is plain). */
+.ai-word-in {
+  animation: ai-word-in 260ms var(--ease-out) both;
+}
+
+@keyframes ai-word-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-msg-actions,
+  .ai-word-in {
+    animation: none;
+  }
 }
 
 /* Working-row label — a soft highlight sweeps through the text while the
@@ -1951,17 +1991,36 @@ textarea.klide-diff-comment-input:focus-visible {
   border-radius: 1px;
   background: var(--accent);
   vertical-align: text-bottom;
-  animation: ai-caret-blink 1.05s steps(2, jump-none) infinite;
+  /* Fades in once, then breathes — no hard terminal blink. The Working row's
+     shimmer already says "alive"; the caret only has to mark where the next
+     word lands. */
+  animation:
+    ai-caret-in 150ms var(--ease-out) both,
+    ai-caret-breathe 1.6s ease-in-out 150ms infinite;
 }
 
-@keyframes ai-caret-blink {
-  0%,
-  50% {
+@keyframes ai-caret-in {
+  from {
+    opacity: 0;
+  }
+  to {
     opacity: 1;
   }
-  50.01%,
+}
+
+@keyframes ai-caret-breathe {
+  0%,
   100% {
-    opacity: 0;
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-caret {
+    animation: none;
   }
 }
 

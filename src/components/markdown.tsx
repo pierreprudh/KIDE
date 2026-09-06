@@ -9,6 +9,11 @@ export type MarkdownOptions = {
   // card. The AI panel never sees these markers and never passes
   // this hook.
   renderTool?: (name: string, summary?: string) => ReactNode;
+  // The text is still arriving. The trailing words of the last block are
+  // wrapped one span per word (keyed by position, so a word already on
+  // screen keeps its DOM node) and each new span resolves in through
+  // `.ai-word-in`. Off by default: a finished message is plain text.
+  streaming?: boolean;
 };
 
 const CODE_KEYWORDS = new Set([
@@ -250,6 +255,32 @@ function renderInline(text: string, keyBase: string): MdNode[] {
   return out;
 }
 
+// The streaming tail: the same inline render, but the last plain-text run is
+// split one span per word (a word plus its trailing space) so only the words
+// that just arrived mount — and animate. Keys are positional; the text only
+// grows at its end, so an existing word keeps its key and its node.
+function renderInlineTail(text: string, keyBase: string): MdNode[] {
+  const nodes = renderInline(text, keyBase);
+  const lastIdx = nodes.length - 1;
+  const last = nodes[lastIdx];
+  if (typeof last !== "string") return nodes;
+  const words: MdNode[] = [];
+  const re = /\S+\s*/g;
+  let w = 0;
+  let m: RegExpExecArray | null;
+  const lead = /^\s*/.exec(last)?.[0] ?? "";
+  if (lead) words.push(lead);
+  re.lastIndex = lead.length;
+  while ((m = re.exec(last))) {
+    words.push(
+      <span key={`${keyBase}-w${w++}`} className="ai-word-in">
+        {m[0]}
+      </span>
+    );
+  }
+  return [...nodes.slice(0, lastIdx), ...words];
+}
+
 // Block-level renderer: handles headers, ordered/unordered/task lists,
 // blockquotes, horizontal rules, and paragraph breaks. Operates on a string
 // that's already had fenced code blocks extracted (so we don't run formatting
@@ -261,13 +292,18 @@ function renderProse(text: string, keyBase: string, options?: MarkdownOptions): 
   type ListState = { kind: "ul" | "ol" | "tasks"; items: string[] };
   let list: ListState | null = null;
   let k = 0;
+  // True only for the final flush of a streaming render: the block being
+  // flushed is the one the model is still typing into.
+  let atTail = false;
+  const inline = (text: string, kb: string, lastOfBlock: boolean) =>
+    lastOfBlock && atTail ? renderInlineTail(text, kb) : renderInline(text, kb);
 
   const flushPara = () => {
     if (para.length === 0) return;
     const content: MdNode[] = [];
     para.forEach((ln, i) => {
       if (i > 0) content.push(<br key={`br-${keyBase}-${k}-${i}`} />);
-      content.push(...renderInline(ln, `${keyBase}-p${k}-${i}`));
+      content.push(...inline(ln, `${keyBase}-p${k}-${i}`, i === para.length - 1));
     });
     blocks.push(
       <div
@@ -322,7 +358,7 @@ function renderProse(text: string, keyBase: string, options?: MarkdownOptions): 
             >
               {done ? "✓" : ""}
             </span>
-            <span style={{ flex: 1 }}>{renderInline(text, `${keyBase}-li${k}-${i}`)}</span>
+            <span style={{ flex: 1 }}>{inline(text, `${keyBase}-li${k}-${i}`, i === list!.items.length - 1)}</span>
           </li>
         );
       }
@@ -331,7 +367,7 @@ function renderProse(text: string, keyBase: string, options?: MarkdownOptions): 
           key={`${keyBase}-li-${k}-${i}`}
           style={{ margin: "1px 0" }}
         >
-          {renderInline(it, `${keyBase}-li${k}-${i}`)}
+          {inline(it, `${keyBase}-li${k}-${i}`, i === list!.items.length - 1)}
         </li>
       );
     });
@@ -593,6 +629,7 @@ function renderProse(text: string, keyBase: string, options?: MarkdownOptions): 
     para.push(line);
   }
   flushTable();
+  atTail = !!options?.streaming;
   flushPara();
   flushList();
   flushBlockquote();
@@ -710,7 +747,10 @@ export function renderMarkdown(text: string, options?: MarkdownOptions): MdNode[
       code = code.replace(/\n$/, "");
       out.push(<CodeBlock key={`code-${idx}`} code={code} lang={lang} />);
     } else if (seg) {
-      out.push(...renderProse(seg, `seg-${idx}`, options));
+      // Only the last segment can be the streaming tail; an earlier one is
+      // already closed off by a code fence.
+      const last = idx === segments.length - 1;
+      out.push(...renderProse(seg, `seg-${idx}`, last ? options : { ...options, streaming: false }));
     }
   });
   return out;

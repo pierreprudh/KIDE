@@ -21,6 +21,7 @@ import {
   type TranscriptDelegate,
 } from "./transcriptReducer";
 import type { Msg } from "./types";
+import { PACE_TICK_MS, paceCount, takeWords } from "./streamPacer";
 
 export type TurnDriverOptions = {
   /** Index of the assistant bubble this turn streams into. */
@@ -44,6 +45,11 @@ export type TurnDriverOptions = {
   clearTimer?: (handle: unknown) => void;
   /** Delta batching interval; ~20 fps by default. */
   flushDelayMs?: number;
+  /** Release streamed text word by word on a steady tick (see
+   *  `streamPacer.ts`) instead of in the bursts it arrives in. On by default;
+   *  tests of the raw batch path turn it off. */
+  pace?: boolean;
+  paceTickMs?: number;
 };
 
 export type TurnDriver = {
@@ -66,6 +72,8 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
   const setTimer = opts.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
   const clearTimer = opts.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
   const flushDelayMs = opts.flushDelayMs ?? 50;
+  const pace = opts.pace ?? true;
+  const paceTickMs = opts.paceTickMs ?? PACE_TICK_MS;
 
   // Adopt the placeholder bubble the panel pre-inserted at assistantIndex, so
   // the stream writes into it instead of duplicating it.
@@ -86,6 +94,14 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
   let firstTokenAt: number | null = null;
   let flushTimer: unknown = null;
 
+  // Text that has arrived but not yet been shown, with the wire time of the
+  // first delta in it — released chunks keep that `ts` so the fold's "first
+  // visible word" timing measures the model, not the pacer.
+  let pendingText = "";
+  let pendingTs: number | null = null;
+  let pendingDelta: Extract<AgentEvent, { type: "assistant_delta" }> | null = null;
+  let paceTimer: unknown = null;
+
   const projectCommit = () => {
     const next = transcript.project(opts.read());
     if (next) opts.commit(next);
@@ -103,6 +119,35 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
     if (flushTimer !== null) {
       clearTimer(flushTimer);
       flushTimer = null;
+    }
+  };
+
+  // Hand `text` to the fold as one delta shaped like the last real one.
+  const applyText = (text: string) => {
+    if (!text || !pendingDelta) return;
+    transcript.apply({ ...pendingDelta, text, thinking: undefined, ts: pendingTs ?? pendingDelta.ts });
+  };
+
+  const releaseTick = () => {
+    paceTimer = null;
+    const [release, rest] = takeWords(pendingText, paceCount(pendingText));
+    applyText(release);
+    pendingText = rest;
+    if (!rest) pendingTs = null;
+    projectCommit();
+    if (rest) paceTimer = setTimer(releaseTick, paceTickMs);
+  };
+
+  /** Show everything still waiting, in order, before anything else renders. */
+  const drainPending = () => {
+    if (paceTimer !== null) {
+      clearTimer(paceTimer);
+      paceTimer = null;
+    }
+    if (pendingText) {
+      applyText(pendingText);
+      pendingText = "";
+      pendingTs = null;
     }
   };
 
@@ -127,6 +172,20 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
       }
       case "assistant_delta": {
         if (firstTokenAt === null) firstTokenAt = now();
+        if (pace) {
+          // Thinking streams straight through (its block has its own cadence);
+          // the visible text queues for the pacer, which projects on each tick.
+          if (event.thinking) transcript.apply({ ...event, text: "" });
+          if (event.text) {
+            pendingDelta = event;
+            pendingTs ??= event.ts;
+            pendingText += event.text;
+            if (paceTimer === null) paceTimer = setTimer(releaseTick, paceTickMs);
+          } else if (event.thinking) {
+            scheduleFlush();
+          }
+          return true;
+        }
         // The fold takes deltas per token (a string append on the open row);
         // only the *projection* is batched behind the flush timer.
         transcript.apply(event);
@@ -135,6 +194,7 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
       }
       case "assistant_message": {
         cancelFlush();
+        drainPending();
         const at = now();
         const step = transcript.apply(event, {
           turnMs: at - turnStartedAt,
@@ -162,6 +222,7 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
         // first *word* reported the whole tool phase as latency — 15s of "no
         // response" for a run that started working immediately.
         if (firstTokenAt === null) firstTokenAt = now();
+        drainPending();
         transcript.apply(event);
         projectCommit();
         return true;
@@ -170,6 +231,7 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
       case "tool_call_started":
       case "tool_call_finished":
       case "steering_injected": {
+        drainPending();
         transcript.apply(event);
         projectCommit();
         return true;
@@ -185,11 +247,13 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
       // Render anything pending first, so the returned index points at what
       // is actually on screen.
       cancelFlush();
+      drainPending();
       projectCommit();
       return { msgs: opts.read(), index: transcript.assistantIndex() };
     },
     finish() {
       cancelFlush();
+      drainPending();
       projectCommit();
     },
     isDetached() {
