@@ -197,6 +197,55 @@ describe("foldAgentEvents", () => {
     expect(rows[0]).toMatchObject({ kind: "assistant", text: "", thinking: "let me think" });
   });
 
+  describe("thinking span", () => {
+    // The header says "Thought for 4.2s" from event timestamps, never a
+    // stopwatch — so a live thread and its replayed transcript agree.
+    it("measures from the first reasoning delta to the first visible word", () => {
+      const events = [
+        userMessage("hi"),
+        delta("", "hmm"),
+        delta("", " more"),
+        delta("Hel"),
+        delta("lo"),
+        assistantMessage("Hello", { thinking: "hmm more" }),
+      ];
+      const rows = foldAgentEvents(events);
+      const first = events[1];
+      const firstWord = events[3];
+      if (first.type !== "assistant_delta" || firstWord.type !== "assistant_delta") throw new Error("shape");
+      expect(rows[1]).toMatchObject({
+        kind: "assistant",
+        thinkingStartedAt: first.ts,
+        thinkingMs: firstWord.ts - first.ts,
+      });
+    });
+
+    it("ends at the settle when the turn thought and then said nothing", () => {
+      const events = [
+        delta("", "plan"),
+        assistantMessage("", { thinking: "plan", toolCalls: [{ toolCallId: "t1", name: "read_file" }] }),
+      ];
+      const rows = foldAgentEvents(events);
+      const first = events[0];
+      const settled = events[1];
+      if (first.type !== "assistant_delta" || settled.type !== "assistant_message") throw new Error("shape");
+      expect(rows[0]).toMatchObject({ kind: "assistant", thinkingMs: settled.ts - first.ts });
+    });
+
+    it("leaves the span unknown when the transcript kept no deltas", () => {
+      const rows = foldAgentEvents([assistantMessage("done", { thinking: "reasoning" })]);
+      if (rows[0].kind !== "assistant") throw new Error("expected assistant");
+      expect(rows[0].thinkingStartedAt).toBeUndefined();
+      expect(rows[0].thinkingMs).toBeUndefined();
+    });
+
+    it("carries the span onto the AI panel message", () => {
+      const rows = foldAgentEvents([delta("", "t"), delta("x"), assistantMessage("x", { thinking: "t" })]);
+      const msgs = foldedToMsgs(rows);
+      expect(msgs[0]).toMatchObject({ role: "assistant", thinkingMs: 100 });
+    });
+  });
+
   describe("tool-call lifecycle correlation", () => {
     it("correlates a started/finished pair onto the assistant that declared it", () => {
       const rows = foldAgentEvents([
