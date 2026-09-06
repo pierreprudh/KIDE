@@ -34,6 +34,13 @@ export type Msg =
       content: string;
       toolCalls?: ToolCall[];
       thinking?: string;
+      /** When reasoning began streaming, epoch ms — anchors the live
+       *  "Thinking" timer so it survives a re-render. */
+      thinkingStartedAt?: number;
+      /** How long the model reasoned before its first visible word, from
+       *  event timestamps (see foldEvents). Absent when nothing measured it;
+       *  the header then says "Thought process" instead of a duration. */
+      thinkingMs?: number;
       delegateConsole?: boolean;
       delegateProvider?: string;
       /** What produced THIS turn — the pair the harness dispatched it with, as

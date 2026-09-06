@@ -13,6 +13,7 @@ import { DotGridLoader, ToolIcon } from "./icons";
 import { renderMarkdown, splitThinking, stripPlanJson } from "../markdown";
 import { providerName } from "../../agent/providers";
 import type { ProviderId } from "../../agent/types";
+import { formatElapsed, useElapsed } from "./WorkingRow";
 
 // Premium thinking block. Renders as a soft card with a pulsing dot while the
 // agent is still streaming, a rotating chevron, and a markdown body so code
@@ -23,7 +24,19 @@ function normalizeThinking(text: string): string {
   return text.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-export function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }) {
+export function ThinkingBlock({
+  text,
+  streaming,
+  startedAt,
+  thinkingMs,
+}: {
+  text: string;
+  streaming: boolean;
+  /** Epoch ms reasoning began — the live timer counts from here. */
+  startedAt?: number;
+  /** Settled reasoning span; drawn as "Thought for 4.2s" when known. */
+  thinkingMs?: number;
+}) {
   return (
     <details open={streaming} className={`klide-think${streaming ? " is-streaming" : ""}`} style={{ margin: "2px 0 6px" }}>
       <summary
@@ -38,16 +51,13 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming: bo
           color: "var(--fg-dim)",
         }}
       >
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 600,
-            fontFamily: "var(--font-mono)",
-            color: streaming ? "var(--accent)" : undefined,
-          }}
-        >
-          {streaming ? "Thinking…" : "Thought process"}
-        </span>
+        {streaming ? (
+          <ThinkingLiveLabel startedAt={startedAt} />
+        ) : (
+          <span style={{ fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
+            {thinkingMs !== undefined ? `Thought for ${formatElapsed(thinkingMs)}` : "Thought process"}
+          </span>
+        )}
         <span
           aria-hidden
           className="klide-think-chev"
@@ -78,6 +88,22 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming: bo
         {renderMarkdown(normalizeThinking(text))}
       </div>
     </details>
+  );
+}
+
+// The streaming header: a shimmer sweeping through "Thinking" and a live
+// timer beside it, the same pair the Working row wears — one language for
+// "the model is busy". Its own component so the 100ms tick re-renders only
+// this label, never the reasoning body under it.
+function ThinkingLiveLabel({ startedAt }: { startedAt?: number }) {
+  const elapsed = useElapsed(startedAt);
+  return (
+    <>
+      <span className="ai-working-label" style={{ fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
+        Thinking
+      </span>
+      <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{elapsed}</span>
+    </>
   );
 }
 
@@ -1169,11 +1195,11 @@ export function renderMessageBody(
     return (
       <>
         {mergedThinking && !opts?.hideThinking && (
-          <ThinkingBlock text={mergedThinking} streaming={streaming} />
+          <ThinkingBlock text={mergedThinking} streaming={streaming} startedAt={m.thinkingStartedAt} thinkingMs={m.thinkingMs} />
         )}
         {visibleContent && (
           <div style={{ marginBottom: m.toolCalls?.length ? 4 : 0, fontSize: 13, lineHeight: 1.58 }}>
-            {renderMarkdown(visibleContent)}
+            {renderMarkdown(visibleContent, { streaming: active })}
           </div>
         )}
         {/* Identical agent messages sent back to back — "pong" to two pings —

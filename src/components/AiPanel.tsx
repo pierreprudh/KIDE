@@ -1194,8 +1194,9 @@ export function AiPanel({
       // render with `hideThinking` so opening the run never shows it twice.
       const thinkingNodes: ReactNode[] = [];
       for (let i = run.start; i < run.end; i++) {
-        const t = extractThinking(msgs[i]);
-        if (t) thinkingNodes.push(<ThinkingBlock key={`think-${i}`} text={t} streaming={false} />);
+        const m = msgs[i];
+        const t = extractThinking(m);
+        if (t) thinkingNodes.push(<ThinkingBlock key={`think-${i}`} text={t} streaming={false} thinkingMs={m.role === "assistant" ? m.thinkingMs : undefined} />);
       }
       out.push(
         <div
@@ -4351,12 +4352,15 @@ This user request requires workspace inspection. Before answering, you MUST call
           const tailPendingTool = last?.role === "tool" && /^Running /.test(last.content);
           const tailPlaceholder = last?.role === "assistant" && !last.content && !last.thinking && !last.toolCalls;
           const tailStreamingText = last?.role === "assistant" && !!last.content;
+          // A reasoning-only tail already wears its own shimmer + timer in the
+          // thinking header; a second heartbeat under it would say it twice.
+          const tailThinking = last?.role === "assistant" && !last.content && !!last.thinking;
           // A running user bubble already carries its own activity hint, so the
           // heartbeat under it is just noise.
           const tailQueuedUser = last?.role === "user" && !!last.queueState;
           const showWorking =
             streaming && !pendingDiff && !pendingPermission && !pendingQuestion &&
-            !tailPendingTool && !tailPlaceholder && !tailStreamingText && !tailQueuedUser;
+            !tailPendingTool && !tailPlaceholder && !tailStreamingText && !tailThinking && !tailQueuedUser;
           if (!showWorking) return null;
           // The timer counts from the turn's own send time, so it survives the
           // row unmounting while a tool runs and remounting after.

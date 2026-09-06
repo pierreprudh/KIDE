@@ -82,6 +82,14 @@ export type FoldedRow =
       meta?: AssistantMeta;
       /** The `assistant_message` event's `ts`, epoch ms. */
       ts?: number;
+      /** The first delta that carried reasoning, epoch ms — the live header's
+       *  timer counts from here. Only a streamed row knows it. */
+      thinkingStartedAt?: number;
+      /** How long the model reasoned before its first visible word (or, with
+       *  no text at all, before the turn settled). Derived from event
+       *  timestamps, never a stopwatch, so live and replay agree — and absent
+       *  when the transcript kept no deltas to measure from. */
+      thinkingMs?: number;
       /** What produced THIS turn, from the `run_started` line in effect when
        *  the row opened. Per-row, not per-thread: a conversation continued on
        *  another model has turns from both, and one label over all of them is
@@ -269,7 +277,14 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
         open = { row: created, idx: rows.length - 1 };
       }
       open.row.text += event.text;
-      if (event.thinking) open.row.thinking = (open.row.thinking ?? "") + event.thinking;
+      if (event.thinking) {
+        open.row.thinking = (open.row.thinking ?? "") + event.thinking;
+        open.row.thinkingStartedAt ??= event.ts;
+      }
+      // The first visible word closes the thinking span.
+      if (event.text && open.row.thinkingStartedAt !== undefined && open.row.thinkingMs === undefined) {
+        open.row.thinkingMs = Math.max(0, event.ts - open.row.thinkingStartedAt);
+      }
       return { changed: [open.idx] };
     }
 
@@ -304,6 +319,11 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
       // Empty final text with streamed deltas → keep the streamed content.
       row.text = text || row.text;
       row.thinking = eventThinking || row.thinking || undefined;
+      // A turn that thought and then went straight to tools (or said nothing)
+      // never had a first word — the settle is the span's end.
+      if (row.thinking && row.thinkingStartedAt !== undefined && row.thinkingMs === undefined) {
+        row.thinkingMs = Math.max(0, event.ts - row.thinkingStartedAt);
+      }
       for (const b of toolBlocks) {
         if (row.toolCalls.some((t) => t.id === b.toolCallId)) continue;
         row.toolCalls.push({
@@ -568,6 +588,8 @@ export function foldedRowToMsgs(row: FoldedRow, view: FoldedMsgView = {}): Msg[]
       provider: row.provider,
       model: row.model,
       thinking: row.thinking,
+      thinkingStartedAt: row.thinkingStartedAt,
+      thinkingMs: row.thinkingMs,
       toolCalls: row.toolCalls.length
         ? row.toolCalls.map((t) => ({
             id: t.id,
