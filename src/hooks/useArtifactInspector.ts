@@ -14,17 +14,29 @@ function artifactIdentity(request: ArtifactRequest): string {
 }
 
 /** A checkpoint set opens as one diff tab per file, not a single grouped tab. */
-function expandArtifactRequest(request: ArtifactRequest): ArtifactRequest[] {
+export function expandArtifactRequest(request: ArtifactRequest): ArtifactRequest[] {
   if (request.kind !== "checkpoint-set") return [request];
-  return request.entries.map((entry) => ({
-    kind: "diff",
-    runId: request.runId,
-    workspaceRoot: entry.workspaceRoot,
-    path: entry.path,
-    original: entry.oldContent,
-    modified: entry.newContent,
-    isCreate: entry.isCreate,
-  }));
+  const byFile = new Map<string, Extract<ArtifactRequest, { kind: "diff" }>>();
+  // Backend checkpoints arrive newest first. Visit them in timestamp order so
+  // the first snapshot is retained while each later edit advances the result.
+  for (const entry of [...request.entries].sort((a, b) => a.ts - b.ts)) {
+    const identity = JSON.stringify([entry.workspaceRoot, entry.path]);
+    const existing = byFile.get(identity);
+    if (existing) {
+      existing.modified = entry.newContent;
+    } else {
+      byFile.set(identity, {
+        kind: "diff",
+        runId: request.runId,
+        workspaceRoot: entry.workspaceRoot,
+        path: entry.path,
+        original: entry.oldContent,
+        modified: entry.newContent,
+        isCreate: entry.isCreate,
+      });
+    }
+  }
+  return [...byFile.values()];
 }
 
 export function useArtifactInspector() {
