@@ -50,13 +50,21 @@ export type TodoHistory = {
   reopened: number;
 };
 
-export function historyOf(item: TodoItem, events: TodoEvent[]): TodoHistory {
+/**
+ * `startedAfter` is when the agent could first have turned to this step — the
+ * moment the step before it closed. A plan is written all at once, so every
+ * step's add sits at the plan's start; measured from there, the step in hand
+ * would show the whole plan's age and the fourth step's span would swallow the
+ * first three. The clock starts at the later of the add and that floor; a
+ * reopen still restarts it.
+ */
+export function historyOf(item: TodoItem, events: TodoEvent[], startedAfter = 0): TodoHistory {
   const own = events
     .filter((e) => e.todo_id === item.id)
     .sort((a, b) => a.seq - b.seq);
 
   const moments: TodoMoment[] = [];
-  let attemptStartedAt = item.created_at;
+  let attemptStartedAt = Math.max(item.created_at, startedAfter);
   let doneIn: number | undefined;
   let reopened = 0;
   let sawAdd = false;
@@ -65,7 +73,7 @@ export function historyOf(item: TodoItem, events: TodoEvent[]): TodoHistory {
     switch (e.action) {
       case "add":
         sawAdd = true;
-        attemptStartedAt = e.at;
+        attemptStartedAt = Math.max(e.at, startedAfter);
         moments.push({ kind: "planned", at: e.at });
         break;
       case "edit":
@@ -102,6 +110,22 @@ export function historyOf(item: TodoItem, events: TodoEvent[]): TodoHistory {
   if (!item.done && doneIn !== undefined) doneIn = undefined;
 
   return { moments, attemptStartedAt, doneIn, reopened };
+}
+
+/** When each step's clock may start: the close of the latest step before it in
+ *  the plan, or 0 for the first. Feed the result to `historyOf` as
+ *  `startedAfter` so spans and the live count measure the work, not the plan. */
+export function workFloors(items: TodoItem[], events: TodoEvent[]): number[] {
+  const floors: number[] = [];
+  let latestClose = 0;
+  for (const item of items) {
+    floors.push(latestClose);
+    if (!item.done) continue;
+    for (const m of historyOf(item, events).moments) {
+      if (m.kind === "done") latestClose = Math.max(latestClose, m.at);
+    }
+  }
+  return floors;
 }
 
 /** When the plan began — the earliest thing that happened to any of its steps.

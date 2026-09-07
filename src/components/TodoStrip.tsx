@@ -6,6 +6,7 @@ import {
   formatOffset,
   historyOf,
   planStartedAt,
+  workFloors,
   type TodoEvent,
   type TodoItem,
   type TodoMoment,
@@ -151,7 +152,7 @@ function CountLabel({ done, total }: { done: number; total: number }) {
     <span
       style={{
         color: "var(--fg-subtle)",
-        fontSize: 11,
+        fontSize: 10.5,
         fontWeight: 500,
         fontFamily: "var(--font-mono)",
         fontVariantNumeric: "tabular-nums",
@@ -201,6 +202,12 @@ function GoalLine({ goal, size }: { goal: string; size: number }) {
 // Numbers instead of hollow circles — type over shape, and "3" already tells
 // you where in the plan you are.
 const MARK = 14;
+// The header ends in two 18px icon boxes (collapse, hide). Rows end in the same
+// width so their chevron sits under the header's, and the figures on every row
+// stop at the same x as the header count — one right edge for the whole strip.
+const ICON = 18;
+const ICON_COLUMN = ICON * 2 + 2;
+const RIGHT_GAP = 12;
 
 function StepMark({ index, state }: { index: number; state: "todo" | "active" | "done" }) {
   const r = (MARK - 1.5) / 2;
@@ -329,6 +336,7 @@ function TodoRow({
   onToggle,
   events,
   planStart,
+  startedAfter,
 }: {
   item: TodoItem;
   index: number;
@@ -339,8 +347,9 @@ function TodoRow({
   onToggle: () => void;
   events: TodoEvent[];
   planStart: number;
+  startedAfter: number;
 }) {
-  const history = historyOf(item, events);
+  const history = historyOf(item, events, startedAfter);
   const tries = attemptLabel(history.reopened);
   const state = item.done ? "done" : active ? "active" : "todo";
 
@@ -370,11 +379,11 @@ function TodoRow({
         onClick={onToggle}
         style={{
           display: "grid",
-          gridTemplateColumns: `${MARK}px minmax(0, 1fr) auto 12px`,
+          gridTemplateColumns: `${MARK}px minmax(0, 1fr) auto ${ICON_COLUMN}px`,
           alignItems: "center",
-          gap: 10,
+          columnGap: RIGHT_GAP,
           minHeight: 24,
-          padding: "0 2px 0 0",
+          padding: 0,
         }}
       >
         <StepMark index={index} state={state} />
@@ -412,7 +421,7 @@ function TodoRow({
           {active && <LiveSince since={history.attemptStartedAt} />}
           {item.done && history.doneIn !== undefined && history.doneIn >= 1000 && <span>{formatSpan(history.doneIn)}</span>}
         </span>
-        <span className="klide-todo-chev" aria-hidden style={{ display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
+        <span className="klide-todo-chev" aria-hidden style={{ width: ICON, height: ICON, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M6 9l6 6 6-6" />
           </svg>
@@ -421,7 +430,7 @@ function TodoRow({
 
       <div className="klide-todo-drawer" data-open={open ? "1" : "0"} aria-hidden={!open}>
         <div>
-          <div style={{ padding: `2px 14px 6px ${MARK + 10}px`, display: "flex", flexDirection: "column", gap: 1 }}>
+          <div style={{ padding: `2px ${ICON_COLUMN + RIGHT_GAP}px 6px ${MARK + RIGHT_GAP}px`, display: "flex", flexDirection: "column", gap: 1 }}>
             {history.moments.map((moment, i) => (
               <MomentLine key={`${moment.kind}-${moment.at}-${i}`} moment={moment} index={i} planStart={planStart} />
             ))}
@@ -524,6 +533,9 @@ export function TodoStrip({
   const visibleItems = items;
   const firstOpen = visibleItems.findIndex((candidate) => !candidate.done);
   const planStart = planStartedAt(items, events);
+  // Each step's clock starts when the step before it closed, so the live count
+  // and the spans measure the work on that step, not the age of the plan.
+  const floors = workFloors(items, events);
   // Prefer the user's actual ask (the goal write-up) over the current step.
   const goal = goalProp?.replace(/\s+/g, " ").trim() || items[0]?.text || recentEvents[0]?.text || "Working through the plan";
 
@@ -620,9 +632,9 @@ export function TodoStrip({
           }}
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0, 1fr) auto auto",
+            gridTemplateColumns: `minmax(0, 1fr) auto ${ICON_COLUMN}px`,
             alignItems: "center",
-            gap: 12,
+            columnGap: RIGHT_GAP,
             paddingBottom: 9,
             cursor: "pointer",
           }}
@@ -630,15 +642,15 @@ export function TodoStrip({
           <GoalLine goal={goal} size={12.5} />
           <CountLabel done={done} total={total} />
           <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
-            <span style={{ width: 18, height: 18, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
+            <span style={{ width: ICON, height: ICON, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
               <ChevronIcon open={open} />
             </span>
             <button
               onClick={(e) => { e.stopPropagation(); hidePlan(); }}
               aria-label="Hide this plan"
               style={{
-                width: 18,
-                height: 18,
+                width: ICON,
+                height: ICON,
                 display: "grid",
                 placeItems: "center",
                 border: "none",
@@ -663,12 +675,14 @@ export function TodoStrip({
           style={{
             position: "relative",
             overflowY: "auto",
+            marginLeft: -3,
             height: open ? listHeight : 0,
             opacity: open ? 1 : 0,
           }}
         >
-          {/* 3px of left room so the active mark's ring isn't clipped by the scroller */}
-          <div ref={listInnerRef} style={{ padding: "8px 6px 10px 3px" }}>
+          {/* 3px of ring room on the left is paid for by the scroller's margin, so
+              the marks still start where the header text does */}
+          <div ref={listInnerRef} style={{ padding: "8px 0 10px 3px" }}>
             {visibleItems.map((item, idx) => (
               <TodoRow
                 key={item.id}
@@ -681,6 +695,7 @@ export function TodoStrip({
                 onToggle={() => setOpenRow((was) => (was === item.id ? null : item.id))}
                 events={events}
                 planStart={planStart}
+                startedAfter={floors[idx] ?? 0}
               />
             ))}
           </div>

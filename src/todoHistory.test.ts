@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attemptLabel, formatOffset, historyOf, planStartedAt, type TodoEvent, type TodoItem } from "./todoHistory";
+import { attemptLabel, formatOffset, historyOf, planStartedAt, workFloors, type TodoEvent, type TodoItem } from "./todoHistory";
 
 const T0 = 1_700_000_000_000;
 const item = (over: Partial<TodoItem> = {}): TodoItem => ({
@@ -75,6 +75,46 @@ describe("historyOf", () => {
     const h = historyOf(item({ done: true, created_at: T0, updated_at: T0 + 8_000 }), []);
     expect(h.moments.map((m) => m.kind)).toEqual(["planned", "done"]);
     expect(h.doneIn).toBe(8_000);
+  });
+});
+
+describe("work floors", () => {
+  // A plan written at T0: step 1 closes at +18s, step 2 at +72s, step 3 open.
+  const plan = [
+    item({ id: "T1", done: true, updated_at: T0 + 18_000 }),
+    item({ id: "T2", done: true, updated_at: T0 + 72_000 }),
+    item({ id: "T3" }),
+  ];
+  const log = [
+    ev(1, "add", T0, { todo_id: "T1" }),
+    ev(2, "add", T0, { todo_id: "T2" }),
+    ev(3, "add", T0, { todo_id: "T3" }),
+    ev(4, "complete", T0 + 18_000, { todo_id: "T1", done: true }),
+    ev(5, "complete", T0 + 72_000, { todo_id: "T2", done: true }),
+  ];
+
+  it("each step may start once the step before it closed", () => {
+    expect(workFloors(plan, log)).toEqual([0, T0 + 18_000, T0 + 72_000]);
+  });
+
+  it("a span measures the work on the step, not the age of the plan", () => {
+    const floors = workFloors(plan, log);
+    expect(historyOf(plan[1], log, floors[1]).doneIn).toBe(54_000);
+    expect(historyOf(plan[2], log, floors[2]).attemptStartedAt).toBe(T0 + 72_000);
+    // the planned line still says when the step was written down
+    expect(historyOf(plan[1], log, floors[1]).moments[0]).toMatchObject({ kind: "planned", at: T0 });
+  });
+
+  it("a reopen after the floor still restarts the clock", () => {
+    const h = historyOf(item({ id: "T2", done: true, updated_at: T0 + 90_000 }), [
+      ev(1, "add", T0, { todo_id: "T2" }),
+      ev(2, "complete", T0 + 40_000, { todo_id: "T2", done: true }),
+      ev(3, "uncomplete", T0 + 60_000, { todo_id: "T2", done: false }),
+      ev(4, "complete", T0 + 90_000, { todo_id: "T2", done: true }),
+    ], T0 + 18_000);
+    expect(h.attemptStartedAt).toBe(T0 + 60_000);
+    expect(h.doneIn).toBe(30_000);
+    expect(h.moments[1]).toMatchObject({ kind: "done", span: 22_000 });
   });
 });
 
