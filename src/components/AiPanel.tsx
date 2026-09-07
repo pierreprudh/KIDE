@@ -81,6 +81,7 @@ import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
 import { CompletionCard } from "./ai/CompletionCard";
+import { hasCompletionReview, type RunCompletion } from "../agent/completion";
 import { groupToolRuns, pairToolResults, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import type { AttachedResult } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
@@ -2863,6 +2864,24 @@ This user request requires workspace inspection. Before answering, you MUST call
   // margins moved to the right gutter. A question island holds that column
   // open on its own, so the conversation makes room for it the same way it
   // does for the plan.
+  // The newest turn whose evidence is worth opening — what "the result" means
+  // on the canvas, where there is room for one entry, not one per turn.
+  const latestCompletion = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      const message = msgs[i];
+      const candidate = message.role === "system" ? message.completion : undefined;
+      if (candidate && hasCompletionReview(candidate)) return candidate;
+    }
+    return undefined;
+  }, [msgs]);
+
+  function requestCompletionChanges(completion: RunCompletion) {
+    setInput((previous) => previous || (completion.stopped
+      ? `Please finish this unfinished work:\n${completion.outcome}\n\nRequested changes: `
+      : `Please revise this completed work:\n${completion.outcome}\n\nRequested changes: `));
+    taRef.current?.focus();
+  }
+
   const canvasIslandUp = planIslandUp || pendingQuestion !== null;
   const focusInset = variant === "focus" && canvasIslandUp ? ISLAND_WIDTH + 36 : 0;
   const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
@@ -4042,14 +4061,13 @@ This user request requires workspace inspection. Before answering, you MUST call
         {stackToolRuns(msgs.map((m, i) => {
           if (m.role === "system" && m.completion) {
             const completion = m.completion;
+            // In Focus the latest result waits in the island column instead,
+            // under the plan it came from (see the column below). A row per
+            // finished turn down the transcript would say it many times.
+            if (variant === "focus") return null;
             return <CompletionCard key={i} completion={completion} disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
-              onRequestChanges={() => {
-                setInput((previous) => previous || (completion.stopped
-                  ? `Please finish this unfinished work:\n${completion.outcome}\n\nRequested changes: `
-                  : `Please revise this completed work:\n${completion.outcome}\n\nRequested changes: `));
-                taRef.current?.focus();
-              }}
+              onRequestChanges={() => requestCompletionChanges(completion)}
             />;
           }
           // "Last" means the tail of the *exchange*, not of the array. Turns
@@ -4553,6 +4571,15 @@ This user request requires workspace inspection. Before answering, you MUST call
               onDockHeightChange={setTodoDockHeight}
               onPresenceChange={setPlanIslandUp}
             />
+            {latestCompletion && (
+              <CompletionCard
+                variant="island"
+                completion={latestCompletion}
+                disabled={streaming}
+                onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
+                onRequestChanges={() => requestCompletionChanges(latestCompletion)}
+              />
+            )}
             {pendingQuestion && (
               <QuestionCard
                 variant="island"

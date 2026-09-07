@@ -3,15 +3,22 @@ import { hasCompletionReview, type RunCompletion } from "../../agent/completion"
 import { CloseIcon } from "../../icons";
 import "./completionCard.css";
 
+/** Where the entry sits. `inline` is the row under the turn that produced it;
+ *  `island` is the Focus canvas' right column, under the plan — the run's
+ *  result waiting where its plan just was, rather than at the far end of a
+ *  transcript the reader has to scroll back down to. */
+export type CompletionCardVariant = "inline" | "island";
+
 type Props = {
   completion: RunCompletion;
   disabled?: boolean;
   onReview?: (path?: string) => void;
   onRequestChanges: () => void;
+  variant?: CompletionCardVariant;
 };
 
 /** A quiet entry point. Evidence opens on demand in the right-hand drawer. */
-export function CompletionCard({ completion, disabled, onReview, onRequestChanges }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onRequestChanges, variant = "inline" }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -22,7 +29,7 @@ export function CompletionCard({ completion, disabled, onReview, onRequestChange
   const close = () => dialog.current?.close();
   const review = (path?: string) => { close(); onReview?.(path); };
   return (
-    <div className="klide-result-entry">
+    <div className="klide-result-entry" data-variant={variant}>
       <button type="button" className="klide-result-trigger" aria-haspopup="dialog" aria-expanded={open} aria-controls={id}
         onClick={() => { dialog.current?.showModal(); setOpen(true); }}>
         <span>{completion.stopped ? "Review partial work" : "Review result"}</span>
