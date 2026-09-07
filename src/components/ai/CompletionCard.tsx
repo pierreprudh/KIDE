@@ -20,6 +20,9 @@ type Props = {
   /** Too little room for the words: the entry keeps the mark and the count,
    *  and the label it drops moves to its tooltip and accessible name. */
   compact?: boolean;
+  /** Put the entry away — the canvas column's windows are all dismissible, so
+   *  a result the reader is done with leaves the corner like a plan does. */
+  onDismiss?: () => void;
 };
 
 type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onRequestChanges"> & {
@@ -63,7 +66,7 @@ export function ResultEvidence({ completion, disabled, onReview, onRequestChange
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
  *  the column the plan already lives in; in a transcript it opens as a sheet. */
-export function CompletionCard({ completion, disabled, onReview, onRequestChanges, variant = "inline", compact = false }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onRequestChanges, variant = "inline", compact = false, onDismiss }: Props) {
   const island = variant === "island";
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -98,45 +101,49 @@ export function CompletionCard({ completion, disabled, onReview, onRequestChange
     // that is the whole hit target, a hairline that appears with the body, and
     // the body growing into the column rather than over the app.
     return (
-      <div className="klide-result-entry" data-variant="island">
-        <section className="klide-result-island" data-open={open ? "1" : undefined} aria-label={title}>
-          <div className="klide-result-island-header" role="button" tabIndex={0}
-            aria-expanded={open} aria-controls={id}
-            aria-label={`${open ? "Collapse" : "Expand"} ${title.toLowerCase()}${files ? `, ${files}` : ""}${compact && attention > 0 ? `, ${attention} item${attention === 1 ? "" : "s"} to review` : ""}`}
-            title={compact ? spoken : undefined}
-            data-compact={compact ? "1" : undefined}
-            data-attention={attention > 0 ? "1" : undefined}
-            onClick={() => setOpen((was) => !was)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" && event.key !== " ") return;
-              event.preventDefault();
-              setOpen((was) => !was);
-            }}>
-            {/* A 232px column is a corner, not a panel: the header keeps one
-                mark and drops the rest — the title, the count, the attention
-                dot and the chevron. What they said is in the header's own
-                name and tooltip, and "needs attention" becomes the mark's
-                colour rather than a dot pinned beside it. */}
-            <ReviewIcon size={15} />
-            {!compact && <>
-              <span className="klide-result-island-title">{title}</span>
-              {files && <span className="klide-result-meta">{files}</span>}
-              {dot}
-              <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
-            </>}
-          </div>
-          <div className="klide-result-island-rule" data-shown={open ? "1" : undefined} aria-hidden="true" />
-          {/* Open, the card takes the rest of the column: the evidence scrolls
-              inside it and the two actions stay on the floor of the card, so
-              nothing ends mid-word against a hard edge. */}
-          {open && (
-            <div className="klide-result-island-panel" id={id}>
-              <ResultEvidence completion={completion} disabled={disabled} onReview={onReview}
-                onRequestChanges={onRequestChanges} onDone={() => setOpen(false)} />
-            </div>
+      <section className="klide-result-island" data-open={open ? "1" : undefined} aria-label={title}>
+        <div className="klide-result-island-header" role="button" tabIndex={0}
+          aria-expanded={open} aria-controls={id}
+          aria-label={`${open ? "Collapse" : "Expand"} ${title.toLowerCase()}${files ? `, ${files}` : ""}${compact && attention > 0 ? `, ${attention} item${attention === 1 ? "" : "s"} to review` : ""}`}
+          title={compact ? spoken : undefined}
+          data-compact={compact ? "1" : undefined}
+          data-attention={attention > 0 ? "1" : undefined}
+          onClick={() => setOpen((was) => !was)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            setOpen((was) => !was);
+          }}>
+          {/* A 232px column is a corner, not a panel: the header keeps one
+              mark and drops the rest — the title, the count, the attention
+              dot and the chevron. What they said is in the header's own
+              name and tooltip, and "needs attention" becomes the mark's
+              colour rather than a dot pinned beside it. */}
+          <ReviewIcon size={15} />
+          {!compact && <>
+            <span className="klide-result-island-title">{title}</span>
+            {files && <span className="klide-result-meta">{files}</span>}
+            {dot}
+            <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
+          </>}
+          {onDismiss && (
+            <button type="button" className="klide-result-island-close" aria-label="Hide this result"
+              onClick={(event) => { event.stopPropagation(); onDismiss(); }}>
+              <CloseIcon size={14} />
+            </button>
           )}
-        </section>
-      </div>
+        </div>
+        <div className="klide-result-island-rule" data-shown={open ? "1" : undefined} aria-hidden="true" />
+        {/* Open, the card takes the rest of the column: the evidence scrolls
+            inside it and the two actions stay on the floor of the card, so
+            nothing ends mid-word against a hard edge. */}
+        {open && (
+          <div className="klide-result-island-panel" id={id}>
+            <ResultEvidence completion={completion} disabled={disabled} onReview={onReview}
+              onRequestChanges={onRequestChanges} onDone={() => setOpen(false)} />
+          </div>
+      )}
+      </section>
     );
   }
 

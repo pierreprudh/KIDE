@@ -68,6 +68,21 @@ describe("the island card", () => {
     expect(html).toContain("Review result · 2 files");
     expect(html).toContain('aria-label="Expand result, 2 files"');
   });
+  // The column is a stack of windows; a right-aligned card in it read as a
+  // different kind of thing, and dismissal is how every window there leaves.
+  it("fills the column and can be put away, at either size", () => {
+    for (const compact of [false, true]) {
+      const html = renderToStaticMarkup(
+        <CompletionCard variant="island" compact={compact} completion={withFiles}
+          onReview={() => {}} onRequestChanges={() => {}} onDismiss={() => {}} />,
+      );
+      expect(html).toContain("klide-result-island-close");
+      expect(html).toContain('aria-label="Hide this result"');
+    }
+  });
+  it("offers no dismissal when the host has nowhere to put the state", () => {
+    expect(renderIsland(withFiles)).not.toContain("klide-result-island-close");
+  });
   it("puts attention on the mark rather than a dot beside it", () => {
     const html = renderIsland({ ...withFiles, warnings: ["Check the migration"] }, true);
     expect(html).not.toContain("klide-result-attention-dot");

@@ -2864,6 +2864,12 @@ This user request requires workspace inspection. Before answering, you MUST call
   // margins moved to the right gutter. A question island holds that column
   // open on its own, so the conversation makes room for it the same way it
   // does for the plan.
+  // A result the reader has put away. Held by run id, not a boolean, so the
+  // next run's result comes back on its own — the same rule the plan follows
+  // (a new plan reopens a hidden strip), without persisting a dismissal that
+  // only matters while the corner is in view.
+  const [dismissedResultRunId, setDismissedResultRunId] = useState<string | null>(null);
+
   // The newest turn whose evidence is worth opening — what "the result" means
   // on the canvas, where there is room for one entry, not one per turn.
   const latestCompletion = useMemo(() => {
@@ -2886,6 +2892,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   // not a constant. `width` (the prop) is the panel's assigned width and means
   // nothing in Focus, where the panel fills its host.
   const canvasRef = useRef<HTMLDivElement>(null);
+  const islandColumnRef = useRef<HTMLDivElement>(null);
   const [canvasWidth, setCanvasWidth] = useState(0);
   useEffect(() => {
     const el = canvasRef.current;
@@ -2912,6 +2919,20 @@ This user request requires workspace inspection. Before answering, you MUST call
   // for nothing here, so the conversation kept the full canvas and the pill
   // floated over the prose in the corner.
   const canvasIslandUp = planIslandUp || pendingQuestion !== null || latestCompletion !== undefined;
+
+  // A question is the one card in the column that holds the run, and it
+  // arrives *under* a plan and an opened result that may already fill the
+  // side. So the column scrolls it into view when it appears — the cards
+  // above keep their place rather than being pushed off to make room.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    const column = islandColumnRef.current;
+    if (!column) return;
+    const frame = requestAnimationFrame(() => {
+      column.scrollTo({ top: column.scrollHeight, behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [pendingQuestion]);
   const focusInset = variant === "focus" && canvasIslandUp ? islandColumnWidth + 36 : 0;
   const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
   const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
@@ -4597,6 +4618,8 @@ This user request requires workspace inspection. Before answering, you MUST call
           does not exist. */}
       {variant === "focus" && (
         <div
+          ref={islandColumnRef}
+          className="klide-island-column"
           style={{
             position: "absolute",
             top: 16,
@@ -4632,7 +4655,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             onDockHeightChange={setTodoDockHeight}
             onPresenceChange={setPlanIslandUp}
           />
-          {latestCompletion && (
+          {latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
             <CompletionCard
               variant="island"
               compact={compactIslands}
@@ -4640,6 +4663,7 @@ This user request requires workspace inspection. Before answering, you MUST call
               disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
               onRequestChanges={() => requestCompletionChanges(latestCompletion)}
+              onDismiss={() => setDismissedResultRunId(latestCompletion.runId)}
             />
           )}
           {pendingQuestion && (
