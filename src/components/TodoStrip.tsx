@@ -214,6 +214,9 @@ const MARK = 14;
 // stop at the same x as the header count — one right edge for the whole strip.
 const ICON = 18;
 const RIGHT_GAP = 12;
+// How long each exit plays before the other takes the corner (todoStrip.css).
+const CARD_EXIT_MS = 200;
+const MARK_EXIT_MS = 140;
 // The dock's header ends in collapse + hide; the island's in hide alone (its
 // header is the collapse target and is too narrow to spend a box on saying so).
 const ICON_COLUMN: Record<TodoStripVariant, number> = { dock: ICON * 2 + 2, island: ICON };
@@ -558,6 +561,21 @@ export function TodoStrip({
   // gesture when the branch pings it. Held exactly as long as the CSS takes to
   // reach full size, then released so the same curve carries it back.
   const [ping, setPing] = useState(false);
+  // The island and its folded mark trade places with a handoff, not a swap:
+  // whichever is on screen fades toward the corner first, then the other
+  // grows out of it. `leaving` names the one on its way out while its exit
+  // plays; the state that decides which is mounted flips when it has gone.
+  const [leaving, setLeaving] = useState<"card" | "mark" | null>(null);
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (leaveTimer.current) clearTimeout(leaveTimer.current); }, []);
+  function afterExit(fn: () => void, ms: number) {
+    if (leaveTimer.current) clearTimeout(leaveTimer.current);
+    const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    leaveTimer.current = setTimeout(() => {
+      leaveTimer.current = null;
+      fn();
+    }, reduced ? 0 : ms);
+  }
 
   useEffect(() => {
     // Drop the previous conversation's list right away so it never flashes
@@ -616,17 +634,30 @@ export function TodoStrip({
   // shape — so ticking items off never resurrects a plan you dismissed, while
   // a genuinely new plan does come back.
   function hidePlan() {
-    rememberPlanHidden(workspaceRoot, conversationId, shownSignature);
-    setDismissed(true);
+    if (variant !== "island") {
+      rememberPlanHidden(workspaceRoot, conversationId, shownSignature);
+      setDismissed(true);
+      return;
+    }
+    setLeaving("card");
+    afterExit(() => {
+      rememberPlanHidden(workspaceRoot, conversationId, shownSignature);
+      setDismissed(true);
+      setLeaving(null);
+    }, CARD_EXIT_MS);
   }
 
   // The island's way back. Hiding the plan gives the canvas back to the
   // conversation, but the plan keeps moving, so a small mark stays in the
   // corner — the icon and the count — and brings the card back on click.
   function showPlan() {
-    forgetPlanHidden(workspaceRoot, conversationId);
-    setDismissed(false);
-    setOpen(true);
+    setLeaving("mark");
+    afterExit(() => {
+      forgetPlanHidden(workspaceRoot, conversationId);
+      setDismissed(false);
+      setOpen(true);
+      setLeaving(null);
+    }, MARK_EXIT_MS);
   }
 
   // When the plan finishes, collapse to the slim pill so the agent's final
@@ -660,9 +691,12 @@ export function TodoStrip({
   // holds the events that emptied it — otherwise clearing the plan leaves a
   // ghost card with a goal header and no rows, holding the composer up.
   const visible = !dismissed && total > 0;
+  // The column starts back the moment the card starts to go, so the two
+  // motions read as one gesture rather than a fade and then a slide.
+  const present = visible && leaving !== "card";
   useEffect(() => {
-    onPresenceChange?.(visible);
-  }, [visible, onPresenceChange]);
+    onPresenceChange?.(present);
+  }, [present, onPresenceChange]);
 
   // Measured before paint, so the list opens at its true height and only
   // *changes* to it animate — adding or clearing a task glides. Then watched:
@@ -699,7 +733,7 @@ export function TodoStrip({
   if (!visible) {
     if (variant !== "island" || dismissed === false || total === 0) return null;
     return (
-      <div className="klide-todo-island" style={{ ...islandWrap, width: "auto" }}>
+      <div className="klide-todo-island-mark" data-leaving={leaving === "mark" ? "true" : undefined} style={{ ...islandWrap, width: "auto" }}>
         <button
           type="button"
           className="klide-todo-reopen"
@@ -715,7 +749,7 @@ export function TodoStrip({
   }
 
   return (
-    <div ref={dockRef} className={island ? "klide-todo-island" : undefined} data-ping={ping ? "true" : undefined} style={island ? islandWrap : dockWrap}>
+    <div ref={dockRef} className={island ? "klide-todo-island" : undefined} data-ping={ping ? "true" : undefined} data-leaving={island && leaving === "card" ? "true" : undefined} style={island ? islandWrap : dockWrap}>
       <section
         className="klide-todo-strip"
         aria-label="Agent todo progress"

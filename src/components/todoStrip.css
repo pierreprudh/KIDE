@@ -24,6 +24,40 @@
 .klide-todo-island[data-ping="true"] {
   scale: 1.028;
 }
+/* On its way out: the card draws back into the corner it came from and the
+   mark grows out of the same corner a beat later (see the mark's delay). Both
+   share one curve with the entrance and the column's slide. */
+.klide-todo-island[data-leaving="true"] {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.94);
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.klide-todo-island-mark {
+  transform-origin: right top;
+  animation: klide-todo-mark-in 260ms cubic-bezier(0.22, 1, 0.36, 1) 60ms backwards;
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.klide-todo-island-mark[data-leaving="true"] {
+  opacity: 0;
+  transform: scale(0.9);
+  pointer-events: none;
+}
+@keyframes klide-todo-mark-in {
+  from {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 /* The island folded to its mark: icon + count, same glass, one hairline. */
 .klide-todo-reopen {
   appearance: none;
@@ -143,7 +177,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .klide-todo-island {
+  .klide-todo-island,
+  .klide-todo-island-mark {
     animation: none;
     transition: none;
   }
