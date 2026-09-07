@@ -8,7 +8,7 @@
 // fixture tests at the bottom of this file pin each wire contract.
 
 use crate::providers::{
-    provider_key, response_error, text_from_message, AiChatResponse, AiUsage, StreamChunk,
+    response_error, text_from_message, AiChatResponse, AiUsage, StreamChunk,
     ANTHROPIC_VERSION, OLLAMA_URL,
 };
 use std::sync::OnceLock;
@@ -1216,13 +1216,13 @@ impl StreamingProvider for AnthropicAdapter {
 }
 
 pub(crate) async fn anthropic_chat(
+    key: String,
     model: String,
     messages: Vec<serde_json::Value>,
     tools: Option<Vec<serde_json::Value>>,
     reflection_level: Option<String>,
     on_chunk: &Channel<StreamChunk>,
 ) -> Result<AiChatResponse, String> {
-    let key = provider_key("anthropic")?.ok_or_else(|| "Missing API key".to_string())?;
     let thinking_budget = reflection_level_to_anthropic_budget(reflection_level.as_deref());
     let adapter = AnthropicAdapter {
         model,

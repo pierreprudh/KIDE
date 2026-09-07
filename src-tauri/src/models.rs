@@ -87,7 +87,7 @@ pub(crate) async fn ai_provider_models(provider: String) -> Result<Vec<String>, 
         }
         let cp = crate::custom_providers::get(&provider)
             .ok_or_else(|| format!("Provider \"{provider}\" is not wired yet"))?;
-        let key = providers::custom_token(&cp.id);
+        let key = providers::custom_token(&cp.id, None);
         return fetch_openai_compatible_models(&cp.id, &cp.models_url(), key).await;
     };
 

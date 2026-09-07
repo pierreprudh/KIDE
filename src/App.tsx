@@ -2460,8 +2460,14 @@ function App() {
   }
 
   // Let the backend know which folder is open, so `${VAR}` token references
-  // for self-hosted endpoints resolve from this project's `.env`.
+  // resolve from this project's `.env`. The first value is always `null` —
+  // the boot restore lands a tick later — and sending that would clear a
+  // root the backend already knows (a window reload leaves runs alive in
+  // Rust), so hold the clear until a root has actually been announced.
+  const announcedRootRef = useRef(false);
   useEffect(() => {
+    if (!workspaceRoot && !announcedRootRef.current) return;
+    if (workspaceRoot) announcedRootRef.current = true;
     void invoke("set_active_workspace", { root: workspaceRoot }).catch(() => {
       /* command unavailable (non-Tauri preview) — ignore */
     });

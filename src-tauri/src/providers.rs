@@ -439,6 +439,20 @@ fn env_var(name: &str) -> Option<String> {
 /// Ok(Some(key)) when one is found, Err when a hosted provider has
 /// no key anywhere.
 pub fn provider_key(id: &str) -> Result<Option<String>, String> {
+    provider_key_in(id, None)
+}
+
+/// `provider_key`, but resolving `${VAR}` references against `scope`'s
+/// `.env` before the folder the window has open. A Harness turn passes its
+/// own run's workspace root, so a run in flight keeps reading its keys even
+/// when the UI's active workspace is gone — closing the folder, switching
+/// projects, or a plain window reload (which starts at "no folder open"
+/// until the boot restore lands) would otherwise make a perfectly good
+/// `.env` unreadable mid-run.
+pub fn provider_key_in(
+    id: &str,
+    scope: Option<&std::path::Path>,
+) -> Result<Option<String>, String> {
     let entry = lookup(id).ok_or_else(|| format!("Provider \"{id}\" is not wired yet"))?;
     match entry.key {
         KeySource::Local => Ok(None),
@@ -448,10 +462,11 @@ pub fn provider_key(id: &str) -> Result<Option<String>, String> {
             // live in `.env` as `${OPENAI_API_KEY}` and never pop a keychain
             // prompt. Reading it must NOT touch the keychain.
             if let Some(reference) = builtin_token_reference(id) {
-                return match resolve_reference(&reference) {
+                return match resolve_reference(&reference, scope) {
                     Some(key) => Ok(Some(key)),
                     None => Err(format!(
-                        "Env reference {reference} for {id} did not resolve — check your .env"
+                        "Env reference {reference} for {id} did not resolve — checked {}",
+                        reference_search_summary(scope)
                     )),
                 };
             }
@@ -489,7 +504,7 @@ pub fn key_status(id: &str) -> Result<ProviderKeyStatus, String> {
             // `has_key` reflects whether the reference actually resolves, so
             // the UI can warn about a `${VAR}` with no matching `.env` entry.
             return Ok(ProviderKeyStatus {
-                has_key: resolve_reference(&reference).is_some(),
+                has_key: resolve_reference(&reference, None).is_some(),
                 source: "reference".to_string(),
             });
         }
@@ -514,7 +529,7 @@ pub fn key_status(id: &str) -> Result<ProviderKeyStatus, String> {
     // status read keychain-prompt-free when the user opted for `.env`.
     if let Some(reference) = builtin_token_reference(id) {
         return Ok(ProviderKeyStatus {
-            has_key: resolve_reference(&reference).is_some(),
+            has_key: resolve_reference(&reference, None).is_some(),
             source: "reference".to_string(),
         });
     }
@@ -672,23 +687,51 @@ fn dotenv_lookup_in(path: &std::path::Path, name: &str) -> Option<String> {
 /// project supplies its own tokens), then `~/.klide/.env` as a global
 /// fallback. The files are the user's own, gitignorable secret stores;
 /// Klide only reads them.
-fn dotenv_lookup(name: &str) -> Option<String> {
-    let from_project = ACTIVE_WORKSPACE
-        .lock()
-        .unwrap()
-        .clone()
-        .and_then(|root| dotenv_lookup_in(&root.join(".env"), name));
-    from_project.or_else(|| {
-        let global = crate::cli::home_dir_path()?.join(".klide").join(".env");
-        dotenv_lookup_in(&global, name)
-    })
+fn dotenv_lookup(name: &str, scope: Option<&std::path::Path>) -> Option<String> {
+    dotenv_roots(scope)
+        .into_iter()
+        .find_map(|root| dotenv_lookup_in(&root.join(".env"), name))
+}
+
+/// The directories whose `.env` a reference resolves from, most specific
+/// first: the caller's own scope (a run's workspace), then the folder open
+/// in the window, then `~/.klide` as the global store. Duplicates are
+/// dropped so the same file is never read twice.
+fn dotenv_roots(scope: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    let mut push = |root: Option<std::path::PathBuf>| {
+        if let Some(root) = root {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    };
+    push(scope.map(|p| p.to_path_buf()));
+    push(ACTIVE_WORKSPACE.lock().unwrap().clone());
+    push(crate::cli::home_dir_path().map(|home| home.join(".klide")));
+    roots
+}
+
+/// Human-readable list of everywhere a reference was looked for, so a
+/// "did not resolve" error names the files to go check instead of saying
+/// "check your .env" when no project was open to hold one.
+fn reference_search_summary(scope: Option<&std::path::Path>) -> String {
+    let files: Vec<String> = dotenv_roots(scope)
+        .iter()
+        .map(|root| root.join(".env").display().to_string())
+        .collect();
+    if files.is_empty() {
+        "the process env (no project open, no home directory)".to_string()
+    } else {
+        format!("the process env, {}", files.join(", "))
+    }
 }
 
 /// Resolve a `${VAR}` reference: process environment first, then a `.env`
 /// file (project, then global). No path touches the keychain, so no prompt.
-fn resolve_reference(reference: &str) -> Option<String> {
+fn resolve_reference(reference: &str, scope: Option<&std::path::Path>) -> Option<String> {
     let name = reference_var_name(reference)?;
-    env_var(name).or_else(|| dotenv_lookup(name))
+    env_var(name).or_else(|| dotenv_lookup(name, scope))
 }
 
 /// Resolve a custom (self-hosted) provider's token. Order:
@@ -699,9 +742,9 @@ fn resolve_reference(reference: &str) -> Option<String> {
 /// token is optional (a no-auth local endpoint has none), so this returns
 /// `Option`, not `Result`. `id` is a raw `custom:` id, not in the static
 /// registry.
-pub fn custom_token(id: &str) -> Option<String> {
+pub fn custom_token(id: &str, scope: Option<&std::path::Path>) -> Option<String> {
     if let Some(reference) = custom_token_reference(id) {
-        return resolve_reference(&reference);
+        return resolve_reference(&reference, scope);
     }
     env_var(&custom_env_var_name(id))
 }
@@ -1110,6 +1153,10 @@ pub(crate) async fn dispatch(
         num_predict,
         reflection_level,
     } = turn;
+    // Keys resolve against *this turn's* workspace, not whatever folder the
+    // window has open — a run must not lose its `.env` because the UI moved
+    // on (closed the folder, switched projects, reloaded).
+    let key_scope = workspace_root.as_deref().map(std::path::PathBuf::from);
     match plan_dispatch(&provider)? {
         DispatchPlan::CustomProvider { id, chat_url } => {
             // Custom providers always speak the OpenAI wire. The token is
@@ -1123,7 +1170,7 @@ pub(crate) async fn dispatch(
                 false,
                 false,
                 false,
-                custom_token(&id),
+                custom_token(&id, key_scope.as_deref()),
                 None,
                 model,
                 messages,
@@ -1160,14 +1207,23 @@ pub(crate) async fn dispatch(
             .await
         }
         DispatchPlan::Anthropic => {
-            crate::adapters::anthropic_chat(model, messages, tools, reflection_level, on_chunk)
-                .await
+            let key = provider_key_in("anthropic", key_scope.as_deref())?
+                .ok_or_else(|| "Missing API key".to_string())?;
+            crate::adapters::anthropic_chat(
+                key,
+                model,
+                messages,
+                tools,
+                reflection_level,
+                on_chunk,
+            )
+            .await
         }
         DispatchPlan::OpenAiWire { provider_id, cfg } => {
             // Hosted providers require a key (`provider_key` errors when
             // missing); local OpenAI-wire ones (MLX, LM Studio) return
             // Ok(None) and send no auth header.
-            let key = provider_key(provider_id)?;
+            let key = provider_key_in(provider_id, key_scope.as_deref())?;
             crate::adapters::openai_compatible_chat(
                 provider_id.to_string(),
                 cfg.chat_url.to_string(),
@@ -1552,11 +1608,44 @@ mod tests {
         let env_name = custom_env_var_name(id);
         std::env::remove_var(&env_name);
 
-        assert_eq!(custom_token(id), None);
+        assert_eq!(custom_token(id, None), None);
 
         std::env::set_var(&env_name, "env-wins");
-        assert_eq!(custom_token(id), Some("env-wins".to_string()));
+        assert_eq!(custom_token(id, None), Some("env-wins".to_string()));
 
         std::env::remove_var(&env_name);
+    }
+
+    #[test]
+    fn a_reference_resolves_from_its_scope_with_no_folder_open() {
+        // The regression: a key that lives only in the project's `.env` was
+        // resolved through the UI-owned active workspace, so a run in flight
+        // lost its key the moment the window had no folder open (a close, a
+        // project switch, or the boot transient after a reload) and failed
+        // with "did not resolve" while the `.env` sat there intact.
+        let dir = std::env::temp_dir().join(format!(
+            "klide-dotenv-scope-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join(".env"), "KLIDE_SCOPED_TEST_KEY=\"from-project\"\n")
+            .expect("write .env");
+
+        assert!(
+            ACTIVE_WORKSPACE.lock().unwrap().is_none(),
+            "a test process has no folder open"
+        );
+        assert_eq!(resolve_reference("${KLIDE_SCOPED_TEST_KEY}", None), None);
+        assert_eq!(
+            resolve_reference("${KLIDE_SCOPED_TEST_KEY}", Some(dir.as_path())),
+            Some("from-project".to_string()),
+        );
+        // The failure message names the files it read, not a bare "check
+        // your .env" the user can't act on.
+        assert!(reference_search_summary(Some(dir.as_path()))
+            .contains(&dir.join(".env").display().to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
