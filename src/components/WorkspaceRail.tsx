@@ -86,10 +86,15 @@ type Props = {
   /** The provider whose group opens by default when the user has expressed no
    *  preference — the one the host is actually dispatching to. */
   activeProvider: ProviderId;
-  /** The conversation the host is actually showing — one, always. It wears the
-   *  active route through the tree: the branch that leads to it, drawn in the
-   *  accent. That route is what says "you are here". */
-  selectedConversationId?: string | null;
+  /** The conversations the host is actually showing. They wear the active
+   *  route through the tree: the branch that leads to each, drawn in the
+   *  accent. That route is what says "you are here".
+   *
+   *  Usually one. A race watch is the case that makes it plural — a race is a
+   *  comparison, both columns are on the canvas at once, and a rail that lit
+   *  only the column the pointer last touched said the wrong thing about where
+   *  you were. */
+  selectedConversationIds?: readonly string[];
   /** Every conversation loaded somewhere right now. In Focus that is the
    *  selected one and nothing else; over the workbench's floating panels it is
    *  one per open AI panel, and the rail is the only surface that can say so.
@@ -434,6 +439,7 @@ function ConvoRow({
   onDelete,
   indent = false,
   selected = false,
+  selectedEnd = false,
   open = false,
   onSelectedPath = false,
   revealDelay,
@@ -445,6 +451,11 @@ function ConvoRow({
   onDelete?: () => void;
   indent?: boolean;
   selected?: boolean;
+  /** The last selected row in this group — where the active route peels into
+   *  the elbow and the neutral trunk takes over again. Distinct from
+   *  `selected` because two racers under one provider are both selected, and
+   *  the route has to run *past* the first of them to reach the second. */
+  selectedEnd?: boolean;
   /** Loaded in a panel, but not the one being shown. Strong text, no route —
    *  the step below `selected`, per the rule in tokens.css that the active
    *  route is what carries "you are here" while the row stays calm. */
@@ -475,6 +486,7 @@ function ConvoRow({
       className="klide-focus-convo-row"
       data-nested={indent || undefined}
       data-selected={selected || undefined}
+      data-selected-end={selectedEnd || undefined}
       data-open={(open && !selected) || undefined}
       data-selected-path={onSelectedPath || undefined}
       /* How the slide finds this row again after the list re-sorts. */
@@ -728,7 +740,7 @@ function useRowSlide(
 function ProviderHistoryGroup({
   group,
   expanded,
-  selectedConversationId,
+  selectedConversationIds,
   openConversationIds,
   revealIndex,
   conversationRevealBase,
@@ -738,7 +750,8 @@ function ProviderHistoryGroup({
 }: {
   group: ProviderHistory;
   expanded: boolean;
-  selectedConversationId?: string;
+  /** Showing right now — each wears the active route. */
+  selectedConversationIds: ReadonlySet<string>;
   /** Loaded in some panel — marked a step below the selected one. */
   openConversationIds: ReadonlySet<string>;
   /** Position in the provider cascade — 0 is the first to appear. */
@@ -772,10 +785,9 @@ function ProviderHistoryGroup({
   const readOnly = group.conversations.every(
     (conversation) => !conversationIsRestorable(conversation),
   );
-  const selectedConversationIndex = selectedConversationId === undefined
-    ? -1
-    : group.conversations.findIndex((conversation) => conversation.id === selectedConversationId);
-  const containsSelectedConversation = selectedConversationIndex >= 0;
+  const containsSelectedConversation = group.conversations.some((conversation) =>
+    selectedConversationIds.has(conversation.id),
+  );
   const countLabel = `${group.conversations.length} ${group.conversations.length === 1 ? "conversation" : "conversations"}`;
   // Everything loaded in a panel is pinned into the collapsed window — the
   // selected one included, since the host always reports it as open too.
@@ -784,9 +796,15 @@ function ProviderHistoryGroup({
     showAllConversations,
     openConversationIds,
   );
-  const visibleSelectedConversationIndex = selectedConversationId === undefined
-    ? -1
-    : visibleConversations.findIndex((conversation) => conversation.id === selectedConversationId);
+  // The active route runs from the group's junction down to the *last*
+  // selected row. Taking the last rather than the first is what lets two
+  // racers on one provider read as one continuous branch through both,
+  // instead of a route that stops at the upper of the two.
+  const lastSelectedConversationIndex = visibleConversations.reduce(
+    (last, conversation, index) =>
+      selectedConversationIds.has(conversation.id) ? index : last,
+    -1,
+  );
   const hasMoreConversations = group.conversations.length > CONVERSATION_ROW_LIMIT;
 
   /* `height: auto` cannot transition cleanly. Capture the old intrinsic height
@@ -911,9 +929,10 @@ function ProviderHistoryGroup({
                   convo={conversation}
                   indent
                   revealDelay={revealDelay(disclosureIndex, CONVO_REVEAL_STEP_MS, disclosureBase)}
-                  selected={selectedConversationId === conversation.id}
+                  selected={selectedConversationIds.has(conversation.id)}
+                  selectedEnd={lastSelectedConversationIndex === index}
                   open={openConversationIds.has(conversation.id)}
-                  onSelectedPath={visibleSelectedConversationIndex >= index}
+                  onSelectedPath={lastSelectedConversationIndex >= index}
                   onOpen={() => onOpen(conversation)}
                   onDelete={() => onDelete(conversation)}
                 />
@@ -944,7 +963,7 @@ export function WorkspaceRail({
   projects,
   nav,
   activeProvider,
-  selectedConversationId = null,
+  selectedConversationIds,
   openConversationIds,
   onSwitchProject,
   onOpenConversation,
@@ -957,11 +976,16 @@ export function WorkspaceRail({
   reloadKey,
 }: Props) {
   const activeProjectRoot = canonicalWorkspaceRoot(workspaceRoot);
-  // One Set for the render: every row in the tree asks it, and a host that only
-  // ever has one conversation loaded (Focus) can leave the prop off.
+  // One Set each for the render. A host that only ever has one conversation
+  // loaded can leave `openConversationIds` off: what is showing is what is
+  // open.
+  const selectedIds = useMemo(
+    () => new Set(selectedConversationIds ?? []),
+    [selectedConversationIds],
+  );
   const openIds = useMemo(
-    () => new Set(openConversationIds ?? (selectedConversationId ? [selectedConversationId] : [])),
-    [openConversationIds, selectedConversationId],
+    () => new Set(openConversationIds ?? selectedIds),
+    [openConversationIds, selectedIds],
   );
   const railProjects = useMemo(
     () => railProjectRoots(projects, activeProjectRoot),
@@ -1433,7 +1457,7 @@ export function WorkspaceRail({
                       <ConvoRow
                         key={c.id}
                         convo={c}
-                        selected={selectedConversationId === c.id}
+                        selected={selectedIds.has(c.id)}
                         open={openIds.has(c.id)}
                         onOpen={() => openHistoryConversation(c)}
                         onDelete={() => deleteHistoryConversation(c)}
@@ -1480,7 +1504,7 @@ export function WorkspaceRail({
                           <div
                             className="klide-focus-provider-groups"
                             data-contains-selected={
-                              history.some((c) => c.id === selectedConversationId) || undefined
+                              history.some((c) => selectedIds.has(c.id)) || undefined
                             }
                           >
                             {providerHistories.map((providerHistory, providerIndex) => {
@@ -1496,7 +1520,7 @@ export function WorkspaceRail({
                                   key={providerHistory.provider}
                                   group={providerHistory}
                                   expanded={providerExpanded}
-                                  selectedConversationId={selectedConversationId ?? undefined}
+                                  selectedConversationIds={selectedIds}
                                   openConversationIds={openIds}
                                   revealIndex={providerIndex}
                                   conversationRevealBase={
