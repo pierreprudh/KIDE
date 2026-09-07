@@ -26,8 +26,8 @@ const DISMISSED_TODOS_KEY = "klide.todoStrip.dismissedCompleted";
 // ~5 rows before the list scrolls; keeps the card off the conversation. A
 // row with its drawer open gets more, so the history is readable without
 // scrolling inside a scroller.
-const MAX_LIST_HEIGHT: Record<TodoStripVariant, number> = { dock: 118, island: 190 };
-const MAX_LIST_HEIGHT_OPEN: Record<TodoStripVariant, number> = { dock: 214, island: 300 };
+const MAX_LIST_HEIGHT: Record<TodoStripVariant, number> = { dock: 118, island: 360 };
+const MAX_LIST_HEIGHT_OPEN: Record<TodoStripVariant, number> = { dock: 214, island: 480 };
 
 function readDismissedTodoStrips(): Record<string, string> {
   try {
@@ -216,6 +216,10 @@ const ICON_COLUMN: Record<TodoStripVariant, number> = { dock: ICON * 2 + 2, isla
  *  the Git island's spot and its shape, and rises in the way it does. */
 export type TodoStripVariant = "dock" | "island";
 
+/** The island's width. Focus centres the conversation in the space to its
+ *  left while the island is up (AiPanel), so the two never overlap. */
+export const ISLAND_WIDTH = 320;
+
 function StepMark({ index, state }: { index: number; state: "todo" | "active" | "done" }) {
   const r = (MARK - 1.5) / 2;
   const c = 2 * Math.PI * r;
@@ -345,6 +349,7 @@ function TodoRow({
   planStart,
   startedAfter,
   iconColumn,
+  roomy,
 }: {
   item: TodoItem;
   index: number;
@@ -357,6 +362,8 @@ function TodoRow({
   planStart: number;
   startedAfter: number;
   iconColumn: number;
+  /** The island's looser rhythm: taller rows, body-size text. */
+  roomy: boolean;
 }) {
   const history = historyOf(item, events, startedAfter);
   const tries = attemptLabel(history.reopened);
@@ -370,13 +377,13 @@ function TodoRow({
     >
       {/* thread in: filled once the task above is done */}
       {index > 0 && (
-        <span aria-hidden className="klide-todo-link" data-filled={threadInFilled ? "1" : "0"} style={{ top: 0, height: 12, left: MARK / 2 - 0.5 }}>
+        <span aria-hidden className="klide-todo-link" data-filled={threadInFilled ? "1" : "0"} style={{ top: 0, height: roomy ? 15 : 12, left: MARK / 2 - 0.5 }}>
           <i />
         </span>
       )}
       {/* thread out: filled once this task is done; runs on through the open drawer */}
       {(!isLast || open) && (
-        <span aria-hidden className="klide-todo-link" data-filled={item.done ? "1" : "0"} style={{ top: 12, bottom: isLast ? 6 : 0, left: MARK / 2 - 0.5 }}>
+        <span aria-hidden className="klide-todo-link" data-filled={item.done ? "1" : "0"} style={{ top: roomy ? 15 : 12, bottom: isLast ? 6 : 0, left: MARK / 2 - 0.5 }}>
           <i />
         </span>
       )}
@@ -389,20 +396,25 @@ function TodoRow({
         style={{
           display: "grid",
           gridTemplateColumns: `${MARK}px minmax(0, 1fr) auto ${iconColumn}px`,
-          alignItems: "center",
+          // The island's text wraps, so its cells pin to the first line: the
+          // mark sits on that line and the thread meets it there.
+          alignItems: roomy ? "start" : "center",
           columnGap: RIGHT_GAP,
-          minHeight: 24,
+          minHeight: roomy ? 30 : 24,
           padding: 0,
         }}
       >
-        <StepMark index={index} state={state} />
+        <span style={{ display: "grid", marginTop: roomy ? 8 : 0 }}>
+          <StepMark index={index} state={state} />
+        </span>
         <span
           style={{
             minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontSize: 12.5,
+            overflow: roomy ? "visible" : "hidden",
+            textOverflow: roomy ? undefined : "ellipsis",
+            whiteSpace: roomy ? "normal" : "nowrap",
+            padding: roomy ? "6px 0" : 0,
+            fontSize: roomy ? 13 : 12.5,
             lineHeight: "18px",
             fontWeight: active ? 500 : 400,
             color: item.done ? "var(--fg-dim)" : active ? "var(--fg-strong)" : "var(--fg-subtle)",
@@ -424,13 +436,15 @@ function TodoRow({
             whiteSpace: "nowrap",
             display: "inline-flex",
             gap: 8,
+            marginTop: roomy ? 6 : 0,
+            lineHeight: "18px",
           }}
         >
           {tries && <span>{tries}</span>}
           {active && <LiveSince since={history.attemptStartedAt} />}
           {item.done && history.doneIn !== undefined && history.doneIn >= 1000 && <span>{formatSpan(history.doneIn)}</span>}
         </span>
-        <span className="klide-todo-chev" aria-hidden style={{ width: ICON, height: ICON, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
+        <span className="klide-todo-chev" aria-hidden style={{ width: ICON, height: ICON, marginTop: roomy ? 6 : 0, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M6 9l6 6 6-6" />
           </svg>
@@ -477,7 +491,7 @@ const islandWrap: CSSProperties = {
   top: 16,
   right: 18,
   zIndex: 6,
-  width: "min(300px, calc(100% - 36px))",
+  width: `min(${ISLAND_WIDTH}px, calc(100% - 36px))`,
   pointerEvents: "none",
 };
 
@@ -507,6 +521,7 @@ export function TodoStrip({
   running = true,
   variant = "dock",
   onDockHeightChange,
+  onPresenceChange,
 }: {
   workspaceRoot: string | null;
   conversationId: string;
@@ -517,6 +532,9 @@ export function TodoStrip({
    *  no run the first open step is just the next step: no arc, no count. */
   running?: boolean;
   onDockHeightChange?: (height: number) => void;
+  /** Whether the strip is on screen at all — Focus makes room beside the
+   *  island while it is, and gives the width back when it goes. */
+  onPresenceChange?: (visible: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -626,12 +644,21 @@ export function TodoStrip({
   // holds the events that emptied it — otherwise clearing the plan leaves a
   // ghost card with a goal header and no rows, holding the composer up.
   const visible = !dismissed && total > 0;
+  useEffect(() => {
+    onPresenceChange?.(visible);
+  }, [visible, onPresenceChange]);
 
   // Measured before paint, so the list opens at its true height and only
-  // *changes* to it animate — adding or clearing a task glides.
+  // *changes* to it animate — adding or clearing a task glides. Then watched:
+  // a drawer grows over 260ms after the click, and a height read once at the
+  // click would clip its last lines under the list's edge.
   useLayoutEffect(() => {
     const el = listInnerRef.current;
-    if (el) setContentHeight(el.scrollHeight);
+    if (!el) return;
+    setContentHeight(el.scrollHeight);
+    const observer = new ResizeObserver(() => setContentHeight(el.scrollHeight));
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [items, open, openRow]);
   const listHeight = Math.min(contentHeight, openRow ? MAX_LIST_HEIGHT_OPEN[variant] : MAX_LIST_HEIGHT[variant]);
   const iconColumn = ICON_COLUMN[variant];
@@ -665,7 +692,7 @@ export function TodoStrip({
           pointerEvents: "auto",
           position: "relative",
           width: island ? "100%" : "min(620px, calc(100% - 48px))",
-          padding: island ? "8px 14px 0" : "10px 16px 0",
+          padding: island ? "12px 16px 0" : "10px 16px 0",
           display: "grid",
           gridTemplateRows: "auto auto minmax(0, 1fr)",
           overflow: "hidden",
@@ -692,14 +719,14 @@ export function TodoStrip({
             gridTemplateColumns: `minmax(0, 1fr) auto ${iconColumn}px`,
             alignItems: "center",
             columnGap: RIGHT_GAP,
-            paddingBottom: island ? 8 : 9,
+            paddingBottom: island ? 11 : 9,
             cursor: "pointer",
           }}
         >
           {island ? (
             // The conversation is right there, so the goal would say it twice;
             // the island names itself the way the Git island does.
-            <span style={{ color: "var(--fg-strong)", fontSize: 12.5, minHeight: 18, display: "flex", alignItems: "center" }}>Plan</span>
+            <span style={{ color: "var(--fg-subtle)", fontSize: 13, minHeight: 18, display: "flex", alignItems: "center" }}>Plan</span>
           ) : (
             <GoalLine goal={goal} size={12.5} />
           )}
@@ -731,7 +758,7 @@ export function TodoStrip({
 
         {/* Collapsed, the separator carries the progress; opening hands it over
             to the thread running through the tasks, so there is only ever one. */}
-        <ProgressRule percent={open ? 0 : percent} inset={island ? 14 : 16} />
+        <ProgressRule percent={open ? 0 : percent} inset={16} />
 
         {/* scrollable list: tasks threaded on one hairline, state carried by type */}
         <div
@@ -747,7 +774,7 @@ export function TodoStrip({
         >
           {/* 3px of ring room on the left is paid for by the scroller's margin, so
               the marks still start where the header text does */}
-          <div ref={listInnerRef} style={{ padding: "8px 0 10px 3px" }}>
+          <div ref={listInnerRef} style={{ padding: island ? "10px 0 12px 3px" : "8px 0 10px 3px" }}>
             {visibleItems.map((item, idx) => (
               <TodoRow
                 key={item.id}
@@ -762,6 +789,7 @@ export function TodoStrip({
                 planStart={planStart}
                 startedAfter={floors[idx] ?? 0}
                 iconColumn={iconColumn}
+                roomy={island}
               />
             ))}
           </div>

@@ -42,7 +42,7 @@ import { serviceAdvisorConsult } from "../agent/advisorConsult";
 import { toolsForMode } from "../agent/tools";
 import { readWorkspaceTextFile, workspacePathExists } from "../workspaceFs";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
-import { TodoStrip } from "./TodoStrip";
+import { ISLAND_WIDTH, TodoStrip } from "./TodoStrip";
 import {
   CLI_DEFAULT_MODEL,
   defaultModelForProvider,
@@ -1994,6 +1994,10 @@ This user request requires workspace inspection. Before answering, you MUST call
   const stickToBottomRef = useRef(true);
   const [stickToBottom, setStickToBottom] = useState(true);
   const [todoDockHeight, setTodoDockHeight] = useState(0);
+  // In Focus the plan is an island at the canvas' top-right; while it is up
+  // the conversation column is centred in the space to its left instead of
+  // under it (see `focusGutterLeft` / `focusGutterRight`).
+  const [planIslandUp, setPlanIslandUp] = useState(false);
 
   function forceStickToBottom() {
     stickToBottomRef.current = true;
@@ -2336,7 +2340,12 @@ This user request requires workspace inspection. Before answering, you MUST call
   // The Focus variant's reading column: instead of restructuring the
   // transcript/composer DOM, the horizontal padding grows to center a
   // ~760px column — one computed gutter, no wrapper churn.
-  const focusGutter = "calc(max(20px, (100% - 760px) / 2))";
+  // The 760px column sits centred in the canvas — or, with the plan island up,
+  // centred in what is left of the canvas beside it, the island's width plus
+  // its two 18px margins moved to the right gutter.
+  const focusInset = variant === "focus" && planIslandUp ? ISLAND_WIDTH + 36 : 0;
+  const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
+  const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
 
   // Messages other agents have queued for this thread that its Run has not
   // taken in yet — read from the journal, refreshed on its change event, so
@@ -3950,7 +3959,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         <div
           ref={scrollRef}
           onScroll={updateStickFromScroll}
-          style={{ flex: 1, overflowX: "hidden", overflowY: delegateSession ? "hidden" : "auto", padding: delegateSession ? 0 : variant === "focus" ? `14px ${focusGutter} ${16 + todoDockHeight}px` : `10px 12px ${12 + todoDockHeight}px`, fontSize: variant === "focus" ? 13.5 : 13, display: delegateSession ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !delegateSession && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
+          style={{ flex: 1, overflowX: "hidden", overflowY: delegateSession ? "hidden" : "auto", padding: delegateSession ? 0 : variant === "focus" ? `14px ${focusGutterRight} ${16 + todoDockHeight}px ${focusGutterLeft}` : `10px 12px ${12 + todoDockHeight}px`, transition: "padding var(--motion-slow) var(--ease-soft)", fontSize: variant === "focus" ? 13.5 : 13, display: delegateSession ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !delegateSession && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
         >
         {delegateSession ? (
           <DelegateTerminalSurface
@@ -4503,11 +4512,12 @@ This user request requires workspace inspection. Before answering, you MUST call
           running={streaming}
           variant={variant === "focus" ? "island" : "dock"}
           onDockHeightChange={setTodoDockHeight}
+          onPresenceChange={setPlanIslandUp}
         />
       </div>
 
       {!delegateSession && (
-      <div style={{ padding: variant === "focus" ? `0 ${focusGutter} 16px` : "0 10px 10px" }}>
+      <div style={{ padding: variant === "focus" ? `0 ${focusGutterRight} 16px ${focusGutterLeft}` : "0 10px 10px", transition: "padding var(--motion-slow) var(--ease-soft)" }}>
         {/* Another agent's words wait here for the user before this
             conversation may read them — the same card as a shell command,
             answered into the journal. While the run itself is paused on one
