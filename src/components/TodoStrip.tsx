@@ -26,8 +26,8 @@ const DISMISSED_TODOS_KEY = "klide.todoStrip.dismissedCompleted";
 // ~5 rows before the list scrolls; keeps the card off the conversation. A
 // row with its drawer open gets more, so the history is readable without
 // scrolling inside a scroller.
-const MAX_LIST_HEIGHT = 118;
-const MAX_LIST_HEIGHT_OPEN = 214;
+const MAX_LIST_HEIGHT: Record<TodoStripVariant, number> = { dock: 118, island: 190 };
+const MAX_LIST_HEIGHT_OPEN: Record<TodoStripVariant, number> = { dock: 214, island: 300 };
 
 function readDismissedTodoStrips(): Record<string, string> {
   try {
@@ -206,8 +206,15 @@ const MARK = 14;
 // width so their chevron sits under the header's, and the figures on every row
 // stop at the same x as the header count — one right edge for the whole strip.
 const ICON = 18;
-const ICON_COLUMN = ICON * 2 + 2;
 const RIGHT_GAP = 12;
+// The dock's header ends in collapse + hide; the island's in hide alone (its
+// header is the collapse target and is too narrow to spend a box on saying so).
+const ICON_COLUMN: Record<TodoStripVariant, number> = { dock: ICON * 2 + 2, island: ICON };
+
+/** Where the strip lives. `dock` floats over the foot of the conversation and
+ *  leans on the composer; `island` sits at the top-right of the Focus canvas,
+ *  the Git island's spot and its shape, and rises in the way it does. */
+export type TodoStripVariant = "dock" | "island";
 
 function StepMark({ index, state }: { index: number; state: "todo" | "active" | "done" }) {
   const r = (MARK - 1.5) / 2;
@@ -337,6 +344,7 @@ function TodoRow({
   events,
   planStart,
   startedAfter,
+  iconColumn,
 }: {
   item: TodoItem;
   index: number;
@@ -348,6 +356,7 @@ function TodoRow({
   events: TodoEvent[];
   planStart: number;
   startedAfter: number;
+  iconColumn: number;
 }) {
   const history = historyOf(item, events, startedAfter);
   const tries = attemptLabel(history.reopened);
@@ -379,7 +388,7 @@ function TodoRow({
         onClick={onToggle}
         style={{
           display: "grid",
-          gridTemplateColumns: `${MARK}px minmax(0, 1fr) auto ${ICON_COLUMN}px`,
+          gridTemplateColumns: `${MARK}px minmax(0, 1fr) auto ${iconColumn}px`,
           alignItems: "center",
           columnGap: RIGHT_GAP,
           minHeight: 24,
@@ -430,7 +439,7 @@ function TodoRow({
 
       <div className="klide-todo-drawer" data-open={open ? "1" : "0"} aria-hidden={!open}>
         <div>
-          <div style={{ padding: `2px ${ICON_COLUMN + RIGHT_GAP}px 6px ${MARK + RIGHT_GAP}px`, display: "flex", flexDirection: "column", gap: 1 }}>
+          <div style={{ padding: `2px ${iconColumn + RIGHT_GAP}px 6px ${MARK + RIGHT_GAP}px`, display: "flex", flexDirection: "column", gap: 1 }}>
             {history.moments.map((moment, i) => (
               <MomentLine key={`${moment.kind}-${moment.at}-${i}`} moment={moment} index={i} planStart={planStart} />
             ))}
@@ -459,6 +468,27 @@ const glassCard: CSSProperties = {
 // overlap the composer (no negative bottom): the chatbox is wider than this
 // narrow bar, so any overlap makes the composer's rounded top corners peek out
 // on either side of the bar.
+// The Focus canvas' top-right corner, where the Git island lives when no
+// conversation is open. Same glass, same border, same radius, so the two read
+// as one family of windows on the canvas; the wrapper carries the entrance and
+// the swell (todoStrip.css) and the card inside stays still.
+const islandWrap: CSSProperties = {
+  position: "absolute",
+  top: 16,
+  right: 18,
+  zIndex: 6,
+  width: "min(300px, calc(100% - 36px))",
+  pointerEvents: "none",
+};
+
+const islandCard: CSSProperties = {
+  background: "var(--composer-glass)",
+  border: "1px solid var(--composer-border)",
+  borderRadius: 15,
+  backdropFilter: "var(--composer-blur)",
+  WebkitBackdropFilter: "var(--composer-blur)",
+};
+
 const dockWrap: CSSProperties = {
   position: "absolute",
   left: 0,
@@ -475,11 +505,13 @@ export function TodoStrip({
   conversationId,
   goal: goalProp,
   running = true,
+  variant = "dock",
   onDockHeightChange,
 }: {
   workspaceRoot: string | null;
   conversationId: string;
   goal?: string;
+  variant?: TodoStripVariant;
   /** Whether a Harness Run is alive on this conversation. The plan on disk
    *  outlives the run — closing the app ends the run, not the file — so with
    *  no run the first open step is just the next step: no arc, no count. */
@@ -497,6 +529,10 @@ export function TodoStrip({
   // One drawer at a time: the strip sits over the conversation, and two open
   // histories would push the answer further out of view than they are worth.
   const [openRow, setOpenRow] = useState<string | null>(null);
+  // The island swells for a beat when a step is ticked — the Git island's
+  // gesture when the branch pings it. Held exactly as long as the CSS takes to
+  // reach full size, then released so the same curve carries it back.
+  const [ping, setPing] = useState(false);
 
   useEffect(() => {
     // Drop the previous conversation's list right away so it never flashes
@@ -567,6 +603,17 @@ export function TodoStrip({
     else setDismissed(false);
   }, [allDone]);
 
+  const prevDoneRef = useRef(done);
+  useEffect(() => {
+    if (done === prevDoneRef.current) return;
+    const ticked = done > prevDoneRef.current;
+    prevDoneRef.current = done;
+    if (!ticked || variant !== "island") return;
+    setPing(true);
+    const timer = setTimeout(() => setPing(false), 380);
+    return () => clearTimeout(timer);
+  }, [done, variant]);
+
   useEffect(() => {
     // Restore a prior hide — the signature comparison handles staleness
     // (a different plan → show again).
@@ -586,12 +633,14 @@ export function TodoStrip({
     const el = listInnerRef.current;
     if (el) setContentHeight(el.scrollHeight);
   }, [items, open, openRow]);
-  const listHeight = Math.min(contentHeight, openRow ? MAX_LIST_HEIGHT_OPEN : MAX_LIST_HEIGHT);
+  const listHeight = Math.min(contentHeight, openRow ? MAX_LIST_HEIGHT_OPEN[variant] : MAX_LIST_HEIGHT[variant]);
+  const iconColumn = ICON_COLUMN[variant];
+  const island = variant === "island";
 
   // The card sizes to its rows now, so the composer offset has to be measured
   // rather than assumed from a fixed height.
   useEffect(() => {
-    if (!visible) {
+    if (!visible || variant === "island") {
       onDockHeightChange?.(0);
       return;
     }
@@ -602,26 +651,26 @@ export function TodoStrip({
     const observer = new ResizeObserver(report);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [visible, open, total, onDockHeightChange]);
+  }, [visible, open, total, onDockHeightChange, variant]);
 
   if (!visible) return null;
 
   return (
-    <div ref={dockRef} style={dockWrap}>
+    <div ref={dockRef} className={island ? "klide-todo-island" : undefined} data-ping={ping ? "true" : undefined} style={island ? islandWrap : dockWrap}>
       <section
         className="klide-todo-strip"
         aria-label="Agent todo progress"
         style={{
-          ...glassCard,
+          ...(island ? islandCard : glassCard),
           pointerEvents: "auto",
           position: "relative",
-          width: "min(620px, calc(100% - 48px))",
-          padding: "10px 16px 0",
+          width: island ? "100%" : "min(620px, calc(100% - 48px))",
+          padding: island ? "8px 14px 0" : "10px 16px 0",
           display: "grid",
           gridTemplateRows: "auto auto minmax(0, 1fr)",
           overflow: "hidden",
-          borderRadius: "14px 14px 0 0",
-          animation: "klide-todo-open-in var(--motion-slow) var(--ease-soft)",
+          borderRadius: island ? 15 : "14px 14px 0 0",
+          animation: island ? undefined : "klide-todo-open-in var(--motion-slow) var(--ease-soft)",
         }}
       >
         {/* header: GOAL · title · count · collapse · hide. Doubles as the
@@ -640,19 +689,27 @@ export function TodoStrip({
           }}
           style={{
             display: "grid",
-            gridTemplateColumns: `minmax(0, 1fr) auto ${ICON_COLUMN}px`,
+            gridTemplateColumns: `minmax(0, 1fr) auto ${iconColumn}px`,
             alignItems: "center",
             columnGap: RIGHT_GAP,
-            paddingBottom: 9,
+            paddingBottom: island ? 8 : 9,
             cursor: "pointer",
           }}
         >
-          <GoalLine goal={goal} size={12.5} />
+          {island ? (
+            // The conversation is right there, so the goal would say it twice;
+            // the island names itself the way the Git island does.
+            <span style={{ color: "var(--fg-strong)", fontSize: 12.5, minHeight: 18, display: "flex", alignItems: "center" }}>Plan</span>
+          ) : (
+            <GoalLine goal={goal} size={12.5} />
+          )}
           <CountLabel done={done} total={total} />
           <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
-            <span style={{ width: ICON, height: ICON, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
-              <ChevronIcon open={open} />
-            </span>
+            {!island && (
+              <span style={{ width: ICON, height: ICON, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
+                <ChevronIcon open={open} />
+              </span>
+            )}
             <button
               onClick={(e) => { e.stopPropagation(); hidePlan(); }}
               aria-label="Hide this plan"
@@ -674,7 +731,7 @@ export function TodoStrip({
 
         {/* Collapsed, the separator carries the progress; opening hands it over
             to the thread running through the tasks, so there is only ever one. */}
-        <ProgressRule percent={open ? 0 : percent} inset={16} />
+        <ProgressRule percent={open ? 0 : percent} inset={island ? 14 : 16} />
 
         {/* scrollable list: tasks threaded on one hairline, state carried by type */}
         <div
@@ -704,6 +761,7 @@ export function TodoStrip({
                 events={events}
                 planStart={planStart}
                 startedAfter={floors[idx] ?? 0}
+                iconColumn={iconColumn}
               />
             ))}
           </div>

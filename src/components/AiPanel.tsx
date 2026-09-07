@@ -4501,6 +4501,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           conversationId={currentId}
           goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
           running={streaming}
+          variant={variant === "focus" ? "island" : "dock"}
           onDockHeightChange={setTodoDockHeight}
         />
       </div>
