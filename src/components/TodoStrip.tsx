@@ -122,32 +122,25 @@ function safeScope(scope: string): string {
   return scope.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
-// Progress is the rule itself: the hairline that separates the header from the
-// list fills with accent as items complete. One line doing two jobs — structure
-// and progress — instead of a stubby inline bar plus a percentage read-out.
-function ProgressRule({ percent, inset }: { percent: number; inset: number }) {
+// The hairline between the header and the list. It used to fill with accent
+// as steps closed, but the header now carries the state itself (the mark, the
+// count, "Completed"), and collapsed it sat at the card's very bottom, where a
+// second line under a bordered card read as a green bar. So it is only a
+// separator now, and only while there is a list to separate.
+function HeaderRule({ shown, inset }: { shown: boolean; inset: number }) {
   return (
     <span
       aria-hidden
       style={{
-        position: "relative",
         display: "block",
         height: 1,
         marginLeft: -inset,
         marginRight: -inset,
         background: "var(--border)",
+        opacity: shown ? 1 : 0,
+        transition: "opacity var(--motion-med) var(--ease-soft)",
       }}
-    >
-      <span
-        style={{
-          position: "absolute",
-          inset: "0 auto 0 0",
-          width: `${percent}%`,
-          background: "var(--accent)",
-          transition: "width var(--motion-slow) var(--ease-out)",
-        }}
-      />
-    </span>
+    />
   );
 }
 
@@ -623,7 +616,6 @@ export function TodoStrip({
 
   const total = items.length;
   const done = items.filter((item) => item.done).length;
-  const percent = total === 0 ? 0 : Math.round((done / total) * 100);
   const recentEvents = [...events].sort((a, b) => b.seq - a.seq).slice(0, 5);
   const visibleItems = items;
   const firstOpen = visibleItems.findIndex((candidate) => !candidate.done);
@@ -848,9 +840,7 @@ export function TodoStrip({
           </span>
         </div>
 
-        {/* Collapsed, the separator carries the progress; opening hands it over
-            to the thread running through the tasks, so there is only ever one. */}
-        <ProgressRule percent={open ? 0 : percent} inset={16} />
+        <HeaderRule shown={open} inset={16} />
 
         {/* scrollable list: tasks threaded on one hairline, state carried by type */}
         <div
