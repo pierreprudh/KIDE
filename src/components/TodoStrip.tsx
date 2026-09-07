@@ -215,8 +215,13 @@ const MARK = 14;
 const ICON = 18;
 const RIGHT_GAP = 12;
 // How long each exit plays before the other takes the corner (todoStrip.css).
-const CARD_EXIT_MS = 200;
+const CARD_EXIT_MS = 220;
 const MARK_EXIT_MS = 140;
+// Opening is sequenced: the column slides over first, the card rises into the
+// space once it is mostly there, and the rows follow the card. These are the
+// island's head start over its own rows and the rows' over each other.
+const ISLAND_ENTER_DELAY_MS = 240;
+const ROW_STAGGER_MS = 26;
 // The dock's header ends in collapse + hide; the island's in hide alone (its
 // header is the collapse target and is too narrow to spend a box on saying so).
 const ICON_COLUMN: Record<TodoStripVariant, number> = { dock: ICON * 2 + 2, island: ICON };
@@ -360,6 +365,7 @@ function TodoRow({
   startedAfter,
   iconColumn,
   roomy,
+  enterDelay,
 }: {
   item: TodoItem;
   index: number;
@@ -374,6 +380,8 @@ function TodoRow({
   iconColumn: number;
   /** The island's looser rhythm: taller rows, body-size text. */
   roomy: boolean;
+  /** Head start before this row's own entrance — the island's, when it has one. */
+  enterDelay: number;
 }) {
   const history = historyOf(item, events, startedAfter);
   const tries = attemptLabel(history.reopened);
@@ -383,7 +391,7 @@ function TodoRow({
     <div
       className="klide-todo-row"
       data-open={open ? "1" : "0"}
-      style={{ position: "relative", animationDelay: `${Math.min(index, 7) * 26}ms` }}
+      style={{ position: "relative", animationDelay: `${enterDelay + Math.min(index, 7) * ROW_STAGGER_MS}ms` }}
     >
       {/* thread in: filled once the task above is done */}
       {index > 0 && (
@@ -691,12 +699,13 @@ export function TodoStrip({
   // holds the events that emptied it — otherwise clearing the plan leaves a
   // ghost card with a goal header and no rows, holding the composer up.
   const visible = !dismissed && total > 0;
-  // The column starts back the moment the card starts to go, so the two
-  // motions read as one gesture rather than a fade and then a slide.
-  const present = visible && leaving !== "card";
+  // Sequenced both ways. Opening: the column slides over first and the card
+  // rises into the space (its entrance waits ISLAND_ENTER_DELAY_MS). Closing:
+  // the card leaves first, and only then — when `dismissed` flips — does the
+  // column slide back while the mark takes the corner.
   useEffect(() => {
-    onPresenceChange?.(present);
-  }, [present, onPresenceChange]);
+    onPresenceChange?.(visible);
+  }, [visible, onPresenceChange]);
 
   // Measured before paint, so the list opens at its true height and only
   // *changes* to it animate — adding or clearing a task glides. Then watched:
@@ -856,6 +865,7 @@ export function TodoStrip({
                 startedAfter={floors[idx] ?? 0}
                 iconColumn={iconColumn}
                 roomy={island}
+                enterDelay={island ? ISLAND_ENTER_DELAY_MS + 60 : 0}
               />
             ))}
           </div>

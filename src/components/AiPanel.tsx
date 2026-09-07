@@ -3959,7 +3959,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         <div
           ref={scrollRef}
           onScroll={updateStickFromScroll}
-          style={{ flex: 1, overflowX: "hidden", overflowY: delegateSession ? "hidden" : "auto", padding: delegateSession ? 0 : variant === "focus" ? `14px ${focusGutterRight} ${16 + todoDockHeight}px ${focusGutterLeft}` : `10px 12px ${12 + todoDockHeight}px`, transition: "padding 320ms cubic-bezier(0.22, 1, 0.36, 1)", fontSize: variant === "focus" ? 13.5 : 13, display: delegateSession ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !delegateSession && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
+          style={{ flex: 1, overflowX: "hidden", overflowY: delegateSession ? "hidden" : "auto", padding: delegateSession ? 0 : variant === "focus" ? `14px ${focusGutterRight} ${16 + todoDockHeight}px ${focusGutterLeft}` : `10px 12px ${12 + todoDockHeight}px`, transition: "padding 420ms cubic-bezier(0.32, 0.72, 0, 1)", fontSize: variant === "focus" ? 13.5 : 13, display: delegateSession ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !delegateSession && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
         >
         {delegateSession ? (
           <DelegateTerminalSurface
@@ -4517,7 +4517,7 @@ This user request requires workspace inspection. Before answering, you MUST call
       </div>
 
       {!delegateSession && (
-      <div style={{ padding: variant === "focus" ? `0 ${focusGutterRight} 16px ${focusGutterLeft}` : "0 10px 10px", transition: "padding 320ms cubic-bezier(0.22, 1, 0.36, 1)" }}>
+      <div style={{ padding: variant === "focus" ? `0 ${focusGutterRight} 16px ${focusGutterLeft}` : "0 10px 10px", transition: "padding 420ms cubic-bezier(0.32, 0.72, 0, 1)" }}>
         {/* Another agent's words wait here for the user before this
             conversation may read them — the same card as a shell command,
             answered into the journal. While the run itself is paused on one

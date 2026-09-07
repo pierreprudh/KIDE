@@ -11,11 +11,20 @@
  *     the way the Git island does and swells for a beat when a step is ticked
  */
 
+/* One ease for the whole sequence — the column's slide, the card's rise, the
+   rows, the mark: a quick start that settles long, and never overshoots. */
+.klide-todo-island,
+.klide-todo-island-mark {
+  --klide-todo-ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 .klide-todo-island {
   transform-origin: right top;
   /* Resting size for the swell below. */
   scale: 1;
-  animation: klide-todo-island-in 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  /* The delay is the sequence: the column has slid most of the way before the
+     card begins to rise into the space (AiPanel moves the column over 420ms). */
+  animation: klide-todo-island-in 380ms var(--klide-todo-ease) 240ms backwards;
   /* One symmetric duration on a soft curve, so the swell in and the release
      out are the same gesture — breathing, not a bounce. `scale` rather than
      `transform`: the entrance owns transform while it plays. */
@@ -29,19 +38,19 @@
    share one curve with the entrance and the column's slide. */
 .klide-todo-island[data-leaving="true"] {
   opacity: 0;
-  transform: translateY(-4px) scale(0.94);
+  transform: translateY(-4px) scale(0.96);
   transition:
-    opacity 160ms var(--ease-out),
-    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 180ms var(--klide-todo-ease),
+    transform 220ms var(--klide-todo-ease);
   pointer-events: none;
 }
 
 .klide-todo-island-mark {
   transform-origin: right top;
-  animation: klide-todo-mark-in 260ms cubic-bezier(0.22, 1, 0.36, 1) 60ms backwards;
+  animation: klide-todo-mark-in 300ms var(--klide-todo-ease) 80ms backwards;
   transition:
-    opacity 120ms var(--ease-out),
-    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 120ms var(--klide-todo-ease),
+    transform 140ms var(--klide-todo-ease);
 }
 .klide-todo-island-mark[data-leaving="true"] {
   opacity: 0;
@@ -86,7 +95,7 @@
 @keyframes klide-todo-island-in {
   from {
     opacity: 0;
-    transform: translateY(-5px) scale(0.975);
+    transform: translateY(-6px) scale(0.97);
   }
   to {
     opacity: 1;
