@@ -76,7 +76,7 @@ import { enabledSkillsPrompt, type Skill } from "../skills";
 
 import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
 import { WorkingRow } from "./ai/WorkingRow";
-import { AttachIcon } from "../icons";
+import { AttachIcon, SidebarIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
@@ -2864,6 +2864,12 @@ This user request requires workspace inspection. Before answering, you MUST call
   // margins moved to the right gutter. A question island holds that column
   // open on its own, so the conversation makes room for it the same way it
   // does for the plan.
+  // The whole column, hidden. Two windows that each close one card still left
+  // the corner standing, and there was no way back to the plain canvas — so
+  // the column itself takes a switch. A parked question overrides it: that
+  // card holds the run, and hiding the run's own question would strand it.
+  const [sidePanelHidden, setSidePanelHidden] = useState(false);
+
   // A result the reader has put away. Held by run id, not a boolean, so the
   // next run's result comes back on its own — the same rule the plan follows
   // (a new plan reopens a hidden strip), without persisting a dismissal that
@@ -2918,7 +2924,9 @@ This user request requires workspace inspection. Before answering, you MUST call
   // Anything in the column holds it open — a result entry on its own counted
   // for nothing here, so the conversation kept the full canvas and the pill
   // floated over the prose in the corner.
-  const canvasIslandUp = planIslandUp || pendingQuestion !== null || latestCompletion !== undefined;
+  const sideHidden = sidePanelHidden && pendingQuestion === null;
+  const canvasIslandUp = !sideHidden
+    && (planIslandUp || pendingQuestion !== null || latestCompletion !== undefined);
 
   // A question is the one card in the column that holds the run, and it
   // arrives *under* a plan and an opened result that may already fill the
@@ -4646,6 +4654,40 @@ This user request requires workspace inspection. Before answering, you MUST call
             pointerEvents: "none",
           }}
         >
+          {/* The column's own switch. Hidden, it is the only thing left in the
+              corner — the way back to the plain canvas has to stay visible, or
+              the panel is gone for good. The mark is the app's pane control
+              (icons.tsx), mirrored: this pane is on the right. */}
+          <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => setSidePanelHidden((was) => !was)}
+              aria-pressed={sideHidden}
+              aria-label={sideHidden ? "Show the side panel" : "Hide the side panel"}
+              title={sideHidden ? "Show the side panel" : "Hide the side panel"}
+              style={{
+                pointerEvents: "auto",
+                width: 24,
+                height: 24,
+                display: "grid",
+                placeItems: "center",
+                padding: 0,
+                border: "none",
+                borderRadius: "var(--radius-sm)",
+                background: "transparent",
+                color: "var(--fg-dim)",
+                cursor: "pointer",
+                transition: "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; e.currentTarget.style.background = "transparent"; }}
+            >
+              <span style={{ display: "grid", placeItems: "center", transform: "scaleX(-1)" }}>
+                <SidebarIcon size={15} collapsed={sideHidden} />
+              </span>
+            </button>
+          </div>
+          {!sideHidden && (
           <TodoStrip
             workspaceRoot={workspaceRoot}
             conversationId={currentId}
@@ -4655,7 +4697,8 @@ This user request requires workspace inspection. Before answering, you MUST call
             onDockHeightChange={setTodoDockHeight}
             onPresenceChange={setPlanIslandUp}
           />
-          {latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+          )}
+          {!sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
             <CompletionCard
               variant="island"
               compact={compactIslands}
