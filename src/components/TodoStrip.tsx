@@ -535,6 +535,8 @@ export function TodoStrip({
   variant = "dock",
   onDockHeightChange,
   onPresenceChange,
+  folded = false,
+  onUnfold,
 }: {
   workspaceRoot: string | null;
   conversationId: string;
@@ -548,6 +550,12 @@ export function TodoStrip({
   /** Whether the strip is on screen at all — Focus makes room beside the
    *  island while it is, and gives the width back when it goes. */
   onPresenceChange?: (visible: boolean) => void;
+  /** The column around it is closed: the plan shows as its mark and nothing
+   *  else, so the corner in the main view is icons rather than windows.
+   *  Clicking the mark reopens the column (`onUnfold`), which is a different
+   *  act from un-hiding a plan the reader dismissed on its own. */
+  folded?: boolean;
+  onUnfold?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -732,6 +740,26 @@ export function TodoStrip({
     observer.observe(el);
     return () => observer.disconnect();
   }, [visible, open, total, onDockHeightChange, variant]);
+
+  // A plan the reader dismissed stays dismissed: the column closing is not a
+  // reason to bring it back as a mark.
+  if (folded && island && total > 0 && !dismissed) {
+    return (
+      <div className="klide-todo-island-mark" style={{ ...islandWrap, width: "auto", alignSelf: "flex-end" }}>
+        <button
+          type="button"
+          className="klide-todo-reopen"
+          onClick={onUnfold}
+          aria-label={`Open the side panel — plan, ${done} of ${total} steps done`}
+          title="Open the side panel"
+          style={{ ...islandCard, pointerEvents: "auto" }}
+        >
+          <PlanIcon size={15} />
+          <CountLabel done={done} total={total} />
+        </button>
+      </div>
+    );
+  }
 
   if (!visible) {
     if (variant !== "island" || dismissed === false || total === 0) return null;

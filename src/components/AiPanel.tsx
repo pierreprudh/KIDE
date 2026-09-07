@@ -76,7 +76,7 @@ import { enabledSkillsPrompt, type Skill } from "../skills";
 
 import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
 import { WorkingRow } from "./ai/WorkingRow";
-import { AttachIcon, SidebarIcon } from "../icons";
+import { AttachIcon, CloseIcon, ReviewIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
@@ -2925,8 +2925,12 @@ This user request requires workspace inspection. Before answering, you MUST call
   // for nothing here, so the conversation kept the full canvas and the pill
   // floated over the prose in the corner.
   const sideHidden = sidePanelHidden && pendingQuestion === null;
-  const canvasIslandUp = !sideHidden
-    && (planIslandUp || pendingQuestion !== null || latestCompletion !== undefined);
+  const resultUp = latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId;
+  const canvasIslandUp = !sideHidden && (planIslandUp || pendingQuestion !== null || resultUp);
+  // Closed, the corner still holds marks, and prose that runs under them is
+  // the overlap the column was built to avoid — so the conversation gives up
+  // the marks' width instead of the panel's.
+  const marksUp = sideHidden && (planIslandUp || resultUp);
 
   // A question is the one card in the column that holds the run, and it
   // arrives *under* a plan and an opened result that may already fill the
@@ -2941,7 +2945,10 @@ This user request requires workspace inspection. Before answering, you MUST call
     });
     return () => cancelAnimationFrame(frame);
   }, [pendingQuestion]);
-  const focusInset = variant === "focus" && canvasIslandUp ? islandColumnWidth + 36 : 0;
+  const focusInset = variant !== "focus" ? 0
+    : canvasIslandUp ? islandColumnWidth + 36
+      : marksUp ? 76
+        : 0;
   const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
   const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
   // Permission gate: the harness pauses and emits a request — a shell command,
@@ -4654,49 +4661,85 @@ This user request requires workspace inspection. Before answering, you MUST call
             pointerEvents: "none",
           }}
         >
-          {/* The column's own switch. Hidden, it is the only thing left in the
-              corner — the way back to the plain canvas has to stay visible, or
-              the panel is gone for good. The mark is the app's pane control
-              (icons.tsx), mirrored: this pane is on the right. */}
-          <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
-            <button
-              type="button"
-              onClick={() => setSidePanelHidden((was) => !was)}
-              aria-pressed={sideHidden}
-              aria-label={sideHidden ? "Show the side panel" : "Hide the side panel"}
-              title={sideHidden ? "Show the side panel" : "Hide the side panel"}
-              style={{
-                pointerEvents: "auto",
-                width: 24,
-                height: 24,
-                display: "grid",
-                placeItems: "center",
-                padding: 0,
-                border: "none",
-                borderRadius: "var(--radius-sm)",
-                background: "transparent",
-                color: "var(--fg-dim)",
-                cursor: "pointer",
-                transition: "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; e.currentTarget.style.background = "transparent"; }}
-            >
-              <span style={{ display: "grid", placeItems: "center", transform: "scaleX(-1)" }}>
-                <SidebarIcon size={15} collapsed={sideHidden} />
-              </span>
-            </button>
-          </div>
+          {/* Open, the column heads with one control: close. Closed, the corner
+              is marks — the plan's own reopen pill and, beside it, the result's
+              — the way the plan has always folded. So the main view carries
+              icons rather than a panel, and either icon opens the panel. */}
           {!sideHidden && (
+            <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setSidePanelHidden(true)}
+                aria-label="Close the side panel"
+                title="Close the side panel"
+                style={{
+                  pointerEvents: "auto",
+                  width: 24,
+                  height: 24,
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  border: "none",
+                  borderRadius: "var(--radius-sm)",
+                  background: "transparent",
+                  color: "var(--fg-dim)",
+                  cursor: "pointer",
+                  transition: "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; e.currentTarget.style.background = "transparent"; }}
+              >
+                <CloseIcon size={14} />
+              </button>
+            </div>
+          )}
+          {(
           <TodoStrip
             workspaceRoot={workspaceRoot}
             conversationId={currentId}
             goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
             running={streaming}
             variant="island"
+            folded={sideHidden}
+            onUnfold={() => setSidePanelHidden(false)}
             onDockHeightChange={setTodoDockHeight}
             onPresenceChange={setPlanIslandUp}
           />
+          )}
+          {sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+            <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setSidePanelHidden(false)}
+                aria-label={`Open the side panel — result, ${latestCompletion.files.length} file${latestCompletion.files.length === 1 ? "" : "s"}`}
+                title="Open the side panel"
+                style={{
+                  pointerEvents: "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  height: 30,
+                  padding: "0 10px 0 9px",
+                  borderRadius: 10,
+                  border: "1px solid var(--composer-border)",
+                  background: "var(--composer-glass)",
+                  backdropFilter: "var(--composer-blur)",
+                  WebkitBackdropFilter: "var(--composer-blur)",
+                  color: "var(--fg-subtle)",
+                  font: "inherit",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  transition: "color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out)",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.borderColor = "var(--border-strong)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; e.currentTarget.style.borderColor = "var(--composer-border)"; }}
+              >
+                <ReviewIcon size={15} />
+                {latestCompletion.files.length > 0 && (
+                  <span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{latestCompletion.files.length}</span>
+                )}
+              </button>
+            </div>
           )}
           {!sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
             <CompletionCard
