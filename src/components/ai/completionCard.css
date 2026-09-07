@@ -45,10 +45,14 @@
    floor, so "Request changes" is never the half-word under a hard edge. */
 /* Open, it takes the rest of the side — but never all of it: a question
    arriving under it holds the run, so the result gives up space down to a
-   height that still reads as a panel, and the column scrolls past that. */
-.klide-result-island[data-open="1"] { flex: 1 1 auto; min-height: min(200px, 100%); }
+   height that still reads as a panel, and the column scrolls past that. The
+   entry is what the column lays out, so the entry is what grows. */
+.klide-result-entry[data-variant="island"][data-open="1"] { display: flex; flex: 1 1 auto; min-height: min(200px, 100%); }
+.klide-result-entry[data-variant="island"][data-open="1"] .klide-result-island { flex: 1; min-height: 0; }
 .klide-result-island-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: klide-result-panel-in 200ms ease-out; }
-.klide-result-island .klide-result-body { padding: 12px 0 4px; }
+/* A wheel that runs out of evidence carries on to the column, so the plan
+   above and a question below stay reachable from inside the card. */
+.klide-result-island .klide-result-body { padding: 12px 0 4px; overscroll-behavior: auto; }
 .klide-result-island .klide-result-body section + section { margin-top: 20px; }
 .klide-result-island .klide-result-footer { padding: 12px 0 14px; }
 @keyframes klide-result-panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
