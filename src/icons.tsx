@@ -29,6 +29,7 @@ import { CaretDown } from "@phosphor-icons/react/dist/csr/CaretDown";
 import { Cards } from "@phosphor-icons/react/dist/csr/Cards";
 import { ChatTeardrop } from "@phosphor-icons/react/dist/csr/ChatTeardrop";
 import { ChatTeardropDots } from "@phosphor-icons/react/dist/csr/ChatTeardropDots";
+import { FileMagnifyingGlass } from "@phosphor-icons/react/dist/csr/FileMagnifyingGlass";
 import { CirclesThree } from "@phosphor-icons/react/dist/csr/CirclesThree";
 import { FlowArrow } from "@phosphor-icons/react/dist/csr/FlowArrow";
 import { ListChecks } from "@phosphor-icons/react/dist/csr/ListChecks";
@@ -87,6 +88,13 @@ export function FolderIcon(p: GlyphProps) {
  *  (filled, accent) drawn a second way for a different meaning. */
 export function AiIcon(p: GlyphProps) {
   return <Icon as={ChatTeardrop} {...p} />;
+}
+
+/** The evidence a finished run left behind — the changed files, the commands
+ *  it ran. A file under a lens rather than a checklist: the run already has a
+ *  plan mark, and this one means "look at what came out", not "track it". */
+export function ReviewIcon(p: GlyphProps) {
+  return <Icon as={FileMagnifyingGlass} {...p} />;
 }
 
 /** Kit asking *you* something — the run is parked on an answer. The same

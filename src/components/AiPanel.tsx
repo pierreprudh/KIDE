@@ -2882,8 +2882,34 @@ This user request requires workspace inspection. Before answering, you MUST call
     taRef.current?.focus();
   }
 
+  // The canvas' own width, measured: the island column's size is a share of it,
+  // not a constant. `width` (the prop) is the panel's assigned width and means
+  // nothing in Focus, where the panel fills its host.
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [canvasWidth, setCanvasWidth] = useState(0);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const report = () => setCanvasWidth(Math.round(el.getBoundingClientRect().width));
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // One rule for the corner: the islands take what is left once the prose has
+  // a readable 560px, clamped to the column's own range. So a smaller window
+  // shrinks the plan, the result and the question together instead of pushing
+  // the conversation into a gutter — and under 260px the result entry drops
+  // its words for its mark, since a column that narrow is a corner, not a
+  // panel. Width 0 is "not measured yet"; assume the roomy case.
+  const islandColumnWidth = canvasWidth === 0
+    ? ISLAND_WIDTH
+    : Math.max(232, Math.min(ISLAND_WIDTH, canvasWidth - 596));
+  const compactIslands = islandColumnWidth < 260;
+
   const canvasIslandUp = planIslandUp || pendingQuestion !== null;
-  const focusInset = variant === "focus" && canvasIslandUp ? ISLAND_WIDTH + 36 : 0;
+  const focusInset = variant === "focus" && canvasIslandUp ? islandColumnWidth + 36 : 0;
   const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
   const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
   // Permission gate: the harness pauses and emits a request — a shell command,
@@ -3979,7 +4005,7 @@ This user request requires workspace inspection. Before answering, you MUST call
       </header>
       ) : null}
 
-      <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
+      <div ref={canvasRef} style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
         <div
           ref={scrollRef}
           onScroll={updateStickFromScroll}
@@ -4066,6 +4092,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             // finished turn down the transcript would say it many times.
             if (variant === "focus") return null;
             return <CompletionCard key={i} completion={completion} disabled={streaming}
+              compact={canvasWidth > 0 && canvasWidth < 300}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
               onRequestChanges={() => requestCompletionChanges(completion)}
             />;
@@ -4553,10 +4580,18 @@ This user request requires workspace inspection. Before answering, you MUST call
               top: 16,
               right: 18,
               zIndex: 6,
-              width: `min(${ISLAND_WIDTH}px, calc(100% - 36px))`,
+              width: `min(${islandColumnWidth}px, calc(100% - 36px))`,
               display: "flex",
               flexDirection: "column",
               gap: 10,
+              // A short window cannot fit a long plan, a result and a question
+              // at once, and the question is the one that must stay reachable
+              // — it holds the run. So the column keeps a height budget and
+              // scrolls inside it: a wheel over any card bubbles to this
+              // scroller even though the column itself takes no hits.
+              maxHeight: "calc(100% - 32px)",
+              overflowY: "auto",
+              overscrollBehavior: "contain",
               // The column is only geometry; each card takes its own clicks
               // back so the conversation stays reachable around them.
               pointerEvents: "none",
@@ -4574,6 +4609,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             {latestCompletion && (
               <CompletionCard
                 variant="island"
+                compact={compactIslands}
                 completion={latestCompletion}
                 disabled={streaming}
                 onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}

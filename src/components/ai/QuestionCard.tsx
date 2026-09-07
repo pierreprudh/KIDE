@@ -50,7 +50,10 @@ export function QuestionCard({
     }
     if (ta.clientWidth === 0) return;
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, island ? 120 : 168)}px`;
+    // The island's cap is a share of the window (18dvh) as well as a number,
+    // so the grow stops wherever the shorter of the two lands.
+    const cap = island ? Math.min(120, window.innerHeight * 0.18) : 168;
+    ta.style.height = `${Math.min(ta.scrollHeight, cap)}px`;
   }, [answer, island]);
 
   return (
@@ -102,7 +105,7 @@ export function QuestionCard({
               whiteSpace: "pre-wrap",
               // A long question is the island's own scroller, so it can never
               // push the answer box off the canvas.
-              maxHeight: island ? 190 : undefined,
+              maxHeight: island ? "min(190px, 22dvh)" : undefined,
               overflowY: island ? "auto" : undefined,
               overscrollBehavior: "contain",
             }}
@@ -141,7 +144,7 @@ export function QuestionCard({
         style={{
           width: "100%",
           minHeight: 34,
-          maxHeight: island ? 120 : 168,
+          maxHeight: island ? "min(120px, 18dvh)" : 168,
           resize: "none",
           background: "transparent",
           border: "none",

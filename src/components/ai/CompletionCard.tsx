@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from "react";
 import { hasCompletionReview, type RunCompletion } from "../../agent/completion";
-import { CloseIcon } from "../../icons";
+import { CloseIcon, ReviewIcon } from "../../icons";
 import "./completionCard.css";
 
 /** Where the entry sits. `inline` is the row under the turn that produced it;
@@ -15,10 +15,13 @@ type Props = {
   onReview?: (path?: string) => void;
   onRequestChanges: () => void;
   variant?: CompletionCardVariant;
+  /** Too little room for the words: the entry keeps the mark and the count,
+   *  and the label it drops moves to its tooltip and accessible name. */
+  compact?: boolean;
 };
 
 /** A quiet entry point. Evidence opens on demand in the right-hand drawer. */
-export function CompletionCard({ completion, disabled, onReview, onRequestChanges, variant = "inline" }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onRequestChanges, variant = "inline", compact = false }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -28,14 +31,23 @@ export function CompletionCard({ completion, disabled, onReview, onRequestChange
   const attention = failed + completion.warnings.length;
   const close = () => dialog.current?.close();
   const review = (path?: string) => { close(); onReview?.(path); };
+  const label = completion.stopped ? "Review partial work" : "Review result";
+  const files = completion.files.length > 0
+    ? `${completion.files.length} file${completion.files.length === 1 ? "" : "s"}`
+    : "";
   return (
     <div className="klide-result-entry" data-variant={variant}>
-      <button type="button" className="klide-result-trigger" aria-haspopup="dialog" aria-expanded={open} aria-controls={id}
+      <button type="button" className="klide-result-trigger" data-compact={compact ? "1" : undefined}
+        aria-haspopup="dialog" aria-expanded={open} aria-controls={id}
+        aria-label={compact ? [label, files].filter(Boolean).join(", ") : undefined}
+        title={compact ? [label, files].filter(Boolean).join(" · ") : undefined}
         onClick={() => { dialog.current?.showModal(); setOpen(true); }}>
-        <span>{completion.stopped ? "Review partial work" : "Review result"}</span>
-        {completion.files.length > 0 && <span className="klide-result-meta">{completion.files.length} file{completion.files.length === 1 ? "" : "s"}</span>}
+        {compact
+          ? <ReviewIcon size={15} />
+          : <span>{label}</span>}
+        {files && <span className="klide-result-meta">{compact ? completion.files.length : files}</span>}
         {attention > 0 && <span className="klide-result-attention-dot" aria-label={`${attention} item${attention === 1 ? "" : "s"} to review`} />}
-        <span aria-hidden="true" className="klide-result-arrow">↗</span>
+        {!compact && <span aria-hidden="true" className="klide-result-arrow">↗</span>}
       </button>
       <dialog ref={dialog} id={id} className="klide-result-drawer" aria-labelledby={`${id}-title`}
         onClose={() => setOpen(false)}
