@@ -2559,6 +2559,15 @@ This user request requires workspace inspection. Before answering, you MUST call
     if (stickToBottomRef.current) el.scrollTo({ top: nextHeight });
   }, [msgs]);
 
+  // The todo strip docks *over* the bottom of this list, so the list pads its
+  // foot by the strip's height (see the scroll container's padding) — the last
+  // message can always scroll clear of it. When that height changes, a reader
+  // who was at the bottom stays there.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && stickToBottomRef.current) el.scrollTo({ top: el.scrollHeight });
+  }, [todoDockHeight]);
+
   // Load a resumed conversation from Mission Control. After loading, ping
   // the parent so it can clear `resumeConversation` — otherwise re-clicking
   // the same run from Mission Control is a no-op (the effect would bail
@@ -3941,7 +3950,7 @@ This user request requires workspace inspection. Before answering, you MUST call
         <div
           ref={scrollRef}
           onScroll={updateStickFromScroll}
-          style={{ flex: 1, overflowX: "hidden", overflowY: delegateSession ? "hidden" : "auto", padding: delegateSession ? 0 : variant === "focus" ? `14px ${focusGutter} 16px` : "10px 12px 12px", fontSize: variant === "focus" ? 13.5 : 13, display: delegateSession ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !delegateSession && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
+          style={{ flex: 1, overflowX: "hidden", overflowY: delegateSession ? "hidden" : "auto", padding: delegateSession ? 0 : variant === "focus" ? `14px ${focusGutter} ${16 + todoDockHeight}px` : `10px 12px ${12 + todoDockHeight}px`, fontSize: variant === "focus" ? 13.5 : 13, display: delegateSession ? "flex" : msgs.length === 0 ? "grid" : "block", placeItems: !delegateSession && msgs.length === 0 ? "center" : undefined, minWidth: 0, minHeight: 0, overscrollBehavior: "contain" }}
         >
         {delegateSession ? (
           <DelegateTerminalSurface
@@ -4491,6 +4500,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           workspaceRoot={workspaceRoot}
           conversationId={currentId}
           goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
+          running={streaming}
           onDockHeightChange={setTodoDockHeight}
         />
       </div>

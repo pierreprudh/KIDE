@@ -444,12 +444,15 @@ function TodoRow({
 // Opaque narrow panel that floats over the bottom of the conversation and
 // docks onto the composer. Narrower than the chat, so messages stay visible in
 // the side margins. No shadow — it cast a dark halo (the "black bars") in dark
-// themes; the hairline border alone defines the panel. No backdrop-filter —
-// solid surface (the webview has a known backdrop-filter bug).
+// themes; the hairline alone defines the panel. One hairline on three sides:
+// a top-only border under a 14px radius curved away into nothing at each
+// corner and read as a glow, and border-strong was a heavier line than any
+// other card in the panel draws. No backdrop-filter — solid surface (the
+// webview has a known backdrop-filter bug).
 const glassCard: CSSProperties = {
   background: "var(--bg-elevated)",
-  border: "none",
-  borderTop: "1px solid var(--border-strong)",
+  border: "1px solid color-mix(in srgb, var(--border-strong) 45%, transparent)",
+  borderBottom: "none",
 };
 
 // Floats just above the composer, INSIDE the conversation area. It must not
@@ -471,11 +474,16 @@ export function TodoStrip({
   workspaceRoot,
   conversationId,
   goal: goalProp,
+  running = true,
   onDockHeightChange,
 }: {
   workspaceRoot: string | null;
   conversationId: string;
   goal?: string;
+  /** Whether a Harness Run is alive on this conversation. The plan on disk
+   *  outlives the run — closing the app ends the run, not the file — so with
+   *  no run the first open step is just the next step: no arc, no count. */
+  running?: boolean;
   onDockHeightChange?: (height: number) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -688,7 +696,7 @@ export function TodoStrip({
                 key={item.id}
                 item={item}
                 index={idx}
-                active={!item.done && idx === firstOpen}
+                active={running && !item.done && idx === firstOpen}
                 isLast={idx === visibleItems.length - 1}
                 threadInFilled={idx > 0 && visibleItems[idx - 1].done}
                 open={openRow === item.id}

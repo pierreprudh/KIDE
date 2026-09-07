@@ -14,7 +14,7 @@ import { renderMarkdown, splitThinking, stripPlanJson } from "../markdown";
 import { providerName } from "../../agent/providers";
 import type { ProviderId } from "../../agent/types";
 import { formatElapsed, useElapsed } from "./WorkingRow";
-import { toolCallKey } from "./toolRuns";
+import { MIN_STACKED_CALLS, toolCallKey, toolRunLabel } from "./toolRuns";
 
 // Premium thinking block. Renders as a soft card with a pulsing dot while the
 // agent is still streaming, a rotating chevron, and a markdown body so code
@@ -310,6 +310,25 @@ export type AttachedResult = { msg: Extract<Msg, { role: "tool" }>; active: bool
 
 // Every call keeps its icon and name, a second `read_file` included: a bare
 // path on a branch read as the first call's result, not a call of its own.
+// A turn that speaks *and* makes a wall of calls — "I'll set up a todo list
+// and read the code", then seven `update_todo_list` rows — keeps its sentence
+// in view and folds the rows under it, behind the same "N tool calls" row a
+// prose-free stretch gets from AiPanel. The sentence is the agent explaining
+// itself; the rows are the machinery it explained. Open while the work is
+// still running, so the only thing moving on screen is never hidden.
+function InlineToolRun({ count, names, working, children }: { count: string; names: string; working: boolean; children: ReactNode }) {
+  const [opened, setOpened] = useState(false);
+  const open = opened || working;
+  return (
+    <>
+      <ToolRunRow count={count} names={names} expanded={open} onToggle={() => setOpened((was) => !was)} />
+      <div className="klide-tool-run-body" data-open={open ? "true" : "false"}>
+        <div>{children}</div>
+      </div>
+    </>
+  );
+}
+
 function ToolCallRow({ name, args, count = 1, result }: { name: string; args: unknown; count?: number; result?: AttachedResult }) {
   const call =
     name === "spawn_subagent" ? (
@@ -1197,14 +1216,27 @@ export function renderMessageBody(
             {renderMarkdown(visibleContent, { streaming: active })}
           </div>
         )}
-        {/* Identical agent messages sent back to back — "pong" to two pings —
-            are one line with a count; every other call keeps its row. */}
-        {foldIdentical(
-          (m.toolCalls ?? []).map((tc, index) => ({ tc, key: toolCallKey(tc, index) })),
-          ({ tc }) => (COORDINATION_TOOL_NAMES.has(tc.name) ? `${tc.name}\n${JSON.stringify(tc.args ?? null)}` : null),
-        ).map(({ item: { tc, key }, count }) => (
-          <ToolCallRow key={key} name={tc.name} args={tc.args} count={count} result={opts?.results?.get(key)} />
-        ))}
+        {(() => {
+          // Identical agent messages sent back to back — "pong" to two pings —
+          // are one line with a count; every other call keeps its row.
+          const calls = m.toolCalls ?? [];
+          const rows = foldIdentical(
+            calls.map((tc, index) => ({ tc, key: toolCallKey(tc, index) })),
+            ({ tc }) => (COORDINATION_TOOL_NAMES.has(tc.name) ? `${tc.name}\n${JSON.stringify(tc.args ?? null)}` : null),
+          ).map(({ item: { tc, key }, count }) => (
+            <ToolCallRow key={key} name={tc.name} args={tc.args} count={count} result={opts?.results?.get(key)} />
+          ));
+          if (!visibleContent || calls.length < MIN_STACKED_CALLS) return rows;
+          const names: string[] = [];
+          for (const tc of calls) if (!names.includes(tc.name)) names.push(tc.name);
+          const label = toolRunLabel({ start: 0, end: 0, calls: calls.length, names });
+          const working = active || [...(opts?.results?.values() ?? [])].some((r) => r.active);
+          return (
+            <InlineToolRun count={label.count} names={label.names} working={working}>
+              {rows}
+            </InlineToolRun>
+          );
+        })()}
         {m.meta && !active && visibleContent !== "" && !m.toolCalls?.length && (
           <MessageMeta meta={m.meta} />
         )}
