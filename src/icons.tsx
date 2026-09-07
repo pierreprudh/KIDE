@@ -30,6 +30,7 @@ import { Cards } from "@phosphor-icons/react/dist/csr/Cards";
 import { ChatTeardrop } from "@phosphor-icons/react/dist/csr/ChatTeardrop";
 import { CirclesThree } from "@phosphor-icons/react/dist/csr/CirclesThree";
 import { FlowArrow } from "@phosphor-icons/react/dist/csr/FlowArrow";
+import { ListChecks } from "@phosphor-icons/react/dist/csr/ListChecks";
 import { Folder } from "@phosphor-icons/react/dist/csr/Folder";
 import { Gear } from "@phosphor-icons/react/dist/csr/Gear";
 import { GitBranch } from "@phosphor-icons/react/dist/csr/GitBranch";
@@ -146,6 +147,11 @@ export function ProfileIcon({ size = RAIL_ICON_SIZE, ...rest }: GlyphProps) {
 /** The rail's primary action, so it gets the simplest mark in the set: a bare
  *  plus. The glyphs under it describe a place; this one only has to say
  *  "begin", and a pencil said "edit something that already exists". */
+/** The agent's plan — the todo list a Goal run works through. */
+export function PlanIcon(p: GlyphProps) {
+  return <Icon as={ListChecks} {...p} />;
+}
+
 export function NewTaskIcon(p: GlyphProps) {
   return <Icon as={Plus} {...p} />;
 }

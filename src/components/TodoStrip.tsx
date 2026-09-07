@@ -12,6 +12,7 @@ import {
   type TodoMoment,
 } from "../todoHistory";
 import { useElapsed } from "./ai/WorkingRow";
+import { PlanIcon } from "../icons";
 import "./todoStrip.css";
 
 type TodoStore = {
@@ -75,6 +76,12 @@ function rememberPlanHidden(
 ) {
   const map = readDismissedTodoStrips();
   map[dismissalKey(workspaceRoot, conversationId)] = signature;
+  writeDismissedTodoStrips(map);
+}
+
+function forgetPlanHidden(workspaceRoot: string | null, conversationId: string) {
+  const map = readDismissedTodoStrips();
+  delete map[dismissalKey(workspaceRoot, conversationId)];
   writeDismissedTodoStrips(map);
 }
 
@@ -613,6 +620,15 @@ export function TodoStrip({
     setDismissed(true);
   }
 
+  // The island's way back. Hiding the plan gives the canvas back to the
+  // conversation, but the plan keeps moving, so a small mark stays in the
+  // corner — the icon and the count — and brings the card back on click.
+  function showPlan() {
+    forgetPlanHidden(workspaceRoot, conversationId);
+    setDismissed(false);
+    setOpen(true);
+  }
+
   // When the plan finishes, collapse to the slim pill so the agent's final
   // output stays visible (a tall card would sit over it like a dark box). If
   // work resumes after a dismiss, bring the box back.
@@ -680,7 +696,23 @@ export function TodoStrip({
     return () => observer.disconnect();
   }, [visible, open, total, onDockHeightChange, variant]);
 
-  if (!visible) return null;
+  if (!visible) {
+    if (variant !== "island" || dismissed === false || total === 0) return null;
+    return (
+      <div className="klide-todo-island" style={{ ...islandWrap, width: "auto" }}>
+        <button
+          type="button"
+          className="klide-todo-reopen"
+          onClick={showPlan}
+          aria-label={`Show the plan, ${done} of ${total} steps done`}
+          style={{ ...islandCard, pointerEvents: "auto" }}
+        >
+          <PlanIcon size={15} />
+          <CountLabel done={done} total={total} />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div ref={dockRef} className={island ? "klide-todo-island" : undefined} data-ping={ping ? "true" : undefined} style={island ? islandWrap : dockWrap}>

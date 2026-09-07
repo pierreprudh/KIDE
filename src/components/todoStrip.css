@@ -24,6 +24,31 @@
 .klide-todo-island[data-ping="true"] {
   scale: 1.028;
 }
+/* The island folded to its mark: icon + count, same glass, one hairline. */
+.klide-todo-reopen {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px 0 9px;
+  border-radius: 10px;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  font: inherit;
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+.klide-todo-reopen:hover {
+  border-color: var(--border-strong) !important;
+  color: var(--fg-strong);
+}
+.klide-todo-reopen:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+}
+
 @keyframes klide-todo-island-in {
   from {
     opacity: 0;
