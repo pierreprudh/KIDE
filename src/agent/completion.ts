@@ -7,6 +7,11 @@ export type RunCompletion = {
   files: string[];
   commands: { id: string; label: string; status: "passed" | "failed" | "unknown"; output?: string }[];
   warnings: string[];
+  /** True when the attempt ended without finishing — cancelled, turn cap, or
+   *  a provider/harness failure. The edits it applied before stopping are
+   *  real files on disk, so the card still opens; it just never presents them
+   *  as a result. */
+  stopped?: boolean;
 };
 
 /** Routine replies and successful read-only work do not need a review entry. */

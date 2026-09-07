@@ -4023,7 +4023,9 @@ This user request requires workspace inspection. Before answering, you MUST call
             return <CompletionCard key={i} completion={completion} disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
               onRequestChanges={() => {
-                setInput((previous) => previous || `Please revise this completed work:\n${completion.outcome}\n\nRequested changes: `);
+                setInput((previous) => previous || (completion.stopped
+                  ? `Please finish this unfinished work:\n${completion.outcome}\n\nRequested changes: `
+                  : `Please revise this completed work:\n${completion.outcome}\n\nRequested changes: `));
                 taRef.current?.focus();
               }}
             />;

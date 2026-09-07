@@ -443,6 +443,46 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
       return { changed: [rows.length - 1] };
     }
 
+    // An attempt that stopped early still left work on disk — the edits it
+    // applied before it died are real, unreviewed files, and inline diff rows
+    // are the only trace of them. So a stop earns the same entry point, with
+    // `stopped` set so nothing about it reads as a finished result. Gated on
+    // evidence: a failure that changed nothing already says everything in its
+    // "Run failed" line, and a second row there would be noise.
+    if (
+      (event.type === "run_error" ||
+        (event.type === "run_result" && event.result.status !== "done")) &&
+      completionMode === "goal" &&
+      !completed &&
+      (changedFiles.size > 0 || commands.size > 0)
+    ) {
+      completed = true;
+      splitRow();
+      const reason =
+        event.type === "run_error"
+          ? event.error.message.trim()
+          : event.result.message?.trim() ||
+            (event.result.status === "max_turns"
+              ? "The run hit its turn cap."
+              : "The run was stopped.");
+      rows.push({
+        kind: "completion",
+        completion: {
+          runId: event.runId,
+          completedAt: event.ts,
+          outcome: reason.slice(0, 280) + (reason.length > 280 ? "…" : ""),
+          files: [...changedFiles],
+          commands: [...commands.values()].map((command) => ({ ...command })),
+          warnings: [
+            "The run stopped before finishing — this work is partial.",
+            ...completionWarnings,
+          ],
+          stopped: true,
+        },
+      });
+      return { changed: [rows.length - 1] };
+    }
+
     if (event.type === "context_compacted") {
       // The auto-compactor collapsed the older turns for the *model*. The
       // transcript still holds them all, so replay renders everything — but it

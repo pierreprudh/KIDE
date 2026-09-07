@@ -30,6 +30,13 @@ describe("CompletionCard", () => {
     expect(html).not.toContain("Changed files");
     expect(html).not.toContain("Review changes");
   });
+  it("never presents a stopped attempt as a result", () => {
+    const html = render({ ...completion, files: ["src/app.tsx"], stopped: true, warnings: ["The run stopped before finishing — this work is partial."] });
+    expect(html).toContain("Review partial work");
+    expect(html).not.toContain("Review result");
+    expect(html).toContain("Partial work");
+    expect(html).toContain("stopped before finishing");
+  });
   it("keeps permission warnings accessible", () => {
     expect(render({ ...completion, warnings: ["Permission denied"] })).toContain("Permission denied");
   });

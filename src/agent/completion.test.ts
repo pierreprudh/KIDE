@@ -47,6 +47,15 @@ describe("completed run evidence", () => {
     expect(cards(foldedToMsgs(fold.rows()))).toEqual([]);
   });
 
+  it.each(["cancelled", "max_turns"] as const)("hands over the files %s left behind, marked partial", (status) => {
+    const fold = createFold();
+    [start(), changed, answer, { ...done, result: { status } } as AgentEvent].forEach((event) => fold.apply(event));
+    const [card] = cards(foldedToMsgs(fold.rows()));
+    expect(card.stopped).toBe(true);
+    expect(card.files).toEqual(["src/settings.tsx"]);
+    expect(card.warnings[0]).toContain("stopped before finishing");
+  });
+
   it("keeps each attempt's evidence separate when the conversation continues", () => {
     const fold = createFold();
     [start(), changed, command, result, answer, done, start(), answer, done].forEach((event) => fold.apply(event));
@@ -57,10 +66,31 @@ describe("completed run evidence", () => {
     expect(completed[1].commands).toEqual([]);
   });
 
-  it("does not add a completion card for a terminal error", () => {
+  const failed: AgentEvent = { type: "run_error", runId: "r", error: { code: "provider_unavailable", message: "Disconnected", retryable: true }, ts: 5 };
+
+  it("does not add a completion card for a terminal error that changed nothing", () => {
     const fold = createFold();
-    [start(), answer, { type: "run_error", runId: "r", error: { code: "provider_unavailable", message: "Disconnected", retryable: true }, ts: 5 } as AgentEvent].forEach((event) => fold.apply(event));
+    [start(), answer, failed].forEach((event) => fold.apply(event));
     expect(cards(foldedToMsgs(fold.rows()))).toEqual([]);
+  });
+
+  it("opens the work a failed run had already applied", () => {
+    // The API-key regression: a run wrote two files, then died on a key it
+    // could no longer resolve. The edits were on disk with no way to review
+    // them as a set.
+    const fold = createFold();
+    [start(), changed, command, result, answer, failed].forEach((event) => fold.apply(event));
+    expect(cards(foldedToMsgs(fold.rows()))).toEqual([{
+      runId: "r", completedAt: 5, outcome: "Disconnected", files: ["src/settings.tsx"],
+      commands: [{ id: "c", label: "npm test", status: "failed", output: "One test failed" }],
+      warnings: ["The run stopped before finishing — this work is partial."], stopped: true,
+    }]);
+  });
+
+  it("does not add a second card when the run already reported a result", () => {
+    const fold = createFold();
+    [start(), changed, answer, done, failed].forEach((event) => fold.apply(event));
+    expect(cards(foldedToMsgs(fold.rows()))).toHaveLength(1);
   });
 
   it("renders the same evidence live and on replay, retaining queued messages", () => {

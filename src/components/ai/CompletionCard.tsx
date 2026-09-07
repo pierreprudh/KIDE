@@ -25,7 +25,7 @@ export function CompletionCard({ completion, disabled, onReview, onRequestChange
     <div className="klide-result-entry">
       <button type="button" className="klide-result-trigger" aria-haspopup="dialog" aria-expanded={open} aria-controls={id}
         onClick={() => { dialog.current?.showModal(); setOpen(true); }}>
-        <span>Review result</span>
+        <span>{completion.stopped ? "Review partial work" : "Review result"}</span>
         {completion.files.length > 0 && <span className="klide-result-meta">{completion.files.length} file{completion.files.length === 1 ? "" : "s"}</span>}
         {attention > 0 && <span className="klide-result-attention-dot" aria-label={`${attention} item${attention === 1 ? "" : "s"} to review`} />}
         <span aria-hidden="true" className="klide-result-arrow">↗</span>
@@ -38,7 +38,7 @@ export function CompletionCard({ completion, disabled, onReview, onRequestChange
           if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) close();
         }}>
         <header className="klide-result-header">
-          <div><h2 id={`${id}-title`}>Result</h2><p>{completion.files.length ? `${completion.files.length} changed file${completion.files.length === 1 ? "" : "s"}` : "Items to review"}</p></div>
+          <div><h2 id={`${id}-title`}>{completion.stopped ? "Partial work" : "Result"}</h2><p>{completion.files.length ? `${completion.files.length} changed file${completion.files.length === 1 ? "" : "s"}` : "Items to review"}</p></div>
           <button type="button" autoFocus className="klide-result-close" aria-label="Close result" onClick={close}><CloseIcon size={18} /></button>
         </header>
         <div className="klide-result-body">
