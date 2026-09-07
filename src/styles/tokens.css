@@ -2382,17 +2382,6 @@ textarea.klide-diff-comment-input:focus-visible {
   animation: klide-todo-mark-pop 420ms var(--ease-spring);
 }
 
-/* The task in flight breathes: one slow halo, no blinking dot. */
-.klide-todo-mark[data-state="active"]::after {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  animation: klide-todo-mark-breathe 2.8s var(--ease-soft) infinite;
-  pointer-events: none;
-}
-
 .klide-todo-check path {
   stroke-dasharray: 24;
   stroke-dashoffset: 24;
@@ -2419,18 +2408,6 @@ textarea.klide-diff-comment-input:focus-visible {
   }
 }
 
-@keyframes klide-todo-mark-breathe {
-  0%,
-  100% {
-    opacity: 0;
-    transform: scale(0.9);
-  }
-  45% {
-    opacity: 1;
-    transform: scale(1.18);
-  }
-}
-
 @keyframes klide-todo-check-draw {
   to {
     stroke-dashoffset: 0;
@@ -2440,7 +2417,6 @@ textarea.klide-diff-comment-input:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .klide-todo-row,
   .klide-todo-mark[data-state="done"],
-  .klide-todo-mark[data-state="active"]::after,
   .klide-todo-check path {
     animation: none;
   }

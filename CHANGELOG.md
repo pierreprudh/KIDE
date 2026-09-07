@@ -108,6 +108,18 @@ still open.
 
 ### Conversation view
 
+- **Each step of the plan carries its own history.** The todo strip above the
+  composer numbers its steps instead of drawing hollow dots: a pending step
+  shows its number in mono, the step in hand wears a thin accent arc sweeping
+  around it, a finished step closes to the check. Click a row and what
+  happened to that step drops down on the same thread — Planned, Reworded with
+  the earlier wording, Reopened, Done in 34s — as offsets from the start of
+  the plan. The active row counts up live in the same figures the Working row
+  uses, a finished row keeps its span, and a step that was ticked and reopened
+  says "2nd try". The fold from the store's mutation log to a per-step timeline
+  is a pure module (`src/todoHistory.ts`) with its own tests; the strip stays a
+  view. No new data: the Rust store already recorded every mutation.
+
 - **The + menu picks the Mode; the foot bar decides the Goal policy.** The
   menu is back to three rows — Chat / Plan / Goal — and the policy (reviewing
   edits · auto-accept edits · full auto) became a standing note beside the

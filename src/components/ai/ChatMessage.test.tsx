@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Msg } from "./types";
-import { extractThinking, renderMessageBody, ThinkingBlock } from "./ChatMessage";
+import { extractThinking, renderMessageBody, ThinkingBlock, type AttachedResult } from "./ChatMessage";
 
 function occurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
@@ -160,5 +160,41 @@ describe("agent coordination tool rows", () => {
 
     expect(html).toContain("coordination update");
     expect(html).toContain("Message env_123 queued");
+  });
+});
+
+describe("a speaking turn with a wall of calls", () => {
+  const speaking = (n: number, results?: Map<string, AttachedResult>): string =>
+    renderToStaticMarkup(
+      renderMessageBody(
+        {
+          role: "assistant",
+          content: "I'll set up a todo list and read the code.",
+          toolCalls: Array.from({ length: n }, (_, i) => ({ id: `c${i}`, name: i === n - 1 ? "glob" : "update_todo_list", args: { text: `step ${i}` } })),
+        },
+        false,
+        { results },
+      ),
+    );
+
+  it("keeps the sentence and folds the rows behind the tool-run summary", () => {
+    const html = speaking(7);
+    expect(html).toContain("I&#x27;ll set up a todo list and read the code.");
+    expect(html).toContain("7 tool calls");
+    expect(html).toContain("update_todo_list, glob");
+    expect(html).toContain('data-open="false"');
+    // the rows are still there, mounted under the fold
+    expect(occurrences(html, "update_todo_list")).toBeGreaterThanOrEqual(6);
+  });
+
+  it("leaves two rows alone — two rows are not a wall", () => {
+    const html = speaking(2);
+    expect(html).not.toContain("tool calls");
+    expect(html).not.toContain("klide-tool-run-body");
+  });
+
+  it("stays open while one of its results is still running", () => {
+    const results = new Map<string, AttachedResult>([["c0", { msg: { role: "tool", content: "Running update_todo_list", toolName: "update_todo_list" }, active: true }]]);
+    expect(speaking(4, results)).toContain('data-open="true"');
   });
 });
