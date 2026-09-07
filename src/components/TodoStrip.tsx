@@ -791,13 +791,23 @@ export function TodoStrip({
           }}
           style={{
             display: "grid",
-            gridTemplateColumns: `minmax(0, 1fr) auto ${iconColumn}px`,
+            gridTemplateColumns: `${MARK}px minmax(0, 1fr) auto ${iconColumn}px`,
             alignItems: "center",
             columnGap: RIGHT_GAP,
             paddingBottom: island ? 11 : 9,
             cursor: "pointer",
           }}
         >
+          {/* The header wears the plan's state on the same mark the rows use:
+              the step in hand with its arc while the run works, the next step's
+              number when no run is alive, and the check — popping in, with
+              "Completed" beside the count — once every step has closed. So the
+              collapsed card still says where things stand. */}
+          <StepMark
+            key={allDone ? "done" : "live"}
+            index={allDone ? total - 1 : Math.max(firstOpen, 0)}
+            state={allDone ? "done" : running ? "active" : "todo"}
+          />
           {island ? (
             // The conversation is right there, so the goal would say it twice;
             // the island names itself the way the Git island does.
@@ -805,7 +815,14 @@ export function TodoStrip({
           ) : (
             <GoalLine goal={goal} size={12.5} />
           )}
-          <CountLabel done={done} total={total} />
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+            {allDone && (
+              <span className="klide-todo-completed" aria-label="Plan completed">
+                Completed
+              </span>
+            )}
+            <CountLabel done={done} total={total} />
+          </span>
           <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
             {!island && (
               <span style={{ width: ICON, height: ICON, display: "grid", placeItems: "center", color: "var(--fg-dim)" }}>
