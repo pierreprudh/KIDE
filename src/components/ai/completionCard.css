@@ -4,19 +4,50 @@
    column, so it drops the transcript margins, wears the island's glass, and
    takes its own clicks back from the column (which passes them through). */
 .klide-result-entry[data-variant="island"] { margin: 0; pointer-events: none; }
-.klide-result-entry[data-variant="island"] .klide-result-trigger { pointer-events: auto; height: 30px; padding: 0 10px; border-radius: 10px; border-color: var(--composer-border); background: var(--composer-glass); backdrop-filter: var(--composer-blur); -webkit-backdrop-filter: var(--composer-blur); color: var(--fg-subtle); }
-.klide-result-entry[data-variant="island"] .klide-result-trigger:hover { border-color: var(--border-strong); color: var(--fg-strong); background: var(--composer-glass); }
+/* On the canvas the result is a window in the plan's column: the same glass,
+   the same 15px corners, and the evidence opens *inside* it — under the plan
+   it came from, where the reader is already looking. The column only carries
+   geometry, so the card takes its own clicks back. */
+.klide-result-island { pointer-events: auto; display: flex; flex-direction: column; overflow: hidden; padding: 0 16px; border: 1px solid var(--composer-border); border-radius: 15px; background: var(--composer-glass); backdrop-filter: var(--composer-blur); -webkit-backdrop-filter: var(--composer-blur); color: var(--fg-strong); font-size: 12px; line-height: 1.5; }
+.klide-result-island-header { display: flex; align-items: center; gap: 10px; min-height: 42px; color: var(--fg-subtle); cursor: pointer; }
+.klide-result-island:hover .klide-result-island-header, .klide-result-island[data-open="1"] .klide-result-island-header { color: var(--fg-strong); }
+/* One mark, centred, and the card shrinks to it — a compact island entry is a
+   corner affordance, so it stops pretending to be a header with a row of
+   controls. Attention rides the mark's colour. */
+.klide-result-island-header[data-compact="1"] { justify-content: center; gap: 0; min-height: 34px; }
+.klide-result-island-header[data-compact="1"][data-attention="1"] { color: var(--warning); }
+.klide-result-island-title { font-size: 13px; }
+/* The count sits at the far end, the way the plan's does. */
+.klide-result-island-header .klide-result-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+/* Shown on hover or once open — the row idiom the plan's steps already use. */
+.klide-result-island-chevron { display: grid; place-items: center; color: var(--fg-dim); opacity: 0; transition: opacity 140ms var(--ease-soft); }
+.klide-result-island:hover .klide-result-island-chevron, .klide-result-island[data-open="1"] .klide-result-island-chevron { opacity: 1; }
+.klide-result-island-header:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 8px; }
+.klide-result-island-rule { height: 1px; background: var(--border); transform: scaleX(0); transform-origin: left; transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1); }
+.klide-result-island-rule[data-shown="1"] { transform: scaleX(1); }
+/* Open, the card claims the rest of the side rather than standing as a block
+   of its own height: the evidence scrolls inside it and the actions sit on its
+   floor, so "Request changes" is never the half-word under a hard edge. */
+.klide-result-island[data-open="1"] { flex: 1 1 auto; min-height: 0; }
+.klide-result-island-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: klide-result-panel-in 200ms ease-out; }
+.klide-result-island .klide-result-body { padding: 12px 0 4px; }
+.klide-result-island .klide-result-body section + section { margin-top: 20px; }
+.klide-result-island .klide-result-footer { padding: 12px 0 14px; }
+@keyframes klide-result-panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .klide-result-island-panel { animation: none; }
+  .klide-result-island-rule, .klide-result-island-chevron { transition: none; }
+}
 /* No room for the words. The mark carries the meaning, the count stays because
    it is the one number a glance wants, and the label lives in the tooltip and
    the accessible name. */
-.klide-result-trigger[data-compact="1"] { gap: 6px; padding: 0 9px; height: 30px; }
-.klide-result-trigger[data-compact="1"] .klide-result-meta { font-variant-numeric: tabular-nums; }
+.klide-result-trigger[data-compact="1"] { display: grid; place-items: center; gap: 0; width: 30px; height: 30px; padding: 0; }
+.klide-result-trigger[data-compact="1"][data-attention="1"] { color: var(--warning); }
 .klide-result-meta { color: var(--fg-subtle); font-size: 11px; }
 .klide-result-arrow { color: var(--fg-subtle); }
 .klide-result-attention-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warning); }
-.klide-result-drawer { position: fixed; inset: 12px 12px 12px auto; margin: 0; box-sizing: border-box; width: min(360px, calc(100vw - 24px)); max-width: none; height: calc(100dvh - 24px); max-height: none; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated); color: var(--fg-strong); font-family: var(--font-ui, 'Atkinson Hyperlegible', sans-serif); font-size: 12px; line-height: 1.5; box-shadow: 0 12px 48px rgb(0 0 0 / 8%); overflow: hidden; }
-.klide-result-drawer[open] { display: flex; flex-direction: column; animation: klide-result-enter 160ms ease-out; }
-.klide-result-drawer::backdrop { background: rgb(0 0 0 / 6%); }
+.klide-result-scrim { position: fixed; inset: 0; display: flex; justify-content: flex-end; padding: 12px; box-sizing: border-box; background: rgb(0 0 0 / 6%); }
+.klide-result-drawer { display: flex; flex-direction: column; box-sizing: border-box; width: min(360px, 100%); height: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated); color: var(--fg-strong); font-family: var(--font-ui, 'Atkinson Hyperlegible', sans-serif); font-size: 12px; line-height: 1.5; box-shadow: 0 12px 48px rgb(0 0 0 / 8%); overflow: hidden; animation: klide-result-enter 160ms ease-out; }
 .klide-result-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 24px 22px 20px; }
 .klide-result-header h2 { margin: 0; font-size: 17px; font-weight: 400; letter-spacing: -.02em; }
 .klide-result-header p { margin: 3px 0 0; color: var(--fg-subtle); font-size: 11px; }
@@ -48,14 +79,15 @@
 .klide-result-drawer button:disabled { opacity: .45; cursor: default; }
 .klide-result-trigger:focus-visible, .klide-result-drawer button:focus-visible, .klide-result-drawer summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @keyframes klide-result-enter { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
-@media (prefers-reduced-motion: reduce) { .klide-result-drawer[open] { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .klide-result-drawer { animation: none; } }
 
 /* The drawer is a side sheet on a roomy window and a full-bleed one on a
    narrow window: at 360px of content plus two 22px gutters it stopped fitting
    somewhere around a 520px viewport, and a sheet the reader cannot see the
    edges of reads as broken rather than as a panel. */
 @media (max-width: 560px) {
-  .klide-result-drawer { inset: 8px; width: auto; height: auto; }
+  .klide-result-scrim { padding: 8px; }
+  .klide-result-drawer { width: 100%; }
   .klide-result-header { padding: 16px 16px 13px; }
   .klide-result-body { padding: 0 16px 16px; }
   .klide-result-footer { padding: 12px 16px 16px; }

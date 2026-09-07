@@ -2908,7 +2908,10 @@ This user request requires workspace inspection. Before answering, you MUST call
     : Math.max(232, Math.min(ISLAND_WIDTH, canvasWidth - 596));
   const compactIslands = islandColumnWidth < 260;
 
-  const canvasIslandUp = planIslandUp || pendingQuestion !== null;
+  // Anything in the column holds it open — a result entry on its own counted
+  // for nothing here, so the conversation kept the full canvas and the pill
+  // floated over the prose in the corner.
+  const canvasIslandUp = planIslandUp || pendingQuestion !== null || latestCompletion !== undefined;
   const focusInset = variant === "focus" && canvasIslandUp ? islandColumnWidth + 36 : 0;
   const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
   const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
@@ -4568,66 +4571,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             </svg>
           </span>
         )}
-        {/* The canvas' right-hand column. Focus keeps its windows here — the
-            plan, and under it a question the run is parked on — one absolutely
-            positioned column so they stack with a gap instead of each
-            measuring the other's height. Everywhere else the plan docks over
-            the composer and this column does not exist. */}
-        {variant === "focus" ? (
-          <div
-            style={{
-              position: "absolute",
-              top: 16,
-              right: 18,
-              zIndex: 6,
-              width: `min(${islandColumnWidth}px, calc(100% - 36px))`,
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
-              // A short window cannot fit a long plan, a result and a question
-              // at once, and the question is the one that must stay reachable
-              // — it holds the run. So the column keeps a height budget and
-              // scrolls inside it: a wheel over any card bubbles to this
-              // scroller even though the column itself takes no hits.
-              maxHeight: "calc(100% - 32px)",
-              overflowY: "auto",
-              overscrollBehavior: "contain",
-              // The column is only geometry; each card takes its own clicks
-              // back so the conversation stays reachable around them.
-              pointerEvents: "none",
-            }}
-          >
-            <TodoStrip
-              workspaceRoot={workspaceRoot}
-              conversationId={currentId}
-              goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
-              running={streaming}
-              variant="island"
-              onDockHeightChange={setTodoDockHeight}
-              onPresenceChange={setPlanIslandUp}
-            />
-            {latestCompletion && (
-              <CompletionCard
-                variant="island"
-                compact={compactIslands}
-                completion={latestCompletion}
-                disabled={streaming}
-                onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
-                onRequestChanges={() => requestCompletionChanges(latestCompletion)}
-              />
-            )}
-            {pendingQuestion && (
-              <QuestionCard
-                variant="island"
-                question={pendingQuestion.question}
-                answer={questionAnswer}
-                onAnswerChange={setQuestionAnswer}
-                onSubmit={() => void submitQuestion()}
-                onSkip={skipQuestion}
-              />
-            )}
-          </div>
-        ) : (
+        {variant !== "focus" && (
           <TodoStrip
             workspaceRoot={workspaceRoot}
             conversationId={currentId}
@@ -4639,6 +4583,77 @@ This user request requires workspace inspection. Before answering, you MUST call
           />
         )}
       </div>
+
+      {/* The side column. Focus keeps its windows here — the plan, under
+          it the run's result, and under that a question the run is parked
+          on — one absolutely positioned column so they stack with a gap
+          instead of each measuring the other's height. It is a child of the
+          panel rather than of the canvas, so it runs the whole side: the
+          canvas ends above the composer, and a column that stopped there cut
+          an open card off mid-content against that seam. The composer is
+          already inset by `focusGutterRight` for this width, so the side
+          below the canvas is the column's to use.
+          Everywhere else the plan docks over the composer and this column
+          does not exist. */}
+      {variant === "focus" && (
+        <div
+          style={{
+            position: "absolute",
+            top: 16,
+            right: 18,
+            zIndex: 6,
+            width: `min(${islandColumnWidth}px, calc(100% - 36px))`,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            // A short window cannot fit a long plan, a result and a question
+            // at once, and the question is the one that must stay reachable
+            // — it holds the run. So the column spans the side and scrolls
+            // inside it: a wheel over any card bubbles to this scroller even
+            // though the column itself takes no hits. The height is definite
+            // rather than a cap, so a card that opens (the result) can claim
+            // the space the others are not using instead of standing as a
+            // block of its own; the others keep their natural size, since a
+            // flex item does not shrink below its content.
+            bottom: 16,
+            overflowY: "auto",
+            overscrollBehavior: "contain",
+            // The column is only geometry; each card takes its own clicks
+            // back so the conversation stays reachable around them.
+            pointerEvents: "none",
+          }}
+        >
+          <TodoStrip
+            workspaceRoot={workspaceRoot}
+            conversationId={currentId}
+            goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
+            running={streaming}
+            variant="island"
+            onDockHeightChange={setTodoDockHeight}
+            onPresenceChange={setPlanIslandUp}
+          />
+          {latestCompletion && (
+            <CompletionCard
+              variant="island"
+              compact={compactIslands}
+              completion={latestCompletion}
+              disabled={streaming}
+              onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
+              onRequestChanges={() => requestCompletionChanges(latestCompletion)}
+            />
+          )}
+          {pendingQuestion && (
+            <QuestionCard
+              variant="island"
+              question={pendingQuestion.question}
+              answer={questionAnswer}
+              onAnswerChange={setQuestionAnswer}
+              onSubmit={() => void submitQuestion()}
+              onSkip={skipQuestion}
+            />
+          )}
+        </div>
+      )}
 
       {!delegateSession && (
       <div style={{ padding: variant === "focus" ? `0 ${focusGutterRight} 16px ${focusGutterLeft}` : "0 10px 10px", transition: "padding 420ms cubic-bezier(0.32, 0.72, 0, 1)" }}>
