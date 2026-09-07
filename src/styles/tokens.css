@@ -1901,6 +1901,44 @@ textarea.klide-diff-comment-input:focus-visible {
   }
 }
 
+/* A run parked on the user — a question to answer, a diff to review, a command
+   to approve (QuestionCard, InlineDiffReview, InlineCommandReview all wear
+   this class). Three surfaces referenced `.ai-qa-card` with no rule behind it,
+   so the cards that interrupt a stream appeared with no entrance at all while
+   every message around them rose. Same move as `.ai-msg-in`, one beat slower:
+   the thing asking for a decision settles rather than snaps. */
+.ai-qa-card {
+  animation: ai-msg-in var(--motion-slower) var(--ease-soft);
+}
+
+/* The same card on the Focus canvas, stacked under the plan island. It rises
+   out of the corner the way the plan does (todoStrip.css), on that sequence's
+   ease — the two windows share a column, so they must share a gesture. No
+   delay: the plan waits for the column to slide, a question arrives mid-run
+   with the column already open. */
+.klide-ask-island {
+  transform-origin: right top;
+  animation: klide-ask-island-in 380ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+@keyframes klide-ask-island-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-qa-card,
+  .klide-ask-island {
+    animation: none;
+  }
+}
+
 /* Per-message action row: hidden by default, fades in on bubble hover.
    `pointer-events:none` while hidden so the row doesn't intercept clicks
    when invisible. The animation on the message row itself animates opacity

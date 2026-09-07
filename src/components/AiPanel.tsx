@@ -43,6 +43,7 @@ import { toolsForMode } from "../agent/tools";
 import { readWorkspaceTextFile, workspacePathExists } from "../workspaceFs";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
 import { ISLAND_WIDTH, TodoStrip } from "./TodoStrip";
+import { QuestionCard } from "./ai/QuestionCard";
 import {
   CLI_DEFAULT_MODEL,
   defaultModelForProvider,
@@ -2338,16 +2339,6 @@ This user request requires workspace inspection. Before answering, you MUST call
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followUpMessage]);
 
-  // The Focus variant's reading column: instead of restructuring the
-  // transcript/composer DOM, the horizontal padding grows to center a
-  // ~760px column — one computed gutter, no wrapper churn.
-  // The 760px column sits centred in the canvas — or, with the plan island up,
-  // centred in what is left of the canvas beside it, the island's width plus
-  // its two 18px margins moved to the right gutter.
-  const focusInset = variant === "focus" && planIslandUp ? ISLAND_WIDTH + 36 : 0;
-  const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
-  const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
-
   // Messages other agents have queued for this thread that its Run has not
   // taken in yet — read from the journal, refreshed on its change event, so
   // they show here the moment they are sent rather than at the next turn.
@@ -2863,6 +2854,19 @@ This user request requires workspace inspection. Before answering, you MUST call
     question: string;
   } | null>(null);
   const [questionAnswer, setQuestionAnswer] = useState("");
+
+  // The Focus variant's reading column: instead of restructuring the
+  // transcript/composer DOM, the horizontal padding grows to center a
+  // ~760px column — one computed gutter, no wrapper churn. The column sits
+  // centred in the canvas — or, with the island column up, centred in what is
+  // left of the canvas beside it, the islands' width plus their two 18px
+  // margins moved to the right gutter. A question island holds that column
+  // open on its own, so the conversation makes room for it the same way it
+  // does for the plan.
+  const canvasIslandUp = planIslandUp || pendingQuestion !== null;
+  const focusInset = variant === "focus" && canvasIslandUp ? ISLAND_WIDTH + 36 : 0;
+  const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
+  const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
   // Permission gate: the harness pauses and emits a request — a shell command,
   // a network target, or a message to another agent — and the user approves or
   // rejects (approveCommand / rejectCommand) before it runs. The card renders
@@ -4519,15 +4523,58 @@ This user request requires workspace inspection. Before answering, you MUST call
             </svg>
           </span>
         )}
-        <TodoStrip
-          workspaceRoot={workspaceRoot}
-          conversationId={currentId}
-          goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
-          running={streaming}
-          variant={variant === "focus" ? "island" : "dock"}
-          onDockHeightChange={setTodoDockHeight}
-          onPresenceChange={setPlanIslandUp}
-        />
+        {/* The canvas' right-hand column. Focus keeps its windows here — the
+            plan, and under it a question the run is parked on — one absolutely
+            positioned column so they stack with a gap instead of each
+            measuring the other's height. Everywhere else the plan docks over
+            the composer and this column does not exist. */}
+        {variant === "focus" ? (
+          <div
+            style={{
+              position: "absolute",
+              top: 16,
+              right: 18,
+              zIndex: 6,
+              width: `min(${ISLAND_WIDTH}px, calc(100% - 36px))`,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              // The column is only geometry; each card takes its own clicks
+              // back so the conversation stays reachable around them.
+              pointerEvents: "none",
+            }}
+          >
+            <TodoStrip
+              workspaceRoot={workspaceRoot}
+              conversationId={currentId}
+              goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
+              running={streaming}
+              variant="island"
+              onDockHeightChange={setTodoDockHeight}
+              onPresenceChange={setPlanIslandUp}
+            />
+            {pendingQuestion && (
+              <QuestionCard
+                variant="island"
+                question={pendingQuestion.question}
+                answer={questionAnswer}
+                onAnswerChange={setQuestionAnswer}
+                onSubmit={() => void submitQuestion()}
+                onSkip={skipQuestion}
+              />
+            )}
+          </div>
+        ) : (
+          <TodoStrip
+            workspaceRoot={workspaceRoot}
+            conversationId={currentId}
+            goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
+            running={streaming}
+            variant="dock"
+            onDockHeightChange={setTodoDockHeight}
+            onPresenceChange={setPlanIslandUp}
+          />
+        )}
       </div>
 
       {!delegateSession && (
@@ -4568,103 +4615,18 @@ This user request requires workspace inspection. Before answering, you MUST call
             onApprovePattern={(pattern) => approveCommand("project", pattern)}
           />
         )}
-        {pendingQuestion && (
-          <div
-            className="ai-qa-card"
-            style={{
-              marginBottom: 8,
-              padding: "10px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid var(--border-strong)",
-              background: "var(--bg-elevated)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--fg-strong)", fontSize: 11, fontWeight: 600 }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--accent)" }}>
-                <circle cx="12" cy="12" r="10" />
-                <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" />
-                <path d="M12 17h.01" />
-              </svg>
-              Question
-            </div>
-            <div style={{ color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
-              {pendingQuestion.question}
-            </div>
-            <textarea
-              autoFocus
-              value={questionAnswer}
-              onChange={(e) => setQuestionAnswer(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  void submitQuestion();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  skipQuestion();
-                }
-              }}
-              placeholder="Type your answer… (⌘↩ to submit, Esc to skip)"
-              rows={3}
-              style={{
-                width: "100%",
-                resize: "vertical",
-                minHeight: 56,
-                maxHeight: 200,
-                font: "inherit",
-                fontSize: 13,
-                lineHeight: 1.5,
-                padding: "8px 10px",
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--border-strong)",
-                background: "var(--bg)",
-                color: "var(--fg-strong)",
-                outline: "none",
-              }}
-            />
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
-              <button
-                type="button"
-                onClick={skipQuestion}
-                style={{
-                  height: 26,
-                  padding: "0 10px",
-                  fontSize: 11.5,
-                  fontWeight: 500,
-                  color: "var(--fg-subtle)",
-                  background: "transparent",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-sm)",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-              >
-                Skip
-              </button>
-              <button
-                type="button"
-                onClick={() => void submitQuestion()}
-                style={{
-                  height: 26,
-                  padding: "0 12px",
-                  fontSize: 11.5,
-                  fontWeight: 600,
-                  color: "var(--control-primary-fg)",
-                  background: "var(--accent)",
-                  border: "1px solid var(--accent)",
-                  borderRadius: "var(--radius-sm)",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.filter = "brightness(1.08)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.filter = "none"; }}
-              >
-                Submit ⌘↩
-              </button>
-            </div>
-          </div>
+        {/* Everywhere but Focus the question waits above the composer: those
+            layouts have no canvas margin to put a window in. On the Focus
+            canvas it is an island instead — see the column beside the
+            conversation. */}
+        {pendingQuestion && variant !== "focus" && (
+          <QuestionCard
+            question={pendingQuestion.question}
+            answer={questionAnswer}
+            onAnswerChange={setQuestionAnswer}
+            onSubmit={() => void submitQuestion()}
+            onSkip={skipQuestion}
+          />
         )}
         {showCompactPrompt && (
           <div style={{ padding: "0 2px 6px" }}>
