@@ -24,9 +24,6 @@ const COLUMN_MARGINS = 36;
 /** A folded corner still needs a lane of its own, or marks sit over the text. */
 const MARK_LANE = 76;
 
-/** Below this the entry drops its words for its mark. */
-const COMPACT_BELOW = 260;
-
 export type ColumnInput = {
   /** What the plan is showing (TodoStrip reports it). */
   planSlot: TodoStripSlot;
@@ -46,8 +43,6 @@ export type ColumnInput = {
 export type ColumnGeometry = {
   /** Column width in px — a share of the canvas, clamped to its range. */
   width: number;
-  /** Entries drop their words at this size. */
-  compact: boolean;
   /** A window is up: the column takes its full width. */
   cardsUp: boolean;
   /** Only marks are up: the column takes a lane, not a panel. */
@@ -78,7 +73,6 @@ export function columnGeometry({ planSlot, resultUp, questionUp, hidden, canvasW
 
   return {
     width,
-    compact: width < COMPACT_BELOW,
     cardsUp,
     marksUp,
     inset: cardsUp ? width + COLUMN_MARGINS : marksUp ? MARK_LANE : 0,

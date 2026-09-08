@@ -4776,7 +4776,6 @@ This user request requires workspace inspection. Before answering, you MUST call
           {latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
             <CompletionCard
               variant="island"
-              compact={column.compact}
               folded={column.planFolded}
               onUnfold={() => setSidePanelHidden(false)}
               completion={latestCompletion}
