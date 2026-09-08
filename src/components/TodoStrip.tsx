@@ -224,6 +224,9 @@ const ICON_COLUMN: Record<TodoStripVariant, number> = { dock: ICON * 2 + 2, isla
  *  the Git island's spot and its shape, and rises in the way it does. */
 export type TodoStripVariant = "dock" | "island";
 
+/** How much of the column the strip is asking for. */
+export type TodoStripSlot = "card" | "mark" | "none";
+
 /** The island's width. Focus centres the conversation in the space to its
  *  left while the island is up (AiPanel), so the two never overlap. */
 export const ISLAND_WIDTH = 320;
@@ -547,9 +550,12 @@ export function TodoStrip({
    *  no run the first open step is just the next step: no arc, no count. */
   running?: boolean;
   onDockHeightChange?: (height: number) => void;
-  /** Whether the strip is on screen at all — Focus makes room beside the
-   *  island while it is, and gives the width back when it goes. */
-  onPresenceChange?: (visible: boolean) => void;
+  /** What the strip occupies in the column, which is not the same question as
+   *  whether it is on screen: a dismissed plan still leaves its reopen mark
+   *  there. Focus makes room for a card, a sliver of room for a mark, and none
+   *  for nothing — and its own close control only appears when there is a card
+   *  to close. */
+  onPresenceChange?: (slot: TodoStripSlot) => void;
   /** The column around it is closed: the plan shows as its mark and nothing
    *  else, so the corner in the main view is icons rather than windows.
    *  Clicking the mark reopens the column (`onUnfold`), which is a different
@@ -701,13 +707,21 @@ export function TodoStrip({
   // holds the events that emptied it — otherwise clearing the plan leaves a
   // ghost card with a goal header and no rows, holding the composer up.
   const visible = !dismissed && total > 0;
+  // The mark stands in for the plan in two cases: the reader dismissed it, or
+  // the column around it is folded. Either way it takes room in the corner
+  // without being a window, which is exactly the distinction the column needs.
+  const slot: TodoStripSlot = variant !== "island" ? (visible ? "card" : "none")
+    : folded && total > 0 && !dismissed ? "mark"
+      : visible ? "card"
+        : dismissed && total > 0 ? "mark"
+          : "none";
   // Sequenced both ways. Opening: the column slides over first and the card
   // rises into the space (its entrance waits ISLAND_ENTER_DELAY_MS). Closing:
   // the card leaves first, and only then — when `dismissed` flips — does the
   // column slide back while the mark takes the corner.
   useEffect(() => {
-    onPresenceChange?.(visible);
-  }, [visible, onPresenceChange]);
+    onPresenceChange?.(slot);
+  }, [slot, onPresenceChange]);
 
   // Measured before paint, so the list opens at its true height and only
   // *changes* to it animate — adding or clearing a task glides. Then watched:

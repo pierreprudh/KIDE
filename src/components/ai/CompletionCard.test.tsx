@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { CompletionCard, ResultEvidence } from "./CompletionCard";
 import type { RunCompletion } from "../../agent/completion";
+import { artifactActionLabel } from "../../artifacts";
 
 const completion: RunCompletion = { runId: "r", completedAt: 1, outcome: "Updated settings.", files: [], commands: [], warnings: [] };
 const render = (value: RunCompletion) => renderToStaticMarkup(<CompletionCard completion={value} onReview={() => {}} onRequestChanges={() => {}} />);
@@ -58,38 +59,48 @@ describe("the island card", () => {
     expect(html).not.toContain("klide-result-island-panel");
     expect(html).not.toContain("Review changes");
   });
-  // A narrow column is a corner: one mark and nothing beside it. The count,
-  // the attention dot and the chevron all go, and what they said has to
-  // survive in the header's name and tooltip instead.
-  it("keeps one mark when the column is narrow", () => {
-    const html = renderIsland(withFiles, true);
-    expect(html).not.toContain("klide-result-island-title");
-    expect(html).not.toContain("klide-result-meta");
-    expect(html).not.toContain("klide-result-island-chevron");
-    expect(html.split("<svg").length - 1).toBe(1);
-    expect(html).toContain("Review result · 2 files");
-    expect(html).toContain('aria-label="Expand result, 2 files"');
+  // "On sidepanel open, each should be full width and when closed only icons."
+  // Open, the entry is a window with its words and its own dismiss.
+  it("is a full-width window while the column is open", () => {
+    const html = renderToStaticMarkup(
+      <CompletionCard variant="island" completion={withFiles}
+        onReview={() => {}} onRequestChanges={() => {}} onDismiss={() => {}} />,
+    );
+    expect(html).toContain("klide-result-island-title");
+    expect(html).toContain("2 files");
+    expect(html).toContain("klide-result-island-close");
+    expect(html).not.toContain("klide-result-mark");
   });
-  // The column is a stack of windows; a right-aligned card in it read as a
-  // different kind of thing, and dismissal is how every window there leaves.
-  it("fills the column and can be put away, at either size", () => {
-    for (const compact of [false, true]) {
-      const html = renderToStaticMarkup(
-        <CompletionCard variant="island" compact={compact} completion={withFiles}
-          onReview={() => {}} onRequestChanges={() => {}} onDismiss={() => {}} />,
-      );
-      expect(html).toContain("klide-result-island-close");
-      expect(html).toContain('aria-label="Hide this result"');
-    }
+
+  // "No full width compacted line option when opened": however narrow the
+  // column gets, an open entry keeps its words. A row that filled the width
+  // with a centred icon was neither a window nor a mark.
+  it("keeps its words when the column is open and narrow", () => {
+    const html = renderToStaticMarkup(
+      <CompletionCard variant="island" compact completion={withFiles}
+        onReview={() => {}} onRequestChanges={() => {}} />,
+    );
+    expect(html).toContain("klide-result-island-title");
+    expect(html).toContain("2 files");
+    expect(html).not.toContain('data-compact="1"');
+  });
+
+  // Folded, it is the plan's pill: mark, count, nothing else — and its job is
+  // to open the column, not its own evidence.
+  it("folds to a mark when the column is closed", () => {
+    const html = renderToStaticMarkup(
+      <CompletionCard variant="island" folded completion={withFiles}
+        onReview={() => {}} onRequestChanges={() => {}} onUnfold={() => {}} />,
+    );
+    expect(html).toContain("klide-result-mark");
+    expect(html).toContain('data-folded="1"');
+    expect(html.split("<svg").length - 1).toBe(1);
+    expect(html).toContain("Open the side panel");
+    expect(html).not.toContain("klide-result-island-title");
+    expect(html).not.toContain("klide-result-island-close");
   });
   it("offers no dismissal when the host has nowhere to put the state", () => {
     expect(renderIsland(withFiles)).not.toContain("klide-result-island-close");
-  });
-  it("puts attention on the mark rather than a dot beside it", () => {
-    const html = renderIsland({ ...withFiles, warnings: ["Check the migration"] }, true);
-    expect(html).not.toContain("klide-result-attention-dot");
-    expect(html).toContain('data-attention="1"');
-    expect(html).toContain("1 item to review");
   });
 });
 
@@ -105,11 +116,19 @@ describe("documents a command produced", () => {
     expect(html).not.toContain("Review changes");
   });
 
-  it("says which of the two things the row will do", () => {
-    expect(renderEvidence({ ...completion, artifacts: [DECK] }, () => {}))
-      .toContain("Open Q3 review.pptx in its app");
-    expect(renderEvidence({ ...completion, artifacts: [{ path: "notes.md", bytes: 900, created: true }] }, () => {}))
-      .toContain("Read notes.md");
+  // A document opens in two steps: the panel first, full width second. So the
+  // row's resting promise is the preview, and the destination label — which of
+  // the two things the second click does — belongs to the state after it.
+  it("offers the preview first, not the destination", () => {
+    const html = renderEvidence({ ...completion, artifacts: [DECK] }, () => {});
+    expect(html).toContain("Preview decks/Q3 review.pptx in the panel");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("Open Q3 review.pptx in its app");
+  });
+
+  it("names the destination the second click reaches", () => {
+    expect(artifactActionLabel("decks/Q3 review.pptx")).toBe("Open Q3 review.pptx in its app");
+    expect(artifactActionLabel("notes.md")).toBe("Read notes.md");
   });
 
   it("still lists them when the host offers no way to open one", () => {

@@ -31,6 +31,11 @@ type Props = {
   /** Put the entry away — the canvas column's windows are all dismissible, so
    *  a result the reader is done with leaves the corner like a plan does. */
   onDismiss?: () => void;
+  /** The column around it is closed: the result shows as its mark and nothing
+   *  else, the way the plan folds. Clicking it opens the column (`onUnfold`),
+   *  which is a different act from opening the evidence. */
+  folded?: boolean;
+  onUnfold?: () => void;
 };
 
 type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpenArtifact" | "onPreviewArtifact" | "onRequestChanges"> & {
@@ -43,6 +48,11 @@ type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpe
  *  DOM to click in. */
 export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, onDone }: EvidenceProps) {
   const review = (path?: string) => { onDone(); onReview?.(path); };
+  // A document opens in two steps: the first click previews it here in the
+  // panel, the second opens it full width (the inspector, or the app that owns
+  // the file). Going straight to full width meant every glance at a deck threw
+  // the reader out of the conversation and into another window.
+  const [previewing, setPreviewing] = useState<string | null>(null);
   const artifacts = completion.artifacts ?? [];
   return (
     <>
@@ -67,14 +77,20 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
             const directory = artifact.path.slice(0, -name.length).replace(/\/$/, "");
             const label = <><span className="klide-result-filename">{name}</span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
             const size = <span className="klide-result-size">{formatBytes(artifact.bytes)}</span>;
+            const shown = previewing === artifact.path;
             const row = onOpenArtifact
-              ? <button type="button" title={artifactActionLabel(artifact.path)}
-                  onClick={() => { onDone(); onOpenArtifact(artifact.path); }}>{label}{size}<span aria-hidden="true">↗</span></button>
+              ? <button type="button" aria-expanded={shown}
+                  title={shown ? artifactActionLabel(artifact.path) : `Preview ${artifact.path} in the panel`}
+                  onClick={() => {
+                    if (!shown) { setPreviewing(artifact.path); return; }
+                    onDone();
+                    onOpenArtifact(artifact.path);
+                  }}>{label}{size}<span aria-hidden="true">{shown ? "↗" : "▸"}</span></button>
               : <div>{label}{size}</div>;
             return (
-              <div key={artifact.path} className="klide-result-document">
+              <div key={artifact.path} className="klide-result-document" data-previewing={shown ? "1" : undefined}>
                 {row}
-                <ArtifactThumb path={artifact.path} load={onPreviewArtifact} />
+                <ArtifactThumb path={artifact.path} load={onPreviewArtifact} shown={shown} />
               </div>
             );
           })}</div>
@@ -101,21 +117,36 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
  *  Asked for once per row, on mount: the answer is a data URI, so nothing is
  *  refetched while the card is open, and a file with no preview simply has no
  *  picture rather than an apology in its place. */
-function ArtifactThumb({ path, load }: { path: string; load?: (path: string) => Promise<string | null> }) {
+/** The picture of one document, in the panel. It loads when the reader asks
+ *  for it — a preview per row, all at once, was a wall of pictures nobody had
+ *  asked to see, and it made the first click on a row the last one. */
+function ArtifactThumb({ path, load, shown }: { path: string; load?: (path: string) => Promise<string | null>; shown: boolean }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
-    if (!load || artifactPreview(path) === "none") return;
+    if (!shown || !load || artifactPreview(path) === "none") return;
     let live = true;
     void load(path).then((next) => { if (live) setSrc(next); }).catch(() => {});
     return () => { live = false; };
-  }, [path, load]);
-  if (!src) return null;
-  return <img className="klide-result-thumb" src={src} alt="" loading="lazy" />;
+  }, [path, load, shown]);
+  if (!shown) return null;
+  if (!src) {
+    return (
+      <p className="klide-result-preview-note">
+        {artifactPreview(path) === "none" ? "No preview for this kind of file." : "Opening a preview…"}
+      </p>
+    );
+  }
+  return (
+    <>
+      <img className="klide-result-thumb" src={src} alt={`Preview of ${path.split("/").pop() ?? path}`} loading="lazy" />
+      <p className="klide-result-preview-note">Click the row again to open it full width.</p>
+    </>
+  );
 }
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
  *  the column the plan already lives in; in a transcript it opens as a sheet. */
-export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss , folded = false, onUnfold }: Props) {
   const island = variant === "island";
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -145,6 +176,21 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
   const spoken = [label, files, attention > 0 ? `${attention} item${attention === 1 ? "" : "s"} to review` : ""]
     .filter(Boolean).join(" · ");
 
+  if (island && folded) {
+    // Closed column: icons only. Same pill as the plan's reopen mark — icon
+    // and count, nothing else — and the same job: bring the column back.
+    return (
+      <div className="klide-result-entry" data-variant="island" data-folded="1">
+        <button type="button" className="klide-result-mark" onClick={onUnfold}
+          aria-label={`Open the side panel — ${title.toLowerCase()}${files ? `, ${files}` : ""}`}
+          title="Open the side panel">
+          <ReviewIcon size={15} />
+          {completion.files.length > 0 && <span className="klide-result-meta">{completion.files.length}</span>}
+        </button>
+      </div>
+    );
+  }
+
   if (island) {
     // One window in the canvas column, built like the plan above it: a header
     // that is the whole hit target, a hairline that appears with the body, and
@@ -154,28 +200,34 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
         <section className="klide-result-island" data-open={open ? "1" : undefined} aria-label={title}>
           <div className="klide-result-island-header" role="button" tabIndex={0}
             aria-expanded={open} aria-controls={id}
-            aria-label={`${open ? "Collapse" : "Expand"} ${title.toLowerCase()}${files ? `, ${files}` : ""}${compact && attention > 0 ? `, ${attention} item${attention === 1 ? "" : "s"} to review` : ""}`}
-            title={compact ? spoken : undefined}
-            data-compact={compact ? "1" : undefined}
+            aria-label={`${open ? "Collapse" : "Expand"} ${spoken.toLowerCase()}`}
+            title={spoken}
             data-attention={attention > 0 ? "1" : undefined}
-            onClick={() => setOpen((was) => !was)}
+            onClick={() => setOpen(!open)}
             onKeyDown={(event) => {
               if (event.key !== "Enter" && event.key !== " ") return;
               event.preventDefault();
-              setOpen((was) => !was);
+              setOpen(!open);
             }}>
             {/* A 232px column is a corner, not a panel: the header keeps one
                 mark and drops the rest — the title, the count, the attention
                 dot and the chevron. What they said is in the header's own
                 name and tooltip, and "needs attention" becomes the mark's
                 colour rather than a dot pinned beside it. */}
+            {/* An open column has no compacted line: an entry there is a
+                window with its words, however narrow the column gets — a
+                full-width row holding a centred icon was neither one thing
+                nor the other. Folded, it is a mark; there is no third state. */}
             <ReviewIcon size={15} />
-            {!compact && <>
-              <span className="klide-result-island-title">{title}</span>
-              {files && <span className="klide-result-meta">{files}</span>}
-              {dot}
-              <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
-            </>}
+            <span className="klide-result-island-title">{title}</span>
+            {files && <span className="klide-result-meta">{files}</span>}
+            {dot}
+            <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
+            {/* Dismissal belongs to the open card. At rest the entry is one
+                mark, and an X beside it is a second thing in the space the
+                rule gives to one — hiding it with opacity was not enough
+                either, since it kept the pill as wide as two. The column's own
+                close puts the whole corner away meanwhile. */}
             {onDismiss && (
               <button type="button" className="klide-result-island-close" aria-label="Hide this result"
                 onClick={(event) => { event.stopPropagation(); onDismiss(); }}>

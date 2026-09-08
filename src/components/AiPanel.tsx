@@ -42,7 +42,8 @@ import { serviceAdvisorConsult } from "../agent/advisorConsult";
 import { toolsForMode } from "../agent/tools";
 import { readWorkspaceTextFile, workspacePathExists } from "../workspaceFs";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
-import { ISLAND_WIDTH, TodoStrip } from "./TodoStrip";
+import { TodoStrip, type TodoStripSlot } from "./TodoStrip";
+import { columnGeometry } from "./ai/canvasColumn";
 import { QuestionCard } from "./ai/QuestionCard";
 import {
   CLI_DEFAULT_MODEL,
@@ -2019,7 +2020,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   // In Focus the plan is an island at the canvas' top-right; while it is up
   // the conversation column is centred in the space to its left instead of
   // under it (see `focusGutterLeft` / `focusGutterRight`).
-  const [planIslandUp, setPlanIslandUp] = useState(false);
+  const [planSlot, setPlanSlot] = useState<TodoStripSlot>("none");
 
   function forceStickToBottom() {
     stickToBottomRef.current = true;
@@ -2935,21 +2936,22 @@ This user request requires workspace inspection. Before answering, you MUST call
   // the conversation into a gutter — and under 260px the result entry drops
   // its words for its mark, since a column that narrow is a corner, not a
   // panel. Width 0 is "not measured yet"; assume the roomy case.
-  const islandColumnWidth = canvasWidth === 0
-    ? ISLAND_WIDTH
-    : Math.max(232, Math.min(ISLAND_WIDTH, canvasWidth - 596));
-  const compactIslands = islandColumnWidth < 260;
+
 
   // Anything in the column holds it open — a result entry on its own counted
   // for nothing here, so the conversation kept the full canvas and the pill
   // floated over the prose in the corner.
-  const sideHidden = sidePanelHidden && pendingQuestion === null;
-  const resultUp = latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId;
-  const canvasIslandUp = !sideHidden && (planIslandUp || pendingQuestion !== null || resultUp);
-  // Closed, the corner still holds marks, and prose that runs under them is
-  // the overlap the column was built to avoid — so the conversation gives up
-  // the marks' width instead of the panel's.
-  const marksUp = sideHidden && (planIslandUp || resultUp);
+  // The corner's geometry is one rule, tested on its own (canvasColumn.ts):
+  // what each slot is showing decides the column's width, whether the canvas
+  // gives up a panel's width or a mark's lane, and whether there is anything
+  // for the close control to close.
+  const column = columnGeometry({
+    planSlot,
+    resultUp: latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId,
+    questionUp: pendingQuestion !== null,
+    hidden: sidePanelHidden,
+    canvasWidth,
+  });
 
   // A question is the one card in the column that holds the run, and it
   // arrives *under* a plan and an opened result that may already fill the
@@ -2964,10 +2966,7 @@ This user request requires workspace inspection. Before answering, you MUST call
     });
     return () => cancelAnimationFrame(frame);
   }, [pendingQuestion]);
-  const focusInset = variant !== "focus" ? 0
-    : canvasIslandUp ? islandColumnWidth + 36
-      : marksUp ? 76
-        : 0;
+  const focusInset = variant === "focus" ? column.inset : 0;
   const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
   const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
   // Permission gate: the harness pauses and emits a request — a shell command,
@@ -4636,7 +4635,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             running={streaming}
             variant="dock"
             onDockHeightChange={setTodoDockHeight}
-            onPresenceChange={setPlanIslandUp}
+            onPresenceChange={setPlanSlot}
           />
         )}
       </div>
@@ -4661,7 +4660,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             top: 16,
             right: 18,
             zIndex: 6,
-            width: `min(${islandColumnWidth}px, calc(100% - 36px))`,
+            width: `min(${column.width}px, calc(100% - 36px))`,
             display: "flex",
             flexDirection: "column",
             gap: 10,
@@ -4686,9 +4685,17 @@ This user request requires workspace inspection. Before answering, you MUST call
               is marks — the plan's own reopen pill and, beside it, the result's
               — the way the plan has always folded. So the main view carries
               icons rather than a panel, and either icon opens the panel. */}
-          {!sideHidden && (
+          {/* The close control keeps its place at the head of the column and
+              slides in and out of it, rather than appearing and vanishing: the
+              cards below it move by the height of one row either way, and a
+              row that pops takes the whole stack with it. Its slot stays
+              mounted so both directions animate (tokens.css owns the curve and
+              the reduced-motion guard). */}
+          <div className="klide-island-close-slot" data-shown={column.showClose ? "1" : undefined}>
             <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
               <button
+                tabIndex={column.showClose ? undefined : -1}
+                aria-hidden={column.showClose ? undefined : true}
                 type="button"
                 onClick={() => setSidePanelHidden(true)}
                 aria-label="Close the side panel"
@@ -4713,7 +4720,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 <CloseIcon size={14} />
               </button>
             </div>
-          )}
+          </div>
           {(
           <TodoStrip
             workspaceRoot={workspaceRoot}
@@ -4721,13 +4728,13 @@ This user request requires workspace inspection. Before answering, you MUST call
             goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
             running={streaming}
             variant="island"
-            folded={sideHidden}
+            folded={column.planFolded}
             onUnfold={() => setSidePanelHidden(false)}
             onDockHeightChange={setTodoDockHeight}
-            onPresenceChange={setPlanIslandUp}
+            onPresenceChange={setPlanSlot}
           />
           )}
-          {sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+          {column.marksUp && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
             <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
               <button
                 type="button"
@@ -4762,10 +4769,15 @@ This user request requires workspace inspection. Before answering, you MUST call
               </button>
             </div>
           )}
-          {!sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+          {/* The result lives in the corner whether the column is open or
+              folded — "a document or review should stay in icons" — and its
+              own resting state is that icon, so there is no second pill here
+              to keep in step with it. */}
+          {latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
             <CompletionCard
               variant="island"
-              compact={compactIslands}
+              folded={column.planFolded}
+              onUnfold={() => setSidePanelHidden(false)}
               completion={latestCompletion}
               disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
