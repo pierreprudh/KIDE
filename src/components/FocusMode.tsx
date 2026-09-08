@@ -1084,13 +1084,13 @@ function FocusAddMenu({
     computePos: (rect) => {
       const width = 238;
       // Bottom-anchored above the trigger, so the room it has is whatever sits
-      // above it minus the two 8px margins. Goal's policy rows push the actions
-      // list past any fixed height — cap it here and let the body scroll rather
-      // than clip the last rung off the bottom.
+      // above it minus the two 8px margins — not a fixed number. Goal's policy
+      // rows take the stack past 350px, which a fixed cap simply cut off; the
+      // ceiling only bites on a short window, and then the body scrolls.
       return {
         bottom: Math.round(window.innerHeight - rect.top + 8),
         left: Math.round(Math.min(Math.max(8, rect.left), window.innerWidth - width - 8)),
-        maxHeight: Math.max(160, Math.min(332, Math.round(rect.top - 16))),
+        maxHeight: Math.max(160, Math.min(560, Math.round(rect.top - 16))),
       };
     },
   });
