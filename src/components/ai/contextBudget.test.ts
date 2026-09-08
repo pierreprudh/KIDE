@@ -11,6 +11,7 @@ import {
   type ContextBudgetInput,
 } from "./contextBudget";
 import type { Msg } from "./types";
+import { conversationTokenEstimate } from "./contextBudget";
 
 function user(content: string): Msg {
   return { role: "user", content };
@@ -245,5 +246,17 @@ describe("conversationCost", () => {
 
   it("is 0 for models with no known price", () => {
     expect(conversationCost([user("a"), assistant("b")])).toBe(0);
+  });
+});
+
+describe("conversationTokenEstimate", () => {
+  it("is the number the budget uses, so a caller may memoize it on msgs and pass it in", () => {
+    const msgs = [user("a".repeat(400)), compactionMarker(), assistant("b".repeat(800))];
+    const estimate = conversationTokenEstimate(msgs);
+    expect(estimate).toBeGreaterThan(0);
+    expect(computeContextBudget(input({ msgs })).messageTokens).toBe(estimate);
+    expect(computeContextBudget(input({ msgs, messageTokens: estimate })).messageTokens).toBe(estimate);
+    // Still counts only from the newest compaction marker onward.
+    expect(estimate).toBe(conversationTokenEstimate(msgs.slice(1)));
   });
 });
