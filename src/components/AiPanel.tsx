@@ -44,6 +44,11 @@ import { readWorkspaceTextFile, workspacePathExists } from "../workspaceFs";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
 import { TodoStrip, type TodoStripSlot } from "./TodoStrip";
 import { columnGeometry } from "./ai/canvasColumn";
+
+/** The documents a completion produced, as the viewer's rail wants them. */
+function documentSet(completion: RunCompletion): { path: string; bytes: number }[] {
+  return (completion.artifacts ?? []).map((artifact) => ({ path: artifact.path, bytes: artifact.bytes }));
+}
 import { QuestionCard } from "./ai/QuestionCard";
 import {
   CLI_DEFAULT_MODEL,
@@ -307,7 +312,10 @@ type Props = {
   onReviewChanges?: (info: { runId: string; title: string; path?: string }) => void;
   /** Open a document a run produced — the inspector for text, the machine's
    *  own app for a deck or a PDF. The host owns that choice. */
-  onOpenArtifact?: (info: { runId: string; path: string }) => void;
+  /** Open one produced document. The whole set travels with it: the viewer
+   *  puts the run's documents in a rail, so it needs the siblings of the row
+   *  that was clicked, not only the row. */
+  onOpenArtifact?: (info: { runId: string; path: string; documents: { path: string; bytes: number }[] }) => void;
   /** A picture of a produced document, when the host can make one. */
   onPreviewArtifact?: (path: string) => Promise<string | null>;
   visible: boolean;
@@ -2890,11 +2898,10 @@ This user request requires workspace inspection. Before answering, you MUST call
   // card holds the run, and hiding the run's own question would strand it.
   const [sidePanelHidden, setSidePanelHidden] = useState(false);
 
-  // A result the reader has put away. Held by run id, not a boolean, so the
-  // next run's result comes back on its own — the same rule the plan follows
-  // (a new plan reopens a hidden strip), without persisting a dismissal that
-  // only matters while the corner is in view.
-  const [dismissedResultRunId, setDismissedResultRunId] = useState<string | null>(null);
+  // The result is not dismissible: what a run produced stays in the corner for
+  // as long as the run is the latest one. The column's close folds it to its
+  // mark like everything else, and the next run replaces it — but there is no
+  // way to lose the files a run made while looking at that run.
 
   // The newest turn whose evidence is worth opening — what "the result" means
   // on the canvas, where there is room for one entry, not one per turn.
@@ -2947,7 +2954,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   // for the close control to close.
   const column = columnGeometry({
     planSlot,
-    resultUp: latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId,
+    resultUp: latestCompletion !== undefined,
     questionUp: pendingQuestion !== null,
     hidden: sidePanelHidden,
     canvasWidth,
@@ -4151,7 +4158,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             return <CompletionCard key={i} completion={completion} disabled={streaming}
               compact={canvasWidth > 0 && canvasWidth < 300}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
-              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: completion.runId, path }) : undefined}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: completion.runId, path, documents: documentSet(completion) }) : undefined}
               onPreviewArtifact={onPreviewArtifact}
               onRequestChanges={() => requestCompletionChanges(completion)}
             />;
@@ -4734,7 +4741,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             onPresenceChange={setPlanSlot}
           />
           )}
-          {column.marksUp && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+          {column.marksUp && latestCompletion && (
             <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
               <button
                 type="button"
@@ -4773,7 +4780,7 @@ This user request requires workspace inspection. Before answering, you MUST call
               folded — "a document or review should stay in icons" — and its
               own resting state is that icon, so there is no second pill here
               to keep in step with it. */}
-          {latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+          {latestCompletion && (
             <CompletionCard
               variant="island"
               folded={column.planFolded}
@@ -4781,10 +4788,9 @@ This user request requires workspace inspection. Before answering, you MUST call
               completion={latestCompletion}
               disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
-              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: latestCompletion.runId, path }) : undefined}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: latestCompletion.runId, path, documents: documentSet(latestCompletion) }) : undefined}
               onPreviewArtifact={onPreviewArtifact}
               onRequestChanges={() => requestCompletionChanges(latestCompletion)}
-              onDismiss={() => setDismissedResultRunId(latestCompletion.runId)}
             />
           )}
           {pendingQuestion && (

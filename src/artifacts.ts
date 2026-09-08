@@ -1,3 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
+import { readWorkspaceFileDataUri, workspacePath } from "./workspaceFs";
+
 /** Where a document a run produced can be read.
  *
  * The frontend twin of `src-tauri/src/agent/artifacts.rs`: that module decides
@@ -52,4 +55,29 @@ export function artifactPreview(path: string): ArtifactPreview {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return "none";
   return PICTURES.has(name.slice(dot + 1).toLowerCase()) ? "image" : "quicklook";
+}
+
+/** A picture of a document, at roughly `size` px on its long edge.
+ *
+ *  An image is already one and comes straight off disk; everything else is
+ *  drawn by macOS Quick Look. Both go through `workspacePath` first: the Rust
+ *  side canonicalizes the path it is handed and does *not* join the workspace
+ *  root, so a relative path resolves against the app's own working directory
+ *  and finds nothing. */
+export function loadArtifactPreview(workspaceRoot: string, path: string, size = 900): Promise<string> {
+  return artifactPreview(path) === "image"
+    ? readWorkspaceFileDataUri(workspaceRoot, path)
+    : invoke<string>("preview_file", {
+      workspaceRoot,
+      path: workspacePath(workspaceRoot, path),
+      size,
+    });
+}
+
+/** Hand the file to the application the machine opens it with. */
+export function openArtifactInApp(workspaceRoot: string, path: string): Promise<void> {
+  return invoke("open_entry", {
+    workspaceRoot,
+    path: workspacePath(workspaceRoot, path),
+  });
 }

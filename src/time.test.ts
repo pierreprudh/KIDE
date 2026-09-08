@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatSpan, relativeTime, relativeTimeLong } from "./time";
+import {
+  formatHours,
+  formatSpan,
+  relativeTime,
+  relativeTimeLong,
+} from "./time";
 
 // `nowMs` is injectable precisely so these don't have to freeze the clock.
 const NOW = 1_700_000_000_000;
@@ -55,5 +60,20 @@ describe("formatSpan", () => {
     expect(formatSpan(4 * MIN)).toBe("4m");
     expect(formatSpan(HOUR)).toBe("1h");
     expect(formatSpan(HOUR + 20 * MIN)).toBe("1h 20m");
+  });
+});
+
+describe("formatHours", () => {
+  it('formats elapsed time as "Xh YYm" with zero-padded minutes', () => {
+    expect(formatHours(2 * HOUR + 5 * MIN)).toBe("2h 05m");
+    expect(formatHours(2 * HOUR)).toBe("2h 00m");
+  });
+
+  it("shows minutes alone when under an hour, still padded", () => {
+    expect(formatHours(5 * MIN)).toBe("0h 05m");
+  });
+
+  it("rounds to the nearest minute", () => {
+    expect(formatHours(HOUR + MIN + 30 * SEC)).toBe("1h 02m");
   });
 });

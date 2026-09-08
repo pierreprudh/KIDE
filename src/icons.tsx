@@ -27,6 +27,7 @@ import { ArrowUp } from "@phosphor-icons/react/dist/csr/ArrowUp";
 import { BookmarkSimple } from "@phosphor-icons/react/dist/csr/BookmarkSimple";
 import { CaretDown } from "@phosphor-icons/react/dist/csr/CaretDown";
 import { Cards } from "@phosphor-icons/react/dist/csr/Cards";
+import { FileText } from "@phosphor-icons/react/dist/csr/FileText";
 import { ChatTeardrop } from "@phosphor-icons/react/dist/csr/ChatTeardrop";
 import { ChatTeardropDots } from "@phosphor-icons/react/dist/csr/ChatTeardropDots";
 import { FileMagnifyingGlass } from "@phosphor-icons/react/dist/csr/FileMagnifyingGlass";
@@ -95,6 +96,12 @@ export function AiIcon(p: GlyphProps) {
  *  plan mark, and this one means "look at what came out", not "track it". */
 export function ReviewIcon(p: GlyphProps) {
   return <Icon as={FileMagnifyingGlass} {...p} />;
+}
+
+/** A document a run produced — a page, not a page under a magnifier: the
+ *  reader is opening it to read, not to review a change to it. */
+export function DocumentIcon(p: GlyphProps) {
+  return <Icon as={FileText} {...p} />;
 }
 
 /** Kit asking *you* something — the run is parked on an answer. The same

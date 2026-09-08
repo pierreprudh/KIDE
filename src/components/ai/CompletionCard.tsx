@@ -28,9 +28,6 @@ type Props = {
   /** Too little room for the words: the entry keeps the mark and the count,
    *  and the label it drops moves to its tooltip and accessible name. */
   compact?: boolean;
-  /** Put the entry away — the canvas column's windows are all dismissible, so
-   *  a result the reader is done with leaves the corner like a plan does. */
-  onDismiss?: () => void;
   /** The column around it is closed: the result shows as its mark and nothing
    *  else, the way the plan folds. Clicking it opens the column (`onUnfold`),
    *  which is a different act from opening the evidence. */
@@ -158,7 +155,7 @@ function ArtifactThumb({ path, load, shown }: { path: string; load?: (path: stri
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
  *  the column the plan already lives in; in a transcript it opens as a sheet. */
-export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss , folded = false, onUnfold }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, folded = false, onUnfold }: Props) {
   const island = variant === "island";
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -240,12 +237,11 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
                 rule gives to one — hiding it with opacity was not enough
                 either, since it kept the pill as wide as two. The column's own
                 close puts the whole corner away meanwhile. */}
-            {onDismiss && (
-              <button type="button" className="klide-result-island-close" aria-label="Hide this result"
-                onClick={(event) => { event.stopPropagation(); onDismiss(); }}>
-                <CloseIcon size={14} />
-              </button>
-            )}
+            {/* No dismiss here. What a run produced stays in the corner while
+                that run is the latest one — the files are the run's output,
+                not a notice about it, and there is no reading of "close" that
+                should lose them. The column's own close folds this to its mark
+                like everything else. */}
           </div>
           <div className="klide-result-island-rule" data-shown={open ? "1" : undefined} aria-hidden="true" />
           {/* Open, the card takes the rest of the column: the evidence scrolls

@@ -100,7 +100,8 @@ import {
 import { useAiPanelFleet } from "./hooks/useAiPanelFleet";
 import { useArtifactInspector } from "./hooks/useArtifactInspector";
 import { listCheckpoints, readAgentRunEvents } from "./agent/client";
-import { artifactOpensIn, artifactPreview } from "./artifacts";
+import { artifactOpensIn, artifactPreview, loadArtifactPreview, openArtifactInApp } from "./artifacts";
+import { DocumentViewer } from "./components/DocumentViewer";
 import { errMessage } from "./errors";
 import {
   DEFAULT_AI_PANEL_ID,
@@ -115,7 +116,7 @@ import {
   type AiPanelRenderOptions,
   type AiSurface,
 } from "./components/ai/panelHost";
-import { readWorkspaceFileDataUri, readWorkspaceTextFile } from "./workspaceFs";
+import { readWorkspaceTextFile } from "./workspaceFs";
 import { modelLabel } from "./components/ai/ModelPicker";
 import { ProviderLogo } from "./components/ai/icons";
 import { RaceFollowUpBar } from "./components/ai/RaceFollowUpBar";
@@ -1276,27 +1277,61 @@ function App() {
   // already one; a deck, a PDF or a spreadsheet is drawn by macOS through
   // Quick Look. Null is a normal answer — the row keeps its name and its size
   // and simply has no picture.
-  const previewRunArtifact = useCallback(async (path: string): Promise<string | null> => {
+  // One complaint per file: the rail and the canvas both ask for the same
+  // document, and two toasts for one failure is one too many.
+  const previewFailures = useRef<Set<string>>(new Set());
+  const previewRunArtifact = useCallback(async (path: string, size = 900): Promise<string | null> => {
     const root = workspaceRoot;
     if (!root) return null;
     try {
-      return artifactPreview(path) === "image"
-        ? await readWorkspaceFileDataUri(root, path)
-        : await invoke<string>("preview_file", { workspaceRoot: root, path });
-    } catch {
+      return await loadArtifactPreview(root, path, size);
+    } catch (err) {
+      // A file with no preview is normal and says so on the sheet. A preview
+      // that *failed* is not: it looks identical to the reader, so the reason
+      // is surfaced once — per file, not per thumbnail — instead of being
+      // swallowed into the same empty sheet.
+      const reason = errMessage(err);
+      if (!previewFailures.current.has(path)) {
+        previewFailures.current.add(path);
+        notify(`No preview for ${path.split("/").pop()}: ${reason}`);
+      }
+      console.warn(`No preview for ${path}:`, reason);
       return null;
     }
   }, [workspaceRoot]);
 
-  async function openRunArtifact({ runId, path }: { runId: string; path: string }) {
+  // The document a reader opened, and the set its rail walks.
+  const [documentViewer, setDocumentViewer] = useState<
+    { path: string; documents: { path: string; bytes: number }[] } | null
+  >(null);
+
+  async function openRunArtifact(
+    { runId, path, documents }: { runId: string; path: string; documents: { path: string; bytes: number }[] },
+  ) {
     const root = workspaceRoot;
     if (!root) return;
+    // Text is read properly in the inspector, with its own editor. A document
+    // Klide cannot render opens in the viewer — reading it in the app beats
+    // bouncing to Keynote for a look, and the viewer keeps a way out to the
+    // real thing. Only a file with no picture at all still leaves straight
+    // away, since there would be nothing to show.
     if (artifactOpensIn(path) === "inspector") {
       openArtifact({ kind: "file", runId, workspaceRoot: root, path });
       return;
     }
+    if (artifactPreview(path) !== "none") {
+      const set = documents.length > 0 ? documents : [{ path, bytes: 0 }];
+      setDocumentViewer({ path, documents: set.filter((d) => artifactPreview(d.path) !== "none") });
+      return;
+    }
+    await openArtifactExternally(path);
+  }
+
+  async function openArtifactExternally(path: string) {
+    const root = workspaceRoot;
+    if (!root) return;
     try {
-      await invoke("open_entry", { workspaceRoot: root, path });
+      await openArtifactInApp(root, path);
     } catch (err) {
       notify(`Unable to open ${path}: ${errMessage(err)}`, { tone: "error" });
     }
@@ -3951,6 +3986,15 @@ function App() {
           commands={paletteCommands}
           onOpenFile={openFile}
           initialQuery={paletteQuery}
+        />
+      )}
+      {documentViewer && (
+        <DocumentViewer
+          documents={documentViewer.documents}
+          path={documentViewer.path}
+          load={previewRunArtifact}
+          onOpenExternal={(path) => void openArtifactExternally(path)}
+          onClose={() => setDocumentViewer(null)}
         />
       )}
       <ToastHost />
