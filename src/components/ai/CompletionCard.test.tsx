@@ -70,16 +70,20 @@ describe("the island card", () => {
     expect(html).toContain("Review result · 2 files");
     expect(html).toContain('aria-label="Expand result, 2 files"');
   });
-  // The column is a stack of windows; a right-aligned card in it read as a
-  // different kind of thing, and dismissal is how every window there leaves.
-  it("fills the column and can be put away, at either size", () => {
+  // "A document or review should stay in icons": at rest the entry is one mark
+  // and nothing else — not even its own dismiss, which kept the pill as wide
+  // as two things even when hidden. Putting a resting result away is the
+  // column's close; the card's own arrives with the open card.
+  it("rests as one mark at either size, with no control beside it", () => {
     for (const compact of [false, true]) {
       const html = renderToStaticMarkup(
         <CompletionCard variant="island" compact={compact} completion={withFiles}
           onReview={() => {}} onRequestChanges={() => {}} onDismiss={() => {}} />,
       );
-      expect(html).toContain("klide-result-island-close");
-      expect(html).toContain('aria-label="Hide this result"');
+      expect(html).toContain('data-resting="1"');
+      expect(html.split("<svg").length - 1).toBe(1);
+      expect(html).not.toContain("klide-result-island-close");
+      expect(html).not.toContain("klide-result-island-title");
     }
   });
   it("offers no dismissal when the host has nowhere to put the state", () => {
