@@ -81,6 +81,17 @@
 .klide-result-files > * { position: relative; display: flex; flex-direction: column; align-items: flex-start; width: 100%; box-sizing: border-box; padding: 10px 22px 10px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; text-align: left; }
 .klide-result-filename { overflow-wrap: anywhere; }
 .klide-result-directory { font-size: 10px; color: var(--fg-subtle); overflow-wrap: anywhere; }
+/* A produced document says how big it is — the one fact that tells a real
+   deck from an empty one a script failed to fill. */
+.klide-result-size { position: absolute; right: 22px; top: 11px; font-size: 10px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+.klide-result-artifacts > .klide-result-document { padding: 0; border: 0; }
+.klide-result-artifacts .klide-result-document > button, .klide-result-artifacts .klide-result-document > div { padding-right: 74px; }
+/* The picture is the row's evidence, not decoration: full column width, its
+   own hairline, and no rounding beyond the card's own vocabulary. A deck is
+   4:3 and a page is taller, so the height follows the image. */
+.klide-result-thumb { display: block; width: 100%; margin: 2px 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); animation: klide-result-thumb-in 220ms ease-out; }
+@keyframes klide-result-thumb-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .klide-result-thumb { animation: none; } }
 .klide-result-files button > :last-child:not(.klide-result-filename):not(.klide-result-directory) { position: absolute; right: 2px; top: 11px; color: var(--fg-subtle); }
 .klide-result-command { border-bottom: 1px solid var(--border); }
 .klide-result-command summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 0; cursor: pointer; list-style: none; }

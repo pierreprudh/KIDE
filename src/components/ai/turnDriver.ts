@@ -173,6 +173,7 @@ export function createTurnDriver(opts: TurnDriverOptions): TurnDriver {
       // Evidence belongs to the fold, while these events still need the
       // panel's file refresh, permission, and terminal-state handlers.
       case "file_changed":
+      case "artifact_produced":
       case "permission_resolved":
       case "run_result": {
         transcript.apply(event);

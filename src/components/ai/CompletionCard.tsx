@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { hasCompletionReview, type RunCompletion } from "../../agent/completion";
+import { artifactActionLabel, artifactPreview } from "../../artifacts";
+import { formatBytes } from "../settings/storage";
 import { ChevronIcon, CloseIcon, ReviewIcon } from "../../icons";
 import { Z } from "../../zLayers";
 import "./completionCard.css";
@@ -15,6 +17,12 @@ type Props = {
   completion: RunCompletion;
   disabled?: boolean;
   onReview?: (path?: string) => void;
+  /** Open a document the run produced. Where it opens — the inspector, or the
+   *  app the machine owns it with — is the host's call, not the card's. */
+  onOpenArtifact?: (path: string) => void;
+  /** A picture of a document Klide cannot render, when the host can make one.
+   *  Resolving to null is a normal answer — some files have no preview. */
+  onPreviewArtifact?: (path: string) => Promise<string | null>;
   onRequestChanges: () => void;
   variant?: CompletionCardVariant;
   /** Too little room for the words: the entry keeps the mark and the count,
@@ -25,7 +33,7 @@ type Props = {
   onDismiss?: () => void;
 };
 
-type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onRequestChanges"> & {
+type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpenArtifact" | "onPreviewArtifact" | "onRequestChanges"> & {
   onDone: () => void;
 };
 
@@ -33,8 +41,9 @@ type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onReq
  *  it is read: inside the island card on the canvas, or in the sheet the
  *  transcript's entry opens. Exported so its markup can be tested without a
  *  DOM to click in. */
-export function ResultEvidence({ completion, disabled, onReview, onRequestChanges, onDone }: EvidenceProps) {
+export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, onDone }: EvidenceProps) {
   const review = (path?: string) => { onDone(); onReview?.(path); };
+  const artifacts = completion.artifacts ?? [];
   return (
     <>
       <div className="klide-result-body">
@@ -45,6 +54,29 @@ export function ResultEvidence({ completion, disabled, onReview, onRequestChange
             const directory = path.slice(0, -name.length).replace(/\/$/, "");
             const label = <><span className="klide-result-filename">{name}</span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
             return onReview ? <button key={path} type="button" title={`Review ${path}`} onClick={() => review(path)}>{label}<span aria-hidden="true">↗</span></button> : <div key={path}>{label}</div>;
+          })}</div>
+        </section>}
+        {artifacts.length > 0 && <section aria-label="Documents produced">
+          {/* Not "Changes": these came from a command, so there is no diff
+              behind them and nothing to revert. The row opens the document —
+              in the inspector when Klide can read it, in the app that owns it
+              when it cannot. */}
+          <h3>Documents <span>{artifacts.length}</span></h3>
+          <div className="klide-result-files klide-result-artifacts">{artifacts.map((artifact) => {
+            const name = artifact.path.split("/").pop() || artifact.path;
+            const directory = artifact.path.slice(0, -name.length).replace(/\/$/, "");
+            const label = <><span className="klide-result-filename">{name}</span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
+            const size = <span className="klide-result-size">{formatBytes(artifact.bytes)}</span>;
+            const row = onOpenArtifact
+              ? <button type="button" title={artifactActionLabel(artifact.path)}
+                  onClick={() => { onDone(); onOpenArtifact(artifact.path); }}>{label}{size}<span aria-hidden="true">↗</span></button>
+              : <div>{label}{size}</div>;
+            return (
+              <div key={artifact.path} className="klide-result-document">
+                {row}
+                <ArtifactThumb path={artifact.path} load={onPreviewArtifact} />
+              </div>
+            );
           })}</div>
         </section>}
         {completion.commands.length > 0 && <section aria-label="Command results">
@@ -64,9 +96,26 @@ export function ResultEvidence({ completion, disabled, onReview, onRequestChange
   );
 }
 
+/** What the document looks like, when the host can say.
+ *
+ *  Asked for once per row, on mount: the answer is a data URI, so nothing is
+ *  refetched while the card is open, and a file with no preview simply has no
+ *  picture rather than an apology in its place. */
+function ArtifactThumb({ path, load }: { path: string; load?: (path: string) => Promise<string | null> }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (!load || artifactPreview(path) === "none") return;
+    let live = true;
+    void load(path).then((next) => { if (live) setSrc(next); }).catch(() => {});
+    return () => { live = false; };
+  }, [path, load]);
+  if (!src) return null;
+  return <img className="klide-result-thumb" src={src} alt="" loading="lazy" />;
+}
+
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
  *  the column the plan already lives in; in a transcript it opens as a sheet. */
-export function CompletionCard({ completion, disabled, onReview, onRequestChanges, variant = "inline", compact = false, onDismiss }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss }: Props) {
   const island = variant === "island";
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -141,7 +190,7 @@ export function CompletionCard({ completion, disabled, onReview, onRequestChange
           {open && (
             <div className="klide-result-island-panel" id={id}>
               <ResultEvidence completion={completion} disabled={disabled} onReview={onReview}
-                onRequestChanges={onRequestChanges} onDone={() => setOpen(false)} />
+                onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={() => setOpen(false)} />
             </div>
         )}
         </section>
@@ -183,7 +232,7 @@ export function CompletionCard({ completion, disabled, onReview, onRequestChange
               <button type="button" autoFocus className="klide-result-close" aria-label="Close result" onClick={close}><CloseIcon size={18} /></button>
             </header>
             <ResultEvidence completion={completion} disabled={disabled} onReview={onReview}
-              onRequestChanges={onRequestChanges} onDone={close} />
+              onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={close} />
           </div>
         </div>,
         document.body,

@@ -304,6 +304,11 @@ type Props = {
    *  surfaces that dock one; without it the "N files changed" row is
    *  plain text. */
   onReviewChanges?: (info: { runId: string; title: string; path?: string }) => void;
+  /** Open a document a run produced — the inspector for text, the machine's
+   *  own app for a deck or a PDF. The host owns that choice. */
+  onOpenArtifact?: (info: { runId: string; path: string }) => void;
+  /** A picture of a produced document, when the host can make one. */
+  onPreviewArtifact?: (path: string) => Promise<string | null>;
   visible: boolean;
   width: number;
   fill?: boolean;
@@ -630,6 +635,8 @@ export function AiPanel({
   onFileWritten,
   onWorkspaceChanged,
   onReviewChanges,
+  onOpenArtifact,
+  onPreviewArtifact,
   visible,
   width,
   fill,
@@ -4145,6 +4152,8 @@ This user request requires workspace inspection. Before answering, you MUST call
             return <CompletionCard key={i} completion={completion} disabled={streaming}
               compact={canvasWidth > 0 && canvasWidth < 300}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: completion.runId, path }) : undefined}
+              onPreviewArtifact={onPreviewArtifact}
               onRequestChanges={() => requestCompletionChanges(completion)}
             />;
           }
@@ -4760,6 +4769,8 @@ This user request requires workspace inspection. Before answering, you MUST call
               completion={latestCompletion}
               disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: latestCompletion.runId, path }) : undefined}
+              onPreviewArtifact={onPreviewArtifact}
               onRequestChanges={() => requestCompletionChanges(latestCompletion)}
               onDismiss={() => setDismissedResultRunId(latestCompletion.runId)}
             />

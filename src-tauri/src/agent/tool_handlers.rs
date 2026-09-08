@@ -1002,7 +1002,10 @@ async fn dirty_set(top: &std::path::Path) -> Option<std::collections::BTreeMap<S
     let out = tokio::process::Command::new("git")
         .arg("-C")
         .arg(top)
-        .args(["status", "--porcelain"])
+        // `-uall`: without it git collapses a wholly-untracked directory into
+        // one `?? decks/` entry, and the deck inside it — the whole point —
+        // never gets named.
+        .args(["status", "--porcelain", "-uall"])
         .output()
         .await
         .ok()?;

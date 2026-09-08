@@ -146,9 +146,14 @@ describe("completed run evidence", () => {
     let messages: Msg[] = [{ role: "assistant", content: "" }, queued];
     const driver = createTurnDriver({ assistantIndex: 0, delegate: {}, pricing: null, read: () => messages, commit: (next) => { messages = next; } });
     const fold = createFold();
-    for (const event of [start(), changed, command, result, answer, done]) {
+    // Every evidence event has to reach the fold through the driver as well:
+    // one missing from its switch lands on disk, replays after a reload, and
+    // is invisible while the run is happening — which is when it matters.
+    for (const event of [start(), changed, produced("decks/Q3.pptx", 40_960, true), command, result, answer, done]) {
       const handled = driver.handleEvent(event);
-      if (event.type === "run_result" || event.type === "file_changed") expect(handled).toBe(false);
+      if (event.type === "run_result" || event.type === "file_changed" || event.type === "artifact_produced") {
+        expect(handled).toBe(false);
+      }
       fold.apply(event);
     }
     driver.finish();

@@ -10,9 +10,11 @@ const renderIsland = (value: RunCompletion, compact = false) => renderToStaticMa
 );
 // The sheet only exists while open, and there is no DOM here to click in — so
 // the evidence both surfaces share is asserted directly.
-const renderEvidence = (value: RunCompletion) => renderToStaticMarkup(
-  <ResultEvidence completion={value} onReview={() => {}} onRequestChanges={() => {}} onDone={() => {}} />,
+const renderEvidence = (value: RunCompletion, onOpenArtifact?: (path: string) => void) => renderToStaticMarkup(
+  <ResultEvidence completion={value} onReview={() => {}} onOpenArtifact={onOpenArtifact}
+    onRequestChanges={() => {}} onDone={() => {}} />,
 );
+const DECK = { path: "decks/Q3 review.pptx", bytes: 40_960, created: true };
 
 describe("CompletionCard", () => {
   it("renders nothing for empty evidence, including older saved completions", () => {
@@ -88,6 +90,40 @@ describe("the island card", () => {
     expect(html).not.toContain("klide-result-attention-dot");
     expect(html).toContain('data-attention="1"');
     expect(html).toContain("1 item to review");
+  });
+});
+
+describe("documents a command produced", () => {
+  it("lists them with their size, apart from the changes", () => {
+    const html = renderEvidence({ ...completion, artifacts: [DECK] }, () => {});
+    expect(html).toContain("Documents");
+    expect(html).toContain("Q3 review.pptx");
+    expect(html).toContain("41 KB");
+    // No diff and no checkpoint behind a produced file: it must not arrive
+    // where the reviewable edits are.
+    expect(html).not.toContain("Changes");
+    expect(html).not.toContain("Review changes");
+  });
+
+  it("says which of the two things the row will do", () => {
+    expect(renderEvidence({ ...completion, artifacts: [DECK] }, () => {}))
+      .toContain("Open Q3 review.pptx in its app");
+    expect(renderEvidence({ ...completion, artifacts: [{ path: "notes.md", bytes: 900, created: true }] }, () => {}))
+      .toContain("Read notes.md");
+  });
+
+  it("still lists them when the host offers no way to open one", () => {
+    // The footer's own buttons stay; it is the row that stops being one.
+    const html = renderEvidence({ ...completion, artifacts: [DECK] });
+    expect(html).toContain("Q3 review.pptx");
+    expect(html).not.toContain("Open Q3 review.pptx in its app");
+    expect(html).not.toContain("↗</span></button>");
+  });
+
+  it("earns the card on its own", () => {
+    // Nothing edited, no failing command: without the document this run would
+    // draw no entry at all.
+    expect(render({ ...completion, artifacts: [DECK] })).toContain("Review result");
   });
 });
 
