@@ -1480,8 +1480,11 @@ async fn start_run(
         snapshot.omitted.extend(clamped.omitted);
         request.context = Some(snapshot);
     }
-    if let Some(root) = request.workspace_root.as_deref() {
-        for command in command_allowlist::list(&runs_dir, root)? {
+    if let Some(root) = request.workspace_root.clone() {
+        // Two git processes on a memo hit, a full-tree fingerprint on a miss
+        // (approval_store.rs) — either way, not on the runtime thread.
+        let dir = runs_dir.clone();
+        for command in crate::blocking::run(move || command_allowlist::list(&dir, &root)).await? {
             if !request.command_allowlist.iter().any(|c| c == &command) {
                 request.command_allowlist.push(command);
             }
@@ -2041,6 +2044,19 @@ async fn run_agent_loop(
             ));
         }
 
+        // A delegate's allowlist reads the fingerprint-scoped approval store —
+        // git processes — so it is resolved off the runtime before the race.
+        let allowed_commands = {
+            let provider = request.provider.clone();
+            let dir = runs_dir.clone();
+            let root = request.workspace_root.clone();
+            crate::blocking::run(move || {
+                Ok(delegate_allowed_commands(&provider, &dir, root.as_deref()))
+            })
+            .await
+            .unwrap_or_default()
+        };
+
         // Race the provider stream against user cancellation so abort takes
         // effect mid-request, not only between turns.
         let request_started_ms = now_ms();
@@ -2056,11 +2072,7 @@ async fn run_agent_loop(
                 tools: turn_tools.clone(),
                 workspace_root: request.workspace_root.clone(),
                 run_id: Some(id.clone()),
-                allowed_commands: delegate_allowed_commands(
-                    &request.provider,
-                    &runs_dir,
-                    request.workspace_root.as_deref(),
-                ),
+                allowed_commands,
                 num_ctx: request.num_ctx,
                 num_predict: reply_budget_override.or(request.num_predict),
                 reflection_level: request.reflection_level.clone(),
