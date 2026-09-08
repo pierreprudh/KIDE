@@ -61,14 +61,19 @@ describe("the island card", () => {
   });
   // "On sidepanel open, each should be full width and when closed only icons."
   // Open, the entry is a window with its words and its own dismiss.
+  // The files a run produced are its output, not a notice about it: the island
+  // offers no way to close them, only the column's own fold.
+  it("offers no dismiss of its own", () => {
+    expect(renderIsland(withFiles)).not.toContain("klide-result-island-close");
+  });
+
   it("is a full-width window while the column is open", () => {
     const html = renderToStaticMarkup(
       <CompletionCard variant="island" completion={withFiles}
-        onReview={() => {}} onRequestChanges={() => {}} onDismiss={() => {}} />,
+        onReview={() => {}} onRequestChanges={() => {}} />,
     );
     expect(html).toContain("klide-result-island-title");
     expect(html).toContain("2 files");
-    expect(html).toContain("klide-result-island-close");
     expect(html).not.toContain("klide-result-mark");
   });
 

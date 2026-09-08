@@ -21,6 +21,17 @@ export function formatSpan(ms: number): string {
   return rest ? `${hr}h ${rest}m` : `${hr}h`;
 }
 
+/** Elapsed time as "Xh YYm". Minutes are zero-padded so the field stays
+ *  fixed-width when displayed alongside `formatSpan` in a columnar list.
+ *  The hour component is always present ("0h 07m"), rounds to the nearest
+ *  minute. */
+export function formatHours(ms: number): string {
+  const totalMin = Math.round(ms / 60_000);
+  const hr = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return `${hr}h ${String(min).padStart(2, "0")}m`;
+}
+
 /** How long ago, coarse: "just now", "12m ago", "5h ago", "3d ago".
  *
  *  Takes `nowMs` so a caller can render a stable list, and so this is testable
