@@ -46,6 +46,7 @@ type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpe
  *  DOM to click in. */
 export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, onDone }: EvidenceProps) {
   const failed = completion.commands.filter((command) => command.status !== "passed").length;
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const review = (path?: string) => { onDone(); onReview?.(path); };
   // A document opens in two steps: the first click previews it here in the
   // panel, the second opens it full width (the inspector, or the app that owns
@@ -114,8 +115,20 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
               arrive as one stack — a heading that opens — and stay quiet even
               when opened. A failure is the exception: nothing dims while a
               command has failed. */}
-          <details className="klide-result-commands" data-failed={failed > 0 ? "1" : undefined}>
-          <summary><span className="klide-result-commands-title">Commands</span> <span>{completion.commands.length}</span></summary>
+          <details className="klide-result-commands" data-failed={failed > 0 ? "1" : undefined}
+            open={commandsOpen} onToggle={(event) => setCommandsOpen(event.currentTarget.open)}>
+          {/* The count leads, on the left, as part of what the row is called —
+              "3 commands" — rather than sitting on the right where it competed
+              with the disclosure. The disclosure itself is the app's chevron,
+              turning over on open instead of swapping a + for a −: one mark
+              that moves, not two that replace each other. */}
+          <summary>
+            <span className="klide-result-commands-title">
+              <span className="klide-result-commands-count">{completion.commands.length}</span>
+              <span>command{completion.commands.length === 1 ? "" : "s"}</span>
+            </span>
+            <span className="klide-result-commands-chevron" aria-hidden="true"><ChevronIcon open={commandsOpen} /></span>
+          </summary>
           {completion.commands.map((command) => <details key={command.id} className="klide-result-command">
             <summary><code>{command.label}</code><span className={`klide-result-status-${command.status}`}>{command.status === "unknown" ? "No result" : command.status === "passed" ? "Passed" : "Failed"}</span></summary>
             <pre>{command.output || "No output recorded."}</pre>

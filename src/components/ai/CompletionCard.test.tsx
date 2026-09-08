@@ -170,6 +170,11 @@ describe("ResultEvidence", () => {
     expect(html).toContain('class="klide-result-commands"');
     expect(html).not.toContain('class="klide-result-commands" open');
     expect(html).not.toContain('data-failed');
+    // The count leads on the left as part of the row's name; the disclosure is
+    // the chevron, and nothing repeats the number on the right.
+    expect(html).toContain('class="klide-result-commands-count">2</span>');
+    expect(html).toContain("klide-result-commands-chevron");
+    expect(html).toContain("commands</span>");
   });
 
   it("stops dimming the stack when a command failed", () => {
