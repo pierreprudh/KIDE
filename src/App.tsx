@@ -1333,7 +1333,6 @@ function App() {
         // Focus reviews in its own column, so it offers no route into the
         // docked inspector it does not render.
         onReviewChanges={opts?.variant === "focus" ? undefined : (info) => void reviewRunChanges(info)}
-        onOpenArtifact={(info) => void openRunArtifact(info)}
         onWorkspaceChanged={() => {
           // A worktree-pinned panel changes its own branch, not the main
           // checkout — only refresh the sidebar git status when the panel
