@@ -30,8 +30,10 @@ const COMPACT_BELOW = 260;
 export type ColumnInput = {
   /** What the plan is showing (TodoStrip reports it). */
   planSlot: TodoStripSlot;
-  /** A reviewable result the reader has not dismissed. */
-  resultUp: boolean;
+  /** What the result is showing. It rests as a mark — evidence to peek at,
+   *  not a thing to watch — and becomes a card only once the reader opens it,
+   *  which is when the column owes it a window's width. */
+  resultSlot: TodoStripSlot;
   /** A question the run is parked on. */
   questionUp: boolean;
   /** The reader closed the column. A question overrides it: that card holds
@@ -59,7 +61,7 @@ export type ColumnGeometry = {
   planFolded: boolean;
 };
 
-export function columnGeometry({ planSlot, resultUp, questionUp, hidden, canvasWidth }: ColumnInput): ColumnGeometry {
+export function columnGeometry({ planSlot, resultSlot, questionUp, hidden, canvasWidth }: ColumnInput): ColumnGeometry {
   // A question is never hidden, so it also un-hides everything beside it: a
   // reader answering one should see the plan it came from.
   const closed = hidden && !questionUp;
@@ -67,8 +69,12 @@ export function columnGeometry({ planSlot, resultUp, questionUp, hidden, canvasW
     ? COLUMN_MAX
     : Math.max(COLUMN_MIN, Math.min(COLUMN_MAX, canvasWidth - PROSE_MIN - COLUMN_MARGINS));
 
-  const cardsUp = !closed && (planSlot === "card" || questionUp || resultUp);
-  const marksUp = !cardsUp && (closed ? planSlot !== "none" || resultUp : planSlot === "mark");
+  // Plan and question stay windows until the reader closes them; a result is a
+  // window only while it is open. Marks are what is left over — and the corner
+  // keeps them whether the column is open or closed, so a finished run never
+  // vanishes from the top right.
+  const cardsUp = !closed && (planSlot === "card" || questionUp || resultSlot === "card");
+  const marksUp = !cardsUp && (planSlot !== "none" || resultSlot !== "none");
 
   return {
     width,

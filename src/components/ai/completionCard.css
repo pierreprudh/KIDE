@@ -19,6 +19,12 @@
    with a button in the middle. Attention rides the mark's colour. */
 .klide-result-island-header[data-compact="1"] { justify-content: center; gap: 0; min-height: 34px; }
 .klide-result-island-header[data-compact="1"][data-attention="1"] { color: var(--warning); }
+/* At rest the island is its mark: the entry stops filling the column and the
+   card shrinks to the icon, so the corner reads as an icon beside the plan's
+   rather than a second empty window. Opening it restores the full width. */
+.klide-result-entry[data-variant="island"][data-resting="1"] { display: flex; justify-content: flex-end; }
+.klide-result-entry[data-resting="1"] .klide-result-island { padding: 0 9px; border-radius: 10px; }
+.klide-result-entry[data-resting="1"] .klide-result-island-header { min-height: 30px; gap: 0; justify-content: center; }
 .klide-result-island-title { font-size: 13px; }
 /* The count sits at the far end, the way the plan's does. */
 .klide-result-island-header .klide-result-meta { margin-left: auto; font-variant-numeric: tabular-nums; }

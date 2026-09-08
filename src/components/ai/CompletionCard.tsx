@@ -31,6 +31,10 @@ type Props = {
   /** Put the entry away — the canvas column's windows are all dismissible, so
    *  a result the reader is done with leaves the corner like a plan does. */
   onDismiss?: () => void;
+  /** Told when the island opens or closes: a result at rest is an icon in the
+   *  corner and an open one is a window, and the column owes each a different
+   *  share of the canvas (canvasColumn.ts). */
+  onOpenChange?: (open: boolean) => void;
 };
 
 type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpenArtifact" | "onPreviewArtifact" | "onRequestChanges"> & {
@@ -115,7 +119,7 @@ function ArtifactThumb({ path, load }: { path: string; load?: (path: string) => 
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
  *  the column the plan already lives in; in a transcript it opens as a sheet. */
-export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss , onOpenChange }: Props) {
   const island = variant === "island";
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -145,12 +149,18 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
   const spoken = [label, files, attention > 0 ? `${attention} item${attention === 1 ? "" : "s"} to review` : ""]
     .filter(Boolean).join(" · ");
 
+  const setIslandOpen = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
+
   if (island) {
     // One window in the canvas column, built like the plan above it: a header
     // that is the whole hit target, a hairline that appears with the body, and
     // the body growing into the column rather than over the app.
     return (
-      <div className="klide-result-entry" data-variant="island" data-open={open ? "1" : undefined}>
+      <div className="klide-result-entry" data-variant="island" data-open={open ? "1" : undefined}
+        data-resting={open ? undefined : "1"}>
         <section className="klide-result-island" data-open={open ? "1" : undefined} aria-label={title}>
           <div className="klide-result-island-header" role="button" tabIndex={0}
             aria-expanded={open} aria-controls={id}
@@ -158,19 +168,23 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
             title={compact ? spoken : undefined}
             data-compact={compact ? "1" : undefined}
             data-attention={attention > 0 ? "1" : undefined}
-            onClick={() => setOpen((was) => !was)}
+            onClick={() => setIslandOpen(!open)}
             onKeyDown={(event) => {
               if (event.key !== "Enter" && event.key !== " ") return;
               event.preventDefault();
-              setOpen((was) => !was);
+              setIslandOpen(!open);
             }}>
             {/* A 232px column is a corner, not a panel: the header keeps one
                 mark and drops the rest — the title, the count, the attention
                 dot and the chevron. What they said is in the header's own
                 name and tooltip, and "needs attention" becomes the mark's
                 colour rather than a dot pinned beside it. */}
+            {/* A result is evidence to peek at, not a thing to watch: at rest
+                it is one mark in the corner, and its words arrive with the
+                body once the reader opens it. (A narrow column gives the same
+                answer for a different reason — no room for them.) */}
             <ReviewIcon size={15} />
-            {!compact && <>
+            {open && !compact && <>
               <span className="klide-result-island-title">{title}</span>
               {files && <span className="klide-result-meta">{files}</span>}
               {dot}
@@ -190,7 +204,7 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
           {open && (
             <div className="klide-result-island-panel" id={id}>
               <ResultEvidence completion={completion} disabled={disabled} onReview={onReview}
-                onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={() => setOpen(false)} />
+                onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={() => setIslandOpen(false)} />
             </div>
         )}
         </section>

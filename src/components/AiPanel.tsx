@@ -2895,6 +2895,9 @@ This user request requires workspace inspection. Before answering, you MUST call
   // (a new plan reopens a hidden strip), without persisting a dismissal that
   // only matters while the corner is in view.
   const [dismissedResultRunId, setDismissedResultRunId] = useState<string | null>(null);
+  // Whether the reader has the result open. A closed result is an icon in the
+  // corner; an open one is a window, and the column owes it the width.
+  const [resultOpen, setResultOpen] = useState(false);
 
   // The newest turn whose evidence is worth opening — what "the result" means
   // on the canvas, where there is room for one entry, not one per turn.
@@ -2947,7 +2950,9 @@ This user request requires workspace inspection. Before answering, you MUST call
   // for the close control to close.
   const column = columnGeometry({
     planSlot,
-    resultUp: latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId,
+    resultSlot: latestCompletion === undefined || latestCompletion.runId === dismissedResultRunId
+      ? "none"
+      : resultOpen ? "card" : "mark",
     questionUp: pendingQuestion !== null,
     hidden: sidePanelHidden,
     canvasWidth,
@@ -4761,10 +4766,15 @@ This user request requires workspace inspection. Before answering, you MUST call
               </button>
             </div>
           )}
-          {column.cardsUp && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+          {/* The result lives in the corner whether the column is open or
+              folded — "a document or review should stay in icons" — and its
+              own resting state is that icon, so there is no second pill here
+              to keep in step with it. */}
+          {latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
             <CompletionCard
               variant="island"
               compact={column.compact}
+              onOpenChange={setResultOpen}
               completion={latestCompletion}
               disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}

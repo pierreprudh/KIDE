@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { columnGeometry, COLUMN_MAX, COLUMN_MIN } from "./canvasColumn";
 
-const roomy = { planSlot: "none", resultUp: false, questionUp: false, hidden: false, canvasWidth: 1210 } as const;
+const roomy = { planSlot: "none", resultSlot: "none", questionUp: false, hidden: false, canvasWidth: 1210 } as const;
 
 describe("canvas column geometry", () => {
   it("gives the canvas back when there is nothing in the corner", () => {
@@ -32,13 +32,31 @@ describe("canvas column geometry", () => {
   });
 
   it("keeps that lane when the reader closes the column on cards", () => {
-    const g = columnGeometry({ ...roomy, planSlot: "card", resultUp: true, hidden: true });
+    const g = columnGeometry({ ...roomy, planSlot: "card", resultSlot: "mark", hidden: true });
     expect(g.cardsUp).toBe(false);
     expect(g.marksUp).toBe(true);
     expect(g.inset).toBe(76);
     expect(g.planFolded).toBe(true);
   });
 
+  // "A document or review should stay in icons; question and todo stay until
+  // closed." A result at rest is a mark either way — the corner keeps it when
+  // the column is closed, and it earns a window only once opened.
+  it("keeps a result in the corner as an icon, open column or closed", () => {
+    for (const hidden of [false, true]) {
+      const g = columnGeometry({ ...roomy, resultSlot: "mark", hidden });
+      expect(g.cardsUp).toBe(false);
+      expect(g.marksUp).toBe(true);
+      expect(g.inset).toBe(76);
+      expect(g.showClose).toBe(false);
+    }
+  });
+  it("gives an opened result the column's width", () => {
+    const g = columnGeometry({ ...roomy, resultSlot: "card" });
+    expect(g.cardsUp).toBe(true);
+    expect(g.inset).toBe(COLUMN_MAX + 36);
+    expect(g.showClose).toBe(true);
+  });
   it("asks for nothing when a closed column has nothing to mark", () => {
     expect(columnGeometry({ ...roomy, hidden: true }).inset).toBe(0);
   });
