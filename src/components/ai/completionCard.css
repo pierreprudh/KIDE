@@ -19,6 +19,12 @@
    with a button in the middle. Attention rides the mark's colour. */
 .klide-result-island-header[data-compact="1"] { justify-content: center; gap: 0; min-height: 34px; }
 .klide-result-island-header[data-compact="1"][data-attention="1"] { color: var(--warning); }
+/* At rest the island is its mark: the entry stops filling the column and the
+   card shrinks to the icon, so the corner reads as an icon beside the plan's
+   rather than a second empty window. Opening it restores the full width. */
+.klide-result-entry[data-variant="island"][data-resting="1"] { display: flex; justify-content: flex-end; }
+.klide-result-entry[data-resting="1"] .klide-result-island { padding: 0 9px; border-radius: 10px; }
+.klide-result-entry[data-resting="1"] .klide-result-island-header { min-height: 30px; gap: 0; justify-content: center; }
 .klide-result-island-title { font-size: 13px; }
 /* The count sits at the far end, the way the plan's does. */
 .klide-result-island-header .klide-result-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
@@ -80,6 +86,9 @@
 .klide-result-body h3 { display: flex; justify-content: space-between; margin: 0 0 8px; font-size: 11px; color: var(--fg-subtle); font-weight: 400; }
 .klide-result-files > * { position: relative; display: flex; flex-direction: column; align-items: flex-start; width: 100%; box-sizing: border-box; padding: 10px 22px 10px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; text-align: left; }
 .klide-result-filename { overflow-wrap: anywhere; }
+.klide-result-document-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.klide-result-document-name > span { min-width: 0; }
+.klide-result-app-logo { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
 .klide-result-directory { font-size: 10px; color: var(--fg-subtle); overflow-wrap: anywhere; }
 /* A produced document says how big it is — the one fact that tells a real
    deck from an empty one a script failed to fill. */
@@ -137,3 +146,5 @@
   .klide-result-footer { padding: 10px 20px 14px; }
   .klide-result-command pre { max-height: min(240px, 26dvh); }
 }
+
+.klide-result-document-count { margin-left: 7px; font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fg-subtle); }

@@ -20,6 +20,10 @@ export type RunCompletion = {
 };
 
 /** Routine replies and successful read-only work do not need a review entry. */
+export function completionDocumentCount(completion: RunCompletion): number {
+  return new Set((completion.artifacts ?? []).map((artifact) => artifact.path)).size;
+}
+
 export function hasCompletionReview(completion: RunCompletion): boolean {
   return completion.files.length > 0 || completion.warnings.length > 0 ||
     (completion.artifacts?.length ?? 0) > 0 ||

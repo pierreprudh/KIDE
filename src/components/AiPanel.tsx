@@ -44,6 +44,7 @@ import { readWorkspaceTextFile, workspacePathExists } from "../workspaceFs";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
 import { ISLAND_WIDTH, TodoStrip } from "./TodoStrip";
 import { QuestionCard } from "./ai/QuestionCard";
+import { sidePanelInset } from "./ai/sidePanelInset";
 import {
   CLI_DEFAULT_MODEL,
   defaultModelForProvider,
@@ -76,12 +77,12 @@ import { enabledSkillsPrompt, type Skill } from "../skills";
 
 import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
 import { WorkingRow } from "./ai/WorkingRow";
-import { AttachIcon, CloseIcon, ReviewIcon } from "../icons";
+import { AttachIcon, CloseIcon, DocumentIcon, ReviewIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
 import { CompletionCard } from "./ai/CompletionCard";
-import { hasCompletionReview, type RunCompletion } from "../agent/completion";
+import { completionDocumentCount, hasCompletionReview, type RunCompletion } from "../agent/completion";
 import { groupToolRuns, pairToolResults, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import type { AttachedResult } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
@@ -306,7 +307,7 @@ type Props = {
   onReviewChanges?: (info: { runId: string; title: string; path?: string }) => void;
   /** Open a document a run produced — the inspector for text, the machine's
    *  own app for a deck or a PDF. The host owns that choice. */
-  onOpenArtifact?: (info: { runId: string; path: string }) => void;
+  onOpenArtifact?: (info: { runId: string; path: string; documents: { path: string; bytes: number }[] }) => void;
   /** A picture of a produced document, when the host can make one. */
   onPreviewArtifact?: (path: string) => Promise<string | null>;
   visible: boolean;
@@ -2888,12 +2889,12 @@ This user request requires workspace inspection. Before answering, you MUST call
   // the column itself takes a switch. A parked question overrides it: that
   // card holds the run, and hiding the run's own question would strand it.
   const [sidePanelHidden, setSidePanelHidden] = useState(false);
+  const [expandedResultRunId, setExpandedResultRunId] = useState<string | null>(null);
 
   // A result the reader has put away. Held by run id, not a boolean, so the
   // next run's result comes back on its own — the same rule the plan follows
   // (a new plan reopens a hidden strip), without persisting a dismissal that
   // only matters while the corner is in view.
-  const [dismissedResultRunId, setDismissedResultRunId] = useState<string | null>(null);
 
   // The newest turn whose evidence is worth opening — what "the result" means
   // on the canvas, where there is room for one entry, not one per turn.
@@ -2905,6 +2906,12 @@ This user request requires workspace inspection. Before answering, you MUST call
     }
     return undefined;
   }, [msgs]);
+
+  function openResultPanel() {
+    if (!latestCompletion) return;
+    setExpandedResultRunId(latestCompletion.runId);
+    setSidePanelHidden(false);
+  }
 
   function requestCompletionChanges(completion: RunCompletion) {
     setInput((previous) => previous || (completion.stopped
@@ -2938,18 +2945,37 @@ This user request requires workspace inspection. Before answering, you MUST call
   const islandColumnWidth = canvasWidth === 0
     ? ISLAND_WIDTH
     : Math.max(232, Math.min(ISLAND_WIDTH, canvasWidth - 596));
-  const compactIslands = islandColumnWidth < 260;
 
   // Anything in the column holds it open — a result entry on its own counted
   // for nothing here, so the conversation kept the full canvas and the pill
   // floated over the prose in the corner.
+  const runDocuments = latestCompletion?.artifacts ?? [];
+  const documentCount = latestCompletion ? completionDocumentCount(latestCompletion) : 0;
+  // The folded corner's pill: the plan, the result and the documents all wear
+  // it, so it is described once rather than three times.
+  const cornerMark: CSSProperties = {
+    pointerEvents: "auto",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    height: 30,
+    padding: "0 10px 0 9px",
+    borderRadius: 10,
+    border: "1px solid var(--composer-border)",
+    background: "var(--composer-glass)",
+    backdropFilter: "var(--composer-blur)",
+    WebkitBackdropFilter: "var(--composer-blur)",
+    color: "var(--fg-subtle)",
+    font: "inherit",
+    fontSize: 11,
+    cursor: "pointer",
+    transition: "color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out)",
+  };
   const sideHidden = sidePanelHidden && pendingQuestion === null;
-  const resultUp = latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId;
-  const canvasIslandUp = !sideHidden && (planIslandUp || pendingQuestion !== null || resultUp);
+  const resultUp = latestCompletion !== undefined;
   // Closed, the corner still holds marks, and prose that runs under them is
   // the overlap the column was built to avoid — so the conversation gives up
   // the marks' width instead of the panel's.
-  const marksUp = sideHidden && (planIslandUp || resultUp);
 
   // A question is the one card in the column that holds the run, and it
   // arrives *under* a plan and an opened result that may already fill the
@@ -2964,11 +2990,15 @@ This user request requires workspace inspection. Before answering, you MUST call
     });
     return () => cancelAnimationFrame(frame);
   }, [pendingQuestion]);
-  const focusInset = variant !== "focus" ? 0
-    : canvasIslandUp ? islandColumnWidth + 36
-      : marksUp ? 76
-        : 0;
+  const focusInset = variant !== "focus" ? 0 : sidePanelInset({
+    hidden: sidePanelHidden,
+    planVisible: planIslandUp,
+    questionVisible: pendingQuestion !== null,
+    resultVisible: resultUp,
+    width: islandColumnWidth,
+  });
   const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
+  const sidePanelExpanded = focusInset === islandColumnWidth + 36;
   const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
   // Permission gate: the harness pauses and emits a request — a shell command,
   // a network target, or a message to another agent — and the user approves or
@@ -4152,7 +4182,7 @@ This user request requires workspace inspection. Before answering, you MUST call
             return <CompletionCard key={i} completion={completion} disabled={streaming}
               compact={canvasWidth > 0 && canvasWidth < 300}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
-              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: completion.runId, path }) : undefined}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: completion.runId, path, documents: completion.artifacts ?? [] }) : undefined}
               onPreviewArtifact={onPreviewArtifact}
               onRequestChanges={() => requestCompletionChanges(completion)}
             />;
@@ -4686,9 +4716,9 @@ This user request requires workspace inspection. Before answering, you MUST call
               is marks — the plan's own reopen pill and, beside it, the result's
               — the way the plan has always folded. So the main view carries
               icons rather than a panel, and either icon opens the panel. */}
-          {!sideHidden && (
-            <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
-              <button
+          {!sideHidden && sidePanelExpanded && (
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 2, flexShrink: 0, paddingRight: 16 }}>
+              {sidePanelExpanded && <button
                 type="button"
                 onClick={() => setSidePanelHidden(true)}
                 aria-label="Close the side panel"
@@ -4711,7 +4741,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; e.currentTarget.style.background = "transparent"; }}
               >
                 <CloseIcon size={14} />
-              </button>
+              </button>}
             </div>
           )}
           {(
@@ -4727,52 +4757,39 @@ This user request requires workspace inspection. Before answering, you MUST call
             onPresenceChange={setPlanIslandUp}
           />
           )}
-          {sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
-            <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+          {/* Folded, the corner is a column of marks under the plan's — stacked,
+              not sat side by side, and in the order the cards take when the
+              panel is open. */}
+          {sideHidden && latestCompletion && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
               <button
                 type="button"
-                onClick={() => setSidePanelHidden(false)}
-                aria-label={`Open the side panel — result, ${latestCompletion.files.length} file${latestCompletion.files.length === 1 ? "" : "s"}`}
+                onClick={openResultPanel}
+                aria-label={`Open the side panel — ${documentCount} document${documentCount === 1 ? "" : "s"}`}
                 title="Open the side panel"
-                style={{
-                  pointerEvents: "auto",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 7,
-                  height: 30,
-                  padding: "0 10px 0 9px",
-                  borderRadius: 10,
-                  border: "1px solid var(--composer-border)",
-                  background: "var(--composer-glass)",
-                  backdropFilter: "var(--composer-blur)",
-                  WebkitBackdropFilter: "var(--composer-blur)",
-                  color: "var(--fg-subtle)",
-                  font: "inherit",
-                  fontSize: 11,
-                  cursor: "pointer",
-                  transition: "color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out)",
-                }}
+                style={{ ...cornerMark }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.borderColor = "var(--border-strong)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; e.currentTarget.style.borderColor = "var(--composer-border)"; }}
               >
-                <ReviewIcon size={15} />
-                {latestCompletion.files.length > 0 && (
-                  <span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{latestCompletion.files.length}</span>
+                {runDocuments.length > 0 ? <DocumentIcon size={15} /> : <ReviewIcon size={15} />}
+                {documentCount > 0 && (
+                  <span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{documentCount}</span>
                 )}
               </button>
             </div>
           )}
-          {!sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+          {!sideHidden && latestCompletion && (
             <CompletionCard
+              key={latestCompletion.runId}
               variant="island"
-              compact={compactIslands}
               completion={latestCompletion}
+              expanded={expandedResultRunId === latestCompletion.runId}
+              onOpenChange={(open) => setExpandedResultRunId(open ? latestCompletion.runId : null)}
               disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
-              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: latestCompletion.runId, path }) : undefined}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: latestCompletion.runId, path, documents: latestCompletion.artifacts ?? [] }) : undefined}
               onPreviewArtifact={onPreviewArtifact}
               onRequestChanges={() => requestCompletionChanges(latestCompletion)}
-              onDismiss={() => setDismissedResultRunId(latestCompletion.runId)}
             />
           )}
           {pendingQuestion && (

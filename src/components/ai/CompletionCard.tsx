@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { hasCompletionReview, type RunCompletion } from "../../agent/completion";
+import { completionDocumentCount, hasCompletionReview, type RunCompletion } from "../../agent/completion";
 import { artifactActionLabel, artifactPreview } from "../../artifacts";
+import { documentAppLogo } from "../../documentAppLogo";
 import { formatBytes } from "../settings/storage";
-import { ChevronIcon, CloseIcon, ReviewIcon } from "../../icons";
+import { ChevronIcon, CloseIcon, DocumentIcon, ReviewIcon } from "../../icons";
 import { Z } from "../../zLayers";
 import "./completionCard.css";
 
@@ -28,6 +29,11 @@ type Props = {
   /** Too little room for the words: the entry keeps the mark and the count,
    *  and the label it drops moves to its tooltip and accessible name. */
   compact?: boolean;
+  /** Told when the island opens or closes, because a result at rest is an icon
+   *  and an opened one is a window — and the column's geometry differs. */
+  onOpenChange?: (open: boolean) => void;
+  /** The Focus host owns expansion so its conversation gutter stays in sync. */
+  expanded?: boolean;
   /** Put the entry away — the canvas column's windows are all dismissible, so
    *  a result the reader is done with leaves the corner like a plan does. */
   onDismiss?: () => void;
@@ -65,7 +71,8 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
           <div className="klide-result-files klide-result-artifacts">{artifacts.map((artifact) => {
             const name = artifact.path.split("/").pop() || artifact.path;
             const directory = artifact.path.slice(0, -name.length).replace(/\/$/, "");
-            const label = <><span className="klide-result-filename">{name}</span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
+            const appLogo = documentAppLogo(artifact.path);
+            const label = <><span className="klide-result-filename klide-result-document-name">{appLogo && <img className="klide-result-app-logo" src={appLogo} alt="" aria-hidden="true" />}<span>{name}</span></span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
             const size = <span className="klide-result-size">{formatBytes(artifact.bytes)}</span>;
             const row = onOpenArtifact
               ? <button type="button" title={artifactActionLabel(artifact.path)}
@@ -115,10 +122,11 @@ function ArtifactThumb({ path, load }: { path: string; load?: (path: string) => 
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
  *  the column the plan already lives in; in a transcript it opens as a sheet. */
-export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss, onOpenChange, expanded }: Props) {
   const island = variant === "island";
   const trigger = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
+  const [localOpen, setOpen] = useState(false);
+  const open = island ? expanded ?? localOpen : localOpen;
   const id = useId();
 
   // The sheet is modal, so Escape closes it and focus goes back to the row
@@ -133,6 +141,7 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
 
   if (!hasCompletionReview(completion)) return null;
 
+  const documentCount = completionDocumentCount(completion);
   const failed = completion.commands.filter((command) => command.status !== "passed").length;
   const attention = failed + completion.warnings.length;
   const label = completion.stopped ? "Review partial work" : "Review result";
@@ -145,6 +154,11 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
   const spoken = [label, files, attention > 0 ? `${attention} item${attention === 1 ? "" : "s"} to review` : ""]
     .filter(Boolean).join(" · ");
 
+  const setIslandOpen = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
+
   if (island) {
     // One window in the canvas column, built like the plan above it: a header
     // that is the whole hit target, a hairline that appears with the body, and
@@ -154,25 +168,29 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
         <section className="klide-result-island" data-open={open ? "1" : undefined} aria-label={title}>
           <div className="klide-result-island-header" role="button" tabIndex={0}
             aria-expanded={open} aria-controls={id}
-            aria-label={`${open ? "Collapse" : "Expand"} ${title.toLowerCase()}${files ? `, ${files}` : ""}${compact && attention > 0 ? `, ${attention} item${attention === 1 ? "" : "s"} to review` : ""}`}
+            aria-label={`${open ? "Collapse" : "Expand"} ${title.toLowerCase()}${documentCount ? `, ${documentCount} documents` : ""}${files ? `, ${files}` : ""}${compact && attention > 0 ? `, ${attention} item${attention === 1 ? "" : "s"} to review` : ""}`}
             title={compact ? spoken : undefined}
             data-compact={compact ? "1" : undefined}
             data-attention={attention > 0 ? "1" : undefined}
-            onClick={() => setOpen((was) => !was)}
+            onClick={() => setIslandOpen(!open)}
             onKeyDown={(event) => {
               if (event.key !== "Enter" && event.key !== " ") return;
               event.preventDefault();
-              setOpen((was) => !was);
+              setIslandOpen(!open);
             }}>
-            {/* A 232px column is a corner, not a panel: the header keeps one
-                mark and drops the rest — the title, the count, the attention
-                dot and the chevron. What they said is in the header's own
-                name and tooltip, and "needs attention" becomes the mark's
-                colour rather than a dot pinned beside it. */}
-            <ReviewIcon size={15} />
+            {/* A result is evidence to peek at, not a thing to watch: at rest
+                it is one mark in the corner, and the words arrive with the
+                body once the reader opens it. (A narrow column is the same
+                answer for a different reason — no room for them.) What they
+                said stays in the header's name and tooltip, and "needs
+                attention" rides the mark's colour rather than a dot beside
+                it. */}
+            {completion.artifacts?.length ? <DocumentIcon size={15} /> : <ReviewIcon size={15} />}
             {!compact && <>
               <span className="klide-result-island-title">{title}</span>
-              {files && <span className="klide-result-meta">{files}</span>}
+              {documentCount > 0
+                ? <span className="klide-result-meta">{documentCount} document{documentCount === 1 ? "" : "s"}</span>
+                : files && <span className="klide-result-meta">{files}</span>}
               {dot}
               <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
             </>}
@@ -190,7 +208,7 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
           {open && (
             <div className="klide-result-island-panel" id={id}>
               <ResultEvidence completion={completion} disabled={disabled} onReview={onReview}
-                onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={() => setOpen(false)} />
+                onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={() => setIslandOpen(false)} />
             </div>
         )}
         </section>

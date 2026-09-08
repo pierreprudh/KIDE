@@ -415,7 +415,11 @@ async fn preview_file(workspace_root: String, path: String, size: Option<u32>) -
                 .unwrap_or_default()
         ));
         std::fs::create_dir_all(&out).map_err(|e| format!("Cannot make a preview: {e}"))?;
-        let status = tokio::process::Command::new("qlmanage")
+        // Resolved through the login shell like every other binary Klide
+        // shells out to: a bundled app launched from Finder has a minimal PATH,
+        // and a bare `Command::new` there fails with nothing to show for it.
+        let qlmanage = cli::resolve_command("qlmanage")?;
+        let status = tokio::process::Command::new(qlmanage)
             .arg("-t")
             .arg("-s")
             .arg(size.unwrap_or(900).clamp(120, 2000).to_string())
@@ -429,9 +433,15 @@ async fn preview_file(workspace_root: String, path: String, size: Option<u32>) -
         let png = out.join(format!("{name}.png"));
         let bytes = match (status, std::fs::read(&png)) {
             (Ok(_), Ok(bytes)) => bytes,
-            _ => {
+            (Ok(status), Err(e)) => {
                 let _ = std::fs::remove_dir_all(&out);
-                return Err("No preview available for this file.".to_string());
+                return Err(format!(
+                    "Quick Look drew no preview for {name} (qlmanage {status}): {e}"
+                ));
+            }
+            (Err(e), _) => {
+                let _ = std::fs::remove_dir_all(&out);
+                return Err(format!("Could not run qlmanage: {e}"));
             }
         };
         let _ = std::fs::remove_dir_all(&out);
