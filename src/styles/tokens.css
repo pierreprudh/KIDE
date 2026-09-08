@@ -1901,6 +1901,35 @@ textarea.klide-diff-comment-input:focus-visible {
   }
 }
 
+/* The canvas column's close control. It lives in a slot that collapses rather
+   than unmounting, so the control slides up out of the corner and the cards
+   under it travel by exactly one row — both ways, which a conditional render
+   cannot do (an unmounted element has no exit). Height carries the movement,
+   opacity and a 6px lift carry the arrival. */
+.klide-island-close-slot {
+  flex-shrink: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateY(-6px);
+  transition:
+    height 260ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 160ms var(--ease-out),
+    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.klide-island-close-slot[data-shown="1"] {
+  height: 24px;
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klide-island-close-slot {
+    transition: none;
+  }
+}
+
 /* A run parked on the user — a question to answer, a diff to review, a command
    to approve (QuestionCard, InlineDiffReview, InlineCommandReview all wear
    this class). Three surfaces referenced `.ai-qa-card` with no rule behind it,

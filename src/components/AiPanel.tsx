@@ -4690,9 +4690,17 @@ This user request requires workspace inspection. Before answering, you MUST call
               is marks — the plan's own reopen pill and, beside it, the result's
               — the way the plan has always folded. So the main view carries
               icons rather than a panel, and either icon opens the panel. */}
-          {column.showClose && (
+          {/* The close control keeps its place at the head of the column and
+              slides in and out of it, rather than appearing and vanishing: the
+              cards below it move by the height of one row either way, and a
+              row that pops takes the whole stack with it. Its slot stays
+              mounted so both directions animate (tokens.css owns the curve and
+              the reduced-motion guard). */}
+          <div className="klide-island-close-slot" data-shown={column.showClose ? "1" : undefined}>
             <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
               <button
+                tabIndex={column.showClose ? undefined : -1}
+                aria-hidden={column.showClose ? undefined : true}
                 type="button"
                 onClick={() => setSidePanelHidden(true)}
                 aria-label="Close the side panel"
@@ -4717,7 +4725,7 @@ This user request requires workspace inspection. Before answering, you MUST call
                 <CloseIcon size={14} />
               </button>
             </div>
-          )}
+          </div>
           {(
           <TodoStrip
             workspaceRoot={workspaceRoot}
