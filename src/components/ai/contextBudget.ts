@@ -25,6 +25,10 @@ export type ContextBreakdownRow = {
 
 export type ContextBudgetInput = {
   msgs: Msg[];
+  /** `conversationTokenEstimate(msgs)`, when the caller already has it. The
+   *  message walk stringifies every tool call and depends on `msgs` alone;
+   *  the rest of the budget moves with every keystroke of the draft. */
+  messageTokens?: number;
   /** The unsent draft in the composer. Counted, because it will be sent. */
   draft: string;
   /** Already-assembled system prompt for this draft, skills and rules included
@@ -109,6 +113,16 @@ export function lastCompactionIndex(msgs: Msg[]): number {
   return -1;
 }
 
+/** Estimated tokens of everything the model still sees: the messages from the
+ *  newest compaction marker onward. The expensive half of the budget — one
+ *  `JSON.stringify` per tool call — and a function of `msgs` alone, so a
+ *  caller can memoize it on the message list and pass it in. */
+export function conversationTokenEstimate(msgs: Msg[]): number {
+  const markerIdx = lastCompactionIndex(msgs);
+  const counted = markerIdx >= 0 ? msgs.slice(markerIdx) : msgs;
+  return counted.reduce((sum, m) => sum + messageTokenEstimate(m), 0);
+}
+
 export function computeContextBudget(input: ContextBudgetInput): ContextBudget {
   const {
     msgs,
@@ -124,9 +138,7 @@ export function computeContextBudget(input: ContextBudgetInput): ContextBudget {
     streaming,
   } = input;
 
-  const markerIdx = lastCompactionIndex(msgs);
-  const counted = markerIdx >= 0 ? msgs.slice(markerIdx) : msgs;
-  const messageTokens = counted.reduce((sum, m) => sum + messageTokenEstimate(m), 0);
+  const messageTokens = input.messageTokens ?? conversationTokenEstimate(msgs);
 
   const draftTokens = estimateTokens(draft);
   const skillsTokens = estimateTokens(skillsPrompt);

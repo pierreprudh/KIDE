@@ -1480,8 +1480,11 @@ async fn start_run(
         snapshot.omitted.extend(clamped.omitted);
         request.context = Some(snapshot);
     }
-    if let Some(root) = request.workspace_root.as_deref() {
-        for command in command_allowlist::list(&runs_dir, root)? {
+    if let Some(root) = request.workspace_root.clone() {
+        // Two git processes on a memo hit, a full-tree fingerprint on a miss
+        // (approval_store.rs) — either way, not on the runtime thread.
+        let dir = runs_dir.clone();
+        for command in crate::blocking::run(move || command_allowlist::list(&dir, &root)).await? {
             if !request.command_allowlist.iter().any(|c| c == &command) {
                 request.command_allowlist.push(command);
             }
@@ -2041,6 +2044,19 @@ async fn run_agent_loop(
             ));
         }
 
+        // A delegate's allowlist reads the fingerprint-scoped approval store —
+        // git processes — so it is resolved off the runtime before the race.
+        let allowed_commands = {
+            let provider = request.provider.clone();
+            let dir = runs_dir.clone();
+            let root = request.workspace_root.clone();
+            crate::blocking::run(move || {
+                Ok(delegate_allowed_commands(&provider, &dir, root.as_deref()))
+            })
+            .await
+            .unwrap_or_default()
+        };
+
         // Race the provider stream against user cancellation so abort takes
         // effect mid-request, not only between turns.
         let request_started_ms = now_ms();
@@ -2056,11 +2072,7 @@ async fn run_agent_loop(
                 tools: turn_tools.clone(),
                 workspace_root: request.workspace_root.clone(),
                 run_id: Some(id.clone()),
-                allowed_commands: delegate_allowed_commands(
-                    &request.provider,
-                    &runs_dir,
-                    request.workspace_root.as_deref(),
-                ),
+                allowed_commands,
                 num_ctx: request.num_ctx,
                 num_predict: reply_budget_override.or(request.num_predict),
                 reflection_level: request.reflection_level.clone(),
@@ -2317,9 +2329,37 @@ async fn run_agent_loop(
                 // history uses the same registry executor but also receives
                 // the app-owned Run store below.
                 _ => ToolOutcome::Produced(match request.workspace_root.as_deref() {
-                    Some(root) => precomputed.remove(&call.id).unwrap_or_else(|| {
-                        execute_read_only_tool_with_runs_dir(root, &call, &id, runs_dir.as_path())
-                    }),
+                    Some(root) => match precomputed.remove(&call.id) {
+                        Some(result) => result,
+                        // A grep over 6 000 files or a `git status` shell-out
+                        // must not hold this tokio worker — other Runs stream
+                        // on the same pool. The executor stays a sync fn (the
+                        // interface its tests and eval.rs use); only the door
+                        // is async (blocking.rs).
+                        None => {
+                            let root = root.to_string();
+                            let call = call.clone();
+                            let run_id = id.clone();
+                            let dir = runs_dir.clone();
+                            match crate::blocking::run(move || {
+                                Ok(execute_read_only_tool_with_runs_dir(
+                                    &root,
+                                    &call,
+                                    &run_id,
+                                    dir.as_path(),
+                                ))
+                            })
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(e) => ToolResult {
+                                    ok: false,
+                                    content: format!("Error: {e}"),
+                                    metadata: None,
+                                },
+                            }
+                        }
+                    },
                     None => no_workspace_result(),
                 }),
             };
@@ -2759,7 +2799,11 @@ pub async fn agent_list_runs(
         })
         .map(|(id, handle)| (id.clone(), handle.status))
         .collect::<HashMap<_, _>>();
-    let mut summaries = list_summaries(&runs_dir, limit, offset)?;
+    // Every summary.json is read before `limit` applies — off the runtime
+    // thread, like the Delegate scan next door in lib.rs.
+    let scan_dir = runs_dir.clone();
+    let mut summaries =
+        crate::blocking::run(move || list_summaries(&scan_dir, limit, offset)).await?;
     for summary in &mut summaries {
         if let Some(status) = live_statuses.get(&summary.id) {
             summary.status = run_status_wire(status).to_string();

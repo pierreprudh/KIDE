@@ -9,7 +9,14 @@
 //
 // Vite compiles Monaco's language services as separate web-worker bundles via
 // the `?worker` imports; `MonacoEnvironment.getWorker` hands the right one to
-// the editor per language. Imported once from `main.tsx` before <App> mounts.
+// the editor per language.
+//
+// Imported by every Monaco consumer (EditorArea, DiffViewerPanel,
+// ArtifactInspector) rather than by `main.tsx`: those surfaces are all lazy
+// (`components/lazySurfaces.tsx`, App's overlay lazies), so the 4.5 MB editor
+// core loads with the first surface that needs it instead of on the Welcome
+// screen's first paint. ES module order guarantees this file has run before
+// any of their `<Editor>` mounts.
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
 import editorWorker from "monaco-editor/editor/editor.worker.js?worker";

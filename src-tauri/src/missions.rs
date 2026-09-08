@@ -1140,16 +1140,23 @@ pub fn mission_create(
 }
 
 #[tauri::command]
-pub fn mission_read(
+pub async fn mission_read(
     workspace_root: String,
     mission_id: String,
 ) -> Result<DurableMissionBundle, String> {
-    load_bundle(&workspace_root, &mission_id)
+    crate::blocking::run(move || load_bundle(&workspace_root, &mission_id)).await
 }
 
 #[tauri::command]
-pub fn mission_list(workspace_root: String) -> Result<Vec<DurableMissionBundle>, String> {
-    let root = missions_root(&workspace_root)?;
+pub async fn mission_list(workspace_root: String) -> Result<Vec<DurableMissionBundle>, String> {
+    // One Markdown + events read per Mission, on the board's tick — off the
+    // main thread (blocking.rs).
+    crate::blocking::run(move || list_missions(&workspace_root)).await
+}
+
+/// Synchronous body of `mission_list` — the interface the tests use.
+pub fn list_missions(workspace_root: &str) -> Result<Vec<DurableMissionBundle>, String> {
+    let root = missions_root(workspace_root)?;
     let mut bundles = Vec::new();
     for entry in std::fs::read_dir(root).map_err(|e| format!("Unable to list Missions: {e}"))? {
         let entry = entry.map_err(|e| format!("Unable to read Mission entry: {e}"))?;
@@ -2699,7 +2706,7 @@ src/agent/durableMissions.ts — update both"
         assert!(stray.is_empty(), "left temp files behind: {stray:?}");
         // And the Mission still lists cleanly.
         assert_eq!(
-            mission_list(root.to_str().unwrap().to_string())
+            list_missions(root.to_str().unwrap())
                 .unwrap()
                 .len(),
             1

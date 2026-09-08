@@ -4205,7 +4205,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
-        let entry = crate::memory::memory_write(
+        let entry = crate::memory::write_memory(
             base.to_string_lossy().to_string(),
             crate::memory::MemoryInput {
                 title: "Keep trust decisions in Rust".to_string(),

@@ -84,7 +84,7 @@ import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } fr
 import { WorkingRow } from "./ai/WorkingRow";
 import { AttachIcon, CloseIcon, ReviewIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
-import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
+import { DelegateTerminalSurface } from "./lazySurfaces";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
 import { CompletionCard } from "./ai/CompletionCard";
 import { hasCompletionReview, type RunCompletion } from "../agent/completion";
@@ -155,6 +155,7 @@ import {
   shouldAutoCompact,
   COMPACT_KEEP_RECENT,
   COMPACT_PROMPT_RATIO,
+  conversationTokenEstimate,
 } from "./ai/contextBudget";
 import { Z } from "../zLayers";
 import { notify } from "../toast";
@@ -1649,7 +1650,10 @@ export function AiPanel({
     return out;
   }
 
-  const lensProjectContext = providerDelegatesWork ? [] : lensItemsForPrompt(projectContext, input, contextMode);
+  const lensProjectContext = useMemo(
+    () => (providerDelegatesWork ? [] : lensItemsForPrompt(projectContext, input, contextMode)),
+    [providerDelegatesWork, projectContext, input, contextMode],
+  );
   const activeMode = nextSendMode ?? agentMode;
   const effectiveMode = effectiveModeFor({
     mode: activeMode,
@@ -1777,24 +1781,52 @@ This user request requires workspace inspection. Before answering, you MUST call
   // compaction threshold (and the compaction-marker exclusion that stops it
   // firing in a loop) could only be exercised by mounting the panel against a
   // live stream.
-  const budget = computeContextBudget({
-    msgs,
-    draft: input,
-    systemPrompt: systemPromptForDraft,
-    skillsPrompt: enabledSkillsPrompt(skills),
-    projectRules,
-    lens: lensProjectContext,
-    toolSchemaTokens,
-    measuredPromptTokens,
-    measuredUsageTokens,
-    contextLimit: effectiveContextLimit,
-    streaming,
-  });
+  //
+  // Memoized in two halves. The message walk stringifies every tool call in
+  // the thread and depends on `msgs` alone; the rest moves with each keystroke
+  // of the draft. Unmemoized, the whole walk ran ~28 times a second while a
+  // Run streamed and once more per keystroke while the user typed.
+  const skillsPrompt = useMemo(() => enabledSkillsPrompt(skills), [skills]);
+  const messageTokens = useMemo(() => conversationTokenEstimate(msgs), [msgs]);
+  const budget = useMemo(
+    () =>
+      computeContextBudget({
+        msgs,
+        messageTokens,
+        draft: input,
+        systemPrompt: systemPromptForDraft,
+        skillsPrompt,
+        projectRules,
+        lens: lensProjectContext,
+        toolSchemaTokens,
+        measuredPromptTokens,
+        measuredUsageTokens,
+        contextLimit: effectiveContextLimit,
+        streaming,
+      }),
+    [
+      msgs,
+      messageTokens,
+      input,
+      systemPromptForDraft,
+      skillsPrompt,
+      projectRules,
+      lensProjectContext,
+      toolSchemaTokens,
+      measuredPromptTokens,
+      measuredUsageTokens,
+      effectiveContextLimit,
+      streaming,
+    ],
+  );
   const contextUsed = budget.used;
   const contextRatio = budget.ratio;
   const contextTone = contextToneFor(contextRatio);
   const contextBreakdownRows = budget.breakdown;
-  const conversationCostUsd = conversationCost(msgs);
+  const conversationCostUsd = useMemo(() => conversationCost(msgs), [msgs]);
+  // Rows above the newest compaction marker draw dimmed. One scan per message
+  // list, not two per row per render.
+  const compactionMarkerIdx = useMemo(() => lastCompactionIndex(msgs), [msgs]);
 
   const canCompact = canCompactConversation({
     providerDelegatesWork,
@@ -4183,7 +4215,7 @@ This user request requires workspace inspection. Before answering, you MUST call
           const isThinkingActive = streaming && isLast && m.role === "assistant" && m.content === "" && !!m.thinking;
           // Messages above the last compaction marker are kept for reference but
           // no longer in the model's context — dim them so that's legible.
-          const dimmed = lastCompactionIndex(msgs) > 0 && i < lastCompactionIndex(msgs);
+          const dimmed = compactionMarkerIdx > 0 && i < compactionMarkerIdx;
 
           if (m.role === "user") {
             // A wake turn has nothing to show; the response it produces opens

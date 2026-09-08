@@ -745,7 +745,12 @@ fn demote_to_superseded(path: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<MemoryEntry, String> {
+pub async fn memory_write(workspace_root: String, input: MemoryInput) -> Result<MemoryEntry, String> {
+    crate::blocking::run(move || write_memory(workspace_root, input)).await
+}
+
+/// Synchronous body of `memory_write` — the interface the tests use.
+pub fn write_memory(workspace_root: String, input: MemoryInput) -> Result<MemoryEntry, String> {
     let base = Workspace::new(&workspace_root)?;
     let hop = resolve_memory_workspace(&base);
     let workspace = hop.as_ref().unwrap_or(&base);
@@ -814,10 +819,15 @@ pub fn memory_write(workspace_root: String, input: MemoryInput) -> Result<Memory
 }
 
 #[tauri::command]
-pub fn memory_list(
+pub async fn memory_list(
     workspace_root: String,
     limit: Option<usize>,
 ) -> Result<Vec<MemoryEntry>, String> {
+    crate::blocking::run(move || list_memory(workspace_root, limit)).await
+}
+
+/// Synchronous body of `memory_list` — the interface the tests use.
+pub fn list_memory(workspace_root: String, limit: Option<usize>) -> Result<Vec<MemoryEntry>, String> {
     let workspace = Workspace::new(&workspace_root)?;
     list_workspace_memory(&workspace, limit.unwrap_or(50))
 }
@@ -1106,7 +1116,12 @@ pub(crate) fn read_workspace_memory_entry(
 }
 
 #[tauri::command]
-pub fn memory_read(workspace_root: String, rel_path: String) -> Result<String, String> {
+pub async fn memory_read(workspace_root: String, rel_path: String) -> Result<String, String> {
+    crate::blocking::run(move || read_memory(workspace_root, rel_path)).await
+}
+
+/// Synchronous body of `memory_read` — the interface the tests use.
+pub fn read_memory(workspace_root: String, rel_path: String) -> Result<String, String> {
     let base = Workspace::new(&workspace_root)?;
     let hop = resolve_memory_workspace(&base);
     let workspace = hop.as_ref().unwrap_or(&base);
@@ -1123,7 +1138,7 @@ pub fn memory_read(workspace_root: String, rel_path: String) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::{
-        memory_list, memory_read, parse_entry_from_file, render_markdown, search_workspace_memory,
+        list_memory, read_memory, parse_entry_from_file, render_markdown, search_workspace_memory,
         MemoryEntry, MemoryKind, MemoryReviewState, MemorySourceRef, MemorySourceType,
         MEMORY_SCHEMA_VERSION,
     };
@@ -1264,8 +1279,8 @@ mod tests {
         let input = |notes: &str| serde_json::from_value(serde_json::json!({
             "title": "Same title", "notes": notes
         })).unwrap();
-        let first = super::memory_write(root.clone(), input("first note")).unwrap();
-        let second = super::memory_write(root, input("second note")).unwrap();
+        let first = super::write_memory(root.clone(), input("first note")).unwrap();
+        let second = super::write_memory(root, input("second note")).unwrap();
         assert_ne!(first.id, second.id);
         assert!(std::fs::read_to_string(&first.path).unwrap().contains("first note"));
         assert!(std::fs::read_to_string(&second.path).unwrap().contains("second note"));
@@ -1287,7 +1302,7 @@ mod tests {
         write_entry(&base, old);
 
         let root = base.to_string_lossy().to_string();
-        let written = super::memory_write(
+        let written = super::write_memory(
             root.clone(),
             super::MemoryInput {
                 title: "Permission gate architecture (revised)".to_string(),
@@ -1341,7 +1356,7 @@ mod tests {
         let root = base.to_string_lossy().to_string();
 
         // A supersedes value that isn't an id is refused outright.
-        let refused = super::memory_write(
+        let refused = super::write_memory(
             root.clone(),
             super::MemoryInput {
                 title: "Injection".to_string(),
@@ -1365,7 +1380,7 @@ mod tests {
         assert!(refused.is_err());
 
         // A newline smuggled into a free string renders as a single sane line.
-        let written = super::memory_write(
+        let written = super::write_memory(
             root,
             super::MemoryInput {
                 title: "Sneaky\nreviewState: stale".to_string(),
@@ -1424,7 +1439,7 @@ mod tests {
 
         // A read on a fresh workspace stays a read: no .klide/memory appears.
         std::fs::create_dir_all(&main).unwrap();
-        assert!(memory_list(main.to_string_lossy().to_string(), None)
+        assert!(list_memory(main.to_string_lossy().to_string(), None)
             .unwrap()
             .is_empty());
         assert!(
@@ -1452,7 +1467,7 @@ mod tests {
         write_entry(&main, entry);
 
         // Recall from inside the worktree sees the main checkout's store…
-        let listed = memory_list(worktree.to_string_lossy().to_string(), None).unwrap();
+        let listed = list_memory(worktree.to_string_lossy().to_string(), None).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "decision-shared");
         assert!(
@@ -1460,7 +1475,7 @@ mod tests {
             "the worktree must not grow a stray store"
         );
         // …and a write from inside the worktree lands in the main store.
-        let written = super::memory_write(
+        let written = super::write_memory(
             worktree.to_string_lossy().to_string(),
             super::MemoryInput {
                 title: "Worktree handoff".to_string(),
@@ -1556,17 +1571,17 @@ mod tests {
 
         let root = workspace.to_string_lossy().to_string();
         assert_eq!(
-            memory_read(root.clone(), ".klide/memory/handoff.md".to_string()).unwrap(),
+            read_memory(root.clone(), ".klide/memory/handoff.md".to_string()).unwrap(),
             "memory"
         );
-        assert!(memory_read(root.clone(), "../outside.txt".to_string()).is_err());
-        assert!(memory_read(root.clone(), "notes.txt".to_string()).is_err());
+        assert!(read_memory(root.clone(), "../outside.txt".to_string()).is_err());
+        assert!(read_memory(root.clone(), "notes.txt".to_string()).is_err());
 
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&outside, memory_dir.join("leak.md")).unwrap();
             assert!(
-                memory_list(root, None)
+                list_memory(root, None)
                     .unwrap()
                     .iter()
                     .all(|entry| entry.id != "leak"),

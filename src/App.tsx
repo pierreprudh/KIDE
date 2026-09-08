@@ -29,11 +29,11 @@ import {
 } from "./icons";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
-import { EditorArea, type EditorEmptyAction } from "./components/EditorArea";
+import { EditorArea, type EditorEmptyAction } from "./components/lazySurfaces";
 import { ImageView } from "./components/ImageView";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { KbdFor } from "./components/Kbd";
-import { TerminalPanel } from "./components/TerminalPanel";
+import { TerminalPanel } from "./components/lazySurfaces";
 import { AiPanel } from "./components/AiPanel";
 import { StatusBar } from "./components/StatusBar";
 // Static (not lazy) on purpose: it is the placeholder shown *while* the

@@ -63,6 +63,7 @@ import {
   LIFECYCLE_LABEL,
   STATUS_COLOR,
   STATUS_LABEL,
+  keepIfSame,
   type Run,
   type RunBoardReasonTone,
   type RunMessage,
@@ -4143,18 +4144,17 @@ export function MissionControl({
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
-      try {
-        const live = await listLiveDelegateSessions();
-        if (!cancelled) setLiveSessions(live);
-      } catch {
-        if (!cancelled) setLiveSessions([]); // outside Tauri / command missing
-      }
-      try {
-        const recent = await listRecentDelegateSessions();
-        if (!cancelled) setRecentSessions(recent);
-      } catch {
-        if (!cancelled) setRecentSessions([]);
-      }
+      // Both lists in flight together, and an unchanged answer keeps its
+      // identity — a fresh array every 2.5 s used to re-render the whole board
+      // when nothing had happened. A failed call (outside Tauri / command
+      // missing) reads as an empty list.
+      const [live, recent] = await Promise.allSettled([
+        listLiveDelegateSessions(),
+        listRecentDelegateSessions(),
+      ]);
+      if (cancelled) return;
+      setLiveSessions((prev) => keepIfSame(prev, live.status === "fulfilled" ? live.value : []));
+      setRecentSessions((prev) => keepIfSame(prev, recent.status === "fulfilled" ? recent.value : []));
     };
     void poll();
     const t = setInterval(poll, 2500);

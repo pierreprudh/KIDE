@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeRunPages, type Run } from "./runs";
+import { keepIfSame, mergeRunPages, type Run } from "./runs";
 
 function run(input: Partial<Run> & Pick<Run, "id" | "source" | "updatedMs">): Run {
   return {
@@ -51,5 +51,27 @@ describe("mergeRunPages", () => {
       "codex:same",
       "claude-code:same",
     ]);
+  });
+});
+
+describe("poll identity", () => {
+  it("mergeRunPages hands back the existing array when a refresh changes nothing", () => {
+    const existing = [run({ id: "a", source: "codex", updatedMs: 100 })];
+    const merged = mergeRunPages(existing, [run({ id: "a", source: "codex", updatedMs: 100 })]);
+    expect(merged).toBe(existing);
+  });
+
+  it("mergeRunPages returns a new array when a row's status moved", () => {
+    const existing = [run({ id: "a", source: "codex", updatedMs: 100, status: "running" })];
+    const merged = mergeRunPages(existing, [run({ id: "a", source: "codex", updatedMs: 100, status: "done" })]);
+    expect(merged).not.toBe(existing);
+    expect(merged[0].status).toBe("done");
+  });
+
+  it("keepIfSame compares by value and keeps the previous identity", () => {
+    const prev = [{ id: "x", live: true }];
+    expect(keepIfSame(prev, [{ id: "x", live: true }])).toBe(prev);
+    expect(keepIfSame(prev, [{ id: "x", live: false }])).not.toBe(prev);
+    expect(keepIfSame(prev, [])).toEqual([]);
   });
 });

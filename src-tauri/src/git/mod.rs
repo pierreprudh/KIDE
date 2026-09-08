@@ -117,16 +117,13 @@ pub(crate) struct GitStash {
     timestamp: i64,
 }
 
-/// Run a blocking git/gh shell-out off the main thread. Synchronous Tauri
-/// commands execute ON the main thread — a 2-second `gh pr list` there
-/// freezes the whole window (input, rendering, every other invoke). Every
-/// command in this module wraps its body in this.
+/// Run a blocking git/gh shell-out off the main thread. Every command in this
+/// module wraps its body in this; the rule and the reasoning live in
+/// `blocking.rs`, this is the module-local spelling of that one door.
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| format!("Git task failed: {e}"))?
+    crate::blocking::run(f).await
 }
 
 fn run_git(workspace_root: &str, args: &[&str]) -> Result<(), String> {

@@ -7,12 +7,42 @@
 //! command-defining file invalidates prior approvals and forces a fresh prompt.
 
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 const MAX_GIT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_UNTRACKED_LIST_BYTES: usize = 1024 * 1024;
+
+/// Ignored local configuration can change command semantics too, so the
+/// fingerprint covers these even though Git deliberately omits them.
+const IGNORED_LOCAL_CONFIG: [&str; 7] = [
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.development.local",
+    ".npmrc",
+    ".agents/tools.json",
+    ".klide/worktree.json",
+];
+
+/// The remembered fingerprint of one repository, and the tree stamp it was
+/// computed under. See [`trust_fingerprint`].
+struct FingerprintMemo {
+    stamp: String,
+    fingerprint: String,
+    /// How many times the full fingerprint has been computed for this root —
+    /// the tests' way of seeing a memo hit.
+    #[cfg(test)]
+    generation: usize,
+}
+
+fn memo() -> &'static Mutex<HashMap<PathBuf, FingerprintMemo>> {
+    static MEMO: OnceLock<Mutex<HashMap<PathBuf, FingerprintMemo>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub struct ApprovalLocation {
     pub path: PathBuf,
@@ -108,9 +138,153 @@ fn workspace_is_inside_repo(canonical_root: &Path, canonical_toplevel: &Path) ->
     canonical_root.starts_with(canonical_toplevel)
 }
 
+/// Fold one path's `symlink_metadata` into a stamp: the mtime in nanoseconds,
+/// the size, and whether it is a file, a directory, a symlink, or missing. A
+/// symlink is stamped as itself, never followed — the full fingerprint refuses
+/// symlinked untracked files, and the stamp must not paper over that.
+fn stat_into(hasher: &mut Sha256, path: &Path) {
+    hasher.update(path.to_string_lossy().as_bytes());
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let kind: u8 = if meta.file_type().is_symlink() {
+                b'l'
+            } else if meta.is_dir() {
+                b'd'
+            } else {
+                b'f'
+            };
+            hasher.update([0, kind]);
+            hasher.update(mtime.to_le_bytes());
+            hasher.update(meta.len().to_le_bytes());
+        }
+        Err(_) => hasher.update(b"\0missing"),
+    }
+    hasher.update(b"\0");
+}
+
+/// The paths a `git status --porcelain=v1 -z` listing names: `XY path`, with a
+/// rename or copy followed by one extra NUL-separated original path.
+fn status_paths(status: &[u8]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut tokens = status.split(|b| *b == 0).filter(|t| !t.is_empty());
+    while let Some(entry) = tokens.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let (code, rest) = entry.split_at(3);
+        out.push(PathBuf::from(String::from_utf8_lossy(rest).as_ref()));
+        if matches!(code[0], b'R' | b'C') || matches!(code[1], b'R' | b'C') {
+            // The original path of a rename: gone from the tree, nothing to stat.
+            tokens.next();
+        }
+    }
+    out
+}
+
+/// A cheap stamp of everything the full fingerprint depends on: HEAD, the
+/// `git status` listing (which paths are changed or untracked, and how), the
+/// mtime + size of each of those paths, and of the ignored config files the
+/// fingerprint also covers. Two short git processes and a stat per dirty path
+/// — no diff, no hashing of file contents.
+///
+/// The trust argument is the one Git's own index makes: a byte can only change
+/// behind an unchanged (path, mtime_ns, size) triple by an edit landing in the
+/// same nanosecond as the last one. Anything coarser — a new untracked file,
+/// a staged hunk, a revert, a checkout — moves the status listing itself.
+fn tree_stamp(canonical_root: &Path) -> Result<String, String> {
+    let ids = git_bytes_limited(
+        canonical_root,
+        &["rev-parse", "--show-toplevel", "HEAD"],
+        16 * 1024,
+    )?;
+    let ids = String::from_utf8_lossy(&ids);
+    let mut lines = ids.lines();
+    let toplevel = PathBuf::from(lines.next().unwrap_or("").trim());
+    let head = lines.next().unwrap_or("").trim().to_string();
+    // Porcelain paths are repository-relative whatever `-C` says, and without a
+    // pathspec the listing covers the whole working tree — the same scope the
+    // full fingerprint diffs.
+    let status = git_bytes_limited(
+        canonical_root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        MAX_UNTRACKED_LIST_BYTES,
+    )?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"klide-tree-stamp-v1\0");
+    hasher.update(canonical_root.to_string_lossy().as_bytes());
+    hasher.update(b"\0head\0");
+    hasher.update(head.as_bytes());
+    hasher.update(b"\0status\0");
+    hasher.update(&status);
+    hasher.update(b"\0stats\0");
+    for rel in status_paths(&status) {
+        stat_into(&mut hasher, &toplevel.join(rel));
+    }
+    for name in IGNORED_LOCAL_CONFIG {
+        stat_into(&mut hasher, &canonical_root.join(name));
+    }
+    Ok(hex_digest(hasher.finalize()))
+}
+
+/// The repository's trust fingerprint, remembered per root.
+///
+/// The full computation (`compute_trust_fingerprint`) diffs the whole tree
+/// against HEAD and hashes every untracked byte — hundreds of milliseconds on
+/// a busy checkout, and it is read at every Run start and, for subscription
+/// Providers, before every turn. So it runs only when the [`tree_stamp`] has
+/// moved since the last answer for this root. A stamp that cannot be taken
+/// (not a repository, unborn HEAD) falls through to the full path so the
+/// caller sees the same refusal it always did.
 fn trust_fingerprint(root: &Path) -> Result<String, String> {
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|e| format!("Unable to resolve workspace for approval: {e}"))?;
+    let Ok(stamp) = tree_stamp(&canonical_root) else {
+        return compute_trust_fingerprint(&canonical_root);
+    };
+    if let Some(hit) = memo().lock().unwrap().get(&canonical_root) {
+        if hit.stamp == stamp {
+            return Ok(hit.fingerprint.clone());
+        }
+    }
+    let fingerprint = compute_trust_fingerprint(&canonical_root)?;
+    let mut memo = memo().lock().unwrap();
+    #[cfg(test)]
+    let generation = memo.get(&canonical_root).map(|m| m.generation).unwrap_or(0) + 1;
+    memo.insert(
+        canonical_root,
+        FingerprintMemo {
+            stamp,
+            fingerprint: fingerprint.clone(),
+            #[cfg(test)]
+            generation,
+        },
+    );
+    Ok(fingerprint)
+}
+
+/// How many times the full fingerprint has been computed for `root`.
+#[cfg(test)]
+fn fingerprint_generation(root: &Path) -> usize {
+    let canonical_root = std::fs::canonicalize(root).unwrap();
+    memo()
+        .lock()
+        .unwrap()
+        .get(&canonical_root)
+        .map(|m| m.generation)
+        .unwrap_or(0)
+}
+
+/// The full fingerprint: HEAD, the complete diff against it, every untracked
+/// file's bytes, and the ignored local config. `root` is already canonical.
+fn compute_trust_fingerprint(canonical_root: &Path) -> Result<String, String> {
+    let canonical_root = canonical_root.to_path_buf();
     let toplevel = git_bytes_limited(
         &canonical_root,
         &["rev-parse", "--show-toplevel"],
@@ -164,15 +338,7 @@ fn trust_fingerprint(root: &Path) -> Result<String, String> {
 
     // Ignored local configuration can change command semantics too. Include
     // the common top-level files even though Git deliberately omitted them.
-    for name in [
-        ".env",
-        ".env.local",
-        ".env.development",
-        ".env.development.local",
-        ".npmrc",
-        ".agents/tools.json",
-        ".klide/worktree.json",
-    ] {
+    for name in IGNORED_LOCAL_CONFIG {
         let path = canonical_root.join(name);
         if path.exists() {
             hash_file(&mut hasher, &path, &mut remaining)?;
@@ -489,5 +655,62 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_unchanged_tree_answers_from_the_memo() {
+        let Some(root) = repo("memo") else { return };
+        let first = trust_fingerprint(&root).unwrap();
+        let generation = fingerprint_generation(&root);
+        assert_eq!(generation, 1, "the first read computes");
+        assert_eq!(trust_fingerprint(&root).unwrap(), first);
+        assert_eq!(trust_fingerprint(&root).unwrap(), first);
+        assert_eq!(
+            fingerprint_generation(&root),
+            generation,
+            "an unchanged tree must not recompute the full fingerprint"
+        );
+    }
+
+    #[test]
+    fn a_same_size_edit_to_an_untracked_file_moves_the_memo() {
+        // The stamp does not hash untracked contents; it trusts mtime + size.
+        // Same size, later mtime: still a different fingerprint.
+        let Some(root) = repo("memo-untracked") else { return };
+        std::fs::write(root.join("notes.txt"), "aaa").unwrap();
+        let before = trust_fingerprint(&root).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join("notes.txt"), "bbb").unwrap();
+        let after = trust_fingerprint(&root).unwrap();
+        assert_ne!(after, before, "an untracked edit must invalidate through the memo");
+        assert_eq!(fingerprint_generation(&root), 2);
+    }
+
+    #[test]
+    fn a_tracked_edit_and_its_revert_both_move_the_memo() {
+        let Some(root) = repo("memo-tracked") else { return };
+        let base = trust_fingerprint(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "changed").unwrap();
+        let edited = trust_fingerprint(&root).unwrap();
+        assert_ne!(edited, base);
+        // Back to HEAD's bytes: git status goes clean, the stamp moves again,
+        // and the fingerprint is the clean tree's once more.
+        std::fs::write(root.join("a.txt"), "hi").unwrap();
+        assert_eq!(trust_fingerprint(&root).unwrap(), base);
+        assert_eq!(fingerprint_generation(&root), 3);
+    }
+
+    #[test]
+    fn status_paths_reads_renames_and_spaces() {
+        let listing = b"R  new name.txt\0old name.txt\0?? notes.txt\0 M src/a.rs\0";
+        let paths = status_paths(listing);
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("new name.txt"),
+                PathBuf::from("notes.txt"),
+                PathBuf::from("src/a.rs"),
+            ]
+        );
     }
 }

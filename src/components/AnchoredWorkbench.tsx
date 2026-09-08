@@ -7,10 +7,10 @@ import type { AiPanelInstance } from "../hooks/usePanelLayout";
 import type { RenderAiPanel } from "./ai/panelHost";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
-import { EditorArea } from "./EditorArea";
+import { EditorArea } from "./lazySurfaces";
 import { ImageView } from "./ImageView";
 import { SearchPanel } from "./SearchPanel";
-import { TerminalPanel } from "./TerminalPanel";
+import { TerminalPanel } from "./lazySurfaces";
 import { SplitPane } from "./SplitPane";
 import type { ThemeId } from "../theme";
 

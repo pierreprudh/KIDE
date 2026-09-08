@@ -1,3 +1,5 @@
+// Points the loader at the bundled editor before <Editor> mounts (see file).
+import "../monaco-setup";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import {
   getMonacoThemeId,

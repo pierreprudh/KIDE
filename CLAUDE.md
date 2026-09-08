@@ -233,6 +233,8 @@ Klide/
     │   ├── storage.rs            Where the runs dir lives — user-choosable folder, validated moves, cache accounting
     │   ├── missions.rs           Durable Missions — authored specs, append-only events, drive loop
     │   ├── durable.rs            Atomic + append-only write primitives for on-disk state
+    │   ├── file_memo.rs          Parsed-file memo keyed on (mtime, len, epoch) — Delegate runs, Harness summaries, scrollback metas
+    │   ├── blocking.rs           The one door for blocking work — spawn_blocking behind async commands + the sync-command drift test
     │   ├── pty.rs                Delegate PTY commands + host-choice rules (SessionHosting)
     │   ├── pty_host.rs           Tauri-free PTY session host — sessions, scrollback, reader loop
     │   ├── pty_daemon.rs         Detached `klide ptyd` server over a unix socket
@@ -510,6 +512,7 @@ npm run tauri dev      # full dev loop (Vite + Rust hot reload)
 - **Workspace-rooted file access.** Agent tools verify paths are inside the workspace before reading/writing.
 - **Tools are defined once in Rust.** The `ToolEntry` struct bundles schema, kind, and execution together. Frontend fetches schemas over IPC. The transcript records each call's *capability* at dispatch time — readers never guess trust effects from a tool's name.
 - **Durable state goes through `durable.rs`.** Missions and Transcripts use atomic replace + flushed appends; a reader must never see a torn document, and interior corruption is an error, not a `continue`.
+- **Blocking work goes through `blocking.rs`.** A sync `#[tauri::command]` runs on the main thread and an inline `std::fs`/`Command` call holds a tokio worker, so IO-bearing commands are `async fn` whose body runs in `blocking::run`, and the Harness dispatches read-only Tools through the same door. `every_sync_command_is_on_the_allowlist` in `lib.rs` fails on a new sync command nobody vouched for.
 - **Icons come from `src/icons.tsx`.** One vocabulary, one weight lever; don't draw a private copy of a glyph in a component (provider/brand/file marks are the hand-drawn exception).
 - **GitHub identity is pinned.** Klide applies the account from `~/.klide/github_account.json` per-command via `GH_TOKEN`; it never follows or mutates gh's global active account.
 - **Styling: inline styles for now.** No CSS framework before v1.0. CSS custom properties in `src/styles/tokens.css` for theming.

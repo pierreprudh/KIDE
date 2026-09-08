@@ -729,7 +729,32 @@ export function stripPlanJson(raw: string): StrippedPlan {
   return { thinking: parts.join("\n\n"), content: "" };
 }
 
+/** Parsed nodes for settled text, keyed by the text itself. Elements are
+ *  immutable descriptions, so one array can back the same message on every
+ *  render — and the same text in two rows. Bounded; oldest entry goes first. */
+const PARSE_CACHE = new Map<string, MdNode[]>();
+const PARSE_CACHE_MAX = 400;
+
 export function renderMarkdown(text: string, options?: MarkdownOptions): MdNode[] {
+  // A streaming tail changes on every tick and would only churn the cache; a
+  // `renderTool` hook makes the output depend on the caller, not the text.
+  const cacheable = !options?.streaming && !options?.renderTool;
+  if (cacheable) {
+    const hit = PARSE_CACHE.get(text);
+    if (hit) return hit;
+  }
+  const out = parseMarkdown(text, options);
+  if (cacheable) {
+    if (PARSE_CACHE.size >= PARSE_CACHE_MAX) {
+      const oldest = PARSE_CACHE.keys().next().value;
+      if (oldest !== undefined) PARSE_CACHE.delete(oldest);
+    }
+    PARSE_CACHE.set(text, out);
+  }
+  return out;
+}
+
+function parseMarkdown(text: string, options?: MarkdownOptions): MdNode[] {
   // Split on ``` so every odd-indexed segment is a code block and every
   // even-indexed segment is prose. Render code blocks first so their
   // contents (which can contain their own ```) are not interpreted again.

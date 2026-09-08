@@ -49,7 +49,7 @@ import { MissionGraph, type MissionGraphMeta } from "./MissionGraph";
 import { planGoal, resolvePlannerModel, stubPlan, type PlannedTask } from "../agent/planner";
 import { PROVIDER_GROUPS, providerName, isDelegateProvider, DEFAULT_MODELS } from "../agent/providers";
 import { ProviderLogo, DotGridLoader } from "./ai/icons";
-import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
+import { DelegateTerminalSurface } from "./lazySurfaces";
 import { notify } from "../toast";
 import { isFavModel, toggleFavModel, subscribeFavModels } from "../favModels";
 import { useCustomProviders } from "../hooks/useCustomProviders";

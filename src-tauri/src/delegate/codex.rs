@@ -123,6 +123,12 @@ impl Delegate for Codex {
         })
     }
 
+    /// The title comes from the session index, not the rollout file, so a
+    /// remembered parse must move when the index does.
+    fn parse_inputs_stamp(&self, home: &str) -> u64 {
+        crate::file_memo::mtime_epoch(&std::path::Path::new(home).join(".codex/session_index.jsonl"))
+    }
+
     fn read_run(&self, _home: &str, key: &str) -> Result<Vec<RunMessage>, String> {
         let content = std::fs::read_to_string(key).map_err(|e| e.to_string())?;
         let mut msgs: Vec<RunMessage> = Vec::new();

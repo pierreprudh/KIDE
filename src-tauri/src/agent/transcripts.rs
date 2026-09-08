@@ -519,6 +519,12 @@ pub fn list_summaries(
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Vec<AgentRunSummary>, String> {
+    // Every summary on disk is read before `limit` applies — the board needs
+    // the newest N, and "newest" is a field inside each file. The memo makes
+    // the steady-state tick a stat per file; only a summary rewritten since
+    // the last tick (a live Run's) is read and parsed again (file_memo.rs).
+    static SUMMARIES: crate::file_memo::FileMemo<Result<Option<AgentRunSummary>, String>> =
+        crate::file_memo::FileMemo::new();
     let mut summaries = Vec::new();
     for entry in std::fs::read_dir(runs_dir).map_err(|e| format!("Unable to read runs dir: {e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -537,8 +543,11 @@ pub fn list_summaries(
         if !name.ends_with(".summary.json") {
             continue;
         }
-        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        if let Ok(summary) = serde_json::from_str::<AgentRunSummary>(&text) {
+        let parsed = SUMMARIES.get_or_compute(&path, 0, |p| {
+            let text = std::fs::read_to_string(p).map_err(|e| e.to_string())?;
+            Ok(serde_json::from_str::<AgentRunSummary>(&text).ok())
+        })?;
+        if let Some(summary) = parsed {
             summaries.push(summary);
         }
     }

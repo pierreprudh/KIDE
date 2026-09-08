@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import type { Msg } from "./types";
-import { DelegateConsole } from "./DelegateTerminal";
+import { DelegateConsole } from "../lazySurfaces";
 import {
   COORDINATION_TOOL_NAMES,
   parseDeliveryReason,
@@ -1121,23 +1121,26 @@ export function RunFailedRow({ message }: { message: string }) {
   );
 }
 
-export function renderMessageBody(
-  m: Msg,
-  active = false,
-  opts?: {
-    /** Skip the ThinkingBlock — the caller renders it elsewhere (AiPanel
-     *  hoists a folded tool run's reasoning above the "N tool calls" row). */
-    hideThinking?: boolean;
-    /** Lets a delivered-agent-message row fetch its bodies from the journal. */
-    workspaceRoot?: string | null;
-    /** This turn's tool results, by call key (`toolCallKey`) — each call row
-     *  draws its own underneath. See `pairToolResults`. */
-    results?: Map<string, AttachedResult>;
-  },
-): ReactElement {
+type MessageBodyOptions = {
+  /** Skip the ThinkingBlock — the caller renders it elsewhere (AiPanel
+   *  hoists a folded tool run's reasoning above the "N tool calls" row). */
+  hideThinking?: boolean;
+  /** Lets a delivered-agent-message row fetch its bodies from the journal. */
+  workspaceRoot?: string | null;
+  /** This turn's tool results, by call key (`toolCallKey`) — each call row
+   *  draws its own underneath. See `pairToolResults`. */
+  results?: Map<string, AttachedResult>;
+};
+
+type MessageBodyProps = MessageBodyOptions & {
+  m: Msg;
+  active?: boolean;
+};
+
+function MessageBodyImpl({ m, active = false, hideThinking, workspaceRoot, results }: MessageBodyProps): ReactElement {
   if (m.role === "system" && m.steering) {
     const delivered = parseDeliveryReason(m.steering.reason);
-    if (delivered) return <AgentInboxRow delivered={delivered} workspaceRoot={opts?.workspaceRoot} />;
+    if (delivered) return <AgentInboxRow delivered={delivered} workspaceRoot={workspaceRoot} />;
     return <SteeringRow reason={m.steering.reason} />;
   }
   if (m.role === "system" && m.runError) {
@@ -1208,7 +1211,7 @@ export function renderMessageBody(
       !!mergedThinking;
     return (
       <>
-        {mergedThinking && !opts?.hideThinking && (
+        {mergedThinking && !hideThinking && (
           <ThinkingBlock text={mergedThinking} streaming={streaming} startedAt={m.thinkingStartedAt} thinkingMs={m.thinkingMs} />
         )}
         {visibleContent && (
@@ -1224,13 +1227,13 @@ export function renderMessageBody(
             calls.map((tc, index) => ({ tc, key: toolCallKey(tc, index) })),
             ({ tc }) => (COORDINATION_TOOL_NAMES.has(tc.name) ? `${tc.name}\n${JSON.stringify(tc.args ?? null)}` : null),
           ).map(({ item: { tc, key }, count }) => (
-            <ToolCallRow key={key} name={tc.name} args={tc.args} count={count} result={opts?.results?.get(key)} />
+            <ToolCallRow key={key} name={tc.name} args={tc.args} count={count} result={results?.get(key)} />
           ));
           if (!visibleContent || calls.length < MIN_STACKED_CALLS) return rows;
           const names: string[] = [];
           for (const tc of calls) if (!names.includes(tc.name)) names.push(tc.name);
           const label = toolRunLabel({ start: 0, end: 0, calls: calls.length, names });
-          const working = active || [...(opts?.results?.values() ?? [])].some((r) => r.active);
+          const working = active || [...(results?.values() ?? [])].some((r) => r.active);
           return (
             <InlineToolRun count={label.count} names={label.names} working={working}>
               {rows}
@@ -1252,5 +1255,34 @@ export function renderMessageBody(
     <div>
       {m.content && <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>}
     </div>
+  );
+}
+
+/**
+ * The memo boundary under every transcript row.
+ *
+ * The Conversation fold and `transcriptReducer` already keep an untouched
+ * `Msg` at the same object identity from one flush to the next; the panel
+ * re-renders ~28 times a second while a Run streams (`streamPacer`). Without a
+ * boundary here every row re-ran `renderMarkdown`, `splitThinking` and
+ * `stripPlanJson` on each tick, so streaming cost grew with the length of the
+ * whole Conversation instead of with the delta. `memo` compares the props
+ * shallowly: a settled row's `m` is the same object, `active` is false, and
+ * the rest are strings or the caller's `Map` — so it returns the element it
+ * already made. Only the live tail row, whose `m` changes, renders.
+ */
+export const MessageBody = memo(MessageBodyImpl);
+
+/** The call-site shape the panel has always used; it now lands on the memo
+ *  boundary above rather than running the body inline in the parent. */
+export function renderMessageBody(m: Msg, active = false, opts?: MessageBodyOptions): ReactElement {
+  return (
+    <MessageBody
+      m={m}
+      active={active}
+      hideThinking={opts?.hideThinking}
+      workspaceRoot={opts?.workspaceRoot}
+      results={opts?.results}
+    />
   );
 }
