@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { hasCompletionReview, type RunCompletion } from "../../agent/completion";
+import { completionDocumentCount, hasCompletionReview, type RunCompletion } from "../../agent/completion";
+import { documentAppLogo } from "../../documentAppLogo";
 import { artifactActionLabel, artifactPreview } from "../../artifacts";
 import { formatBytes } from "../settings/storage";
 import { ChevronIcon, CloseIcon, ReviewIcon } from "../../icons";
@@ -50,12 +51,9 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
   // the file). Going straight to full width meant every glance at a deck threw
   // the reader out of the conversation and into another window.
   //
-  // Opening the result *is* the first step for the document it produced: the
-  // first previewable one shows straight away, so a run that made a deck shows
-  // the deck rather than a list with a picture one more click behind it.
-  const [previewing, setPreviewing] = useState<string | null>(
-    () => (completion.artifacts ?? []).find((a) => artifactPreview(a.path) !== "none")?.path ?? null,
-  );
+  // Opening the result *is* the first step: every document it produced shows
+  // its picture here, in the panel. So the row's own click is the second step
+  // and opens the document full width — no row has to be chosen first.
   const artifacts = completion.artifacts ?? [];
   return (
     <>
@@ -78,28 +76,28 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
           <div className="klide-result-files klide-result-artifacts">{artifacts.map((artifact) => {
             const name = artifact.path.split("/").pop() || artifact.path;
             const directory = artifact.path.slice(0, -name.length).replace(/\/$/, "");
-            const label = <><span className="klide-result-filename">{name}</span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
+            // The app that owns the file, as its own mark: a reader looking for
+            // the deck finds it by the PowerPoint square faster than by
+            // reading four filenames.
+            const appLogo = documentAppLogo(artifact.path);
+            const label = (
+              <>
+                <span className="klide-result-filename klide-result-document-name">
+                  {appLogo && <img className="klide-result-app-logo" src={appLogo} alt="" aria-hidden="true" />}
+                  <span>{name}</span>
+                </span>
+                {directory && <span className="klide-result-directory">{directory}</span>}
+              </>
+            );
             const size = <span className="klide-result-size">{formatBytes(artifact.bytes)}</span>;
-            const shown = previewing === artifact.path;
-            // Two steps only where there is something to see first. A file
-            // Klide cannot draw a picture of has no preview step to offer, so
-            // its row opens on the first click rather than spending one on a
-            // frame that would say "no preview".
-            const previewable = artifactPreview(artifact.path) !== "none";
-            const step = previewable && !shown;
             const row = onOpenArtifact
-              ? <button type="button" aria-expanded={previewable ? shown : undefined}
-                  title={step ? `Preview ${artifact.path} in the panel` : artifactActionLabel(artifact.path)}
-                  onClick={() => {
-                    if (step) { setPreviewing(artifact.path); return; }
-                    onDone();
-                    onOpenArtifact(artifact.path);
-                  }}>{label}{size}<span aria-hidden="true">{step ? "▸" : "↗"}</span></button>
+              ? <button type="button" title={artifactActionLabel(artifact.path)}
+                  onClick={() => { onDone(); onOpenArtifact(artifact.path); }}>{label}{size}<span aria-hidden="true">↗</span></button>
               : <div>{label}{size}</div>;
             return (
-              <div key={artifact.path} className="klide-result-document" data-previewing={shown ? "1" : undefined}>
+              <div key={artifact.path} className="klide-result-document">
                 {row}
-                <ArtifactThumb path={artifact.path} load={onPreviewArtifact} shown={shown} />
+                <ArtifactThumb path={artifact.path} load={onPreviewArtifact} />
               </div>
             );
           })}</div>
@@ -129,15 +127,14 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
 /** The picture of one document, in the panel. It loads when the reader asks
  *  for it — a preview per row, all at once, was a wall of pictures nobody had
  *  asked to see, and it made the first click on a row the last one. */
-function ArtifactThumb({ path, load, shown }: { path: string; load?: (path: string) => Promise<string | null>; shown: boolean }) {
+function ArtifactThumb({ path, load }: { path: string; load?: (path: string) => Promise<string | null> }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
-    if (!shown || !load || artifactPreview(path) === "none") return;
+    if (!load || artifactPreview(path) === "none") return;
     let live = true;
     void load(path).then((next) => { if (live) setSrc(next); }).catch(() => {});
     return () => { live = false; };
-  }, [path, load, shown]);
-  if (!shown) return null;
+  }, [path, load]);
   if (!src) {
     return (
       <p className="klide-result-preview-note">
@@ -145,12 +142,7 @@ function ArtifactThumb({ path, load, shown }: { path: string; load?: (path: stri
       </p>
     );
   }
-  return (
-    <>
-      <img className="klide-result-thumb" src={src} alt={`Preview of ${path.split("/").pop() ?? path}`} loading="lazy" />
-      <p className="klide-result-preview-note">Click the row again to open it full width.</p>
-    </>
-  );
+  return <img className="klide-result-thumb" src={src} alt={`Preview of ${path.split("/").pop() ?? path}`} loading="lazy" />;
 }
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
@@ -182,7 +174,8 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
     : "";
   const dot = attention > 0 && <span className="klide-result-attention-dot" aria-label={`${attention} item${attention === 1 ? "" : "s"} to review`} />;
   // What the compact mark cannot say, its name says.
-  const spoken = [label, files, attention > 0 ? `${attention} item${attention === 1 ? "" : "s"} to review` : ""]
+  const documentCount = completionDocumentCount(completion);
+  const spoken = [label, files, documentCount > 0 ? `${documentCount} document${documentCount === 1 ? "" : "s"}` : "", attention > 0 ? `${attention} item${attention === 1 ? "" : "s"} to review` : ""]
     .filter(Boolean).join(" · ");
 
   if (island && folded) {
@@ -230,6 +223,7 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
             <ReviewIcon size={15} />
             <span className="klide-result-island-title">{title}</span>
             {files && <span className="klide-result-meta">{files}</span>}
+            {documentCount > 0 && <span className="klide-result-document-count">{documentCount} document{documentCount === 1 ? "" : "s"}</span>}
             {dot}
             <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
             {/* Dismissal belongs to the open card. At rest the entry is one
