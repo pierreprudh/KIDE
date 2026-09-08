@@ -1083,9 +1083,14 @@ function FocusAddMenu({
     closeOnOutsideClick: true,
     computePos: (rect) => {
       const width = 238;
+      // Bottom-anchored above the trigger, so the room it has is whatever sits
+      // above it minus the two 8px margins. Goal's policy rows push the actions
+      // list past any fixed height — cap it here and let the body scroll rather
+      // than clip the last rung off the bottom.
       return {
         bottom: Math.round(window.innerHeight - rect.top + 8),
         left: Math.round(Math.min(Math.max(8, rect.left), window.innerWidth - width - 8)),
+        maxHeight: Math.max(160, Math.min(332, Math.round(rect.top - 16))),
       };
     },
   });
@@ -1176,7 +1181,7 @@ function FocusAddMenu({
           role="menu"
           aria-label={view === "files" ? "Add a file" : "Add files and choose a mode"}
           className="popover-enter menu-glass klide-focus-add-menu"
-          style={{ left: pos.left, bottom: pos.bottom, zIndex: Z.popover }}
+          style={{ left: pos.left, bottom: pos.bottom, maxHeight: pos.maxHeight, zIndex: Z.popover }}
         >
           {view === "files" ? (
             <>
@@ -1194,7 +1199,7 @@ function FocusAddMenu({
                   aria-label="Find a workspace file"
                 />
               </div>
-              <div className="klide-focus-add-file-list">
+              <div className="klide-focus-add-file-list menu-scroll">
                 {files === null ? (
                   <div className="klide-focus-add-empty">Loading files…</div>
                 ) : matchingFiles.length === 0 ? (
@@ -1216,7 +1221,7 @@ function FocusAddMenu({
               </div>
             </>
           ) : (
-            <>
+            <div className="klide-focus-add-menu-scroll menu-scroll">
               <button
                 type="button"
                 role="menuitem"
@@ -1316,7 +1321,7 @@ function FocusAddMenu({
                   })}
                 </>
               )}
-            </>
+            </div>
           )}
         </div>,
         document.body
