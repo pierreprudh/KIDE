@@ -48,6 +48,11 @@ type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpe
  *  DOM to click in. */
 export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, onDone }: EvidenceProps) {
   const review = (path?: string) => { onDone(); onReview?.(path); };
+  // A document opens in two steps: the first click previews it here in the
+  // panel, the second opens it full width (the inspector, or the app that owns
+  // the file). Going straight to full width meant every glance at a deck threw
+  // the reader out of the conversation and into another window.
+  const [previewing, setPreviewing] = useState<string | null>(null);
   const artifacts = completion.artifacts ?? [];
   return (
     <>
@@ -72,14 +77,20 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
             const directory = artifact.path.slice(0, -name.length).replace(/\/$/, "");
             const label = <><span className="klide-result-filename">{name}</span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
             const size = <span className="klide-result-size">{formatBytes(artifact.bytes)}</span>;
+            const shown = previewing === artifact.path;
             const row = onOpenArtifact
-              ? <button type="button" title={artifactActionLabel(artifact.path)}
-                  onClick={() => { onDone(); onOpenArtifact(artifact.path); }}>{label}{size}<span aria-hidden="true">↗</span></button>
+              ? <button type="button" aria-expanded={shown}
+                  title={shown ? artifactActionLabel(artifact.path) : `Preview ${artifact.path} in the panel`}
+                  onClick={() => {
+                    if (!shown) { setPreviewing(artifact.path); return; }
+                    onDone();
+                    onOpenArtifact(artifact.path);
+                  }}>{label}{size}<span aria-hidden="true">{shown ? "↗" : "▸"}</span></button>
               : <div>{label}{size}</div>;
             return (
-              <div key={artifact.path} className="klide-result-document">
+              <div key={artifact.path} className="klide-result-document" data-previewing={shown ? "1" : undefined}>
                 {row}
-                <ArtifactThumb path={artifact.path} load={onPreviewArtifact} />
+                <ArtifactThumb path={artifact.path} load={onPreviewArtifact} shown={shown} />
               </div>
             );
           })}</div>
@@ -106,16 +117,31 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
  *  Asked for once per row, on mount: the answer is a data URI, so nothing is
  *  refetched while the card is open, and a file with no preview simply has no
  *  picture rather than an apology in its place. */
-function ArtifactThumb({ path, load }: { path: string; load?: (path: string) => Promise<string | null> }) {
+/** The picture of one document, in the panel. It loads when the reader asks
+ *  for it — a preview per row, all at once, was a wall of pictures nobody had
+ *  asked to see, and it made the first click on a row the last one. */
+function ArtifactThumb({ path, load, shown }: { path: string; load?: (path: string) => Promise<string | null>; shown: boolean }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
-    if (!load || artifactPreview(path) === "none") return;
+    if (!shown || !load || artifactPreview(path) === "none") return;
     let live = true;
     void load(path).then((next) => { if (live) setSrc(next); }).catch(() => {});
     return () => { live = false; };
-  }, [path, load]);
-  if (!src) return null;
-  return <img className="klide-result-thumb" src={src} alt="" loading="lazy" />;
+  }, [path, load, shown]);
+  if (!shown) return null;
+  if (!src) {
+    return (
+      <p className="klide-result-preview-note">
+        {artifactPreview(path) === "none" ? "No preview for this kind of file." : "Opening a preview…"}
+      </p>
+    );
+  }
+  return (
+    <>
+      <img className="klide-result-thumb" src={src} alt={`Preview of ${path.split("/").pop() ?? path}`} loading="lazy" />
+      <p className="klide-result-preview-note">Click the row again to open it full width.</p>
+    </>
+  );
 }
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in

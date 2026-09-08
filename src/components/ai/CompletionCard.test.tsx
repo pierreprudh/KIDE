@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { CompletionCard, ResultEvidence } from "./CompletionCard";
 import type { RunCompletion } from "../../agent/completion";
+import { artifactActionLabel } from "../../artifacts";
 
 const completion: RunCompletion = { runId: "r", completedAt: 1, outcome: "Updated settings.", files: [], commands: [], warnings: [] };
 const render = (value: RunCompletion) => renderToStaticMarkup(<CompletionCard completion={value} onReview={() => {}} onRequestChanges={() => {}} />);
@@ -115,11 +116,19 @@ describe("documents a command produced", () => {
     expect(html).not.toContain("Review changes");
   });
 
-  it("says which of the two things the row will do", () => {
-    expect(renderEvidence({ ...completion, artifacts: [DECK] }, () => {}))
-      .toContain("Open Q3 review.pptx in its app");
-    expect(renderEvidence({ ...completion, artifacts: [{ path: "notes.md", bytes: 900, created: true }] }, () => {}))
-      .toContain("Read notes.md");
+  // A document opens in two steps: the panel first, full width second. So the
+  // row's resting promise is the preview, and the destination label — which of
+  // the two things the second click does — belongs to the state after it.
+  it("offers the preview first, not the destination", () => {
+    const html = renderEvidence({ ...completion, artifacts: [DECK] }, () => {});
+    expect(html).toContain("Preview decks/Q3 review.pptx in the panel");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("Open Q3 review.pptx in its app");
+  });
+
+  it("names the destination the second click reaches", () => {
+    expect(artifactActionLabel("decks/Q3 review.pptx")).toBe("Open Q3 review.pptx in its app");
+    expect(artifactActionLabel("notes.md")).toBe("Read notes.md");
   });
 
   it("still lists them when the host offers no way to open one", () => {

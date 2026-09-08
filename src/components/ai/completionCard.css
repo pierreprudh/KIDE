@@ -91,6 +91,8 @@
 /* The picture is the row's evidence, not decoration: full column width, its
    own hairline, and no rounding beyond the card's own vocabulary. A deck is
    4:3 and a page is taller, so the height follows the image. */
+.klide-result-preview-note { margin: 2px 0 12px; color: var(--fg-dim); font-size: 10.5px; line-height: 1.4; }
+.klide-result-document[data-previewing="1"] > button { color: var(--fg-strong); }
 .klide-result-thumb { display: block; width: 100%; margin: 2px 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); animation: klide-result-thumb-in 220ms ease-out; }
 @keyframes klide-result-thumb-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .klide-result-thumb { animation: none; } }
