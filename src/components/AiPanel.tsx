@@ -84,7 +84,7 @@ import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } fr
 import { WorkingRow } from "./ai/WorkingRow";
 import { AttachIcon, CloseIcon, ReviewIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
-import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
+import { DelegateTerminalSurface } from "./lazySurfaces";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
 import { CompletionCard } from "./ai/CompletionCard";
 import { hasCompletionReview, type RunCompletion } from "../agent/completion";

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import type { Msg } from "./types";
-import { DelegateConsole } from "./DelegateTerminal";
+import { DelegateConsole } from "../lazySurfaces";
 import {
   COORDINATION_TOOL_NAMES,
   parseDeliveryReason,

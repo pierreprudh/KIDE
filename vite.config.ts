@@ -47,6 +47,12 @@ export default defineConfig(async () => ({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Vite's dynamic-import preload helper is a virtual module every lazy
+          // chunk imports. Left to Rollup it was hoisted into whichever chunk
+          // came first — vendor-monaco — which made every lazy surface pull
+          // the 4.5 MB editor core onto the first-paint path. Pin it to the
+          // small vendor chunk the entry always loads.
+          if (id.includes("vite/preload-helper")) return "vendor";
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("monaco-editor") || id.includes("@monaco-editor")) return "vendor-monaco";
           if (id.includes("@xterm")) return "vendor-terminal";

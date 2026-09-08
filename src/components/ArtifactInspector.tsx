@@ -1,3 +1,5 @@
+// Points the loader at the bundled editor before <Editor> mounts (see file).
+import "../monaco-setup";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { detectLanguage } from "../editorLanguage";
 import Editor, { DiffEditor } from "@monaco-editor/react";
