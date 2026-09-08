@@ -1,5 +1,6 @@
 mod accounts;
 mod adapters;
+mod blocking;
 mod cli;
 mod agent;
 mod coordination;
@@ -49,7 +50,7 @@ struct FsEntry {
 /// best-effort — failures during the shell-out become empty strings
 /// rather than a hard error, so a missing `whoami` on some weird
 /// container still returns a usable (if partial) struct.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct AppUserInfo {
     username: String,
@@ -58,23 +59,27 @@ struct AppUserInfo {
 }
 
 #[tauri::command]
-fn app_user_info() -> AppUserInfo {
-    let username = cli::shell_one_line("whoami", "")
-        .or_else(|| std::env::var("USER").ok())
-        .or_else(|| std::env::var("USERNAME").ok())
-        .unwrap_or_default();
-    let hostname = cli::shell_one_line("hostname", "")
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .unwrap_or_default();
-    let home = cli::home_dir_path()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    AppUserInfo {
-        username,
-        hostname,
-        home_dir: home,
-    }
+async fn app_user_info() -> AppUserInfo {
+    // `whoami` + `hostname` shell-outs — off the main thread.
+    blocking::run_infallible(move || {
+        let username = cli::shell_one_line("whoami", "")
+            .or_else(|| std::env::var("USER").ok())
+            .or_else(|| std::env::var("USERNAME").ok())
+            .unwrap_or_default();
+        let hostname = cli::shell_one_line("hostname", "")
+            .or_else(|| std::env::var("HOSTNAME").ok())
+            .or_else(|| std::env::var("COMPUTERNAME").ok())
+            .unwrap_or_default();
+        let home = cli::home_dir_path()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        AppUserInfo {
+            username,
+            hostname,
+            home_dir: home,
+        }
+    })
+    .await
 }
 
 // Keychain service name lives in `providers` (single source of truth for
@@ -88,21 +93,31 @@ fn app_user_info() -> AppUserInfo {
 // Report whether a usable key exists and where it comes from — never returns
 // the key itself, so the value stays inside the Rust side.
 #[tauri::command]
-fn ai_provider_key_status(provider: String) -> ProviderKeyStatus {
-    providers::key_status(&provider).unwrap_or(ProviderKeyStatus {
-        has_key: false,
-        source: "none".to_string(),
+async fn ai_provider_key_status(provider: String) -> ProviderKeyStatus {
+    // Reads the keychain-marker file; three surfaces probe all 16 providers at
+    // once, so the reads stay off the main thread (blocking.rs).
+    blocking::run(move || providers::key_status(&provider))
+        .await
+        .unwrap_or(ProviderKeyStatus {
+            has_key: false,
+            source: "none".to_string(),
+        })
+}
+
+#[tauri::command]
+async fn ai_set_provider_key(provider: String, key: String) -> Result<(), String> {
+    blocking::run(move || {
+        providers::set_keychain_key(&provider, &key)
     })
+    .await
 }
 
 #[tauri::command]
-fn ai_set_provider_key(provider: String, key: String) -> Result<(), String> {
-    providers::set_keychain_key(&provider, &key)
-}
-
-#[tauri::command]
-fn ai_clear_provider_key(provider: String) -> Result<(), String> {
-    providers::clear_keychain_key(&provider)
+async fn ai_clear_provider_key(provider: String) -> Result<(), String> {
+    blocking::run(move || {
+        providers::clear_keychain_key(&provider)
+    })
+    .await
 }
 
 // Per-model list price (USD per million in/out tokens), or null for local /
@@ -117,13 +132,19 @@ fn ai_model_pricing(model: String) -> Option<pricing::ModelPricing> {
 // (resolved from the env / project `.env` / ~/.klide/.env), exactly like a
 // self-hosted endpoint. Keychain-free, so it never pops a macOS prompt.
 #[tauri::command]
-fn ai_set_provider_key_reference(provider: String, reference: String) -> Result<(), String> {
-    providers::set_provider_reference(&provider, Some(&reference))
+async fn ai_set_provider_key_reference(provider: String, reference: String) -> Result<(), String> {
+    blocking::run(move || {
+        providers::set_provider_reference(&provider, Some(&reference))
+    })
+    .await
 }
 
 #[tauri::command]
-fn ai_clear_provider_key_reference(provider: String) -> Result<(), String> {
-    providers::set_provider_reference(&provider, None)
+async fn ai_clear_provider_key_reference(provider: String) -> Result<(), String> {
+    blocking::run(move || {
+        providers::set_provider_reference(&provider, None)
+    })
+    .await
 }
 
 // ── Custom (self-hosted) providers ──────────────────────────────────────
@@ -133,8 +154,11 @@ fn ai_clear_provider_key_reference(provider: String) -> Result<(), String> {
 // keyed by the same `custom:` id.
 
 #[tauri::command]
-fn custom_provider_list() -> Vec<custom_providers::CustomProvider> {
-    custom_providers::list()
+async fn custom_provider_list() -> Vec<custom_providers::CustomProvider> {
+    blocking::run_infallible(move || {
+        custom_providers::list()
+    })
+    .await
 }
 
 // Account snapshots for delegate CLIs (Codex / Claude Code / OpenCode). List
@@ -146,22 +170,28 @@ fn accounts_list(provider: String) -> accounts::AccountsView {
 }
 
 #[tauri::command]
-fn account_save_current(provider: String, name: String) -> Result<accounts::Account, String> {
-    accounts::save_current(&provider, &name)
+async fn account_save_current(provider: String, name: String) -> Result<accounts::Account, String> {
+    blocking::run(move || {
+        accounts::save_current(&provider, &name)
+    })
+    .await
 }
 
 #[tauri::command]
-fn account_activate(app: tauri::AppHandle, provider: String, name: String) -> Result<(), String> {
-    // Live-run guard: a running delegate refreshes its token and writes back
-    // to the store we're about to swap, so refuse while one is live. Asks both
-    // hosts — a ptyd-hosted session is exactly the case that outlives the app.
-    if pty::provider_has_live_session(&app, &provider) {
-        return Err(format!(
-            "A {} session is live in Klide — finish or stop it before switching accounts.",
-            provider
-        ));
-    }
-    accounts::activate(&provider, &name)
+async fn account_activate(app: tauri::AppHandle, provider: String, name: String) -> Result<(), String> {
+    blocking::run(move || {
+        // Live-run guard: a running delegate refreshes its token and writes back
+        // to the store we're about to swap, so refuse while one is live. Asks both
+        // hosts — a ptyd-hosted session is exactly the case that outlives the app.
+        if pty::provider_has_live_session(&app, &provider) {
+            return Err(format!(
+                "A {} session is live in Klide — finish or stop it before switching accounts.",
+                provider
+            ));
+        }
+        accounts::activate(&provider, &name)
+    })
+    .await
 }
 
 /// Tell the backend which folder is open, so `${VAR}` token references can
@@ -177,36 +207,54 @@ async fn set_active_workspace(app: tauri::AppHandle, root: Option<String>) -> Re
 }
 
 #[tauri::command]
-fn custom_provider_upsert(provider: custom_providers::CustomProvider) -> Result<(), String> {
-    custom_providers::upsert(provider)
+async fn custom_provider_upsert(provider: custom_providers::CustomProvider) -> Result<(), String> {
+    blocking::run(move || {
+        custom_providers::upsert(provider)
+    })
+    .await
 }
 
 #[tauri::command]
-fn custom_provider_remove(id: String) -> Result<(), String> {
-    // Drop the keychain token alongside the config so a re-added id with
-    // the same name doesn't silently inherit the old credential.
-    let _ = providers::clear_keychain_key(&id);
-    custom_providers::remove(&id)
+async fn custom_provider_remove(id: String) -> Result<(), String> {
+    blocking::run(move || {
+        // Drop the keychain token alongside the config so a re-added id with
+        // the same name doesn't silently inherit the old credential.
+        let _ = providers::clear_keychain_key(&id);
+        custom_providers::remove(&id)
+    })
+    .await
 }
 
 #[tauri::command]
-fn custom_cli_list() -> Vec<custom_cli::CustomCli> {
-    custom_cli::list()
+async fn custom_cli_list() -> Vec<custom_cli::CustomCli> {
+    blocking::run_infallible(move || {
+        custom_cli::list()
+    })
+    .await
 }
 
 #[tauri::command]
-fn custom_cli_upsert(provider: custom_cli::CustomCli) -> Result<(), String> {
-    custom_cli::upsert(provider)
+async fn custom_cli_upsert(provider: custom_cli::CustomCli) -> Result<(), String> {
+    blocking::run(move || {
+        custom_cli::upsert(provider)
+    })
+    .await
 }
 
 #[tauri::command]
-fn custom_cli_remove(id: String) -> Result<(), String> {
-    custom_cli::remove(&id)
+async fn custom_cli_remove(id: String) -> Result<(), String> {
+    blocking::run(move || {
+        custom_cli::remove(&id)
+    })
+    .await
 }
 
 #[tauri::command]
-fn ai_subscription_status(provider: String) -> Result<cli::AiConnectionStatus, String> {
-    cli::subscription_status(provider)
+async fn ai_subscription_status(provider: String) -> Result<cli::AiConnectionStatus, String> {
+    blocking::run(move || {
+        cli::subscription_status(provider)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -222,13 +270,16 @@ fn ai_list_tools(mode: String) -> Vec<serde_json::Value> {
 // ── Find in files ───────────────────────────────────────────────────────
 
 #[tauri::command]
-fn search_in_files(
+async fn search_in_files(
     workspace_root: String,
     pattern: String,
     include: Option<String>,
 ) -> Result<search::SearchResult, String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    search::search_workspace(&ws, &pattern, include.as_deref())
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        search::search_workspace(&ws, &pattern, include.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -267,33 +318,39 @@ async fn ai_chat(
 }
 
 #[tauri::command]
-fn list_dir(workspace_root: String, path: String) -> Result<Vec<FsEntry>, String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    let path = ws.resolve_abs_read(&path)?;
-    let entries = std::fs::read_dir(path).map_err(|e| format!("Unable to read folder: {e}"))?;
+async fn list_dir(workspace_root: String, path: String) -> Result<Vec<FsEntry>, String> {
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let path = ws.resolve_abs_read(&path)?;
+        let entries = std::fs::read_dir(path).map_err(|e| format!("Unable to read folder: {e}"))?;
 
-    let mut out = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Unable to read folder entry: {e}"))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("Unable to read folder entry type: {e}"))?;
-        out.push(FsEntry {
-            name: entry.file_name().to_string_lossy().to_string(),
-            is_directory: file_type.is_dir(),
-        });
-    }
+        let mut out = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Unable to read folder entry: {e}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("Unable to read folder entry type: {e}"))?;
+            out.push(FsEntry {
+                name: entry.file_name().to_string_lossy().to_string(),
+                is_directory: file_type.is_dir(),
+            });
+        }
 
-    Ok(out)
+        Ok(out)
+    })
+    .await
 }
 
 #[tauri::command]
-fn read_text_file(workspace_root: String, path: String) -> Result<String, String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    let path = ws.resolve_abs_read(&path)?;
-    // User tier: the human may open their own .env; the 20 MB cap only stops
-    // a file Monaco couldn't render from freezing the webview.
-    ws.read_text(&path, workspace::Access::User)
+async fn read_text_file(workspace_root: String, path: String) -> Result<String, String> {
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let path = ws.resolve_abs_read(&path)?;
+        // User tier: the human may open their own .env; the 20 MB cap only stops
+        // a file Monaco couldn't render from freezing the webview.
+        ws.read_text(&path, workspace::Access::User)
+    })
+    .await
 }
 
 fn mime_for_path(path: &str) -> &'static str {
@@ -322,62 +379,80 @@ fn mime_for_path(path: &str) -> &'static str {
 /// MIME is guessed from the extension. Capped at 20 MB to keep one huge asset
 /// from bloating the IPC payload and webview memory.
 #[tauri::command]
-fn read_file_data_uri(workspace_root: String, path: String) -> Result<String, String> {
-    use base64::Engine;
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    let abs = ws.resolve_abs_read(&path)?;
-    let meta = std::fs::metadata(&abs).map_err(|e| format!("Unable to read file: {e}"))?;
-    if meta.len() > workspace::USER_MAX_READ_BYTES {
-        return Err("File is too large to preview (max 20 MB).".to_string());
-    }
-    let bytes = std::fs::read(&abs).map_err(|e| format!("Unable to read file: {e}"))?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{};base64,{}", mime_for_path(&path), b64))
+async fn read_file_data_uri(workspace_root: String, path: String) -> Result<String, String> {
+    blocking::run(move || {
+        use base64::Engine;
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let abs = ws.resolve_abs_read(&path)?;
+        let meta = std::fs::metadata(&abs).map_err(|e| format!("Unable to read file: {e}"))?;
+        if meta.len() > workspace::USER_MAX_READ_BYTES {
+            return Err("File is too large to preview (max 20 MB).".to_string());
+        }
+        let bytes = std::fs::read(&abs).map_err(|e| format!("Unable to read file: {e}"))?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(format!("data:{};base64,{}", mime_for_path(&path), b64))
+    })
+    .await
 }
 
 #[tauri::command]
-fn path_exists(workspace_root: String, path: String) -> Result<bool, String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    Ok(ws.resolve_abs_readwrite(&path)?.exists())
+async fn path_exists(workspace_root: String, path: String) -> Result<bool, String> {
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        Ok(ws.resolve_abs_readwrite(&path)?.exists())
+    })
+    .await
 }
 
 #[tauri::command]
-fn write_text_file(workspace_root: String, path: String, content: String) -> Result<(), String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    let target = ws.resolve_abs_readwrite(&path)?;
-    ws.write_text(&target, &content, workspace::Access::User)
+async fn write_text_file(workspace_root: String, path: String, content: String) -> Result<(), String> {
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let target = ws.resolve_abs_readwrite(&path)?;
+        ws.write_text(&target, &content, workspace::Access::User)
+    })
+    .await
 }
 
 #[tauri::command]
-fn create_entry(workspace_root: String, path: String, is_directory: bool) -> Result<(), String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    let target = ws.resolve_abs_entry(&path)?;
-    if target.exists() {
-        return Err("An entry with that name already exists".to_string());
-    }
-    if is_directory {
-        std::fs::create_dir(&target).map_err(|e| format!("Unable to create folder: {e}"))
-    } else {
-        std::fs::write(&target, "").map_err(|e| format!("Unable to create file: {e}"))
-    }
+async fn create_entry(workspace_root: String, path: String, is_directory: bool) -> Result<(), String> {
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let target = ws.resolve_abs_entry(&path)?;
+        if target.exists() {
+            return Err("An entry with that name already exists".to_string());
+        }
+        if is_directory {
+            std::fs::create_dir(&target).map_err(|e| format!("Unable to create folder: {e}"))
+        } else {
+            std::fs::write(&target, "").map_err(|e| format!("Unable to create file: {e}"))
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-fn rename_entry(workspace_root: String, from: String, to: String) -> Result<(), String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    let from_path = ws.resolve_abs_entry(&from)?;
-    let to_path = ws.resolve_abs_entry(&to)?;
-    if to_path.exists() {
-        return Err("An entry with that name already exists".to_string());
-    }
-    std::fs::rename(&from_path, &to_path).map_err(|e| format!("Unable to rename: {e}"))
+async fn rename_entry(workspace_root: String, from: String, to: String) -> Result<(), String> {
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let from_path = ws.resolve_abs_entry(&from)?;
+        let to_path = ws.resolve_abs_entry(&to)?;
+        if to_path.exists() {
+            return Err("An entry with that name already exists".to_string());
+        }
+        std::fs::rename(&from_path, &to_path).map_err(|e| format!("Unable to rename: {e}"))
+    })
+    .await
 }
 
 #[tauri::command]
-fn delete_entry(workspace_root: String, path: String) -> Result<(), String> {
-    let ws = workspace::Workspace::new(&workspace_root)?;
-    let target = ws.resolve_abs_entry(&path)?;
-    ws.remove(&target, workspace::Access::User)
+async fn delete_entry(workspace_root: String, path: String) -> Result<(), String> {
+    blocking::run(move || {
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let target = ws.resolve_abs_entry(&path)?;
+        ws.remove(&target, workspace::Access::User)
+    })
+    .await
 }
 
 /// A picture of a document Klide cannot render — a deck, a spreadsheet, a PDF.
@@ -500,19 +575,26 @@ async fn list_agent_runs(
         .map(str::trim)
         .filter(|root| !root.is_empty())
         .map(str::to_string);
-    let mut runs = tokio::task::spawn_blocking(move || match scope {
-        Some(root) => delegate::list_runs_for_workspace(&home, limit, offset, &root),
-        None => delegate::list_runs(&home, limit, offset),
+    // The spawn-mapping read and the scrollback-meta scan are filesystem work
+    // too, so they ride the same blocking closure rather than running after
+    // the await on the runtime thread.
+    let scan_app = app.clone();
+    let (mut runs, (by_delegate, by_external), hosted_statuses) = blocking::run(move || {
+        let runs = match scope {
+            Some(root) => delegate::list_runs_for_workspace(&home, limit, offset, &root),
+            None => delegate::list_runs(&home, limit, offset),
+        };
+        // Inject parent ids from the spawn mappings recorded at dispatch time.
+        // Try by Klide's internal ID first, then by the external session ID
+        // (for cases where the CLI created its own session id different from
+        // the one we passed to delegate_pty_spawn).
+        Ok((
+            runs,
+            crate::pty::read_delegate_sessions_by_id(&scan_app),
+            crate::pty::historical_delegate_statuses(&scan_app),
+        ))
     })
-    .await
-    .map_err(|e| format!("Unable to list agent runs: {e}"))?;
-
-    // Inject parent ids from the spawn mappings recorded at dispatch time.
-    // Try by Klide's internal ID first, then by the external session ID (for
-    // cases where the CLI created its own session id different from the one
-    // we passed to delegate_pty_spawn).
-    let (by_delegate, by_external) = crate::pty::read_delegate_sessions_by_id(&app);
-    let hosted_statuses = crate::pty::historical_delegate_statuses(&app);
+    .await?;
     for run in runs.iter_mut() {
         // Evidence: surface the linked git worktree a run executed in (when its
         // cwd is one), so the board can answer "where did this happen?".
@@ -559,22 +641,28 @@ fn resolve_agent_log_path(home: &str, path: &str) -> Result<std::path::PathBuf, 
 }
 
 #[tauri::command]
-fn read_agent_run(path: String, source: String) -> Result<Vec<RunMessage>, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    // (OpenCode runs go through read_opencode_run instead — their key is a
-    // session id, not a path under home.)
-    let path = resolve_agent_log_path(&home, &path)?;
-    // Route through the registry so every delegate uses its own parser — an
-    // unknown source errors loudly instead of being mis-read as Claude.
-    let adapter = delegate::lookup(&source)
-        .ok_or_else(|| format!("No delegate adapter for source: {source}"))?;
-    adapter.read_run(&home, &path.to_string_lossy())
+async fn read_agent_run(path: String, source: String) -> Result<Vec<RunMessage>, String> {
+    blocking::run(move || {
+        let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+        // (OpenCode runs go through read_opencode_run instead — their key is a
+        // session id, not a path under home.)
+        let path = resolve_agent_log_path(&home, &path)?;
+        // Route through the registry so every delegate uses its own parser — an
+        // unknown source errors loudly instead of being mis-read as Claude.
+        let adapter = delegate::lookup(&source)
+            .ok_or_else(|| format!("No delegate adapter for source: {source}"))?;
+        adapter.read_run(&home, &path.to_string_lossy())
+    })
+    .await
 }
 
 #[tauri::command]
-fn read_opencode_run(session_id: String) -> Result<Vec<RunMessage>, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    delegate::OpenCode.read_run(&home, &session_id)
+async fn read_opencode_run(session_id: String) -> Result<Vec<RunMessage>, String> {
+    blocking::run(move || {
+        let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+        delegate::OpenCode.read_run(&home, &session_id)
+    })
+    .await
 }
 
 /// True when the process was launched by the bundle verification script
@@ -1074,5 +1162,127 @@ would render and then do nothing when clicked"
         for (_, event) in MENU_ITEMS {
             assert!(event.starts_with("menu:"), "{event} is not a menu event");
         }
+    }
+}
+
+#[cfg(test)]
+mod blocking_door_tests {
+    //! A sync `#[tauri::command]` runs on the main thread (see blocking.rs).
+    //! This test reads the command modules' own source so a new sync command
+    //! that does IO cannot slip in unnoticed: either make it `async fn` and
+    //! route the work through `blocking::run`, or add it to the allowlist on
+    //! purpose, with a reason.
+
+    /// Commands allowed to stay sync. Each is in-memory, a sub-millisecond
+    /// mutex/handle touch, or a Mission write behind a state lock that a
+    /// blocking closure cannot hold.
+    const SYNC_COMMANDS: &[&str] = &[
+        // lib.rs — pure or a table lookup
+        "ai_model_pricing",
+        "ai_list_tools",
+        // lib.rs — a small JSON read; user-driven, not polled
+        "accounts_list",
+        // lib.rs — hand off to the opener plugin / native menu
+        "open_entry",
+        "reveal_entry",
+        "menu_sync_projects",
+        // missions.rs — Mission writes serialized behind the store's write
+        // gate (ADR-0002); a blocking closure cannot hold that State lock.
+        "mission_create",
+        "mission_save_task",
+        "mission_prepare_attempt",
+        "mission_fail_attempt_dispatch",
+        "mission_validate_attempt",
+        // pty.rs — a mutex touch on an in-process session, or a spawn whose
+        // cost is the fork itself
+        "delegate_daemon_status",
+        "delegate_daemon_set_enabled",
+        "pty_spawn",
+        "pty_resize",
+        "pty_write",
+        "pty_close",
+        "delegate_pty_spawn",
+        "delegate_pty_write",
+        "delegate_pty_live_sessions",
+        "delegate_pty_resize",
+        "delegate_pty_stop",
+        // local_servers.rs / agent/mod.rs — kill a child / read a status map
+        "ai_local_server_stop",
+        "agent_run_status",
+    ];
+
+    const COMMAND_SOURCES: &[(&str, &str)] = &[
+        ("lib.rs", include_str!("lib.rs")),
+        ("skills.rs", include_str!("skills.rs")),
+        ("memory.rs", include_str!("memory.rs")),
+        ("missions.rs", include_str!("missions.rs")),
+        ("pty.rs", include_str!("pty.rs")),
+        ("local_servers.rs", include_str!("local_servers.rs")),
+        ("gateway.rs", include_str!("gateway.rs")),
+        ("models.rs", include_str!("models.rs")),
+        ("coordination.rs", include_str!("coordination.rs")),
+        ("storage.rs", include_str!("storage.rs")),
+        ("providers.rs", include_str!("providers.rs")),
+        ("agent/mod.rs", include_str!("agent/mod.rs")),
+        ("git/mod.rs", include_str!("git/mod.rs")),
+        ("git/github.rs", include_str!("git/github.rs")),
+    ];
+
+    /// Names of every `#[tauri::command]` in `src` whose `fn` is not `async`.
+    fn sync_commands_in(src: &str) -> Vec<String> {
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.trim().starts_with("#[tauri::command") {
+                continue;
+            }
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim_start().starts_with("#[") {
+                j += 1;
+            }
+            let Some(sig) = lines.get(j) else { continue };
+            if sig.contains("async fn ") {
+                continue;
+            }
+            let Some(rest) = sig.split("fn ").nth(1) else { continue };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_sync_command_is_on_the_allowlist() {
+        let mut found: Vec<(&str, String)> = Vec::new();
+        for (file, src) in COMMAND_SOURCES {
+            for name in sync_commands_in(src) {
+                found.push((file, name));
+            }
+        }
+        assert!(
+            found.len() >= 5,
+            "found only {} sync commands — the parse is wrong, not the code",
+            found.len()
+        );
+        let unvouched: Vec<&(&str, String)> = found
+            .iter()
+            .filter(|(_, name)| !SYNC_COMMANDS.contains(&name.as_str()))
+            .collect();
+        assert!(
+            unvouched.is_empty(),
+            "sync #[tauri::command]s nobody vouched for: {unvouched:?} — a sync command \
+runs on the main thread and freezes the window while it works. Make it `async fn` \
+and route the body through blocking::run, or add it to SYNC_COMMANDS with a reason."
+        );
+        let stale: Vec<&&str> = SYNC_COMMANDS
+            .iter()
+            .filter(|name| !found.iter().any(|(_, f)| f == **name))
+            .collect();
+        assert!(stale.is_empty(), "SYNC_COMMANDS lists commands that are no longer sync: {stale:?}");
     }
 }

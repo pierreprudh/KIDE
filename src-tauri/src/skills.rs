@@ -176,7 +176,17 @@ fn skill_group_label(source: &str, author: &str, repository: &str) -> String {
 /// can find on disk. The Rust side runs unsandboxed, so it can read
 /// the user's home directory without a Tauri fs scope entry.
 #[tauri::command]
-pub(crate) fn list_filesystem_skills(
+pub(crate) async fn list_filesystem_skills(
+    workspace_root: Option<String>,
+) -> Result<Vec<FileSystemSkill>, String> {
+    // Four directories and one read per SKILL.md on every workspace change —
+    // off the main thread (blocking.rs).
+    crate::blocking::run(move || scan_filesystem_skills(workspace_root)).await
+}
+
+/// The synchronous scan behind `list_filesystem_skills` — the interface the
+/// tests use.
+pub(crate) fn scan_filesystem_skills(
     workspace_root: Option<String>,
 ) -> Result<Vec<FileSystemSkill>, String> {
     let home = std::env::var_os("HOME")

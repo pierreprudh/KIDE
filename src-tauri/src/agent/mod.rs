@@ -2317,9 +2317,37 @@ async fn run_agent_loop(
                 // history uses the same registry executor but also receives
                 // the app-owned Run store below.
                 _ => ToolOutcome::Produced(match request.workspace_root.as_deref() {
-                    Some(root) => precomputed.remove(&call.id).unwrap_or_else(|| {
-                        execute_read_only_tool_with_runs_dir(root, &call, &id, runs_dir.as_path())
-                    }),
+                    Some(root) => match precomputed.remove(&call.id) {
+                        Some(result) => result,
+                        // A grep over 6 000 files or a `git status` shell-out
+                        // must not hold this tokio worker — other Runs stream
+                        // on the same pool. The executor stays a sync fn (the
+                        // interface its tests and eval.rs use); only the door
+                        // is async (blocking.rs).
+                        None => {
+                            let root = root.to_string();
+                            let call = call.clone();
+                            let run_id = id.clone();
+                            let dir = runs_dir.clone();
+                            match crate::blocking::run(move || {
+                                Ok(execute_read_only_tool_with_runs_dir(
+                                    &root,
+                                    &call,
+                                    &run_id,
+                                    dir.as_path(),
+                                ))
+                            })
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(e) => ToolResult {
+                                    ok: false,
+                                    content: format!("Error: {e}"),
+                                    metadata: None,
+                                },
+                            }
+                        }
+                    },
                     None => no_workspace_result(),
                 }),
             };
@@ -2759,7 +2787,11 @@ pub async fn agent_list_runs(
         })
         .map(|(id, handle)| (id.clone(), handle.status))
         .collect::<HashMap<_, _>>();
-    let mut summaries = list_summaries(&runs_dir, limit, offset)?;
+    // Every summary.json is read before `limit` applies — off the runtime
+    // thread, like the Delegate scan next door in lib.rs.
+    let scan_dir = runs_dir.clone();
+    let mut summaries =
+        crate::blocking::run(move || list_summaries(&scan_dir, limit, offset)).await?;
     for summary in &mut summaries {
         if let Some(status) = live_statuses.get(&summary.id) {
             summary.status = run_status_wire(status).to_string();

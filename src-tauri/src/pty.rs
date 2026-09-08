@@ -1081,34 +1081,46 @@ pub fn delegate_pty_write(
 }
 
 #[tauri::command]
-pub fn delegate_pty_snapshot(
+pub async fn delegate_pty_snapshot(
     app: tauri::AppHandle,
-    host: State<SessionHost>,
+    host: State<'_, SessionHost>,
     session_id: String,
-) -> DelegatePtySnapshot {
-    // Whichever host has the session live serves its buffer — its ring has the
-    // authoritative seq for the dedup handshake.
-    for h in both_hosts(&app, &host) {
-        if let Some(snap) = h.live_snapshot(&session_id) {
-            return snap;
+) -> Result<DelegatePtySnapshot, String> {
+    let host = host.inner().clone();
+    // A daemon socket round-trip plus up to 1 MB of disk log — off the main
+    // thread (blocking.rs).
+    crate::blocking::run(move || {
+        // Whichever host has the session live serves its buffer — its ring has
+        // the authoritative seq for the dedup handshake.
+        for h in both_hosts(&app, &host) {
+            if let Some(snap) = h.live_snapshot(&session_id) {
+                return Ok(snap);
+            }
         }
-    }
-    // Neither hosts it: the shared disk log, identical from either side.
-    host.snapshot(&session_id, scrollback_dir(&app).as_deref())
+        // Neither hosts it: the shared disk log, identical from either side.
+        Ok(host.snapshot(&session_id, scrollback_dir(&app).as_deref()))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delegate_pty_recent_sessions(
+pub async fn delegate_pty_recent_sessions(
     app: tauri::AppHandle,
-    host: State<SessionHost>,
-) -> Vec<RecentDelegateSession> {
-    let Some(dir) = scrollback_dir(&app) else {
-        return Vec::new();
-    };
-    // "Recent" = persisted but not live ANYWHERE — a session still running in
-    // the daemon must not be offered as a reopen.
-    let live = all_live_ids(host.live_ids(), &daemon_live_rows(&app));
-    pty_host::scan_recent_sessions(&dir, &live)
+    host: State<'_, SessionHost>,
+) -> Result<Vec<RecentDelegateSession>, String> {
+    let host = host.inner().clone();
+    // Polled every 2.5 s by Mission Control: a daemon round-trip plus a
+    // read_dir + one JSON parse per persisted session — off the main thread.
+    crate::blocking::run(move || {
+        let Some(dir) = scrollback_dir(&app) else {
+            return Ok(Vec::new());
+        };
+        // "Recent" = persisted but not live ANYWHERE — a session still running
+        // in the daemon must not be offered as a reopen.
+        let live = all_live_ids(host.live_ids(), &daemon_live_rows(&app));
+        Ok(pty_host::scan_recent_sessions(&dir, &live))
+    })
+    .await
 }
 
 /// One live delegate session, for Mission Control's "reattach" surface. These

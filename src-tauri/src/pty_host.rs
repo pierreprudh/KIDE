@@ -486,7 +486,7 @@ pub struct RecentDelegateSession {
 /// The delegate session table plus every operation on it. One instance lives
 /// in the Tauri-managed state today; the same type will be the daemon's whole
 /// world in Slice 3.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SessionHost {
     /// Shared with each session's reader thread, which removes its own entry
     /// on CLI exit.
