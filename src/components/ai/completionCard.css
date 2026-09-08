@@ -1,11 +1,75 @@
 .klide-result-entry { display: flex; justify-content: flex-end; margin: 8px 0 14px; }
 .klide-result-trigger { display: inline-flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--fg-strong); font: inherit; font-size: 12px; cursor: pointer; }
+/* On the Focus canvas the entry is one of the islands in the right-hand
+   column, so it drops the transcript margins, wears the island's glass, and
+   takes its own clicks back from the column (which passes them through). */
+/* Full column width, like the plan above it — a right-aligned card in a column
+   of full-width ones read as a different kind of thing, and the two are the
+   same kind: a window on the canvas. */
+.klide-result-entry[data-variant="island"] { display: block; margin: 0; pointer-events: none; }
+/* On the canvas the result is a window in the plan's column: the same glass,
+   the same 15px corners, and the evidence opens *inside* it — under the plan
+   it came from, where the reader is already looking. The column only carries
+   geometry, so the card takes its own clicks back. */
+.klide-result-island { pointer-events: auto; display: flex; flex-direction: column; overflow: hidden; padding: 0 16px; border: 1px solid var(--composer-border); border-radius: 15px; background: var(--composer-glass); backdrop-filter: var(--composer-blur); -webkit-backdrop-filter: var(--composer-blur); color: var(--fg-strong); font-size: 12px; line-height: 1.5; }
+.klide-result-island-header { display: flex; align-items: center; gap: 10px; min-height: 42px; color: var(--fg-subtle); cursor: pointer; }
+.klide-result-island:hover .klide-result-island-header, .klide-result-island[data-open="1"] .klide-result-island-header { color: var(--fg-strong); }
+/* Compact drops the row of controls but keeps the card's width: one mark,
+   centred in it, so the column stays one stack of windows rather than a stack
+   with a button in the middle. Attention rides the mark's colour. */
+.klide-result-island-header[data-compact="1"] { justify-content: center; gap: 0; min-height: 34px; }
+.klide-result-island-header[data-compact="1"][data-attention="1"] { color: var(--warning); }
+.klide-result-island-title { font-size: 13px; }
+/* The count sits at the far end, the way the plan's does. */
+.klide-result-island-header .klide-result-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+/* Shown on hover or once open — the row idiom the plan's steps already use. */
+.klide-result-island-chevron { display: grid; place-items: center; color: var(--fg-dim); opacity: 0; transition: opacity 140ms var(--ease-soft); }
+.klide-result-island:hover .klide-result-island-chevron, .klide-result-island[data-open="1"] .klide-result-island-chevron { opacity: 1; }
+/* Put it away. Same mark, same size and the same hover reveal as the plan's,
+   so both windows in the column are dismissed the same way; it stays out of
+   the resting state, which on a narrow column is one mark and nothing else. */
+.klide-result-island-close { display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-dim); cursor: pointer; transition: opacity 140ms var(--ease-soft), color var(--motion-fast) var(--ease-out); }
+/* At full size it stands where the plan's does, and for the same reason: a
+   window you can put away should say so without being hovered first. Compact
+   is the exception — the resting state there is one mark, so it waits. */
+.klide-result-island-header[data-compact="1"] .klide-result-island-close { opacity: 0; }
+.klide-result-island:hover .klide-result-island-header[data-compact="1"] .klide-result-island-close, .klide-result-island-header[data-compact="1"] .klide-result-island-close:focus-visible { opacity: 1; }
+.klide-result-island-close:hover { color: var(--fg-strong); }
+.klide-result-island-header[data-compact="1"] .klide-result-island-close { position: absolute; right: 8px; }
+.klide-result-island-header[data-compact="1"] { position: relative; }
+.klide-result-island-header:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 8px; }
+.klide-result-island-rule { height: 1px; background: var(--border); transform: scaleX(0); transform-origin: left; transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1); }
+.klide-result-island-rule[data-shown="1"] { transform: scaleX(1); }
+/* Open, the card claims the rest of the side rather than standing as a block
+   of its own height: the evidence scrolls inside it and the actions sit on its
+   floor, so "Request changes" is never the half-word under a hard edge. */
+/* Open, it takes the rest of the side — but never all of it: a question
+   arriving under it holds the run, so the result gives up space down to a
+   height that still reads as a panel, and the column scrolls past that. The
+   entry is what the column lays out, so the entry is what grows. */
+.klide-result-entry[data-variant="island"][data-open="1"] { display: flex; flex: 1 1 auto; min-height: min(200px, 100%); }
+.klide-result-entry[data-variant="island"][data-open="1"] .klide-result-island { flex: 1; min-height: 0; }
+.klide-result-island-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: klide-result-panel-in 200ms ease-out; }
+/* A wheel that runs out of evidence carries on to the column, so the plan
+   above and a question below stay reachable from inside the card. */
+.klide-result-island .klide-result-body { padding: 12px 0 4px; overscroll-behavior: auto; }
+.klide-result-island .klide-result-body section + section { margin-top: 20px; }
+.klide-result-island .klide-result-footer { padding: 12px 0 14px; }
+@keyframes klide-result-panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .klide-result-island-panel { animation: none; }
+  .klide-result-island-rule, .klide-result-island-chevron { transition: none; }
+}
+/* No room for the words. The mark carries the meaning, the count stays because
+   it is the one number a glance wants, and the label lives in the tooltip and
+   the accessible name. */
+.klide-result-trigger[data-compact="1"] { display: grid; place-items: center; gap: 0; width: 30px; height: 30px; padding: 0; }
+.klide-result-trigger[data-compact="1"][data-attention="1"] { color: var(--warning); }
 .klide-result-meta { color: var(--fg-subtle); font-size: 11px; }
 .klide-result-arrow { color: var(--fg-subtle); }
 .klide-result-attention-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warning); }
-.klide-result-drawer { position: fixed; inset: 12px 12px 12px auto; margin: 0; box-sizing: border-box; width: min(360px, calc(100vw - 24px)); max-width: none; height: calc(100dvh - 24px); max-height: none; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated); color: var(--fg-strong); font-family: var(--font-ui, 'Atkinson Hyperlegible', sans-serif); font-size: 12px; line-height: 1.5; box-shadow: 0 12px 48px rgb(0 0 0 / 8%); overflow: hidden; }
-.klide-result-drawer[open] { display: flex; flex-direction: column; animation: klide-result-enter 160ms ease-out; }
-.klide-result-drawer::backdrop { background: rgb(0 0 0 / 6%); }
+.klide-result-scrim { position: fixed; inset: 0; display: flex; justify-content: flex-end; padding: 12px; box-sizing: border-box; background: rgb(0 0 0 / 6%); }
+.klide-result-drawer { display: flex; flex-direction: column; box-sizing: border-box; width: min(360px, 100%); height: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated); color: var(--fg-strong); font-family: var(--font-ui, 'Atkinson Hyperlegible', sans-serif); font-size: 12px; line-height: 1.5; box-shadow: 0 12px 48px rgb(0 0 0 / 8%); overflow: hidden; animation: klide-result-enter 160ms ease-out; }
 .klide-result-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 24px 22px 20px; }
 .klide-result-header h2 { margin: 0; font-size: 17px; font-weight: 400; letter-spacing: -.02em; }
 .klide-result-header p { margin: 3px 0 0; color: var(--fg-subtle); font-size: 11px; }
@@ -17,6 +81,17 @@
 .klide-result-files > * { position: relative; display: flex; flex-direction: column; align-items: flex-start; width: 100%; box-sizing: border-box; padding: 10px 22px 10px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; text-align: left; }
 .klide-result-filename { overflow-wrap: anywhere; }
 .klide-result-directory { font-size: 10px; color: var(--fg-subtle); overflow-wrap: anywhere; }
+/* A produced document says how big it is — the one fact that tells a real
+   deck from an empty one a script failed to fill. */
+.klide-result-size { position: absolute; right: 22px; top: 11px; font-size: 10px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+.klide-result-artifacts > .klide-result-document { padding: 0; border: 0; }
+.klide-result-artifacts .klide-result-document > button, .klide-result-artifacts .klide-result-document > div { padding-right: 74px; }
+/* The picture is the row's evidence, not decoration: full column width, its
+   own hairline, and no rounding beyond the card's own vocabulary. A deck is
+   4:3 and a page is taller, so the height follows the image. */
+.klide-result-thumb { display: block; width: 100%; margin: 2px 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); animation: klide-result-thumb-in 220ms ease-out; }
+@keyframes klide-result-thumb-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .klide-result-thumb { animation: none; } }
 .klide-result-files button > :last-child:not(.klide-result-filename):not(.klide-result-directory) { position: absolute; right: 2px; top: 11px; color: var(--fg-subtle); }
 .klide-result-command { border-bottom: 1px solid var(--border); }
 .klide-result-command summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 0; cursor: pointer; list-style: none; }
@@ -37,4 +112,28 @@
 .klide-result-drawer button:disabled { opacity: .45; cursor: default; }
 .klide-result-trigger:focus-visible, .klide-result-drawer button:focus-visible, .klide-result-drawer summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @keyframes klide-result-enter { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
-@media (prefers-reduced-motion: reduce) { .klide-result-drawer[open] { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .klide-result-drawer { animation: none; } }
+
+/* The drawer is a side sheet on a roomy window and a full-bleed one on a
+   narrow window: at 360px of content plus two 22px gutters it stopped fitting
+   somewhere around a 520px viewport, and a sheet the reader cannot see the
+   edges of reads as broken rather than as a panel. */
+@media (max-width: 560px) {
+  .klide-result-scrim { padding: 8px; }
+  .klide-result-drawer { width: 100%; }
+  .klide-result-header { padding: 16px 16px 13px; }
+  .klide-result-body { padding: 0 16px 16px; }
+  .klide-result-footer { padding: 12px 16px 16px; }
+}
+
+/* A short window (a laptop with the terminal docked under the canvas) runs out
+   of height before it runs out of width, so the chrome gives its padding back
+   and one command's output can never own the whole sheet. */
+@media (max-height: 620px) {
+  .klide-result-header { padding: 14px 20px 11px; }
+  .klide-result-header h2 { font-size: 15px; }
+  .klide-result-body { padding: 0 20px 14px; }
+  .klide-result-body section + section { margin-top: 18px; }
+  .klide-result-footer { padding: 10px 20px 14px; }
+  .klide-result-command pre { max-height: min(240px, 26dvh); }
+}

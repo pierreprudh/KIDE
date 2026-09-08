@@ -380,6 +380,80 @@ fn delete_entry(workspace_root: String, path: String) -> Result<(), String> {
     ws.remove(&target, workspace::Access::User)
 }
 
+/// A picture of a document Klide cannot render — a deck, a spreadsheet, a PDF.
+///
+/// macOS already draws all of them for Quick Look, so `qlmanage` is asked for
+/// a thumbnail rather than Klide growing a converter per format. ~200ms for a
+/// deck, and the PNG comes back as a `data:` URI so the webview needs no file
+/// access of its own. Not available off macOS, where the honest answer is that
+/// there is no preview rather than a broken one.
+#[tauri::command]
+async fn preview_file(workspace_root: String, path: String, size: Option<u32>) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (workspace_root, path, size);
+        return Err("Previews need macOS Quick Look.".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use base64::Engine;
+        let ws = workspace::Workspace::new(&workspace_root)?;
+        let abs = ws.resolve_abs_read(&path)?;
+        let name = abs
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .ok_or_else(|| "That path has no file name.".to_string())?;
+        // One directory per request, removed on the way out: qlmanage names its
+        // output after the source file, so two previews of `summary.docx` in a
+        // shared directory would race for the same name.
+        let out = std::env::temp_dir().join(format!(
+            "klide-preview-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&out).map_err(|e| format!("Cannot make a preview: {e}"))?;
+        let status = tokio::process::Command::new("qlmanage")
+            .arg("-t")
+            .arg("-s")
+            .arg(size.unwrap_or(900).clamp(120, 2000).to_string())
+            .arg("-o")
+            .arg(&out)
+            .arg(&abs)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        let png = out.join(format!("{name}.png"));
+        let bytes = match (status, std::fs::read(&png)) {
+            (Ok(_), Ok(bytes)) => bytes,
+            _ => {
+                let _ = std::fs::remove_dir_all(&out);
+                return Err("No preview available for this file.".to_string());
+            }
+        };
+        let _ = std::fs::remove_dir_all(&out);
+        Ok(format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ))
+    }
+}
+
+/// Hand a file to the application the machine already opens it with. The one
+/// way to read a deck, a PDF or a spreadsheet a run produced: Klide renders
+/// none of them, and a viewer for each would be a bigger thing than the card
+/// that lists them.
+#[tauri::command]
+fn open_entry(workspace_root: String, path: String) -> Result<(), String> {
+    let ws = workspace::Workspace::new(&workspace_root)?;
+    let target = ws.resolve_abs_read(&path)?;
+    tauri_plugin_opener::open_path(target, None::<&str>)
+        .map_err(|e| format!("Unable to open this file: {e}"))
+}
+
 #[tauri::command]
 fn reveal_entry(workspace_root: String, path: String) -> Result<(), String> {
     let ws = workspace::Workspace::new(&workspace_root)?;
@@ -786,6 +860,8 @@ pub fn run() {
             create_entry,
             rename_entry,
             delete_entry,
+            open_entry,
+            preview_file,
             reveal_entry,
             storage::app_storage_dirs,
             storage::app_storage_reveal,

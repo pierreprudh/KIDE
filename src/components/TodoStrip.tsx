@@ -497,12 +497,14 @@ const glassCard: CSSProperties = {
 // conversation is open. Same glass, same border, same radius, so the two read
 // as one family of windows on the canvas; the wrapper carries the entrance and
 // the swell (todoStrip.css) and the card inside stays still.
+//
+// The corner itself belongs to the column AiPanel puts there, not to this
+// card: a pending question stacks under the plan in the same column, and two
+// cards each positioning themselves against the canvas would have had to
+// measure one another. So the wrapper only takes the width it is given.
 const islandWrap: CSSProperties = {
-  position: "absolute",
-  top: 16,
-  right: 18,
-  zIndex: 6,
-  width: `min(${ISLAND_WIDTH}px, calc(100% - 36px))`,
+  position: "relative",
+  width: "100%",
   pointerEvents: "none",
 };
 
@@ -533,6 +535,8 @@ export function TodoStrip({
   variant = "dock",
   onDockHeightChange,
   onPresenceChange,
+  folded = false,
+  onUnfold,
 }: {
   workspaceRoot: string | null;
   conversationId: string;
@@ -546,6 +550,12 @@ export function TodoStrip({
   /** Whether the strip is on screen at all — Focus makes room beside the
    *  island while it is, and gives the width back when it goes. */
   onPresenceChange?: (visible: boolean) => void;
+  /** The column around it is closed: the plan shows as its mark and nothing
+   *  else, so the corner in the main view is icons rather than windows.
+   *  Clicking the mark reopens the column (`onUnfold`), which is a different
+   *  act from un-hiding a plan the reader dismissed on its own. */
+  folded?: boolean;
+  onUnfold?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -731,10 +741,30 @@ export function TodoStrip({
     return () => observer.disconnect();
   }, [visible, open, total, onDockHeightChange, variant]);
 
+  // A plan the reader dismissed stays dismissed: the column closing is not a
+  // reason to bring it back as a mark.
+  if (folded && island && total > 0 && !dismissed) {
+    return (
+      <div className="klide-todo-island-mark" style={{ ...islandWrap, width: "auto", alignSelf: "flex-end" }}>
+        <button
+          type="button"
+          className="klide-todo-reopen"
+          onClick={onUnfold}
+          aria-label={`Open the side panel — plan, ${done} of ${total} steps done`}
+          title="Open the side panel"
+          style={{ ...islandCard, pointerEvents: "auto" }}
+        >
+          <PlanIcon size={15} />
+          <CountLabel done={done} total={total} />
+        </button>
+      </div>
+    );
+  }
+
   if (!visible) {
     if (variant !== "island" || dismissed === false || total === 0) return null;
     return (
-      <div className="klide-todo-island-mark" data-leaving={leaving === "mark" ? "true" : undefined} style={{ ...islandWrap, width: "auto" }}>
+      <div className="klide-todo-island-mark" data-leaving={leaving === "mark" ? "true" : undefined} style={{ ...islandWrap, width: "auto", alignSelf: "flex-end" }}>
         <button
           type="button"
           className="klide-todo-reopen"

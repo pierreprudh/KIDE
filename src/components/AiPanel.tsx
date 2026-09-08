@@ -43,6 +43,7 @@ import { toolsForMode } from "../agent/tools";
 import { readWorkspaceTextFile, workspacePathExists } from "../workspaceFs";
 import { listWorkspaceFiles } from "./ai/workspaceFiles";
 import { ISLAND_WIDTH, TodoStrip } from "./TodoStrip";
+import { QuestionCard } from "./ai/QuestionCard";
 import {
   CLI_DEFAULT_MODEL,
   defaultModelForProvider,
@@ -75,11 +76,12 @@ import { enabledSkillsPrompt, type Skill } from "../skills";
 
 import { KlideMark, ProviderLogo, AssistantPlaceholderLoader, DotGridLoader } from "./ai/icons";
 import { WorkingRow } from "./ai/WorkingRow";
-import { AttachIcon } from "../icons";
+import { AttachIcon, CloseIcon, ReviewIcon } from "../icons";
 import { FileTypeIcon } from "./fileMarks";
 import { DelegateTerminalSurface } from "./ai/DelegateTerminal";
 import { PendingInboxRow, renderMessageBody, extractThinking, CompactionRow, ThinkingBlock, ToolRunRow } from "./ai/ChatMessage";
 import { CompletionCard } from "./ai/CompletionCard";
+import { hasCompletionReview, type RunCompletion } from "../agent/completion";
 import { groupToolRuns, pairToolResults, toolRunIndex, toolRunLabel } from "./ai/toolRuns";
 import type { AttachedResult } from "./ai/ChatMessage";
 import { MessageActions } from "./ai/MessageActions";
@@ -302,6 +304,11 @@ type Props = {
    *  surfaces that dock one; without it the "N files changed" row is
    *  plain text. */
   onReviewChanges?: (info: { runId: string; title: string; path?: string }) => void;
+  /** Open a document a run produced — the inspector for text, the machine's
+   *  own app for a deck or a PDF. The host owns that choice. */
+  onOpenArtifact?: (info: { runId: string; path: string }) => void;
+  /** A picture of a produced document, when the host can make one. */
+  onPreviewArtifact?: (path: string) => Promise<string | null>;
   visible: boolean;
   width: number;
   fill?: boolean;
@@ -628,6 +635,8 @@ export function AiPanel({
   onFileWritten,
   onWorkspaceChanged,
   onReviewChanges,
+  onOpenArtifact,
+  onPreviewArtifact,
   visible,
   width,
   fill,
@@ -2350,16 +2359,6 @@ This user request requires workspace inspection. Before answering, you MUST call
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followUpMessage]);
 
-  // The Focus variant's reading column: instead of restructuring the
-  // transcript/composer DOM, the horizontal padding grows to center a
-  // ~760px column — one computed gutter, no wrapper churn.
-  // The 760px column sits centred in the canvas — or, with the plan island up,
-  // centred in what is left of the canvas beside it, the island's width plus
-  // its two 18px margins moved to the right gutter.
-  const focusInset = variant === "focus" && planIslandUp ? ISLAND_WIDTH + 36 : 0;
-  const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
-  const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
-
   // Messages other agents have queued for this thread that its Run has not
   // taken in yet — read from the journal, refreshed on its change event, so
   // they show here the moment they are sent rather than at the next turn.
@@ -2875,6 +2874,102 @@ This user request requires workspace inspection. Before answering, you MUST call
     question: string;
   } | null>(null);
   const [questionAnswer, setQuestionAnswer] = useState("");
+
+  // The Focus variant's reading column: instead of restructuring the
+  // transcript/composer DOM, the horizontal padding grows to center a
+  // ~760px column — one computed gutter, no wrapper churn. The column sits
+  // centred in the canvas — or, with the island column up, centred in what is
+  // left of the canvas beside it, the islands' width plus their two 18px
+  // margins moved to the right gutter. A question island holds that column
+  // open on its own, so the conversation makes room for it the same way it
+  // does for the plan.
+  // The whole column, hidden. Two windows that each close one card still left
+  // the corner standing, and there was no way back to the plain canvas — so
+  // the column itself takes a switch. A parked question overrides it: that
+  // card holds the run, and hiding the run's own question would strand it.
+  const [sidePanelHidden, setSidePanelHidden] = useState(false);
+
+  // A result the reader has put away. Held by run id, not a boolean, so the
+  // next run's result comes back on its own — the same rule the plan follows
+  // (a new plan reopens a hidden strip), without persisting a dismissal that
+  // only matters while the corner is in view.
+  const [dismissedResultRunId, setDismissedResultRunId] = useState<string | null>(null);
+
+  // The newest turn whose evidence is worth opening — what "the result" means
+  // on the canvas, where there is room for one entry, not one per turn.
+  const latestCompletion = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      const message = msgs[i];
+      const candidate = message.role === "system" ? message.completion : undefined;
+      if (candidate && hasCompletionReview(candidate)) return candidate;
+    }
+    return undefined;
+  }, [msgs]);
+
+  function requestCompletionChanges(completion: RunCompletion) {
+    setInput((previous) => previous || (completion.stopped
+      ? `Please finish this unfinished work:\n${completion.outcome}\n\nRequested changes: `
+      : `Please revise this completed work:\n${completion.outcome}\n\nRequested changes: `));
+    taRef.current?.focus();
+  }
+
+  // The canvas' own width, measured: the island column's size is a share of it,
+  // not a constant. `width` (the prop) is the panel's assigned width and means
+  // nothing in Focus, where the panel fills its host.
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const islandColumnRef = useRef<HTMLDivElement>(null);
+  const [canvasWidth, setCanvasWidth] = useState(0);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const report = () => setCanvasWidth(Math.round(el.getBoundingClientRect().width));
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // One rule for the corner: the islands take what is left once the prose has
+  // a readable 560px, clamped to the column's own range. So a smaller window
+  // shrinks the plan, the result and the question together instead of pushing
+  // the conversation into a gutter — and under 260px the result entry drops
+  // its words for its mark, since a column that narrow is a corner, not a
+  // panel. Width 0 is "not measured yet"; assume the roomy case.
+  const islandColumnWidth = canvasWidth === 0
+    ? ISLAND_WIDTH
+    : Math.max(232, Math.min(ISLAND_WIDTH, canvasWidth - 596));
+  const compactIslands = islandColumnWidth < 260;
+
+  // Anything in the column holds it open — a result entry on its own counted
+  // for nothing here, so the conversation kept the full canvas and the pill
+  // floated over the prose in the corner.
+  const sideHidden = sidePanelHidden && pendingQuestion === null;
+  const resultUp = latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId;
+  const canvasIslandUp = !sideHidden && (planIslandUp || pendingQuestion !== null || resultUp);
+  // Closed, the corner still holds marks, and prose that runs under them is
+  // the overlap the column was built to avoid — so the conversation gives up
+  // the marks' width instead of the panel's.
+  const marksUp = sideHidden && (planIslandUp || resultUp);
+
+  // A question is the one card in the column that holds the run, and it
+  // arrives *under* a plan and an opened result that may already fill the
+  // side. So the column scrolls it into view when it appears — the cards
+  // above keep their place rather than being pushed off to make room.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    const column = islandColumnRef.current;
+    if (!column) return;
+    const frame = requestAnimationFrame(() => {
+      column.scrollTo({ top: column.scrollHeight, behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [pendingQuestion]);
+  const focusInset = variant !== "focus" ? 0
+    : canvasIslandUp ? islandColumnWidth + 36
+      : marksUp ? 76
+        : 0;
+  const focusGutterLeft = `calc(max(20px, (100% - ${760 + focusInset}px) / 2))`;
+  const focusGutterRight = `calc(max(20px, (100% - ${760 + focusInset}px) / 2) + ${focusInset}px)`;
   // Permission gate: the harness pauses and emits a request — a shell command,
   // a network target, or a message to another agent — and the user approves or
   // rejects (approveCommand / rejectCommand) before it runs. The card renders
@@ -3968,7 +4063,7 @@ This user request requires workspace inspection. Before answering, you MUST call
       </header>
       ) : null}
 
-      <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
+      <div ref={canvasRef} style={{ position: "relative", flex: 1, minHeight: 0, display: "flex" }}>
         <div
           ref={scrollRef}
           onScroll={updateStickFromScroll}
@@ -4050,14 +4145,16 @@ This user request requires workspace inspection. Before answering, you MUST call
         {stackToolRuns(msgs.map((m, i) => {
           if (m.role === "system" && m.completion) {
             const completion = m.completion;
+            // In Focus the latest result waits in the island column instead,
+            // under the plan it came from (see the column below). A row per
+            // finished turn down the transcript would say it many times.
+            if (variant === "focus") return null;
             return <CompletionCard key={i} completion={completion} disabled={streaming}
+              compact={canvasWidth > 0 && canvasWidth < 300}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: completion.runId, title: "Run changes", path }) : undefined}
-              onRequestChanges={() => {
-                setInput((previous) => previous || (completion.stopped
-                  ? `Please finish this unfinished work:\n${completion.outcome}\n\nRequested changes: `
-                  : `Please revise this completed work:\n${completion.outcome}\n\nRequested changes: `));
-                taRef.current?.focus();
-              }}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: completion.runId, path }) : undefined}
+              onPreviewArtifact={onPreviewArtifact}
+              onRequestChanges={() => requestCompletionChanges(completion)}
             />;
           }
           // "Last" means the tail of the *exchange*, not of the array. Turns
@@ -4531,16 +4628,165 @@ This user request requires workspace inspection. Before answering, you MUST call
             </svg>
           </span>
         )}
-        <TodoStrip
-          workspaceRoot={workspaceRoot}
-          conversationId={currentId}
-          goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
-          running={streaming}
-          variant={variant === "focus" ? "island" : "dock"}
-          onDockHeightChange={setTodoDockHeight}
-          onPresenceChange={setPlanIslandUp}
-        />
+        {variant !== "focus" && (
+          <TodoStrip
+            workspaceRoot={workspaceRoot}
+            conversationId={currentId}
+            goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
+            running={streaming}
+            variant="dock"
+            onDockHeightChange={setTodoDockHeight}
+            onPresenceChange={setPlanIslandUp}
+          />
+        )}
       </div>
+
+      {/* The side column. Focus keeps its windows here — the plan, under
+          it the run's result, and under that a question the run is parked
+          on — one absolutely positioned column so they stack with a gap
+          instead of each measuring the other's height. It is a child of the
+          panel rather than of the canvas, so it runs the whole side: the
+          canvas ends above the composer, and a column that stopped there cut
+          an open card off mid-content against that seam. The composer is
+          already inset by `focusGutterRight` for this width, so the side
+          below the canvas is the column's to use.
+          Everywhere else the plan docks over the composer and this column
+          does not exist. */}
+      {variant === "focus" && (
+        <div
+          ref={islandColumnRef}
+          className="klide-island-column"
+          style={{
+            position: "absolute",
+            top: 16,
+            right: 18,
+            zIndex: 6,
+            width: `min(${islandColumnWidth}px, calc(100% - 36px))`,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            // A short window cannot fit a long plan, a result and a question
+            // at once, and the question is the one that must stay reachable
+            // — it holds the run. So the column spans the side and scrolls
+            // inside it: a wheel over any card bubbles to this scroller even
+            // though the column itself takes no hits. The height is definite
+            // rather than a cap, so a card that opens (the result) can claim
+            // the space the others are not using instead of standing as a
+            // block of its own; the others keep their natural size, since a
+            // flex item does not shrink below its content.
+            bottom: 16,
+            overflowY: "auto",
+            overscrollBehavior: "contain",
+            // The column is only geometry; each card takes its own clicks
+            // back so the conversation stays reachable around them.
+            pointerEvents: "none",
+          }}
+        >
+          {/* Open, the column heads with one control: close. Closed, the corner
+              is marks — the plan's own reopen pill and, beside it, the result's
+              — the way the plan has always folded. So the main view carries
+              icons rather than a panel, and either icon opens the panel. */}
+          {!sideHidden && (
+            <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setSidePanelHidden(true)}
+                aria-label="Close the side panel"
+                title="Close the side panel"
+                style={{
+                  pointerEvents: "auto",
+                  width: 24,
+                  height: 24,
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  border: "none",
+                  borderRadius: "var(--radius-sm)",
+                  background: "transparent",
+                  color: "var(--fg-dim)",
+                  cursor: "pointer",
+                  transition: "color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out)",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-dim)"; e.currentTarget.style.background = "transparent"; }}
+              >
+                <CloseIcon size={14} />
+              </button>
+            </div>
+          )}
+          {(
+          <TodoStrip
+            workspaceRoot={workspaceRoot}
+            conversationId={currentId}
+            goal={msgs.find((m) => m.role === "user")?.content.trim() || undefined}
+            running={streaming}
+            variant="island"
+            folded={sideHidden}
+            onUnfold={() => setSidePanelHidden(false)}
+            onDockHeightChange={setTodoDockHeight}
+            onPresenceChange={setPlanIslandUp}
+          />
+          )}
+          {sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+            <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setSidePanelHidden(false)}
+                aria-label={`Open the side panel — result, ${latestCompletion.files.length} file${latestCompletion.files.length === 1 ? "" : "s"}`}
+                title="Open the side panel"
+                style={{
+                  pointerEvents: "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  height: 30,
+                  padding: "0 10px 0 9px",
+                  borderRadius: 10,
+                  border: "1px solid var(--composer-border)",
+                  background: "var(--composer-glass)",
+                  backdropFilter: "var(--composer-blur)",
+                  WebkitBackdropFilter: "var(--composer-blur)",
+                  color: "var(--fg-subtle)",
+                  font: "inherit",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  transition: "color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out)",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--fg-strong)"; e.currentTarget.style.borderColor = "var(--border-strong)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--fg-subtle)"; e.currentTarget.style.borderColor = "var(--composer-border)"; }}
+              >
+                <ReviewIcon size={15} />
+                {latestCompletion.files.length > 0 && (
+                  <span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{latestCompletion.files.length}</span>
+                )}
+              </button>
+            </div>
+          )}
+          {!sideHidden && latestCompletion && latestCompletion.runId !== dismissedResultRunId && (
+            <CompletionCard
+              variant="island"
+              compact={compactIslands}
+              completion={latestCompletion}
+              disabled={streaming}
+              onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}
+              onOpenArtifact={onOpenArtifact ? (path) => onOpenArtifact({ runId: latestCompletion.runId, path }) : undefined}
+              onPreviewArtifact={onPreviewArtifact}
+              onRequestChanges={() => requestCompletionChanges(latestCompletion)}
+              onDismiss={() => setDismissedResultRunId(latestCompletion.runId)}
+            />
+          )}
+          {pendingQuestion && (
+            <QuestionCard
+              variant="island"
+              question={pendingQuestion.question}
+              answer={questionAnswer}
+              onAnswerChange={setQuestionAnswer}
+              onSubmit={() => void submitQuestion()}
+              onSkip={skipQuestion}
+            />
+          )}
+        </div>
+      )}
 
       {!delegateSession && (
       <div style={{ padding: variant === "focus" ? `0 ${focusGutterRight} 16px ${focusGutterLeft}` : "0 10px 10px", transition: "padding 420ms cubic-bezier(0.32, 0.72, 0, 1)" }}>
@@ -4580,103 +4826,18 @@ This user request requires workspace inspection. Before answering, you MUST call
             onApprovePattern={(pattern) => approveCommand("project", pattern)}
           />
         )}
-        {pendingQuestion && (
-          <div
-            className="ai-qa-card"
-            style={{
-              marginBottom: 8,
-              padding: "10px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid var(--border-strong)",
-              background: "var(--bg-elevated)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--fg-strong)", fontSize: 11, fontWeight: 600 }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--accent)" }}>
-                <circle cx="12" cy="12" r="10" />
-                <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" />
-                <path d="M12 17h.01" />
-              </svg>
-              Question
-            </div>
-            <div style={{ color: "var(--fg-strong)", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
-              {pendingQuestion.question}
-            </div>
-            <textarea
-              autoFocus
-              value={questionAnswer}
-              onChange={(e) => setQuestionAnswer(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  void submitQuestion();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  skipQuestion();
-                }
-              }}
-              placeholder="Type your answer… (⌘↩ to submit, Esc to skip)"
-              rows={3}
-              style={{
-                width: "100%",
-                resize: "vertical",
-                minHeight: 56,
-                maxHeight: 200,
-                font: "inherit",
-                fontSize: 13,
-                lineHeight: 1.5,
-                padding: "8px 10px",
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--border-strong)",
-                background: "var(--bg)",
-                color: "var(--fg-strong)",
-                outline: "none",
-              }}
-            />
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
-              <button
-                type="button"
-                onClick={skipQuestion}
-                style={{
-                  height: 26,
-                  padding: "0 10px",
-                  fontSize: 11.5,
-                  fontWeight: 500,
-                  color: "var(--fg-subtle)",
-                  background: "transparent",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-sm)",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-              >
-                Skip
-              </button>
-              <button
-                type="button"
-                onClick={() => void submitQuestion()}
-                style={{
-                  height: 26,
-                  padding: "0 12px",
-                  fontSize: 11.5,
-                  fontWeight: 600,
-                  color: "var(--control-primary-fg)",
-                  background: "var(--accent)",
-                  border: "1px solid var(--accent)",
-                  borderRadius: "var(--radius-sm)",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.filter = "brightness(1.08)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.filter = "none"; }}
-              >
-                Submit ⌘↩
-              </button>
-            </div>
-          </div>
+        {/* Everywhere but Focus the question waits above the composer: those
+            layouts have no canvas margin to put a window in. On the Focus
+            canvas it is an island instead — see the column beside the
+            conversation. */}
+        {pendingQuestion && variant !== "focus" && (
+          <QuestionCard
+            question={pendingQuestion.question}
+            answer={questionAnswer}
+            onAnswerChange={setQuestionAnswer}
+            onSubmit={() => void submitQuestion()}
+            onSkip={skipQuestion}
+          />
         )}
         {showCompactPrompt && (
           <div style={{ padding: "0 2px 6px" }}>

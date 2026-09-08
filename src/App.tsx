@@ -100,6 +100,8 @@ import {
 import { useAiPanelFleet } from "./hooks/useAiPanelFleet";
 import { useArtifactInspector } from "./hooks/useArtifactInspector";
 import { listCheckpoints, readAgentRunEvents } from "./agent/client";
+import { artifactOpensIn, artifactPreview } from "./artifacts";
+import { errMessage } from "./errors";
 import {
   DEFAULT_AI_PANEL_ID,
   admissionBase,
@@ -113,7 +115,7 @@ import {
   type AiPanelRenderOptions,
   type AiSurface,
 } from "./components/ai/panelHost";
-import { readWorkspaceTextFile } from "./workspaceFs";
+import { readWorkspaceFileDataUri, readWorkspaceTextFile } from "./workspaceFs";
 import { modelLabel } from "./components/ai/ModelPicker";
 import { ProviderLogo } from "./components/ai/icons";
 import { RaceFollowUpBar } from "./components/ai/RaceFollowUpBar";
@@ -1258,6 +1260,41 @@ function App() {
     );
   }
 
+  // A document a run produced, opened where it can actually be read: text in
+  // the inspector, everything else — a deck, a PDF, a spreadsheet — in the
+  // application the machine already opens it with. Klide renders none of
+  // those, and a viewer for each would be a bigger thing than the card that
+  // lists them.
+  // A picture of a produced document for its row in the card. An image is
+  // already one; a deck, a PDF or a spreadsheet is drawn by macOS through
+  // Quick Look. Null is a normal answer — the row keeps its name and its size
+  // and simply has no picture.
+  const previewRunArtifact = useCallback(async (path: string): Promise<string | null> => {
+    const root = workspaceRoot;
+    if (!root) return null;
+    try {
+      return artifactPreview(path) === "image"
+        ? await readWorkspaceFileDataUri(root, path)
+        : await invoke<string>("preview_file", { workspaceRoot: root, path });
+    } catch {
+      return null;
+    }
+  }, [workspaceRoot]);
+
+  async function openRunArtifact({ runId, path }: { runId: string; path: string }) {
+    const root = workspaceRoot;
+    if (!root) return;
+    if (artifactOpensIn(path) === "inspector") {
+      openArtifact({ kind: "file", runId, workspaceRoot: root, path });
+      return;
+    }
+    try {
+      await invoke("open_entry", { workspaceRoot: root, path });
+    } catch (err) {
+      notify(`Unable to open ${path}: ${errMessage(err)}`, { tone: "error" });
+    }
+  }
+
   async function reviewRunChanges({ runId, title, path }: { runId: string; title: string; path?: string }) {
     try {
       const checkpoints = await listCheckpoints(runId);
@@ -1330,7 +1367,11 @@ function App() {
           openConversationInAiPanel(convo);
         }}
         onFileWritten={onAgentWrote}
-        onReviewChanges={(info) => void reviewRunChanges(info)}
+        // Focus reviews in its own column, so it offers no route into the
+        // docked inspector it does not render.
+        onReviewChanges={opts?.variant === "focus" ? undefined : (info) => void reviewRunChanges(info)}
+        onOpenArtifact={(info) => void openRunArtifact(info)}
+        onPreviewArtifact={previewRunArtifact}
         onWorkspaceChanged={() => {
           // A worktree-pinned panel changes its own branch, not the main
           // checkout — only refresh the sidebar git status when the panel
@@ -3814,8 +3855,14 @@ function App() {
             {/* Docked Artifact Inspector — the same slide-in review surface as
                 Mission Control, at the right edge of the workbench. Opened
                 from the AI panel's "N files changed" row; MC keeps its own
-                instance, so this one only shows on the base surface. */}
-            {overlay === null && (
+                instance, so this one only shows on the base surface.
+                Not in Focus: that canvas reviews a run's changes live in its
+                right-hand column, where the result card lists the files and
+                opens its evidence in place. Docking a second review surface
+                under the composer there put the same work in two places, and
+                the one that lost the argument was a header strip squeezed
+                against the status bar. */}
+            {overlay === null && !focusBase && (
               <div
                 className="artifact-inspector-shell"
                 data-open={artifactOpen ? "true" : "false"}

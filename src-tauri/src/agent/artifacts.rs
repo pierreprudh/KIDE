@@ -50,7 +50,9 @@ pub(crate) fn parse_porcelain(out: &str) -> BTreeMap<String, String> {
         let rest = rest.trim_start();
         let path = rest.rsplit(" -> ").next().unwrap_or(rest);
         let path = unquote(path);
-        if path.is_empty() {
+        // A trailing slash is a directory git chose to collapse. `-uall` stops
+        // it doing that, and a directory is not a document either way.
+        if path.is_empty() || path.ends_with('/') {
             continue;
         }
         // The two characters are kept as they come: ` M` (worktree) and `M `
@@ -159,6 +161,14 @@ mod tests {
                 created: false
             }],
         );
+    }
+
+    #[test]
+    fn a_collapsed_directory_is_not_a_document() {
+        // What `git status --porcelain` says without `-uall`, and what the
+        // first live test recorded: the folder, at 96 bytes, instead of the
+        // deck inside it.
+        assert_eq!(produced(&set(""), &set("?? q3-demo/\n")), vec![]);
     }
 
     #[test]

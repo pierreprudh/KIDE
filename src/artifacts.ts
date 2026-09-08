@@ -1,0 +1,55 @@
+/** Where a document a run produced can be read.
+ *
+ * The frontend twin of `src-tauri/src/agent/artifacts.rs`: that module decides
+ * what a command left behind, this one decides what Klide can do with it.
+ *
+ * The Artifact Inspector is Monaco, so it reads text and nothing else. A deck,
+ * a PDF, a spreadsheet, an image — Klide renders none of them, and a viewer
+ * for each is a far bigger thing than a card. So they open in the app the
+ * machine already uses for them, which is also what the reader wanted.
+ */
+
+/** Extensions the inspector can show as text. Deliberately a list rather than
+ *  a guess: a file with no extension, or one we have not thought about, is
+ *  likelier to be a binary than a document, and opening a binary in Monaco is
+ *  the failure mode this list exists to avoid. */
+const READABLE = new Set([
+  "md", "markdown", "mdx", "txt", "text", "log",
+  "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "ini", "env",
+  "html", "htm", "xml", "svg", "css", "scss",
+  "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rs", "go", "rb", "java", "kt",
+  "sh", "bash", "zsh", "sql", "graphql", "diff", "patch",
+]);
+
+export type ArtifactTarget = "inspector" | "system";
+
+/** Where the row should send this file. */
+export function artifactOpensIn(path: string): ArtifactTarget {
+  const name = path.split("/").pop() ?? path;
+  const dot = name.lastIndexOf(".");
+  // A dot at position 0 is a dotfile (`.env`), not an extension marker.
+  if (dot <= 0) return "system";
+  return READABLE.has(name.slice(dot + 1).toLowerCase()) ? "inspector" : "system";
+}
+
+/** The word for what the row's action will do, for its tooltip and its
+ *  accessible name — "open" is vague when half of these leave the app. */
+export function artifactActionLabel(path: string): string {
+  const name = path.split("/").pop() || path;
+  return artifactOpensIn(path) === "inspector" ? `Read ${name}` : `Open ${name} in its app`;
+}
+
+/** Images the webview draws itself; a deck, a PDF or a spreadsheet is drawn by
+ *  macOS through Quick Look; text needs no picture, since the row opens it in
+ *  the inspector where it can be read properly. */
+export type ArtifactPreview = "image" | "quicklook" | "none";
+
+const PICTURES = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"]);
+
+export function artifactPreview(path: string): ArtifactPreview {
+  if (artifactOpensIn(path) === "inspector") return "none";
+  const name = path.split("/").pop() ?? path;
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return "none";
+  return PICTURES.has(name.slice(dot + 1).toLowerCase()) ? "image" : "quicklook";
+}
