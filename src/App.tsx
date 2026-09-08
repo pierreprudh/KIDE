@@ -843,6 +843,17 @@ function App() {
     appendAiPanel();
   }
 
+  /** "New task" on the Focus side: clear the canvas back to the start stage.
+   *  `back()` first — the rail stands beside the full-window overlays (Git
+   *  Review, Mission Control), so from one of those a new task that only reset
+   *  Focus state would land under a screen still covering it. */
+  function startFocusTask() {
+    back();
+    endFocusRaceWatch();
+    setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
+    setFocusChatActive(false);
+  }
+
   /** Resume a conversation the rail's tree points at, into an AI panel. Focus
    *  does the same work against its own canvas (see `onOpenConversation` on
    *  <FocusMode>) — one set of rules, one surface each. */
@@ -947,11 +958,7 @@ function App() {
       id: "new-task",
       label: "New task",
       icon: <NewTaskIcon size={15} />,
-      onClick: () => {
-        endFocusRaceWatch();
-        setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
-        setFocusChatActive(false);
-      },
+      onClick: () => startFocusTask(),
     },
     {
       // Git Review is a full-window surface, not a panel, so Focus reaches the
@@ -3241,11 +3248,7 @@ function App() {
                     setFocusConvoError({ title: convo.title || "Untitled conversation" });
                   }}
                   onClearConversationNavigation={clearFocusConvoNavigation}
-                  onNewChat={() => {
-                    endFocusRaceWatch();
-                    setAiPanelCwd(aiPanels[0]?.id ?? "ai-main", undefined);
-                    setFocusChatActive(false);
-                  }}
+                  onNewChat={() => startFocusTask()}
                   onOpenConversation={(convo) => {
                     setFocusSelectedConvoId(convo.id);
                     setFocusConvoError(null);
