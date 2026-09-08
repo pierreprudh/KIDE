@@ -70,12 +70,13 @@ describe("canvas column geometry", () => {
     expect(g.planFolded).toBe(false);
   });
 
-  it("shrinks with the canvas and goes compact in a corner", () => {
+  // The column narrows with the canvas, but its entries never become a
+  // compacted line: open is a window at whatever width is left, folded is a
+  // mark, and there is no third state in between.
+  it("shrinks with the canvas, down to its floor", () => {
     expect(columnGeometry({ ...roomy, canvasWidth: 900 }).width).toBe(304);
-    expect(columnGeometry({ ...roomy, canvasWidth: 900 }).compact).toBe(false);
-    const tight = columnGeometry({ ...roomy, canvasWidth: 700 });
-    expect(tight.width).toBe(COLUMN_MIN);
-    expect(tight.compact).toBe(true);
+    expect(columnGeometry({ ...roomy, canvasWidth: 700 }).width).toBe(COLUMN_MIN);
+    expect(columnGeometry({ ...roomy, canvasWidth: 400 }).width).toBe(COLUMN_MIN);
   });
 
   it("assumes the roomy case before the canvas has been measured", () => {

@@ -174,9 +174,8 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
         <section className="klide-result-island" data-open={open ? "1" : undefined} aria-label={title}>
           <div className="klide-result-island-header" role="button" tabIndex={0}
             aria-expanded={open} aria-controls={id}
-            aria-label={`${open ? "Collapse" : "Expand"} ${title.toLowerCase()}${files ? `, ${files}` : ""}${compact && attention > 0 ? `, ${attention} item${attention === 1 ? "" : "s"} to review` : ""}`}
-            title={compact ? spoken : undefined}
-            data-compact={compact ? "1" : undefined}
+            aria-label={`${open ? "Collapse" : "Expand"} ${spoken.toLowerCase()}`}
+            title={spoken}
             data-attention={attention > 0 ? "1" : undefined}
             onClick={() => setOpen(!open)}
             onKeyDown={(event) => {
@@ -189,17 +188,15 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
                 dot and the chevron. What they said is in the header's own
                 name and tooltip, and "needs attention" becomes the mark's
                 colour rather than a dot pinned beside it. */}
-            {/* A result is evidence to peek at, not a thing to watch: at rest
-                it is one mark in the corner, and its words arrive with the
-                body once the reader opens it. (A narrow column gives the same
-                answer for a different reason — no room for them.) */}
+            {/* An open column has no compacted line: an entry there is a
+                window with its words, however narrow the column gets — a
+                full-width row holding a centred icon was neither one thing
+                nor the other. Folded, it is a mark; there is no third state. */}
             <ReviewIcon size={15} />
-            {!compact && <>
-              <span className="klide-result-island-title">{title}</span>
-              {files && <span className="klide-result-meta">{files}</span>}
-              {dot}
-              <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
-            </>}
+            <span className="klide-result-island-title">{title}</span>
+            {files && <span className="klide-result-meta">{files}</span>}
+            {dot}
+            <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
             {/* Dismissal belongs to the open card. At rest the entry is one
                 mark, and an X beside it is a second thing in the space the
                 rule gives to one — hiding it with opacity was not enough

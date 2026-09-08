@@ -58,18 +58,6 @@ describe("the island card", () => {
     expect(html).not.toContain("klide-result-island-panel");
     expect(html).not.toContain("Review changes");
   });
-  // A narrow column is a corner: one mark and nothing beside it. The count,
-  // the attention dot and the chevron all go, and what they said has to
-  // survive in the header's name and tooltip instead.
-  it("keeps one mark when the column is narrow", () => {
-    const html = renderIsland(withFiles, true);
-    expect(html).not.toContain("klide-result-island-title");
-    expect(html).not.toContain("klide-result-meta");
-    expect(html).not.toContain("klide-result-island-chevron");
-    expect(html.split("<svg").length - 1).toBe(1);
-    expect(html).toContain("Review result · 2 files");
-    expect(html).toContain('aria-label="Expand result, 2 files"');
-  });
   // "On sidepanel open, each should be full width and when closed only icons."
   // Open, the entry is a window with its words and its own dismiss.
   it("is a full-width window while the column is open", () => {
@@ -81,6 +69,19 @@ describe("the island card", () => {
     expect(html).toContain("2 files");
     expect(html).toContain("klide-result-island-close");
     expect(html).not.toContain("klide-result-mark");
+  });
+
+  // "No full width compacted line option when opened": however narrow the
+  // column gets, an open entry keeps its words. A row that filled the width
+  // with a centred icon was neither a window nor a mark.
+  it("keeps its words when the column is open and narrow", () => {
+    const html = renderToStaticMarkup(
+      <CompletionCard variant="island" compact completion={withFiles}
+        onReview={() => {}} onRequestChanges={() => {}} />,
+    );
+    expect(html).toContain("klide-result-island-title");
+    expect(html).toContain("2 files");
+    expect(html).not.toContain('data-compact="1"');
   });
 
   // Folded, it is the plan's pill: mark, count, nothing else — and its job is
@@ -99,12 +100,6 @@ describe("the island card", () => {
   });
   it("offers no dismissal when the host has nowhere to put the state", () => {
     expect(renderIsland(withFiles)).not.toContain("klide-result-island-close");
-  });
-  it("puts attention on the mark rather than a dot beside it", () => {
-    const html = renderIsland({ ...withFiles, warnings: ["Check the migration"] }, true);
-    expect(html).not.toContain("klide-result-attention-dot");
-    expect(html).toContain('data-attention="1"');
-    expect(html).toContain("1 item to review");
   });
 });
 
