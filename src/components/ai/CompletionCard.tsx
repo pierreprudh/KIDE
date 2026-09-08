@@ -190,7 +190,12 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
               {dot}
               <span className="klide-result-island-chevron" aria-hidden="true"><ChevronIcon open={open} /></span>
             </>}
-            {onDismiss && (
+            {/* Dismissal belongs to the open card. At rest the entry is one
+                mark, and an X beside it is a second thing in the space the
+                rule gives to one — hiding it with opacity was not enough
+                either, since it kept the pill as wide as two. The column's own
+                close puts the whole corner away meanwhile. */}
+            {onDismiss && open && (
               <button type="button" className="klide-result-island-close" aria-label="Hide this result"
                 onClick={(event) => { event.stopPropagation(); onDismiss(); }}>
                 <CloseIcon size={14} />
