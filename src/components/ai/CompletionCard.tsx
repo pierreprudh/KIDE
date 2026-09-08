@@ -45,6 +45,7 @@ type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpe
  *  transcript's entry opens. Exported so its markup can be tested without a
  *  DOM to click in. */
 export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, onDone }: EvidenceProps) {
+  const failed = completion.commands.filter((command) => command.status !== "passed").length;
   const review = (path?: string) => { onDone(); onReview?.(path); };
   // A document opens in two steps: the first click previews it here in the
   // panel, the second opens it full width (the inspector, or the app that owns
@@ -108,11 +109,18 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
           })}</div>
         </section>}
         {completion.commands.length > 0 && <section aria-label="Command results">
-          <h3>Commands <span>{completion.commands.length}</span></h3>
+          {/* The commands are the run's receipts: evidence you check when
+              something looks wrong, not something to read every time. So they
+              arrive as one stack — a heading that opens — and stay quiet even
+              when opened. A failure is the exception: nothing dims while a
+              command has failed. */}
+          <details className="klide-result-commands" data-failed={failed > 0 ? "1" : undefined}>
+          <summary><span className="klide-result-commands-title">Commands</span> <span>{completion.commands.length}</span></summary>
           {completion.commands.map((command) => <details key={command.id} className="klide-result-command">
             <summary><code>{command.label}</code><span className={`klide-result-status-${command.status}`}>{command.status === "unknown" ? "No result" : command.status === "passed" ? "Passed" : "Failed"}</span></summary>
             <pre>{command.output || "No output recorded."}</pre>
           </details>)}
+          </details>
         </section>}
         {completion.warnings.length > 0 && <section className="klide-result-notes" aria-label="Review notes"><h3>Worth a look</h3>{completion.warnings.map((warning) => <p key={warning}>{warning}</p>)}</section>}
       </div>

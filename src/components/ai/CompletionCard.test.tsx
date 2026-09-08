@@ -160,6 +160,26 @@ describe("documents a command produced", () => {
 });
 
 describe("ResultEvidence", () => {
+  // Receipts, not headlines: one collapsed stack, dimmed, and it stays dimmed
+  // when opened. A failure is the exception that cancels the dimming.
+  it("stacks the commands, closed and quiet", () => {
+    const html = renderEvidence({
+      ...completion,
+      commands: [{ id: "c1", label: "npm test", status: "passed" }, { id: "c2", label: "npm run build", status: "passed" }],
+    }, () => {});
+    expect(html).toContain('class="klide-result-commands"');
+    expect(html).not.toContain('class="klide-result-commands" open');
+    expect(html).not.toContain('data-failed');
+  });
+
+  it("stops dimming the stack when a command failed", () => {
+    const html = renderEvidence({
+      ...completion,
+      commands: [{ id: "c1", label: "npm test", status: "failed", output: "1 failing" }],
+    }, () => {});
+    expect(html).toContain('data-failed="1"');
+  });
+
   it("lists changed files with a way into each one", () => {
     const html = renderEvidence({ ...completion, files: ["src/app.tsx"] });
     expect(html).toContain("Changes");
