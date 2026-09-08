@@ -1330,7 +1330,10 @@ function App() {
           openConversationInAiPanel(convo);
         }}
         onFileWritten={onAgentWrote}
-        onReviewChanges={(info) => void reviewRunChanges(info)}
+        // Focus reviews in its own column, so it offers no route into the
+        // docked inspector it does not render.
+        onReviewChanges={opts?.variant === "focus" ? undefined : (info) => void reviewRunChanges(info)}
+        onOpenArtifact={(info) => void openRunArtifact(info)}
         onWorkspaceChanged={() => {
           // A worktree-pinned panel changes its own branch, not the main
           // checkout — only refresh the sidebar git status when the panel
@@ -3814,8 +3817,14 @@ function App() {
             {/* Docked Artifact Inspector — the same slide-in review surface as
                 Mission Control, at the right edge of the workbench. Opened
                 from the AI panel's "N files changed" row; MC keeps its own
-                instance, so this one only shows on the base surface. */}
-            {overlay === null && (
+                instance, so this one only shows on the base surface.
+                Not in Focus: that canvas reviews a run's changes live in its
+                right-hand column, where the result card lists the files and
+                opens its evidence in place. Docking a second review surface
+                under the composer there put the same work in two places, and
+                the one that lost the argument was a header strip squeezed
+                against the status bar. */}
+            {overlay === null && !focusBase && (
               <div
                 className="artifact-inspector-shell"
                 data-open={artifactOpen ? "true" : "false"}
