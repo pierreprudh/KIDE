@@ -252,6 +252,14 @@ pub trait Delegate: Sync {
     /// (OpenCode's SQLite connection, Codex's title index) across the page.
     fn run_parser(&self, home: &str) -> Box<dyn RunParser>;
 
+    /// A stamp of every input to `run_parser` *other than the transcript itself*
+    /// — `0` when there is none. The run memo keys a remembered parse on the
+    /// transcript's mtime and length plus this, so a sidecar that changes on its
+    /// own (Codex's title index) still invalidates it.
+    fn parse_inputs_stamp(&self, _home: &str) -> u64 {
+        0
+    }
+
     /// The run's conversation for the Mission Control detail pane. `key` is
     /// the same value `discover_runs` produced — a transcript path or a
     /// session id, depending on the CLI.
@@ -348,12 +356,20 @@ fn run_matches_workspace(run: &AgentRun, workspace_root: &str) -> bool {
         .is_some_and(|cwd| cwd == normalize_path(workspace_root))
 }
 
+/// Parsed runs remembered per transcript file (file_memo.rs). Mission Control
+/// re-lists every 7.5 s and a page re-parses from candidate zero to honour
+/// `offset`; with the memo both are a stat per candidate, and only a transcript
+/// that moved since the last tick is read again. OpenCode keys are session ids,
+/// not paths — the memo computes those uncached, exactly as before.
+static PARSED_RUNS: crate::file_memo::FileMemo<Option<AgentRun>> = crate::file_memo::FileMemo::new();
+
 fn list_runs_matching(
     home: &str,
     limit: usize,
     offset: usize,
     workspace_root: Option<&str>,
 ) -> Vec<AgentRun> {
+    let stamps: Vec<u64> = ALL.iter().map(|d| d.parse_inputs_stamp(home)).collect();
     let mut candidates: Vec<(usize, RunCandidate)> = Vec::new();
     for (i, delegate) in ALL.iter().enumerate() {
         let found = match workspace_root {
@@ -371,10 +387,11 @@ fn list_runs_matching(
     let mut matched = 0usize;
     let mut misses = 0usize;
     for (i, c) in candidates {
-        let Some(run) = parsers[i]
-            .get_or_insert_with(|| ALL[i].run_parser(home))
-            .parse(&c.key)
-        else {
+        let Some(run) = PARSED_RUNS.get_or_compute(std::path::Path::new(&c.key), stamps[i], |_| {
+            parsers[i]
+                .get_or_insert_with(|| ALL[i].run_parser(home))
+                .parse(&c.key)
+        }) else {
             continue;
         };
         if let Some(root) = workspace_root {
@@ -622,6 +639,40 @@ mod tests {
         let rest = list_runs(home_str, 10, 2);
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].id, "oss-old");
+    }
+
+    #[test]
+    fn a_repeated_listing_parses_each_transcript_once() {
+        let home = std::env::temp_dir().join("klide-delegate-test-run-memo");
+        let _ = std::fs::remove_dir_all(&home);
+        let proj = home.join(".claude/projects/-tmp-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let log = proj.join("c1.jsonl");
+        std::fs::write(
+            &log,
+            r#"{"type":"user","ts":1,"message":{"content":"claude run"}}"#,
+        )
+        .unwrap();
+        let home_str = home.to_str().unwrap();
+
+        let first = list_runs(home_str, 10, 0);
+        assert_eq!(first.len(), 1);
+        let again = list_runs(home_str, 10, 0);
+        assert_eq!(again.len(), 1);
+        assert_eq!(
+            PARSED_RUNS.computes_for(&log),
+            1,
+            "an unchanged transcript is parsed once across listings"
+        );
+
+        // The session continues: the file grows, and the next listing sees it.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut text = std::fs::read_to_string(&log).unwrap();
+        text.push_str("\n{\"type\":\"assistant\",\"ts\":2,\"message\":{\"content\":\"done\"}}");
+        std::fs::write(&log, text).unwrap();
+        let grown = list_runs(home_str, 10, 0);
+        assert_eq!(PARSED_RUNS.computes_for(&log), 2, "a changed transcript is parsed again");
+        assert!(grown[0].message_count > first[0].message_count);
     }
 
     #[test]

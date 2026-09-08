@@ -9,7 +9,7 @@
 // Read-only: we never write to those files. Each adapter owns its own
 // format; what's shared lives here.
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRun {
     pub id: String,
@@ -257,15 +257,21 @@ pub(crate) fn retain_candidates_in_workspace(
     candidates: Vec<RunCandidate>,
     workspace_root: &str,
 ) -> Vec<RunCandidate> {
+    // A transcript's head is written once; remembering the probe per file
+    // turns the board's 7.5 s tick from "open every candidate for 64 KB" into
+    // a stat per candidate (file_memo.rs). A live session's file keeps moving
+    // and keeps being re-probed, which is the right cost in the right place.
+    static HEAD_CWD: crate::file_memo::FileMemo<Option<String>> = crate::file_memo::FileMemo::new();
     let want = super::normalize_path(workspace_root);
     candidates
         .into_iter()
-        .filter(
-            |c| match head_json_string(std::path::Path::new(&c.key), "cwd") {
+        .filter(|c| {
+            let path = std::path::Path::new(&c.key);
+            match HEAD_CWD.get_or_compute(path, 0, |p| head_json_string(p, "cwd")) {
                 Some(cwd) => super::normalize_path(&cwd) == want,
                 None => true,
-            },
-        )
+            }
+        })
         .collect()
 }
 

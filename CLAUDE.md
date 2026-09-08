@@ -233,6 +233,7 @@ Klide/
     │   ├── storage.rs            Where the runs dir lives — user-choosable folder, validated moves, cache accounting
     │   ├── missions.rs           Durable Missions — authored specs, append-only events, drive loop
     │   ├── durable.rs            Atomic + append-only write primitives for on-disk state
+    │   ├── file_memo.rs          Parsed-file memo keyed on (mtime, len, epoch) — Delegate runs, Harness summaries, scrollback metas
     │   ├── blocking.rs           The one door for blocking work — spawn_blocking behind async commands + the sync-command drift test
     │   ├── pty.rs                Delegate PTY commands + host-choice rules (SessionHosting)
     │   ├── pty_host.rs           Tauri-free PTY session host — sessions, scrollback, reader loop

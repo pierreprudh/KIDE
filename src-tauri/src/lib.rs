@@ -8,6 +8,7 @@ mod custom_cli;
 mod custom_providers;
 mod delegate;
 mod durable;
+mod file_memo;
 mod gateway;
 mod git;
 mod local_servers;

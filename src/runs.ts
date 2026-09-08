@@ -561,13 +561,29 @@ export function mergeRunPages(existing: Run[], incoming: Run[]): Run[] {
     seen.add(key);
     merged.push(run);
   }
-  return merged.sort((a, b) => {
+  merged.sort((a, b) => {
     const byTime = b.updatedMs - a.updatedMs;
     if (byTime !== 0) return byTime;
     const ak = runPageKey(a);
     const bk = runPageKey(b);
     return ak < bk ? -1 : ak > bk ? 1 : 0;
   });
+  // Identity is the signal the board reads: a refresh that changed nothing
+  // must hand back the same array, or every 7.5 s tick rebuilds the ledger
+  // and re-renders every row.
+  return keepIfSame(existing, merged);
+}
+
+/** `next` when it differs from `prev` in any row, otherwise `prev` itself —
+ * so a poll that returned the same data leaves React state untouched. Rows
+ * arrive fresh from IPC on every tick, so this compares by value. */
+export function keepIfSame<T>(prev: T[], next: T[]): T[] {
+  if (prev === next) return prev;
+  if (prev.length !== next.length) return next;
+  for (let i = 0; i < prev.length; i++) {
+    if (JSON.stringify(prev[i]) !== JSON.stringify(next[i])) return next;
+  }
+  return prev;
 }
 
 // ── Stats panel cache ──────────────────────────────────────────────────────

@@ -217,6 +217,10 @@ pub fn read_scrollback_meta(dir: &Path, session_id: &str) -> Option<ScrollbackMe
 /// metadata index to join a CLI transcript id back to the PTY that hosted it;
 /// no scrollback bytes are read here.
 pub fn scan_scrollback_metas(dir: &Path) -> Vec<ScrollbackMeta> {
+    // Read on every board tick for the historical-status join; a meta only
+    // changes when its session spawns or exits, so remember the parse per file
+    // (file_memo.rs).
+    static METAS: crate::file_memo::FileMemo<Option<ScrollbackMeta>> = crate::file_memo::FileMemo::new();
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -228,9 +232,11 @@ pub fn scan_scrollback_metas(dir: &Path) -> Vec<ScrollbackMeta> {
             if !name.ends_with(".meta.json") || name.ends_with(".tmp") {
                 return None;
             }
-            fs::read_to_string(path)
-                .ok()
-                .and_then(|text| serde_json::from_str(&text).ok())
+            METAS.get_or_compute(&path, 0, |p| {
+                fs::read_to_string(p)
+                    .ok()
+                    .and_then(|text| serde_json::from_str(&text).ok())
+            })
         })
         .collect()
 }
