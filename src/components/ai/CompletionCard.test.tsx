@@ -119,11 +119,25 @@ describe("documents a command produced", () => {
   // A document opens in two steps: the panel first, full width second. So the
   // row's resting promise is the preview, and the destination label — which of
   // the two things the second click does — belongs to the state after it.
-  it("offers the preview first, not the destination", () => {
+  // Opening the result is the first of the two steps for the document it
+  // produced: the first previewable one is already showing, so its row now
+  // promises the destination the next click reaches.
+  it("previews the first document as soon as the result opens", () => {
     const html = renderEvidence({ ...completion, artifacts: [DECK] }, () => {});
-    expect(html).toContain("Preview decks/Q3 review.pptx in the panel");
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).not.toContain("Open Q3 review.pptx in its app");
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain("Open Q3 review.pptx in its app");
+    expect(html).not.toContain("Preview decks/Q3 review.pptx in the panel");
+  });
+
+  // A second document waits its turn behind one click, and a file with no
+  // picture to show skips the preview step entirely rather than spending a
+  // click on an empty frame.
+  it("offers the preview step only where there is a picture to see", () => {
+    const html = renderEvidence({ ...completion, artifacts: [DECK, { path: "notes.md", bytes: 900, created: true }] }, () => {});
+    expect(html).toContain("Read notes.md");
+    expect(html).not.toContain("Preview notes.md in the panel");
+    const second = renderEvidence({ ...completion, artifacts: [DECK, { path: "q3/summary.docx", bytes: 12_000, created: true }] }, () => {});
+    expect(second).toContain("Preview q3/summary.docx in the panel");
   });
 
   it("names the destination the second click reaches", () => {

@@ -52,7 +52,13 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
   // panel, the second opens it full width (the inspector, or the app that owns
   // the file). Going straight to full width meant every glance at a deck threw
   // the reader out of the conversation and into another window.
-  const [previewing, setPreviewing] = useState<string | null>(null);
+  //
+  // Opening the result *is* the first step for the document it produced: the
+  // first previewable one shows straight away, so a run that made a deck shows
+  // the deck rather than a list with a picture one more click behind it.
+  const [previewing, setPreviewing] = useState<string | null>(
+    () => (completion.artifacts ?? []).find((a) => artifactPreview(a.path) !== "none")?.path ?? null,
+  );
   const artifacts = completion.artifacts ?? [];
   return (
     <>
@@ -78,14 +84,20 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
             const label = <><span className="klide-result-filename">{name}</span>{directory && <span className="klide-result-directory">{directory}</span>}</>;
             const size = <span className="klide-result-size">{formatBytes(artifact.bytes)}</span>;
             const shown = previewing === artifact.path;
+            // Two steps only where there is something to see first. A file
+            // Klide cannot draw a picture of has no preview step to offer, so
+            // its row opens on the first click rather than spending one on a
+            // frame that would say "no preview".
+            const previewable = artifactPreview(artifact.path) !== "none";
+            const step = previewable && !shown;
             const row = onOpenArtifact
-              ? <button type="button" aria-expanded={shown}
-                  title={shown ? artifactActionLabel(artifact.path) : `Preview ${artifact.path} in the panel`}
+              ? <button type="button" aria-expanded={previewable ? shown : undefined}
+                  title={step ? `Preview ${artifact.path} in the panel` : artifactActionLabel(artifact.path)}
                   onClick={() => {
-                    if (!shown) { setPreviewing(artifact.path); return; }
+                    if (step) { setPreviewing(artifact.path); return; }
                     onDone();
                     onOpenArtifact(artifact.path);
-                  }}>{label}{size}<span aria-hidden="true">{shown ? "↗" : "▸"}</span></button>
+                  }}>{label}{size}<span aria-hidden="true">{step ? "▸" : "↗"}</span></button>
               : <div>{label}{size}</div>;
             return (
               <div key={artifact.path} className="klide-result-document" data-previewing={shown ? "1" : undefined}>

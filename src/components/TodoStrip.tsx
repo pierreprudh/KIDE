@@ -563,7 +563,10 @@ export function TodoStrip({
   folded?: boolean;
   onUnfold?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  // The island opens on its steps: the column exists to be watched, and a
+  // header alone says less than the plan it stands for. The dock still starts
+  // closed — it sits over the conversation.
+  const [open, setOpen] = useState(variant === "island");
   const [dismissed, setDismissed] = useState(false);
   const [items, setItems] = useState<TodoItem[]>([]);
   const [events, setEvents] = useState<TodoEvent[]>([]);
@@ -676,13 +679,14 @@ export function TodoStrip({
     }, MARK_EXIT_MS);
   }
 
-  // When the plan finishes, collapse to the slim pill so the agent's final
-  // output stays visible (a tall card would sit over it like a dark box). If
-  // work resumes after a dismiss, bring the box back.
+  // A finished plan folds in the dock, where the card sits over the
+  // conversation and a tall box would cover the answer. The island has a lane
+  // of its own and covers nothing, so its steps stay readable — a header
+  // saying "3/3" with the three steps hidden is the plan at its least useful.
   useEffect(() => {
-    if (allDone) setOpen(false);
-    else setDismissed(false);
-  }, [allDone]);
+    if (allDone && variant === "dock") setOpen(false);
+    else if (!allDone) setDismissed(false);
+  }, [allDone, variant]);
 
   const prevDoneRef = useRef(done);
   useEffect(() => {
