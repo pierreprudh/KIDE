@@ -87,20 +87,25 @@
    deck from an empty one a script failed to fill. */
 .klide-result-size { position: absolute; right: 22px; top: 11px; font-size: 10px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 .klide-result-artifacts > .klide-result-document { padding: 0; border: 0; }
-.klide-result-artifacts .klide-result-document > button, .klide-result-artifacts .klide-result-document > div { padding-right: 74px; }
+/* A document row is a grid, not a stack: the app mark, the name over its
+   folder, the size and the arrow all sit on one row and share one baseline.
+   The generic file row's absolute size (pinned 11px from the top) is released
+   here — it lines up only while a row is one line high. */
+.klide-result-artifacts .klide-result-document-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; column-gap: 10px; width: 100%; box-sizing: border-box; padding: 9px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; text-align: left; }
+.klide-result-artifacts .klide-result-document-text { display: grid; gap: 1px; min-width: 0; }
+.klide-result-artifacts .klide-result-size, .klide-result-artifacts .klide-result-open { position: static; right: auto; top: auto; }
+.klide-result-artifacts .klide-result-open { color: var(--fg-subtle); }
 /* The picture is the row's evidence, not decoration: full column width, its
    own hairline, and no rounding beyond the card's own vocabulary. A deck is
    4:3 and a page is taller, so the height follows the image. */
 .klide-result-preview-note { margin: 2px 0 12px; color: var(--fg-dim); font-size: 10.5px; line-height: 1.4; }
 .klide-result-document[data-previewing="1"] > button { color: var(--fg-strong); }
-.klide-result-document-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.klide-result-document-name > span { min-width: 0; }
-.klide-result-app-logo { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
+.klide-result-app-logo { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
 .klide-result-document-count { margin-left: 7px; font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fg-subtle); }
 .klide-result-thumb { display: block; width: 100%; margin: 2px 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); animation: klide-result-thumb-in 220ms ease-out; }
 @keyframes klide-result-thumb-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .klide-result-thumb { animation: none; } }
-.klide-result-files button > :last-child:not(.klide-result-filename):not(.klide-result-directory) { position: absolute; right: 2px; top: 11px; color: var(--fg-subtle); }
+.klide-result-files button > :last-child:not(.klide-result-filename):not(.klide-result-directory):not(.klide-result-open) { position: absolute; right: 2px; top: 11px; color: var(--fg-subtle); }
 .klide-result-command { border-bottom: 1px solid var(--border); }
 .klide-result-command summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 0; cursor: pointer; list-style: none; }
 .klide-result-command summary::-webkit-details-marker { display: none; }

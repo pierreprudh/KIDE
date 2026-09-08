@@ -80,20 +80,25 @@ export function ResultEvidence({ completion, disabled, onReview, onOpenArtifact,
             // the deck finds it by the PowerPoint square faster than by
             // reading four filenames.
             const appLogo = documentAppLogo(artifact.path);
+            // Four columns on one baseline: the app's mark, the name over its
+            // folder, the size, the arrow. The generic file row stacks and pins
+            // its size to a fixed 11px from the top, which only lines up while
+            // the row is one line high — with a logo and a folder under the
+            // name, everything drifted.
             const label = (
               <>
-                <span className="klide-result-filename klide-result-document-name">
-                  {appLogo && <img className="klide-result-app-logo" src={appLogo} alt="" aria-hidden="true" />}
-                  <span>{name}</span>
+                {appLogo && <img className="klide-result-app-logo" src={appLogo} alt="" aria-hidden="true" />}
+                <span className="klide-result-document-text">
+                  <span className="klide-result-filename">{name}</span>
+                  {directory && <span className="klide-result-directory">{directory}</span>}
                 </span>
-                {directory && <span className="klide-result-directory">{directory}</span>}
               </>
             );
             const size = <span className="klide-result-size">{formatBytes(artifact.bytes)}</span>;
             const row = onOpenArtifact
-              ? <button type="button" title={artifactActionLabel(artifact.path)}
-                  onClick={() => { onDone(); onOpenArtifact(artifact.path); }}>{label}{size}<span aria-hidden="true">↗</span></button>
-              : <div>{label}{size}</div>;
+              ? <button type="button" className="klide-result-document-row" title={artifactActionLabel(artifact.path)}
+                  onClick={() => { onDone(); onOpenArtifact(artifact.path); }}>{label}{size}<span className="klide-result-open" aria-hidden="true">↗</span></button>
+              : <div className="klide-result-document-row">{label}{size}</div>;
             return (
               <div key={artifact.path} className="klide-result-document">
                 {row}
