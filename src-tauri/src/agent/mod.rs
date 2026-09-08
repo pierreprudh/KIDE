@@ -1,4 +1,5 @@
 mod approval_store;
+mod artifacts;
 mod command_allowlist;
 mod conversation_search;
 mod glob_match;

@@ -4687,9 +4687,12 @@ button:focus-visible .menu-leadout {
   bottom: calc(-1 * var(--rail-row-gap));
 }
 
-/* At the selected row the active route peels into the elbow. The neutral trunk
-   beneath it remains visible when later conversations follow. */
-.klide-focus-provider-conversations > .klide-focus-convo-row[data-selected="true"]::after {
+/* At the last selected row the active route peels into the elbow. The neutral
+   trunk beneath it remains visible when later conversations follow. It is the
+   *last* rather than every selected row because a race can select two rows in
+   one provider group: the route has to run past the first to reach the second,
+   and only then hand back to the neutral trunk. */
+.klide-focus-provider-conversations > .klide-focus-convo-row[data-selected-end="true"]::after {
   bottom: auto;
   height: var(--rail-branch-depart);
 }

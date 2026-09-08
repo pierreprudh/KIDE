@@ -185,8 +185,17 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
   let completed = false;
   let attemptStart = 0;
   const changedFiles = new Set<string>();
+  // Keyed by path: a command may rewrite the same deck twice in a run, and the
+  // last size is the one on disk. `created` stays true once true — the run did
+  // make the file, whatever it did to it afterwards.
+  const producedFiles = new Map<string, { path: string; bytes: number; created: boolean }>();
   const commands = new Map<string, RunCompletion["commands"][number]>();
   const completionWarnings = new Set<string>();
+
+  // A path that also came through a write tool belongs to Changes, not here:
+  // that one has a checkpoint behind it, so it can be diffed and reverted.
+  const producedArtifacts = () =>
+    [...producedFiles.values()].filter((artifact) => !changedFiles.has(artifact.path));
 
   const newAssistant = (): AssistantRow => ({
     kind: "assistant",
@@ -257,6 +266,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
       completed = false;
       attemptStart = open && !open.row.text && !open.row.toolCalls.length ? open.idx : rows.length;
       changedFiles.clear();
+      producedFiles.clear();
       commands.clear();
       completionWarnings.clear();
       dispatch = { provider: event.provider, model: event.model };
@@ -422,6 +432,16 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
       return { changed: [] };
     }
 
+    if (event.type === "artifact_produced") {
+      const seen = producedFiles.get(event.path);
+      producedFiles.set(event.path, {
+        path: event.path,
+        bytes: event.bytes,
+        created: seen?.created || event.created,
+      });
+      return { changed: [] };
+    }
+
     if (event.type === "permission_resolved" && event.decision.behavior === "deny") {
       completionWarnings.add("A permission was denied. Review the conversation for work that may have been skipped.");
       return { changed: [] };
@@ -437,6 +457,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
         completedAt: event.ts,
         outcome: outcome.slice(0, 280) + (outcome.length > 280 ? "…" : ""),
         files: [...changedFiles],
+        artifacts: producedArtifacts(),
         commands: [...commands.values()].map((command) => ({ ...command })),
         warnings: [...completionWarnings],
       } });
@@ -472,6 +493,7 @@ export function createFold(opts: FoldOptions = {}): FoldHandle {
           completedAt: event.ts,
           outcome: reason.slice(0, 280) + (reason.length > 280 ? "…" : ""),
           files: [...changedFiles],
+          artifacts: producedArtifacts(),
           commands: [...commands.values()].map((command) => ({ ...command })),
           warnings: [
             "The run stopped before finishing — this work is partial.",

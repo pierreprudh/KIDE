@@ -254,6 +254,11 @@ export type AgentEvent =
   | { type: "diff_proposed"; runId: string; proposal: DiffProposal; ts: number }
   | { type: "diff_resolved"; runId: string; proposalId: string; decision: DiffDecision; ts: number }
   | { type: "file_changed"; runId: string; path: string; oldHash: string; newHash: string; ts: number }
+  /** A file an approved `run_command` left behind — a deck, a PDF, a generated
+   *  report. No write tool ran, so there is no diff and no checkpoint behind
+   *  it: the harness read the workspace's dirty set either side of the command
+   *  and this is what appeared. */
+  | { type: "artifact_produced"; runId: string; path: string; bytes: number; created: boolean; ts: number }
   | { type: "run_result"; runId: string; result: AgentRunResult; ts: number }
   | { type: "run_error"; runId: string; error: AgentError; ts: number }
   | { type: "user_question_requested"; runId: string; requestId: string; question: string; ts: number }

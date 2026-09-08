@@ -869,49 +869,54 @@ where
             CoordinationActor::Run { run_id } => run_id.as_str(),
             CoordinationActor::Operator => "operator",
         };
-        let accept = match permission::precheck(ctx, permission::Capability::Message, peer, full_auto) {
-            permission::Precheck::Execute => true,
-            permission::Precheck::AutoReject(_) => false,
-            permission::Precheck::Ask => {
-                let peer_label = snapshot
-                    .runs
-                    .iter()
-                    .find(|run| run.registration.run_id == peer)
-                    .and_then(|run| run.registration.label.clone());
-                let kind_label = format!("{:?}", envelope.kind).to_ascii_lowercase();
-                // Not a Tool call, but the gate needs a call id to pair the
-                // request with its resolution; the envelope id is that.
-                let call = NormalizedToolCall {
-                    id: format!("inbox_{}", envelope.id),
-                    name: "agent_inbox".to_string(),
-                    input: serde_json::json!({}),
-                };
-                let perm = PermissionRequest {
-                    id: permission::request_id(ctx, &call),
-                    run_id: ctx.id.to_string(),
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    input: serde_json::json!({
-                        "envelopeId": envelope.id,
-                        "fromRunId": peer,
-                        "peerLabel": peer_label,
-                        "kind": kind_label,
-                        "body": envelope.body,
-                        "replyTo": envelope.reply_to,
-                    }),
-                    summary: format!("{kind_label} from @{}", peer_label.as_deref().unwrap_or(peer)),
-                    reason: "Another agent wrote this; approve it to let this conversation read it."
-                        .to_string(),
-                    options: message_gate_options(),
-                };
-                let decision = match permission::run_gate(ctx, &call, perm, emit).await? {
-                    permission::GateDecision::Cancelled => return Ok(true),
-                    decision => decision,
-                };
-                permission::record(ctx, permission::Capability::Message, peer, peer, &decision);
-                matches!(decision, permission::GateDecision::Approved { .. })
-            }
-        };
+        let accept =
+            match permission::precheck(ctx, permission::Capability::Message, peer, full_auto) {
+                permission::Precheck::Execute => true,
+                permission::Precheck::AutoReject(_) => false,
+                permission::Precheck::Ask => {
+                    let peer_label = snapshot
+                        .runs
+                        .iter()
+                        .find(|run| run.registration.run_id == peer)
+                        .and_then(|run| run.registration.label.clone());
+                    let kind_label = format!("{:?}", envelope.kind).to_ascii_lowercase();
+                    // Not a Tool call, but the gate needs a call id to pair the
+                    // request with its resolution; the envelope id is that.
+                    let call = NormalizedToolCall {
+                        id: format!("inbox_{}", envelope.id),
+                        name: "agent_inbox".to_string(),
+                        input: serde_json::json!({}),
+                    };
+                    let perm = PermissionRequest {
+                        id: permission::request_id(ctx, &call),
+                        run_id: ctx.id.to_string(),
+                        tool_call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        input: serde_json::json!({
+                            "envelopeId": envelope.id,
+                            "fromRunId": peer,
+                            "peerLabel": peer_label,
+                            "kind": kind_label,
+                            "body": envelope.body,
+                            "replyTo": envelope.reply_to,
+                        }),
+                        summary: format!(
+                            "{kind_label} from @{}",
+                            peer_label.as_deref().unwrap_or(peer)
+                        ),
+                        reason:
+                            "Another agent wrote this; approve it to let this conversation read it."
+                                .to_string(),
+                        options: message_gate_options(),
+                    };
+                    let decision = match permission::run_gate(ctx, &call, perm, emit).await? {
+                        permission::GateDecision::Cancelled => return Ok(true),
+                        decision => decision,
+                    };
+                    permission::record(ctx, permission::Capability::Message, peer, peer, &decision);
+                    matches!(decision, permission::GateDecision::Approved { .. })
+                }
+            };
         ctx.sup.coordination_apply(
             workspace_root,
             CoordinationCommand::ReviewEnvelope {
@@ -925,6 +930,85 @@ where
         )?;
     }
     Ok(false)
+}
+
+/// Run an approved command, then say what it left behind.
+///
+/// A write tool's edit arrives as `FileChanged` with a checkpoint behind it. A
+/// file a *command* produces — a deck, a PDF, a generated report — has neither,
+/// and until this it reached no surface at all. So the command is bracketed by
+/// a read of the workspace's dirty set, and whatever appeared or changed in
+/// between is announced as `ArtifactProduced`.
+///
+/// Best-effort by construction: no repo (or a git that will not answer) means
+/// no detection, never a failed tool call. Ignored paths never appear, so a
+/// `npm install` and a build into an ignored `dist/` stay silent.
+async fn run_command_announcing_artifacts<E>(
+    ctx: &ToolCtx<'_>,
+    root: &str,
+    cwd: &str,
+    command: &str,
+    timeout_secs: u64,
+    emit: &mut E,
+) -> Result<ToolResult, String>
+where
+    E: FnMut(AgentEvent) -> Result<(), String>,
+{
+    let repo = repo_top(root).await;
+    let before = match &repo {
+        Some(top) => dirty_set(top).await,
+        None => None,
+    };
+    let result = run_command_capture_in(root, cwd, command, timeout_secs).await;
+    let (Some(top), Some(before)) = (repo, before) else {
+        return Ok(result);
+    };
+    let Some(after) = dirty_set(&top).await else {
+        return Ok(result);
+    };
+    for file in artifacts::produced(&before, &after) {
+        let bytes = tokio::fs::metadata(top.join(&file.path))
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        emit(AgentEvent::ArtifactProduced {
+            run_id: ctx.id.to_string(),
+            path: file.path,
+            bytes,
+            created: file.created,
+            ts: now_ms(),
+        })?;
+    }
+    Ok(result)
+}
+
+/// The repository the workspace belongs to. Porcelain paths are relative to
+/// this, not to the workspace or the command's cwd, so it is what both the
+/// status read and the size read are anchored on.
+async fn repo_top(root: &str) -> Option<std::path::PathBuf> {
+    let out = tokio::process::Command::new("git")
+        .args(["-C", root, "rev-parse", "--show-toplevel"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!top.is_empty()).then(|| std::path::PathBuf::from(top))
+}
+
+async fn dirty_set(top: &std::path::Path) -> Option<std::collections::BTreeMap<String, String>> {
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(top)
+        .args(["status", "--porcelain"])
+        .output()
+        .await
+        .ok()?;
+    out.status
+        .success()
+        .then(|| artifacts::parse_porcelain(&String::from_utf8_lossy(&out.stdout)))
 }
 
 pub(super) async fn process_command_tool<E>(
@@ -991,7 +1075,15 @@ where
     ) {
         permission::Precheck::Execute => {
             return Ok(ToolOutcome::Produced(
-                run_command_capture_in(root_value, &cwd, &command, timeout_secs).await,
+                run_command_announcing_artifacts(
+                    ctx,
+                    root_value,
+                    &cwd,
+                    &command,
+                    timeout_secs,
+                    emit,
+                )
+                .await?,
             ));
         }
         permission::Precheck::AutoReject(msg) => {
@@ -1048,7 +1140,8 @@ where
 
     let result = match decision {
         permission::GateDecision::Approved { .. } => {
-            run_command_capture_in(root_value, &cwd, &command, timeout_secs).await
+            run_command_announcing_artifacts(ctx, root_value, &cwd, &command, timeout_secs, emit)
+                .await?
         }
         _ => ToolResult {
             ok: false,
@@ -1099,7 +1192,9 @@ async fn execute_network_tool(root: &str, call: &NormalizedToolCall, run_id: &st
     }
 }
 
-pub(super) fn network_invocation(call: &NormalizedToolCall) -> Result<NetworkInvocation, ToolResult> {
+pub(super) fn network_invocation(
+    call: &NormalizedToolCall,
+) -> Result<NetworkInvocation, ToolResult> {
     match call.name.as_str() {
         "web_search" => {
             let query = call
@@ -1323,38 +1418,37 @@ Do not propose it again — take a different approach or ask the user what they'
     // the proposed diff so the edit stays visible in the conversation, and
     // the checkpoint written below keeps it revertable — which is what makes
     // auto-accept safe. Otherwise pause for diff review.
-    let decision = if ctx.request.require_diff_review == Some(false)
-        || permission::edits_auto_applied(ctx)
-    {
-        emit(AgentEvent::DiffProposed {
-            run_id: ctx.id.to_string(),
-            proposal: proposal.clone(),
-            ts: now_ms(),
-        })?;
-        "apply".to_string()
-    } else {
-        match pause_for_user(
-            ctx.sup,
-            ctx.id,
-            AgentRunStatus::WaitingForDiff,
-            AgentEvent::DiffProposed {
+    let decision =
+        if ctx.request.require_diff_review == Some(false) || permission::edits_auto_applied(ctx) {
+            emit(AgentEvent::DiffProposed {
                 run_id: ctx.id.to_string(),
                 proposal: proposal.clone(),
                 ts: now_ms(),
-            },
-            "reject",
-            ctx.cancel,
-            emit,
-            |handle, tx| {
-                *handle.pending_diff.lock().unwrap() = Some(tx);
-            },
-        )
-        .await?
-        {
-            PauseOutcome::Cancelled => return Ok(ToolOutcome::Cancelled),
-            PauseOutcome::Resolved(decision) => decision,
-        }
-    };
+            })?;
+            "apply".to_string()
+        } else {
+            match pause_for_user(
+                ctx.sup,
+                ctx.id,
+                AgentRunStatus::WaitingForDiff,
+                AgentEvent::DiffProposed {
+                    run_id: ctx.id.to_string(),
+                    proposal: proposal.clone(),
+                    ts: now_ms(),
+                },
+                "reject",
+                ctx.cancel,
+                emit,
+                |handle, tx| {
+                    *handle.pending_diff.lock().unwrap() = Some(tx);
+                },
+            )
+            .await?
+            {
+                PauseOutcome::Cancelled => return Ok(ToolOutcome::Cancelled),
+                PauseOutcome::Resolved(decision) => decision,
+            }
+        };
 
     let (behavior, note, apply_all) = parse_diff_decision(&decision);
     // "Validate all": this approval covers every later edit of the run, so the
@@ -1389,8 +1483,7 @@ Do not propose it again — take a different approach or ask the user what they'
                 // that define them, so the checkpoint format had two spellers.
                 let checkpoint_dir = checkpoint_dir(ctx.runs_dir, ctx.id);
                 let _ = std::fs::create_dir_all(&checkpoint_dir);
-                let checkpoint_file =
-                    checkpoint_file(ctx.runs_dir, ctx.id, &proposal.tool_call_id);
+                let checkpoint_file = checkpoint_file(ctx.runs_dir, ctx.id, &proposal.tool_call_id);
                 let entry = CheckpointEntry {
                     tool_call_id: proposal.tool_call_id.clone(),
                     path: proposal.path.clone(),

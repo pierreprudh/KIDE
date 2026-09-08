@@ -1110,6 +1110,18 @@ export function AiPanel({
   const providerDelegatesWork = isDelegateProvider(provider);
   const delegateSession = providerDelegatesWork && variant !== "focus";
   const isLocalProvider = isManagedLocalProvider(provider);
+  // A panel handed an explicit conversation — a Mission Control reattach, a
+  // race-watch column — holds that thread from its first frame, but nothing
+  // wrote it down: the durable binding is written by identity transitions, and
+  // reattaching to a Run that has already settled makes none. The rail derives
+  // what is open from those bindings, so a watched racer could sit on the
+  // canvas while the history tree said nothing was there. Record it on mount.
+  useEffect(() => {
+    if (panelId && initialConversationId) {
+      persistConversationSessionBinding(panelId, conversationSessionRef.current);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // A delegate conversation's identity IS its PTY session id
   // (`{convoId}:{provider}`), so persist the panel↔convo pairing the moment
   // the provider/convo binds — not on turn start like hosted chats, because a

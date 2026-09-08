@@ -447,6 +447,7 @@ impl AgentEvent {
             | AgentEvent::DiffProposed { ts, .. }
             | AgentEvent::DiffResolved { ts, .. }
             | AgentEvent::FileChanged { ts, .. }
+            | AgentEvent::ArtifactProduced { ts, .. }
             | AgentEvent::RunResult { ts, .. }
             | AgentEvent::RunError { ts, .. }
             | AgentEvent::ContextCompacted { ts, .. }
@@ -623,6 +624,23 @@ pub enum AgentEvent {
         path: String,
         old_hash: String,
         new_hash: String,
+        ts: i64,
+    },
+    /// A file an approved `run_command` left behind — a deck built by a
+    /// script, a PDF from pandoc, a generated report. No write tool ran, so
+    /// there is no diff review and no checkpoint behind this: it is the
+    /// harness noticing that the workspace gained something, by reading the
+    /// dirty set either side of the command.
+    ArtifactProduced {
+        run_id: String,
+        path: String,
+        /// Size on disk when the command finished. Zero when the file could
+        /// not be stat'd, which is a report worth keeping, not a reason to
+        /// drop the event.
+        bytes: u64,
+        /// The command created the file, rather than rewriting one that was
+        /// already there.
+        created: bool,
         ts: i64,
     },
     RunResult {

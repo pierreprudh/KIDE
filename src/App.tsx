@@ -561,6 +561,38 @@ function App() {
     openConversations.find((c) => c.panelId === primaryPanelId)?.convoId ??
     openConversations[0]?.convoId ??
     null;
+  // A race is a comparison: both columns are on the canvas and both are where
+  // you are, so the rail lights the route to every racer rather than to
+  // whichever column the pointer last engaged. A racer's Run id *is* its
+  // conversation id — the watch panels reattach to it — so this is right from
+  // the moment the tabs exist, without waiting on a panel binding.
+  const raceWatchConversationIds = raceWatchTabs.map((tab) => tab.runId);
+  const railSelectedConversationId = focusBase
+    ? focusChatActive && !focusConvoError
+      ? railActiveConversationId ?? focusSelectedConvoId
+      : focusSelectedConvoId
+    : railActiveConversationId;
+  const railSelectedConversationIds =
+    raceWatchConversationIds.length > 0
+      ? raceWatchConversationIds
+      : railSelectedConversationId
+        ? [railSelectedConversationId]
+        : [];
+  /* Focus: only while the canvas is actually showing them — on the hero home
+     nothing is open, whatever the panels still hold, and during a race watch
+     the racers are the only thing on the canvas. The workbench keeps its
+     panels and adds the racers to them. */
+  const railOpenConversationIds =
+    focusBase && !focusChatActive
+      ? []
+      : focusBase && raceWatchConversationIds.length > 0
+        ? raceWatchConversationIds
+        : [
+            ...new Set([
+              ...openConversations.map((c) => c.convoId),
+              ...raceWatchConversationIds,
+            ]),
+          ];
 
   const [skills, setSkills] = useState<Skill[]>(() => loadSkills());
 
@@ -2975,19 +3007,10 @@ function App() {
                  merely open. In Focus the panel bindings are the truth while a
                  chat is up — they follow a drop into the split — and the local
                  click state covers the apology row and the moment between a
-                 click and the binding catching up. */
-              selectedConversationId={
-                focusBase
-                  ? focusChatActive && !focusConvoError
-                    ? railActiveConversationId ?? focusSelectedConvoId
-                    : focusSelectedConvoId
-                  : railActiveConversationId
-              }
-              /* Focus: only while the canvas is actually showing them — on the
-                 hero home nothing is open, whatever the panels still hold. */
-              openConversationIds={
-                focusBase && !focusChatActive ? [] : openConversations.map((c) => c.convoId)
-              }
+                 click and the binding catching up. A race watch is the one case
+                 with more than one "here": see the derivation above. */
+              selectedConversationIds={railSelectedConversationIds}
+              openConversationIds={railOpenConversationIds}
               onSwitchProject={(root) => {
                 if (focusBase) {
                   endFocusRaceWatch();
