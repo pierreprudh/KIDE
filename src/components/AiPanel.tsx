@@ -2895,9 +2895,6 @@ This user request requires workspace inspection. Before answering, you MUST call
   // (a new plan reopens a hidden strip), without persisting a dismissal that
   // only matters while the corner is in view.
   const [dismissedResultRunId, setDismissedResultRunId] = useState<string | null>(null);
-  // Whether the reader has the result open. A closed result is an icon in the
-  // corner; an open one is a window, and the column owes it the width.
-  const [resultOpen, setResultOpen] = useState(false);
 
   // The newest turn whose evidence is worth opening — what "the result" means
   // on the canvas, where there is room for one entry, not one per turn.
@@ -2950,9 +2947,7 @@ This user request requires workspace inspection. Before answering, you MUST call
   // for the close control to close.
   const column = columnGeometry({
     planSlot,
-    resultSlot: latestCompletion === undefined || latestCompletion.runId === dismissedResultRunId
-      ? "none"
-      : resultOpen ? "card" : "mark",
+    resultUp: latestCompletion !== undefined && latestCompletion.runId !== dismissedResultRunId,
     questionUp: pendingQuestion !== null,
     hidden: sidePanelHidden,
     canvasWidth,
@@ -4782,7 +4777,8 @@ This user request requires workspace inspection. Before answering, you MUST call
             <CompletionCard
               variant="island"
               compact={column.compact}
-              onOpenChange={setResultOpen}
+              folded={column.planFolded}
+              onUnfold={() => setSidePanelHidden(false)}
               completion={latestCompletion}
               disabled={streaming}
               onReview={onReviewChanges ? (path) => onReviewChanges({ runId: latestCompletion.runId, title: "Run changes", path }) : undefined}

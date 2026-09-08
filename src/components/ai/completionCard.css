@@ -19,12 +19,15 @@
    with a button in the middle. Attention rides the mark's colour. */
 .klide-result-island-header[data-compact="1"] { justify-content: center; gap: 0; min-height: 34px; }
 .klide-result-island-header[data-compact="1"][data-attention="1"] { color: var(--warning); }
-/* At rest the island is its mark: the entry stops filling the column and the
-   card shrinks to the icon, so the corner reads as an icon beside the plan's
-   rather than a second empty window. Opening it restores the full width. */
-.klide-result-entry[data-variant="island"][data-resting="1"] { display: flex; justify-content: flex-end; }
-.klide-result-entry[data-resting="1"] .klide-result-island { padding: 0 9px; border-radius: 10px; }
-.klide-result-entry[data-resting="1"] .klide-result-island-header { min-height: 30px; gap: 0; justify-content: center; }
+/* A closed column is icons only, so the entry becomes the same pill the plan
+   folds to: right-aligned, shrink to its mark and count, same glass and
+   hairline. Open, every entry in the column is a full-width window instead —
+   that switch is the column's state, not the card's. */
+.klide-result-entry[data-variant="island"][data-folded="1"] { display: flex; justify-content: flex-end; }
+.klide-result-mark { appearance: none; pointer-events: auto; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 9px; border-radius: 10px; border: 1px solid var(--composer-border); background: var(--composer-glass); backdrop-filter: var(--composer-blur); -webkit-backdrop-filter: var(--composer-blur); color: var(--fg-subtle); font: inherit; font-size: 11px; cursor: pointer; transition: color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.klide-result-mark:hover { color: var(--fg-strong); border-color: var(--border-strong); }
+.klide-result-mark:focus-visible { outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
+.klide-result-mark .klide-result-meta { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .klide-result-island-title { font-size: 13px; }
 /* The count sits at the far end, the way the plan's does. */
 .klide-result-island-header .klide-result-meta { margin-left: auto; font-variant-numeric: tabular-nums; }

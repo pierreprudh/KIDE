@@ -30,10 +30,10 @@ const COMPACT_BELOW = 260;
 export type ColumnInput = {
   /** What the plan is showing (TodoStrip reports it). */
   planSlot: TodoStripSlot;
-  /** What the result is showing. It rests as a mark — evidence to peek at,
-   *  not a thing to watch — and becomes a card only once the reader opens it,
-   *  which is when the column owes it a window's width. */
-  resultSlot: TodoStripSlot;
+  /** Whether a reviewable result the reader has not dismissed exists. What it
+   *  *looks* like is the column's business, not its own: open, every entry is
+   *  a full-width window; closed, every entry is its mark. */
+  resultUp: boolean;
   /** A question the run is parked on. */
   questionUp: boolean;
   /** The reader closed the column. A question overrides it: that card holds
@@ -57,11 +57,11 @@ export type ColumnGeometry = {
   /** Whether to draw the column's close control. It belongs to cards: with
    *  nothing but marks left there is nothing for it to close. */
   showClose: boolean;
-  /** Whether the plan renders folded to its mark. */
+  /** Whether the entries render folded to their marks (plan and result alike). */
   planFolded: boolean;
 };
 
-export function columnGeometry({ planSlot, resultSlot, questionUp, hidden, canvasWidth }: ColumnInput): ColumnGeometry {
+export function columnGeometry({ planSlot, resultUp, questionUp, hidden, canvasWidth }: ColumnInput): ColumnGeometry {
   // A question is never hidden, so it also un-hides everything beside it: a
   // reader answering one should see the plan it came from.
   const closed = hidden && !questionUp;
@@ -69,12 +69,12 @@ export function columnGeometry({ planSlot, resultSlot, questionUp, hidden, canva
     ? COLUMN_MAX
     : Math.max(COLUMN_MIN, Math.min(COLUMN_MAX, canvasWidth - PROSE_MIN - COLUMN_MARGINS));
 
-  // Plan and question stay windows until the reader closes them; a result is a
-  // window only while it is open. Marks are what is left over — and the corner
-  // keeps them whether the column is open or closed, so a finished run never
-  // vanishes from the top right.
-  const cardsUp = !closed && (planSlot === "card" || questionUp || resultSlot === "card");
-  const marksUp = !cardsUp && (planSlot !== "none" || resultSlot !== "none");
+  // Open, every entry in the column is a full-width window; closed, every one
+  // is its mark. So the column is "open" whenever it holds anything the reader
+  // has not folded away, and the corner keeps the marks either way — a
+  // finished run never vanishes from the top right.
+  const cardsUp = !closed && (planSlot === "card" || questionUp || resultUp);
+  const marksUp = !cardsUp && (planSlot !== "none" || resultUp);
 
   return {
     width,
