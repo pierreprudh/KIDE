@@ -31,10 +31,11 @@ type Props = {
   /** Put the entry away — the canvas column's windows are all dismissible, so
    *  a result the reader is done with leaves the corner like a plan does. */
   onDismiss?: () => void;
-  /** Told when the island opens or closes: a result at rest is an icon in the
-   *  corner and an open one is a window, and the column owes each a different
-   *  share of the canvas (canvasColumn.ts). */
-  onOpenChange?: (open: boolean) => void;
+  /** The column around it is closed: the result shows as its mark and nothing
+   *  else, the way the plan folds. Clicking it opens the column (`onUnfold`),
+   *  which is a different act from opening the evidence. */
+  folded?: boolean;
+  onUnfold?: () => void;
 };
 
 type EvidenceProps = Pick<Props, "completion" | "disabled" | "onReview" | "onOpenArtifact" | "onPreviewArtifact" | "onRequestChanges"> & {
@@ -119,7 +120,7 @@ function ArtifactThumb({ path, load }: { path: string; load?: (path: string) => 
 
 /** A quiet entry point. On the canvas the evidence opens inside the card, in
  *  the column the plan already lives in; in a transcript it opens as a sheet. */
-export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss , onOpenChange }: Props) {
+export function CompletionCard({ completion, disabled, onReview, onOpenArtifact, onPreviewArtifact, onRequestChanges, variant = "inline", compact = false, onDismiss , folded = false, onUnfold }: Props) {
   const island = variant === "island";
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -149,18 +150,27 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
   const spoken = [label, files, attention > 0 ? `${attention} item${attention === 1 ? "" : "s"} to review` : ""]
     .filter(Boolean).join(" · ");
 
-  const setIslandOpen = (next: boolean) => {
-    setOpen(next);
-    onOpenChange?.(next);
-  };
+  if (island && folded) {
+    // Closed column: icons only. Same pill as the plan's reopen mark — icon
+    // and count, nothing else — and the same job: bring the column back.
+    return (
+      <div className="klide-result-entry" data-variant="island" data-folded="1">
+        <button type="button" className="klide-result-mark" onClick={onUnfold}
+          aria-label={`Open the side panel — ${title.toLowerCase()}${files ? `, ${files}` : ""}`}
+          title="Open the side panel">
+          <ReviewIcon size={15} />
+          {completion.files.length > 0 && <span className="klide-result-meta">{completion.files.length}</span>}
+        </button>
+      </div>
+    );
+  }
 
   if (island) {
     // One window in the canvas column, built like the plan above it: a header
     // that is the whole hit target, a hairline that appears with the body, and
     // the body growing into the column rather than over the app.
     return (
-      <div className="klide-result-entry" data-variant="island" data-open={open ? "1" : undefined}
-        data-resting={open ? undefined : "1"}>
+      <div className="klide-result-entry" data-variant="island" data-open={open ? "1" : undefined}>
         <section className="klide-result-island" data-open={open ? "1" : undefined} aria-label={title}>
           <div className="klide-result-island-header" role="button" tabIndex={0}
             aria-expanded={open} aria-controls={id}
@@ -168,11 +178,11 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
             title={compact ? spoken : undefined}
             data-compact={compact ? "1" : undefined}
             data-attention={attention > 0 ? "1" : undefined}
-            onClick={() => setIslandOpen(!open)}
+            onClick={() => setOpen(!open)}
             onKeyDown={(event) => {
               if (event.key !== "Enter" && event.key !== " ") return;
               event.preventDefault();
-              setIslandOpen(!open);
+              setOpen(!open);
             }}>
             {/* A 232px column is a corner, not a panel: the header keeps one
                 mark and drops the rest — the title, the count, the attention
@@ -184,7 +194,7 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
                 body once the reader opens it. (A narrow column gives the same
                 answer for a different reason — no room for them.) */}
             <ReviewIcon size={15} />
-            {open && !compact && <>
+            {!compact && <>
               <span className="klide-result-island-title">{title}</span>
               {files && <span className="klide-result-meta">{files}</span>}
               {dot}
@@ -195,7 +205,7 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
                 rule gives to one — hiding it with opacity was not enough
                 either, since it kept the pill as wide as two. The column's own
                 close puts the whole corner away meanwhile. */}
-            {onDismiss && open && (
+            {onDismiss && (
               <button type="button" className="klide-result-island-close" aria-label="Hide this result"
                 onClick={(event) => { event.stopPropagation(); onDismiss(); }}>
                 <CloseIcon size={14} />
@@ -209,7 +219,7 @@ export function CompletionCard({ completion, disabled, onReview, onOpenArtifact,
           {open && (
             <div className="klide-result-island-panel" id={id}>
               <ResultEvidence completion={completion} disabled={disabled} onReview={onReview}
-                onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={() => setIslandOpen(false)} />
+                onOpenArtifact={onOpenArtifact} onPreviewArtifact={onPreviewArtifact} onRequestChanges={onRequestChanges} onDone={() => setOpen(false)} />
             </div>
         )}
         </section>
