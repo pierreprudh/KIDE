@@ -15,6 +15,7 @@ mod local_servers;
 mod memory;
 mod missions;
 mod models;
+mod preview;
 mod pricing;
 mod providers;
 mod pty;
@@ -458,74 +459,18 @@ async fn delete_entry(workspace_root: String, path: String) -> Result<(), String
 
 /// A picture of a document Klide cannot render — a deck, a spreadsheet, a PDF.
 ///
-/// macOS already draws all of them for Quick Look, so `qlmanage` is asked for
-/// a thumbnail rather than Klide growing a converter per format. ~200ms for a
-/// deck, and the PNG comes back as a `data:` URI so the webview needs no file
-/// access of its own. Not available off macOS, where the honest answer is that
-/// there is no preview rather than a broken one.
+/// Drawn by macOS Quick Look and remembered per file and size in `preview.rs`,
+/// so the card, the viewer's canvas and its rail pay for one render each and a
+/// second look is a lookup. The PNG comes back as a `data:` URI so the webview
+/// needs no file access of its own.
 #[tauri::command]
 async fn preview_file(workspace_root: String, path: String, size: Option<u32>) -> Result<String, String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (workspace_root, path, size);
-        return Err("Previews need macOS Quick Look.".to_string());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use base64::Engine;
+    blocking::run(move || {
         let ws = workspace::Workspace::new(&workspace_root)?;
         let abs = ws.resolve_abs_read(&path)?;
-        let name = abs
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .ok_or_else(|| "That path has no file name.".to_string())?;
-        // One directory per request, removed on the way out: qlmanage names its
-        // output after the source file, so two previews of `summary.docx` in a
-        // shared directory would race for the same name.
-        let out = std::env::temp_dir().join(format!(
-            "klide-preview-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::create_dir_all(&out).map_err(|e| format!("Cannot make a preview: {e}"))?;
-        // Resolved through the login shell like every other binary Klide
-        // shells out to: a bundled app launched from Finder has a minimal PATH,
-        // and a bare `Command::new` there fails with nothing to show for it.
-        let qlmanage = cli::resolve_command("qlmanage")?;
-        let status = tokio::process::Command::new(qlmanage)
-            .arg("-t")
-            .arg("-s")
-            .arg(size.unwrap_or(900).clamp(120, 2000).to_string())
-            .arg("-o")
-            .arg(&out)
-            .arg(&abs)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        let png = out.join(format!("{name}.png"));
-        let bytes = match (status, std::fs::read(&png)) {
-            (Ok(_), Ok(bytes)) => bytes,
-            (Ok(status), Err(e)) => {
-                let _ = std::fs::remove_dir_all(&out);
-                return Err(format!(
-                    "Quick Look drew no preview for {name} (qlmanage {status}): {e}"
-                ));
-            }
-            (Err(e), _) => {
-                let _ = std::fs::remove_dir_all(&out);
-                return Err(format!("Could not run qlmanage: {e}"));
-            }
-        };
-        let _ = std::fs::remove_dir_all(&out);
-        Ok(format!(
-            "data:image/png;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(&bytes)
-        ))
-    }
+        preview::data_uri(&abs, preview::clamp_size(size), preview::quick_look)
+    })
+    .await
 }
 
 /// Hand a file to the application the machine already opens it with. The one

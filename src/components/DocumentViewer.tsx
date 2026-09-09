@@ -17,6 +17,10 @@ type Props = {
    *  asks small and the canvas asks large, so a deck is not read from a
    *  thumbnail stretched to fill a window. */
   load: (path: string, size: number) => Promise<string | null>;
+  /** A picture of the document the host already has at any size — the card's
+   *  thumbnail, usually — shown on the canvas while the large one is drawn.
+   *  Null means the canvas says the picture is coming instead. */
+  placeholder?: (path: string) => string | null;
   /** Hand the file to the application that owns it. */
   onOpenExternal: (path: string) => void;
   onClose: () => void;
@@ -60,25 +64,29 @@ function RailItem({ document, active, load, onSelect }: {
  * between what the run made, the sheet, and one way out to the application
  * that can actually edit it.
  */
-export function DocumentViewer({ documents, path, load, onOpenExternal, onClose }: Props) {
+export function DocumentViewer({ documents, path, load, placeholder, onOpenExternal, onClose }: Props) {
   const [active, setActive] = useState(path);
-  const [src, setSrc] = useState<string | null>(null);
+  const [src, setSrc] = useState<string | null>(() => placeholder?.(path) ?? null);
   const [pending, setPending] = useState(true);
   const [actualSize, setActualSize] = useState(false);
   const canvas = useRef<HTMLDivElement>(null);
 
   useEffect(() => setActive(path), [path]);
 
+  // The sharp picture takes a Quick Look render the first time — ~200 ms — so
+  // the canvas shows the picture the host already has for this document (the
+  // card's, or a rail thumbnail's) and swaps it for the large one when that
+  // lands, instead of going blank between every step.
   useEffect(() => {
     let live = true;
     setPending(true);
-    setSrc(null);
+    setSrc(placeholder?.(active) ?? null);
     setActualSize(false);
     void load(active, CANVAS_SIZE)
       .then((next) => { if (live) { setSrc(next); setPending(false); } })
-      .catch(() => { if (live) setPending(false); });
+      .catch(() => { if (live) { setSrc(null); setPending(false); } });
     return () => { live = false; };
-  }, [active, load]);
+  }, [active, load, placeholder]);
 
   // Escape leaves; the arrows walk the rail, which is what a reader reaches for
   // before they reach for the mouse.
@@ -137,7 +145,7 @@ export function DocumentViewer({ documents, path, load, onOpenExternal, onClose 
           )}
           <div ref={canvas} className="klide-doc-canvas" data-actual={actualSize ? "1" : undefined}>
             {src
-              ? <img className="klide-doc-sheet" src={src} alt={`Preview of ${fileName(active)}`} />
+              ? <img className="klide-doc-sheet" data-provisional={pending ? "1" : undefined} src={src} alt={`Preview of ${fileName(active)}`} />
               : <p className="klide-doc-empty">{pending ? "Drawing the preview…" : "No preview for this file. Open it in its app to read it."}</p>}
           </div>
         </div>

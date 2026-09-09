@@ -154,6 +154,10 @@ type Panel = "explorer" | "git" | "memory" | "skills" | "ai" | "runs" | "setting
 type ActivityPanel = Panel | "orchestrator" | "home";
 export type { HarnessSettings } from "./settingsStore";
 
+/** Documents whose best picture App keeps in memory for the viewer's first
+ *  frame. A run makes a handful; past this the oldest is forgotten. */
+const BEST_PICTURES_KEPT = 48;
+
 function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   // The Surface — which screen the app is on. One owner for what used to be
@@ -1280,11 +1284,24 @@ function App() {
   // One complaint per file: the rail and the canvas both ask for the same
   // document, and two toasts for one failure is one too many.
   const previewFailures = useRef<Set<string>>(new Set());
+  // The best picture seen for each document this session, so the viewer can
+  // put the card's thumbnail on its canvas the instant it opens and swap it
+  // for the sharp one when Quick Look has drawn it. Rust remembers the renders
+  // themselves; this only knows which one to show first.
+  const bestPictures = useRef<Map<string, { size: number; src: string }>>(new Map());
   const previewRunArtifact = useCallback(async (path: string, size = 900): Promise<string | null> => {
     const root = workspaceRoot;
     if (!root) return null;
     try {
-      return await loadArtifactPreview(root, path, size);
+      const src = await loadArtifactPreview(root, path, size);
+      const best = bestPictures.current;
+      const known = best.get(path);
+      if (!known || known.size <= size) {
+        best.delete(path);
+        best.set(path, { size, src });
+        if (best.size > BEST_PICTURES_KEPT) best.delete(best.keys().next().value as string);
+      }
+      return src;
     } catch (err) {
       // A file with no preview is normal and says so on the sheet. A preview
       // that *failed* is not: it looks identical to the reader, so the reason
@@ -1299,6 +1316,7 @@ function App() {
       return null;
     }
   }, [workspaceRoot]);
+  const placeholderPicture = useCallback((path: string) => bestPictures.current.get(path)?.src ?? null, []);
 
   // The document a reader opened, and the set its rail walks.
   const [documentViewer, setDocumentViewer] = useState<
@@ -3993,6 +4011,7 @@ function App() {
           documents={documentViewer.documents}
           path={documentViewer.path}
           load={previewRunArtifact}
+          placeholder={placeholderPicture}
           onOpenExternal={(path) => void openArtifactExternally(path)}
           onClose={() => setDocumentViewer(null)}
         />
