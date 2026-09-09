@@ -6,8 +6,8 @@ const documents = [
   { path: "q3-demo/deck.pptx", bytes: 28_625 },
   { path: "q3-demo/summary.docx", bytes: 3_796 },
 ];
-const render = (path: string, docs = documents) => renderToStaticMarkup(
-  <DocumentViewer documents={docs} path={path} load={async () => null}
+const render = (path: string, docs = documents, placeholder?: (path: string) => string | null) => renderToStaticMarkup(
+  <DocumentViewer documents={docs} path={path} load={async () => null} placeholder={placeholder}
     onOpenExternal={() => {}} onClose={() => {}} />,
 );
 
@@ -42,5 +42,19 @@ describe("DocumentViewer", () => {
     // The load promise has not resolved in a static render — the reader is
     // told, instead of being given a blank canvas that looks broken.
     expect(render("q3-demo/deck.pptx")).toContain("Drawing the preview…");
+  });
+
+  it("opens on the picture the host already has, and marks it provisional until the sharp one lands", () => {
+    // The card drew this deck at 900 px a click ago. Quick Look takes ~200 ms
+    // for the 1800 px one, so the canvas shows the picture it has rather than
+    // an empty sheet, and swaps in place when the large one arrives.
+    const html = render("q3-demo/deck.pptx", documents, (path) => path.endsWith("deck.pptx") ? "data:image/png;base64,c21hbGw=" : null);
+    expect(html).toContain('src="data:image/png;base64,c21hbGw="');
+    expect(html).toContain('data-provisional="1"');
+    expect(html).not.toContain("Drawing the preview…");
+  });
+
+  it("says the picture is coming when the host has none to stand in", () => {
+    expect(render("q3-demo/summary.docx", documents, () => null)).toContain("Drawing the preview…");
   });
 });

@@ -134,6 +134,9 @@
   background: var(--bg-elevated);
   animation: klide-doc-sheet-in 200ms ease-out;
 }
+/* A smaller picture standing in while the large one is drawn: it keeps the
+   canvas full, and the sharp one replaces it in place — no second fade. */
+.klide-doc-sheet[data-provisional="1"] { animation: none; }
 /* Actual size: the picture stops fitting and the canvas scrolls, for a deck
    whose small print is the reason the reader opened it. */
 .klide-doc-canvas[data-actual="1"] { place-items: start center; }
